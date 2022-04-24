@@ -21,7 +21,7 @@ from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
 PLEX_TOKEN = 'xxxxxx'
 PLEX_BIF_FRAME_INTERVAL = 2
-PLEX_LOCAL_MEDIA_PATH = '/faster/plex/Media/localhost'
+PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
 
 GPU_THREADS = 4
 CPU_THREADS = 4
