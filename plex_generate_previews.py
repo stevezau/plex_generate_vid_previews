@@ -22,7 +22,7 @@ PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
 PLEX_TOKEN = 'xxxxxx'
 PLEX_BIF_FRAME_INTERVAL = 2
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
-
+TMP_FOLDER = '/tmp/plex'
 GPU_THREADS = 4
 CPU_THREADS = 4
 
@@ -139,7 +139,7 @@ def process_item(item_key, lock):
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
             if not os.path.isfile(index_bif):
-                tmp_path = os.path.join('/faster/tmp', bundle_hash)
+                tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
                 if os.path.isdir(tmp_path):
                     shutil.rmtree(tmp_path)
                 try:
@@ -210,4 +210,11 @@ if __name__ == '__main__':
     # Also forcing 'colorize=True' otherwise Loguru won't recognize that the sink support colors
     logger.add(lambda m: console.print('\n%s' % m, end=""), colorize=True)
 
-    run()
+    try:
+        if not os.path.isdir(TMP_FOLDER):
+            os.mkdir(TMP_FOLDER)
+        run()
+    finally:
+        if os.path.isdir(TMP_FOLDER):
+            shutil.rmtree(TMP_FOLDER)
+
