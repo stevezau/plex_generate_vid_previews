@@ -56,11 +56,7 @@ except ImportError:
     print('Dependencies Missing!  Please run "pip3 install pillow".')
     sys.exit()
 
-try:
-    import piexif
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install piexif".')
-    sys.exit()
+import PIL
 
 if not os.path.isfile('/usr/bin/ffmpeg'):
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
@@ -89,12 +85,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def generate_images(video_file, output_folder, lock):
+    filter_complex_parameters = "[0:V:0] fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease [out]".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
     args = [
         "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
         video_file, "-q", "3",
         "-filter_complex",
-        "[0:V:0] fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease [out]".format(
-            round(1 / PLEX_BIF_FRAME_INTERVAL, 6)),
+        filter_complex_parameters,
         "-map", "[out]", '{}/img-%06d.jpg'.format(output_folder)
     ]
 
@@ -127,8 +123,10 @@ def generate_images(video_file, output_folder, lock):
         speed = speed[-1]
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
 
-    # Rename images
+    # Rename and Optimize Images
     for image in glob.glob('{}/img*.jpg'.format(output_folder)):
+        auto_quality = 75
+		img.save(image,quality=auto_quality,optimize=True,progressive=False,format="JPEG")
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
         os.rename(image, os.path.join(output_folder, '{:010d}.jpg'.format(frame_second)))
