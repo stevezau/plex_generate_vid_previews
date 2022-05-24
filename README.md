@@ -8,7 +8,7 @@ Create github issue OR see thread https://forums.plex.tv/t/script-to-regenerate-
 # STEP 1 - install python3 Deps
 Requires python3
 ```
-pip3 install loguru rich plexapi gpustat pillow piexif
+pip3 install loguru rich plexapi gpustat pillow piexif requests
 ```
 
 # STEP 2 - Download script and edit the Vars
