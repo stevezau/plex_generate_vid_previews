@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 import re
@@ -20,11 +21,18 @@ from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
 # EDIT These Vars #
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
 PLEX_TOKEN = 'xxxxxx'
-PLEX_BIF_FRAME_INTERVAL = 2
+PLEX_BIF_FRAME_INTERVAL = 5
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
-TMP_FOLDER = '/tmp/plex'
+TMP_FOLDER = '/dev/shm/plex_generate_previews'
 GPU_THREADS = 4
 CPU_THREADS = 4
+PLEX_UID = 1000
+PLEX_GUID = 1001
+
+# DO NOT EDIT BELOW HERE #
+
+os.setgid(PLEX_GUID)
+os.setuid(PLEX_UID)
 
 console = Console(color_system=None, stderr=True)
 
@@ -140,6 +148,8 @@ def process_item(item_key, lock):
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
             if not os.path.isfile(index_bif):
                 tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+                if not os.path.isdir(indexes_path):
+                    os.mkdir(indexes_path)
                 if os.path.isdir(tmp_path):
                     shutil.rmtree(tmp_path)
                 try:
@@ -217,4 +227,3 @@ if __name__ == '__main__':
     finally:
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
-
