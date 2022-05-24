@@ -10,6 +10,16 @@ import glob
 import os
 import struct
 
+if not os.path.isfile('/usr/bin/mediainfo'):
+    print('MediaInfo not found.  MediaInfo must be installed and available in PATH.')
+    sys.exit()	
+
+try:
+    from pymediainfo import MediaInfo
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install pymediainfo".')
+    sys.exit()
+
 try:
     import gpustat
 except ImportError:
@@ -85,13 +95,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def generate_images(video_file, output_folder, lock):
-    filter_complex_parameters = "[0:V:0] fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease [out]".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+    vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+    if MediaInfo.parse(video_file).video_tracks[0].hdr_format != "None":
+         vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6)) #
     args = [
         "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
-        video_file, "-q", "3",
-        "-filter_complex",
-        filter_complex_parameters,
-        "-map", "[out]", '{}/img-%06d.jpg'.format(output_folder)
+        video_file, "-an", "-sn", "-dn", "-q:v", "3",
+        "-vf",
+        vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
     ]
 
     start = time.time()
@@ -123,10 +134,10 @@ def generate_images(video_file, output_folder, lock):
         speed = speed[-1]
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
 
-    # Rename and Optimize Images
+    # Optimize and Rename Images
     for image in glob.glob('{}/img*.jpg'.format(output_folder)):
-        auto_quality = 75
-		img.save(image,quality=auto_quality,optimize=True,progressive=False,format="JPEG")
+        im = Image.open(image)  
+        im = im.save(image,format="JPEG",optimize=True,progressive=False)
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
         os.rename(image, os.path.join(output_folder, '{:010d}.jpg'.format(frame_second)))
