@@ -9,14 +9,52 @@ import multiprocessing
 import glob
 import os
 import struct
-import gpustat
+
+try:
+    import gpustat
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
+ 
 import time
 import requests
 import array
-from plexapi.server import PlexServer
-from loguru import logger
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
+
+try:
+    from plexapi.server import PlexServer
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
+    
+try:
+    from loguru import logger
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
+
+try:
+    from rich.console import Console
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
+
+try:
+    from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
+
+try:
+    from PIL import Image
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
+
+try:
+    import piexif
+except ImportError:
+    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    sys.exit()
 
 # EDIT These Vars #
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
