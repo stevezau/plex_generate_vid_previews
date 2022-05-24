@@ -13,48 +13,58 @@ import struct
 try:
     import gpustat
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install gpustat".')
     sys.exit()
  
 import time
-import requests
+
+try:
+    import requests
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install requests".')
+    sys.exit()
+
 import array
 
 try:
     from plexapi.server import PlexServer
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install plexapi".')
     sys.exit()
     
 try:
     from loguru import logger
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install loguru".')
     sys.exit()
 
 try:
     from rich.console import Console
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit()
 
 try:
     from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit()
 
 try:
     from PIL import Image
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install pillow".')
     sys.exit()
 
 try:
     import piexif
 except ImportError:
-    print('\n    Dependencies Missing!  Please run "pip3 install loguru rich plexapi gpustat pillow piexif"')
+    print('Dependencies Missing!  Please run "pip3 install piexif".')
     sys.exit()
+
+if not os.path.isfile('/usr/bin/ffmpeg'):
+    print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
+    sys.exit()	
 
 # EDIT These Vars #
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
