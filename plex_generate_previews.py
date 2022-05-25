@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+
+# EDIT These Vars #
+PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
+PLEX_TOKEN = 'xxxxxx'
+PLEX_BIF_FRAME_INTERVAL = 5
+PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
+TMP_FOLDER = '/dev/shm/plex_generate_previews'
+GPU_THREADS = 4
+CPU_THREADS = 4
+
+# DO NOT EDIT BELOW HERE #
+
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -52,17 +64,6 @@ except ImportError:
 if not os.path.isfile('/usr/bin/ffmpeg'):
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
-
-# EDIT These Vars #
-PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
-PLEX_TOKEN = 'xxxxxx'
-PLEX_BIF_FRAME_INTERVAL = 5
-PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
-TMP_FOLDER = '/dev/shm/plex_generate_previews'
-GPU_THREADS = 4
-CPU_THREADS = 4
-
-# DO NOT EDIT BELOW HERE #
 
 console = Console(color_system=None, stderr=True)
 
