@@ -9,68 +9,49 @@ import multiprocessing
 import glob
 import os
 import struct
-
 if not os.path.isfile('/usr/bin/mediainfo'):
     print('MediaInfo not found.  MediaInfo must be installed and available in PATH.')
-    sys.exit()	
-
+    sys.exit(1)	
 try:
     from pymediainfo import MediaInfo
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install pymediainfo".')
-    sys.exit()
-
+    sys.exit(1)
 try:
     import gpustat
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install gpustat".')
-    sys.exit()
- 
+    sys.exit(1)
 import time
-
 try:
     import requests
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install requests".')
-    sys.exit()
-
+    sys.exit(1)
 import array
-
 try:
     from plexapi.server import PlexServer
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install plexapi".')
-    sys.exit()
-    
+    sys.exit(1)
 try:
     from loguru import logger
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install loguru".')
-    sys.exit()
-
+    sys.exit(1)
 try:
     from rich.console import Console
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
-    sys.exit()
-
+    sys.exit(1)
 try:
     from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
-    sys.exit()
-
-try:
-    from PIL import Image
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install pillow".')
-    sys.exit()
-
-import PIL
-
+    sys.exit(1)
 if not os.path.isfile('/usr/bin/ffmpeg'):
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
-    sys.exit()	
+    sys.exit(1)
 
 # EDIT These Vars #
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
@@ -80,13 +61,8 @@ PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Se
 TMP_FOLDER = '/dev/shm/plex_generate_previews'
 GPU_THREADS = 4
 CPU_THREADS = 4
-PLEX_UID = 1000
-PLEX_GUID = 1001
 
 # DO NOT EDIT BELOW HERE #
-
-os.setgid(PLEX_GUID)
-os.setuid(PLEX_UID)
 
 console = Console(color_system=None, stderr=True)
 
@@ -136,8 +112,6 @@ def generate_images(video_file, output_folder, lock):
 
     # Optimize and Rename Images
     for image in glob.glob('{}/img*.jpg'.format(output_folder)):
-        im = Image.open(image)  
-        im = im.save(image,format="JPEG",optimize=True,progressive=False)
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
         os.rename(image, os.path.join(output_folder, '{:010d}.jpg'.format(frame_second)))
