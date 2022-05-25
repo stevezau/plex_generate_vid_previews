@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+
+# EDIT These Vars #
+PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
+PLEX_TOKEN = 'xxxxxx'
+PLEX_BIF_FRAME_INTERVAL = 5
+PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
+TMP_FOLDER = '/dev/shm/plex_generate_previews'
+GPU_THREADS = 4
+CPU_THREADS = 4
+
+# DO NOT EDIT BELOW HERE #
+
+import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 import re
@@ -8,23 +21,49 @@ import multiprocessing
 import glob
 import os
 import struct
-import gpustat
+if not os.path.isfile('/usr/bin/mediainfo'):
+    print('MediaInfo not found.  MediaInfo must be installed and available in PATH.')
+    sys.exit(1)	
+try:
+    from pymediainfo import MediaInfo
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install pymediainfo".')
+    sys.exit(1)
+try:
+    import gpustat
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install gpustat".')
+    sys.exit(1)
 import time
-import requests
+try:
+    import requests
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install requests".')
+    sys.exit(1)
 import array
-from plexapi.server import PlexServer
-from loguru import logger
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
-
-# EDIT These Vars #
-PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
-PLEX_TOKEN = 'xxxxxx'
-PLEX_BIF_FRAME_INTERVAL = 2
-PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
-TMP_FOLDER = '/tmp/plex'
-GPU_THREADS = 4
-CPU_THREADS = 4
+try:
+    from plexapi.server import PlexServer
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install plexapi".')
+    sys.exit(1)
+try:
+    from loguru import logger
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install loguru".')
+    sys.exit(1)
+try:
+    from rich.console import Console
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install rich".')
+    sys.exit(1)
+try:
+    from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install rich".')
+    sys.exit(1)
+if not os.path.isfile('/usr/bin/ffmpeg'):
+    print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
+    sys.exit(1)
 
 console = Console(color_system=None, stderr=True)
 
@@ -33,13 +72,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def generate_images(video_file, output_folder, lock):
+    vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+    if MediaInfo.parse(video_file).video_tracks[0].hdr_format != "None":
+         vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
     args = [
         "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
-        video_file, "-q", "3",
-        "-filter_complex",
-        "[0:V:0] fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease [out]".format(
-            round(1 / PLEX_BIF_FRAME_INTERVAL, 6)),
-        "-map", "[out]", '{}/img-%06d.jpg'.format(output_folder)
+        video_file, "-an", "-sn", "-dn", "-q:v", "3",
+        "-vf",
+        vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
     ]
 
     start = time.time()
@@ -71,7 +111,7 @@ def generate_images(video_file, output_folder, lock):
         speed = speed[-1]
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
 
-    # Rename images
+    # Optimize and Rename Images
     for image in glob.glob('{}/img*.jpg'.format(output_folder)):
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
@@ -140,6 +180,8 @@ def process_item(item_key, lock):
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
             if not os.path.isfile(index_bif):
                 tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+                if not os.path.isdir(indexes_path):
+                    os.mkdir(indexes_path)
                 if os.path.isdir(tmp_path):
                     shutil.rmtree(tmp_path)
                 try:
@@ -217,4 +259,3 @@ if __name__ == '__main__':
     finally:
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
-
