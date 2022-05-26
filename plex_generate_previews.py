@@ -239,14 +239,17 @@ if __name__ == '__main__':
     logger.remove()  # Remove default 'stderr' handler
 
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
+        print('%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH variable' % PLEX_LOCAL_MEDIA_PATH)
         logger.error('%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH variable' % PLEX_LOCAL_MEDIA_PATH)
         exit(1)
 
     if 'xxxxxx' in PLEX_URL:
+        print('Please update the PLEX_URL variable within this script')
         logger.error('Please update the PLEX_URL variable within this script')
         exit(1)
 
     if 'xxxxxx' in PLEX_TOKEN:
+        print('Please update the PLEX_TOKEN variable within this script')
         logger.error('Please update the PLEX_TOKEN variable within this script')
         exit(1)
 
