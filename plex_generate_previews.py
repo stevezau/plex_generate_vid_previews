@@ -4,6 +4,7 @@
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
 PLEX_TOKEN = 'xxxxxx'
 PLEX_BIF_FRAME_INTERVAL = 5
+THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6 with 2 being highest quality and largest file size and 6 being lowest quality and smallest file size. # 
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
 TMP_FOLDER = '/dev/shm/plex_generate_previews'
 GPU_THREADS = 4
@@ -78,7 +79,7 @@ def generate_images(video_file, output_folder, lock):
             vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
     args = [
         "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
-        video_file, "-an", "-sn", "-dn", "-q:v", "3",
+        video_file, "-an", "-sn", "-dn", "-q:v", str(THUMBNAIL_QUALITY),
         "-vf",
         vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
     ]
