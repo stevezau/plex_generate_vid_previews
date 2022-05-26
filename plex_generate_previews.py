@@ -237,27 +237,23 @@ def run():
 
 if __name__ == '__main__':
     logger.remove()  # Remove default 'stderr' handler
-
-    if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
-        print('%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH variable' % PLEX_LOCAL_MEDIA_PATH)
-        logger.error('%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH variable' % PLEX_LOCAL_MEDIA_PATH)
-        exit(1)
-
-    if 'xxxxxx' in PLEX_URL:
-        print('Please update the PLEX_URL variable within this script')
-        logger.error('Please update the PLEX_URL variable within this script')
-        exit(1)
-
-    if 'xxxxxx' in PLEX_TOKEN:
-        print('Please update the PLEX_TOKEN variable within this script')
-        logger.error('Please update the PLEX_TOKEN variable within this script')
-        exit(1)
-
     # We need to specify end=''" as log message already ends with \n (thus the lambda function)
     # Also forcing 'colorize=True' otherwise Loguru won't recognize that the sink support colors
     logger.add(lambda m: console.print('\n%s' % m, end=""), colorize=True)
 
-    try:
+    if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
+        logger.error('%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH variable' % PLEX_LOCAL_MEDIA_PATH)
+        exit(1)
+
+    if 'xxxxxx' in PLEX_URL:
+        logger.error('Please update the PLEX_URL variable within this script')
+        exit(1)
+
+    if 'xxxxxx' in PLEX_TOKEN:
+        logger.error('Please update the PLEX_TOKEN variable within this script')
+        exit(1)
+
+     try:
         if not os.path.isdir(TMP_FOLDER):
             os.mkdir(TMP_FOLDER)
         run()
