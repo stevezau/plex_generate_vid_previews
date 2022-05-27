@@ -74,9 +74,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def generate_images(video_file, output_folder, lock):
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
-    if MediaInfo.parse(video_file).video_tracks[0].hdr_format != "None":
-         if MediaInfo.parse(video_file).video_tracks[0].hdr_format is not None:
-            vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+    if (MediaInfo.parse(video_file).video_tracks[0].hdr_format != "None") and (MediaInfo.parse(video_file).video_tracks[0].hdr_format is not None):
+        vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+
     args = [
         "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
         video_file, "-an", "-sn", "-dn", "-q:v", str(THUMBNAIL_QUALITY),
