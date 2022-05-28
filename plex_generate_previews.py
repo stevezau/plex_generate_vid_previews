@@ -181,12 +181,10 @@ def process_item(item_key, lock):
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
-            if not os.path.isfile(index_bif):
-                tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+            tmp_path = os.path.join(TMP_FOLDER, bundle_hash)            
+            if (not os.path.isfile(index_bif)) and (not os.path.isdir(tmp_path)):
                 if not os.path.isdir(indexes_path):
                     os.mkdir(indexes_path)
-                if os.path.isdir(tmp_path):
-                    shutil.rmtree(tmp_path)
                 try:
                     os.mkdir(tmp_path)
                     generate_images(media_part.attrib['file'], tmp_path, lock)
@@ -255,6 +253,9 @@ if __name__ == '__main__':
         exit(1)
 
      try:
+        if os.path.isdir(TMP_FOLDER):
+            shutil.rmtree(TMP_FOLDER)   
+            os.mkdir(TMP_FOLDER)
         if not os.path.isdir(TMP_FOLDER):
             os.mkdir(TMP_FOLDER)
         run()
