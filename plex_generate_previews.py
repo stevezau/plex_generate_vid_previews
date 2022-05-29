@@ -75,7 +75,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 def generate_images(video_file, output_folder, lock):
     media_info = MediaInfo.parse(video_file)
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
-    if (media_info.video_tracks[0].hdr_format != "None") and (media_info.video_tracks[0].hdr_format is not None):
+    
+    # Check if we have a HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
+    if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
         vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
 
     args = [
@@ -253,11 +255,10 @@ if __name__ == '__main__':
         exit(1)
 
      try:
+        # Clean TMP Folder
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)   
-            os.mkdir(TMP_FOLDER)
-        if not os.path.isdir(TMP_FOLDER):
-            os.mkdir(TMP_FOLDER)
+        os.mkdir(TMP_FOLDER)
         run()
     finally:
         if os.path.isdir(TMP_FOLDER):
