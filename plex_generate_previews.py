@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # EDIT These Vars #
-PLEX_URL = 'https://xxxxxx.plex.direct:32400/'
+PLEX_URL = 'https://xxxxxx.plex.direct:32400/' # If running locally, can also enter IP directly "https://127.0.0.1:32400/"
 PLEX_TOKEN = 'xxxxxx'
 PLEX_BIF_FRAME_INTERVAL = 5
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
