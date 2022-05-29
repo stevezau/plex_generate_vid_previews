@@ -21,7 +21,7 @@ To get your plex url and token
 1. Open plex web https://app.plex.tv/ and go to any video file
 2. Open the ... menu and select "get info"
 3. Click "view xml" on bottom left
-4. Use the url (without the path) for the `PLEX_URL` var in the python script. For example `https://xxxx.plex.direct:32433/`
+4. Use the url (without the path) for the `PLEX_URL` var in the python script. For example `https://xxxx.plex.direct:32400/` or `https://127.0.0.1:32400/` if running locally.
 5. Find Plex-Token in the url and insert the value into `PLEX_TOKEN` var in the python script.
 
 # STEP 4 - Run
