@@ -4,6 +4,7 @@
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/' # If running locally, can also enter IP directly "https://127.0.0.1:32400/"
 PLEX_TOKEN = 'xxxxxx'
 PLEX_BIF_FRAME_INTERVAL = 5
+THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6 with 2 being highest quality and largest file size and 6 being lowest quality and smallest file size. # 
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
 TMP_FOLDER = '/dev/shm/plex_generate_previews'
 GPU_THREADS = 4
@@ -72,12 +73,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def generate_images(video_file, output_folder, lock):
+    media_info = MediaInfo.parse(video_file)
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
-    if MediaInfo.parse(video_file).video_tracks[0].hdr_format != "None":
-         vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+    if (media_info.video_tracks[0].hdr_format != "None") and (media_info.video_tracks[0].hdr_format is not None):
+        vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+
     args = [
         "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
-        video_file, "-an", "-sn", "-dn", "-q:v", "3",
+        video_file, "-an", "-sn", "-dn", "-q:v", str(THUMBNAIL_QUALITY),
         "-vf",
         vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
     ]
@@ -106,7 +109,7 @@ def generate_images(video_file, output_folder, lock):
     # Speed
     end = time.time()
     seconds = round(end - start, 1)
-    speed = re.findall('speed= ([0-9]+)x', err.decode('utf-8'))
+    speed = re.findall('speed= ?([0-9]+\.?[0-9]*|\.[0-9]+)x', err.decode('utf-8'))
     if speed:
         speed = speed[-1]
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
@@ -178,12 +181,10 @@ def process_item(item_key, lock):
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
-            if not os.path.isfile(index_bif):
-                tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+            tmp_path = os.path.join(TMP_FOLDER, bundle_hash)            
+            if (not os.path.isfile(index_bif)) and (not os.path.isdir(tmp_path)):
                 if not os.path.isdir(indexes_path):
                     os.mkdir(indexes_path)
-                if os.path.isdir(tmp_path):
-                    shutil.rmtree(tmp_path)
                 try:
                     os.mkdir(tmp_path)
                     generate_images(media_part.attrib['file'], tmp_path, lock)
@@ -235,6 +236,9 @@ def run():
 
 if __name__ == '__main__':
     logger.remove()  # Remove default 'stderr' handler
+    # We need to specify end=''" as log message already ends with \n (thus the lambda function)
+    # Also forcing 'colorize=True' otherwise Loguru won't recognize that the sink support colors
+    logger.add(lambda m: console.print('\n%s' % m, end=""), colorize=True)
 
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
         logger.error('%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH variable' % PLEX_LOCAL_MEDIA_PATH)
@@ -248,11 +252,10 @@ if __name__ == '__main__':
         logger.error('Please update the PLEX_TOKEN variable within this script')
         exit(1)
 
-    # We need to specify end=''" as log message already ends with \n (thus the lambda function)
-    # Also forcing 'colorize=True' otherwise Loguru won't recognize that the sink support colors
-    logger.add(lambda m: console.print('\n%s' % m, end=""), colorize=True)
-
-    try:
+     try:
+        if os.path.isdir(TMP_FOLDER):
+            shutil.rmtree(TMP_FOLDER)   
+            os.mkdir(TMP_FOLDER)
         if not os.path.isdir(TMP_FOLDER):
             os.mkdir(TMP_FOLDER)
         run()
