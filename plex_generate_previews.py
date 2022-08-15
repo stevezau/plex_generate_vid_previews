@@ -254,7 +254,7 @@ if __name__ == '__main__':
         logger.error('Please update the PLEX_TOKEN variable within this script')
         exit(1)
 
-     try:
+    try:
         # Clean TMP Folder
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)   
