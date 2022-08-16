@@ -5,11 +5,11 @@ It will use multi threaded processes with a mixture of nvidia GPU and CPU for ma
 # Questions or support?
 Create github issue OR see thread https://forums.plex.tv/t/script-to-regenerate-video-previews-multi-threaded/788360
 
-# STEP 1 - Install ffmpeg
-Ensure ffmpeg is in your path https://www.ffmpeg.org/download.html
+# STEP 1 - Install dependencies (make sure they are in your path)
+1. FFmpeg: https://www.ffmpeg.org/download.html
+2. MediaInfo: https://mediaarea.net/fr/MediaInfo/Download
 
-# STEP 2 - Install python3 Deps
-Requires python3
+# STEP 2 - Install Python 3 dependencies
 ```
 pip3 install loguru rich plexapi gpustat requests pymediainfo
 ```
