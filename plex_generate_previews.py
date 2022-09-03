@@ -66,7 +66,8 @@ try:
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
-if not shutil.which("ffmpeg"):
+FFMPEG_PATH = shutil.which("ffmpeg")
+if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
 
@@ -86,7 +87,7 @@ def generate_images(video_file_param, output_folder, lock):
         vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
 
     args = [
-        "ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
+        FFMPEG_PATH, "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
         video_file, "-an", "-sn", "-dn", "-q:v", str(THUMBNAIL_QUALITY),
         "-vf",
         vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
