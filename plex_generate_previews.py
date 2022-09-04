@@ -7,6 +7,10 @@ PLEX_BIF_FRAME_INTERVAL = 5
 THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6 with 2 being highest quality and largest file size and 6 being lowest quality and smallest file size. # 
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
 TMP_FOLDER = '/dev/shm/plex_generate_previews'
+
+PLEX_LOCAL_VIDEOS_PATH_MAPPING = '/path/this/script/sees/to/video/library'
+PLEX_VIDEOS_PATH_MAPPING = '/path/plex/sees/to/video/library'
+
 GPU_THREADS = 4
 CPU_THREADS = 4
 
@@ -22,7 +26,7 @@ import multiprocessing
 import glob
 import os
 import struct
-if not os.path.isfile('/usr/bin/mediainfo'):
+if not shutil.which("mediainfo"):
     print('MediaInfo not found.  MediaInfo must be installed and available in PATH.')
     sys.exit(1)	
 try:
@@ -62,7 +66,8 @@ try:
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
-if not os.path.isfile('/usr/bin/ffmpeg'):
+FFMPEG_PATH = shutil.which("ffmpeg")
+if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
 
@@ -72,7 +77,8 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-def generate_images(video_file, output_folder, lock):
+def generate_images(video_file_param, output_folder, lock):
+    video_file = video_file_param.replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
     media_info = MediaInfo.parse(video_file)
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
     
@@ -81,7 +87,7 @@ def generate_images(video_file, output_folder, lock):
         vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
 
     args = [
-        "/usr/bin/ffmpeg", "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
+        FFMPEG_PATH, "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
         video_file, "-an", "-sn", "-dn", "-q:v", str(THUMBNAIL_QUALITY),
         "-vf",
         vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
