@@ -11,7 +11,7 @@ Create github issue OR see thread https://forums.plex.tv/t/script-to-regenerate-
 
 # STEP 2 - Install Python 3 dependencies
 ```
-pip3 install loguru rich plexapi gpustat requests pymediainfo
+pip3 install loguru rich plexapi gpustat==1.0.0rc1 requests pymediainfo
 ```
 
 # STEP 3 - Download script and edit the Vars
