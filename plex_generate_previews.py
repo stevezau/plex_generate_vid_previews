@@ -4,10 +4,13 @@
 PLEX_URL = 'https://xxxxxx.plex.direct:32400/' # If running locally, can also enter IP directly "https://127.0.0.1:32400/"
 PLEX_TOKEN = 'xxxxxx'
 PLEX_BIF_FRAME_INTERVAL = 5
-THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6 with 2 being highest quality and largest file size and 6 being lowest quality and smallest file size. # 
+THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6, with 2 being the highest quality and largest file size and 6 being the lowest quality and smallest file size. # 
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
 TMP_FOLDER = '/dev/shm/plex_generate_previews'
 
+# If you are running this script remotely, you can use the below variables 
+# So you can have another computer generate previews for your Plex server by mapping the paths appropriately.
+# If you are running on your plex server, you can set both variables to ''
 PLEX_LOCAL_VIDEOS_PATH_MAPPING = '/path/this/script/sees/to/video/library'
 PLEX_VIDEOS_PATH_MAPPING = '/path/plex/sees/to/video/library'
 
