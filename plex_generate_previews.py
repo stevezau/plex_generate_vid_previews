@@ -113,14 +113,14 @@ def generate_images(video_file_param, output_folder, lock):
 
     out, err = proc.communicate()
     if proc.returncode != 0:
-        err_lines = err.decode('utf-8').split('\n')[-5:]
+        err_lines = err.decode('utf-8', 'ignore').split('\n')[-5:]
         logger.error(err_lines)
         raise Exception('Problem trying to ffmpeg images for {}'.format(video_file))
 
     # Speed
     end = time.time()
     seconds = round(end - start, 1)
-    speed = re.findall('speed= ?([0-9]+\.?[0-9]*|\.[0-9]+)x', err.decode('utf-8'))
+    speed = re.findall('speed= ?([0-9]+\.?[0-9]*|\.[0-9]+)x', err.decode('utf-8', 'ignore'))
     if speed:
         speed = speed[-1]
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
