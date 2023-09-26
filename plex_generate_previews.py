@@ -32,6 +32,10 @@ import multiprocessing
 import glob
 import os
 import struct
+
+# Set the timeout envvar for https://github.com/pkkid/python-plexapi
+os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = "1"
+
 if not shutil.which("mediainfo"):
     print('MediaInfo not found.  MediaInfo must be installed and available in PATH.')
     sys.exit(1)	
