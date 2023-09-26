@@ -8,6 +8,9 @@ THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6, with 2 being the highest quality
 PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
 TMP_FOLDER = '/dev/shm/plex_generate_previews'
 
+# If you have a large library, you might need to increase the below timeout (seconds) when sending requests to plex. 
+PLEX_TIMEOUT=60
+
 # If you are running this script remotely, you can use the below variables 
 # So you can have another computer generate previews for your Plex server by mapping the paths appropriately.
 # If you are running on your plex server, you can set both variables to ''
@@ -177,7 +180,7 @@ def generate_bif(bif_filename, images_path):
 def process_item(item_key, lock):
     sess = requests.Session()
     sess.verify = False
-    plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=sess)
+    plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
 
     data = plex.query('{}/tree'.format(item_key))
 
