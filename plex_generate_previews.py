@@ -107,19 +107,14 @@ def generate_images(video_file_param, output_folder, lock):
     hw = False
 
     with lock:
-        try:
-            gpu = gpustat.core.new_query()[0]
+        gpu_stats_query = gpustat.core.new_query()
+        gpu = gpu_stats_query[0] if gpu_stats_query else None
+        if gpu:
             gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower() == 'ffmpeg']
-        except Exception as error:
-            logger.error('Problem getting GPU stats')
-            logger.exception(error)
-            gpu_ffmpeg = []
-        if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
-            hw = True
-            args.insert(5, "-hwaccel")
-            args.insert(6, "cuda")
-
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
+                hw = True
+                args.insert(5, "-hwaccel")
+                args.insert(6, "cuda")        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Allow time for it to start
         time.sleep(1)
 
