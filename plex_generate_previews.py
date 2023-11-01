@@ -115,9 +115,11 @@ def generate_images(video_file_param, output_folder, lock):
                 hw = True
                 args.insert(5, "-hwaccel")
                 args.insert(6, "cuda")
-                proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # Allow time for it to start
-        time.sleep(1)
+
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # Allow time for it to start
+    time.sleep(1)
 
     out, err = proc.communicate()
     if proc.returncode != 0:
