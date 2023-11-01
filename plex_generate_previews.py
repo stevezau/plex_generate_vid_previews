@@ -114,9 +114,12 @@ def generate_images(video_file_param, output_folder, lock):
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
                 args.insert(5, "-hwaccel")
-                args.insert(6, "cuda")        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # Allow time for it to start
-        time.sleep(1)
+                args.insert(6, "cuda")
+
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # Allow time for it to start
+    time.sleep(1)
 
     out, err = proc.communicate()
     if proc.returncode != 0:
@@ -127,7 +130,7 @@ def generate_images(video_file_param, output_folder, lock):
     # Speed
     end = time.time()
     seconds = round(end - start, 1)
-    speed = re.findall('speed= ?([0-9]+\.?[0-9]*|\.[0-9]+)x', err.decode('utf-8', 'ignore'))
+    speed = re.findall('speed= ?([0-9]+\\.?[0-9]*|\\.[0-9]+)x', err.decode('utf-8', 'ignore'))
     if speed:
         speed = speed[-1]
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
@@ -195,7 +198,11 @@ def process_item(item_key, lock):
                 if sys.argv[1] not in media_part.attrib['file']:
                     return
             bundle_hash = media_part.attrib['hash']
-            bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
+            try:
+                bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1>
+            except Exception as e:
+               logger.error(e)
+               continue
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
