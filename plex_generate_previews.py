@@ -114,7 +114,8 @@ def generate_images(video_file_param, output_folder, lock):
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
                 args.insert(5, "-hwaccel")
-                args.insert(6, "cuda")        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                args.insert(6, "cuda")
+                proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Allow time for it to start
         time.sleep(1)
 
