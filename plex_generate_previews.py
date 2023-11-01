@@ -195,7 +195,11 @@ def process_item(item_key, lock):
                 if sys.argv[1] not in media_part.attrib['file']:
                     return
             bundle_hash = media_part.attrib['hash']
-            bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
+            try:
+                bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1>
+            except Exception as e:
+               logger.error(e)
+               continue
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
