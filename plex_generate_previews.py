@@ -199,7 +199,7 @@ def process_item(item_key, lock):
                     return
             bundle_hash = media_part.attrib['hash']
             try:
-                bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1>
+                bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
             except Exception as e:
                logger.error(e)
                continue
