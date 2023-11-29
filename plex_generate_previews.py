@@ -218,7 +218,7 @@ def process_item(item_key, lock):
                     # Remove bif, as it prob failed to generate
                     if os.path.exists(index_bif):
                         os.remove(index_bif)
-                    logger.error(e)
+                    logger.exception(e)
                 finally:
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
