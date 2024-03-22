@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-
-# EDIT These Vars #
-PLEX_URL = 'https://xxxxxx.plex.direct:32400/' # If running locally, can also enter IP directly "https://127.0.0.1:32400/"
-PLEX_TOKEN = 'xxxxxx'
-PLEX_BIF_FRAME_INTERVAL = 5
-THUMBNAIL_QUALITY = 4 # Allowed range is 2 - 6, with 2 being the highest quality and largest file size and 6 being the lowest quality and smallest file size. # 
-PLEX_LOCAL_MEDIA_PATH = '/path_to/plex/Library/Application Support/Plex Media Server/Media'
-TMP_FOLDER = '/dev/shm/plex_generate_previews'
-
-# If you have a large library, you might need to increase the below timeout (seconds) when sending requests to plex. 
 PLEX_TIMEOUT=60
-
-# If you are running this script remotely, you can use the below variables 
-# So you can have another computer generate previews for your Plex server by mapping the paths appropriately.
-# If you are running on your plex server, you can set both variables to ''
-PLEX_LOCAL_VIDEOS_PATH_MAPPING = '/path/this/script/sees/to/video/library'
-PLEX_VIDEOS_PATH_MAPPING = '/path/plex/sees/to/video/library'
-
-GPU_THREADS = 4
-CPU_THREADS = 4
 
 # DO NOT EDIT BELOW HERE #
 
@@ -32,6 +13,23 @@ import multiprocessing
 import glob
 import os
 import struct
+
+PLEX_URL = os.environ.get('PLEX_URL', 'https://xxxxxx.plex.direct:32400/') # Plex server URL. can also use for local server: http://localhost:32400
+PLEX_TOKEN = os.environ.get('PLEX_TOKEN', 'xxxxxx') # Plex authentication token
+PLEX_BIF_FRAME_INTERVAL = int(os.environ.get('PLEX_BIF_FRAME_INTERVAL', 5)) # Interval between preview images
+THUMBNAIL_QUALITY = int(os.environ.get('THUMBNAIL_QUALITY', 4)) # Preview image quality (2-6)
+PLEX_LOCAL_MEDIA_PATH = os.environ.get('PLEX_LOCAL_MEDIA_PATH', '/path_to/plex/Library/Application Support/Plex Media Server/Media') # Local Plex media path
+TMP_FOLDER = os.environ.get('TMP_FOLDER', '/dev/shm/plex_generate_previews') # Temporary folder for preview generation
+PLEX_TIMEOUT = int(os.environ.get('PLEX_TIMEOUT', 60)) # Timeout for Plex API requests (seconds)
+
+# Path mappings for remote preview generation. # So you can have another computer generate previews for your Plex server
+# If you are running on your plex server, you can set both variables to ''
+PLEX_LOCAL_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPING', '') # Local video path for the script
+PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '') # Plex server video path
+
+GPU_THREADS = int(os.environ.get('GPU_THREADS', 4)) # Number of GPU threads for preview generation
+CPU_THREADS = int(os.environ.get('CPU_THREADS', 4)) # Number of CPU threads for preview generation
+
 
 # Set the timeout envvar for https://github.com/pkkid/python-plexapi
 os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(PLEX_TIMEOUT)

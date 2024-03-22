@@ -1,0 +1,7 @@
+pymediainfo
+gpustat
+requests
+plexapi
+loguru
+rich
+python-dotenv
