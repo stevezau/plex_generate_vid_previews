@@ -59,18 +59,15 @@ services:
   previews:
     build: .
     environment:
-      - PLEX_URL=https://xxxxxx.plex.direct:32400 # can also input http://localhost:32400
-      - PLEX_TOKEN=your-plex-token # fetch it from your media xml
+      - PLEX_URL=https://xxxxxx.plex.direct:32400 
+      - PLEX_TOKEN=your-plex-token 
       - PLEX_BIF_FRAME_INTERVAL=5
       - THUMBNAIL_QUALITY=4
       - PLEX_LOCAL_MEDIA_PATH=/path/to/plex/media
       - TMP_FOLDER=/tmp/previews
       - PLEX_TIMEOUT=60
-      - GPU_THREADS=4  
-      - CPU_THREADS=4
-##if u want to use it remotely 
-#      - PLEX_LOCAL_VIDEOS_PATH_MAPPING=/videos ## 
-#      - PLEX_VIDEOS_PATH_MAPPING=/path/to/plex/videos
+      - GPU_THREADS=5  
+      - CPU_THREADS=5
     volumes:
       - /path/to/plex/media:/path/to/plex/media
       - /path/to/plex/videos:/videos
@@ -85,7 +82,7 @@ services:
 ## docker cli ([click here for more info](https://docs.docker.com/engine/reference/commandline/cli/))
 
 ```bash
-docker run -d \
+docker run -it --rm \
   --name=plex_generate_vid_previews \
   --runtime=nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all \

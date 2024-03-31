@@ -237,7 +237,6 @@ def run():
         if section.METADATA_TYPE == 'episode':
             media = [m.key for m in section.search(libtype='episode')]
         else:
-            continue
             media = [m.key for m in section.search()]
 
         logger.info('Got {} media files'.format(len(media)))
