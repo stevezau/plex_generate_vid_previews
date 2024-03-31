@@ -1,7 +1,7 @@
-pymediainfo
-gpustat
-requests
-plexapi
-loguru
-rich
-python-dotenv
+pymediainfo==6.1.0
+gpustat==1.1.1
+requests==2.31.0
+plexapi==4.15.10
+loguru==0.7.2
+rich==13.7.1
+python-dotenv==1.0.1

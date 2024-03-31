@@ -3,6 +3,9 @@
 This script is designed to speed up the process of generating preview thumbnails for your Plex media library. It
 utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
 
+## Known issues
+- There is a known issue where AV1 codes are very slow via the docker container. If there are any ffmpeg experts out there, please help [here](https://github.com/stevezau/plex_generate_vid_previews/issues/33)
+
 ## Features
 
 - Accelerates preview thumbnail generation using NVIDIA GPUs and multi-threaded CPU processing
@@ -22,19 +25,19 @@ utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for ma
 You can customize various settings by modifying the environment variables. If you are running locally you can create
 a `.env` file
 
-|            Variables             | Function                                                                                                                                  |
-|:--------------------------------:|-------------------------------------------------------------------------------------------------------------------------------------------|
-|            `PLEX_URL`            | Plex server URL. (eg: http://localhost:32400)                                                                                             |
-|           `PLEX_TOKEN`           | Plex Token. ([click here for how to get a token]https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) |
-|    `PLEX_BIF_FRAME_INTERVAL`     | Interval between preview images (default: 5)                                                                                              |
-|     `PLEX_LOCAL_MEDIA_PATH`      | Path to Plex Media folder (eg: /path_to/plex/Library/Application Support/Plex Media Server/Media)                                         |
-|       `THUMBNAIL_QUALITY`        | Preview image quality (2-6, default: 4). 2 being highest quality and largest file size and 6 being lowest quality and smallest file size. |
-|           `TMP_FOLDER`           | Temp folder for image generation. (default: /dev/shm/plex_generate_previews)                                                              |
-|          `PLEX_TIMEOUT`          | Timeout for Plex API requests in seconds (default: 60). If you have a large library, you might need to increase the timeout.              |
-|          `GPU_THREADS`           | Number of GPU threads for preview generation (default: 4)                                                                                 |
-|          `CPU_THREADS`           | Number of CPU threads for preview generation (default: 4)                                                                                 |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Leave blank unless you need to map your local media files to a remote path (eg: '/path/this/script/sees/to/video/library')                |
-|    `PLEX_VIDEOS_PATH_MAPPING`    | Leave blank unless you need to map your local media files to a remote path (eg: '/path/plex/sees/to/video/library')                       |
+|            Variables             | Function                                                                                                                                    |
+|:--------------------------------:|---------------------------------------------------------------------------------------------------------------------------------------------|
+|            `PLEX_URL`            | Plex server URL. (eg: http://localhost:32400)                                                                                               |
+|           `PLEX_TOKEN`           | Plex Token. ([click here for how to get a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)) |
+|    `PLEX_BIF_FRAME_INTERVAL`     | Interval between preview images (default: 5)                                                                                                |
+|     `PLEX_LOCAL_MEDIA_PATH`      | Path to Plex Media folder (eg: /path_to/plex/Library/Application Support/Plex Media Server/Media)                                           |
+|       `THUMBNAIL_QUALITY`        | Preview image quality (2-6, default: 4). 2 being highest quality and largest file size and 6 being lowest quality and smallest file size.   |
+|           `TMP_FOLDER`           | Temp folder for image generation. (default: /dev/shm/plex_generate_previews)                                                                |
+|          `PLEX_TIMEOUT`          | Timeout for Plex API requests in seconds (default: 60). If you have a large library, you might need to increase the timeout.                |
+|          `GPU_THREADS`           | Number of GPU threads for preview generation (default: 4)                                                                                   |
+|          `CPU_THREADS`           | Number of CPU threads for preview generation (default: 4)                                                                                   |
+| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Leave blank unless you need to map your local media files to a remote path (eg: '/path/this/script/sees/to/video/library')                  |
+|    `PLEX_VIDEOS_PATH_MAPPING`    | Leave blank unless you need to map your local media files to a remote path (eg: '/path/plex/sees/to/video/library')                         |
 
 # Usage via Docker
 
