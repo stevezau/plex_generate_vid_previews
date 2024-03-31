@@ -43,7 +43,6 @@ try:
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install gpustat".')
     sys.exit(1)
-import time
 
 try:
     import requests
