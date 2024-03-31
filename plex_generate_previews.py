@@ -64,14 +64,11 @@ except ImportError:
     sys.exit(1)
 try:
     from rich.console import Console
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install rich".')
-    sys.exit(1)
-try:
     from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
+
 FFMPEG_PATH = shutil.which("ffmpeg")
 if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
