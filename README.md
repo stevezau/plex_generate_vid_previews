@@ -148,8 +148,3 @@ python3 plex_preview_thumbnail_generator.py
 If you have any questions or need support, please create a GitHub issue in this repository
 
 Feel free to contribute to this project by submitting pull requests or reporting issues.
-
-
-
-
-
