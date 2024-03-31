@@ -44,7 +44,7 @@ a `.env` file
 # Usage via Docker
 
 > [!IMPORTANT]  
-> Not the extra "z" in the Docker Hub url (stevezzau/plex_generate_vid_previews)[https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews]. 
+> Not the extra "z" in the Docker Hub url [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews). 
 > stevezau was already taken on dockerhub.  
 
 ## Install NVIDIA Container Toolkit
