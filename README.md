@@ -1,4 +1,6 @@
-# Plex Preview Thumbnail Generator
+# [stevezau/plex_generate_vid_previews](https://github.com/stevezau/plex_generate_vid_previews/)
+
+## Plex Preview Thumbnail Generator
 
 This script is designed to speed up the process of generating preview thumbnails for your Plex media library. It
 utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
@@ -41,6 +43,9 @@ a `.env` file
 
 # Usage via Docker
 
+> [!IMPORTANT]  
+> Not the extra "z" in the Docker Container (stevezzau/plex_generate_vid_previews). stevezau was already taken on dockerhub.  
+
 ## Install NVIDIA Container Toolkit
 
 Make sure you have the NVIDIA Container Toolkit installed on your host system and a compatible NVIDIA GPU with CUDA
@@ -57,7 +62,7 @@ documentation: [NVIDIA Container Toolkit Installation Guide](https://docs.nvidia
 version: '3'
 services:
   previews:
-    build: .
+    image: stevezzau/plex_generate_vid_previews:latest
     environment:
       - PLEX_URL=https://xxxxxx.plex.direct:32400 
       - PLEX_TOKEN=your-plex-token 
@@ -97,7 +102,7 @@ docker run -it --rm \
   -e CPU_THREADS=5 \
   -v /your/media/files:/your/media/files \
   -v /plex/folder:/plex/folder \
-  plex_generate_vid_previews:latest
+  stevezzau/plex_generate_vid_previews:latest
 ```
 
 # Usage running locally
