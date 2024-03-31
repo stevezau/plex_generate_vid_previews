@@ -1,7 +1,7 @@
-FROM jrottenberg/ffmpeg:latest
+FROM jrottenberg/ffmpeg:4.2-nvidia
 
 # Install Python and pip
-RUN apt-get update && apt-get install -y python3 python3-pip
+RUN apt-get update && apt-get install -y python3 python3-pip mediainfo
 
 # Set the working directory in the container
 WORKDIR /app
@@ -10,11 +10,10 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install the Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install -r requirements.txt
 
 # Copy the Python script and .env file to the working directory
 COPY plex_generate_previews.py .
-COPY .env .
 
 # Run the Python script when the container starts
-CMD ["python3", "plex_generate_previews.py"]
+ENTRYPOINT ["python3", "plex_generate_previews.py"]

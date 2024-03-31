@@ -1,7 +1,7 @@
-
 # Plex Preview Thumbnail Generator
 
-This script is designed to speed up the process of generating preview thumbnails for your Plex media library. It utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
+This script is designed to speed up the process of generating preview thumbnails for your Plex media library. It
+utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
 
 ## Features
 
@@ -14,24 +14,102 @@ This script is designed to speed up the process of generating preview thumbnails
 ## Requirements
 
 - NVIDIA GPU with CUDA support
-- Docker and Docker Compose
-- NVIDIA Container Toolkit
+- NVIDIA Container Toolkit (if using Docker)
 - Plex Media Server
 
-## Setup
+## Environment variables
 
-### 1. Install Dependencies
+You can customize various settings by modifying the environment variables. If you are running locally you can create
+a `.env` file
+
+|            Variables             | Function                                                                                                                                  |
+|:--------------------------------:|-------------------------------------------------------------------------------------------------------------------------------------------|
+|            `PLEX_URL`            | Plex server URL. (eg: http://localhost:32400)                                                                                             |
+|           `PLEX_TOKEN`           | Plex Token. ([click here for how to get a token]https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) |
+|    `PLEX_BIF_FRAME_INTERVAL`     | Interval between preview images (default: 5)                                                                                              |
+|     `PLEX_LOCAL_MEDIA_PATH`      | Path to Plex Media folder (eg: /path_to/plex/Library/Application Support/Plex Media Server/Media)                                         |
+|       `THUMBNAIL_QUALITY`        | Preview image quality (2-6, default: 4). 2 being highest quality and largest file size and 6 being lowest quality and smallest file size. |
+|           `TMP_FOLDER`           | Temp folder for image generation. (default: /dev/shm/plex_generate_previews)                                                              |
+|          `PLEX_TIMEOUT`          | Timeout for Plex API requests in seconds (default: 60). If you have a large library, you might need to increase the timeout.              |
+|          `GPU_THREADS`           | Number of GPU threads for preview generation (default: 4)                                                                                 |
+|          `CPU_THREADS`           | Number of CPU threads for preview generation (default: 4)                                                                                 |
+| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Leave blank unless you need to map your local media files to a remote path (eg: '/path/this/script/sees/to/video/library')                |
+|    `PLEX_VIDEOS_PATH_MAPPING`    | Leave blank unless you need to map your local media files to a remote path (eg: '/path/plex/sees/to/video/library')                       |
+
+# Usage via Docker
+
+## Install NVIDIA Container Toolkit
+
+Make sure you have the NVIDIA Container Toolkit installed on your host system and a compatible NVIDIA GPU with CUDA
+support. The script automatically detects the available GPU and utilizes it for faster thumbnail generation.
+
+To enable GPU access inside the Docker container, you need to install the NVIDIA Container Toolkit on your host system.
+Follow the installation instructions for your distribution from the official NVIDIA
+documentation: [NVIDIA Container Toolkit Installation Guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+## docker-compose ([click here for more info](https://docs.linuxserver.io/general/docker-compose))
+
+```yaml
+---
+version: '3'
+services:
+  previews:
+    build: .
+    environment:
+      - PLEX_URL=https://xxxxxx.plex.direct:32400 # can also input http://localhost:32400
+      - PLEX_TOKEN=your-plex-token # fetch it from your media xml
+      - PLEX_BIF_FRAME_INTERVAL=5
+      - THUMBNAIL_QUALITY=4
+      - PLEX_LOCAL_MEDIA_PATH=/path/to/plex/media
+      - TMP_FOLDER=/tmp/previews
+      - PLEX_TIMEOUT=60
+      - GPU_THREADS=4  
+      - CPU_THREADS=4
+##if u want to use it remotely 
+#      - PLEX_LOCAL_VIDEOS_PATH_MAPPING=/videos ## 
+#      - PLEX_VIDEOS_PATH_MAPPING=/path/to/plex/videos
+    volumes:
+      - /path/to/plex/media:/path/to/plex/media
+      - /path/to/plex/videos:/videos
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    runtime: nvidia
+```
+
+## docker cli ([click here for more info](https://docs.docker.com/engine/reference/commandline/cli/))
+
+```bash
+docker run -d \
+  --name=plex_generate_vid_previews \
+  --runtime=nvidia \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e PLEX_URL='http://localhost:32400' \
+  -e PLEX_TOKEN='XXXXXX' \
+  -e PLEX_BIF_FRAME_INTERVAL=2 \
+  -e THUMBNAIL_QUALITY=4 \
+  -e PLEX_LOCAL_MEDIA_PATH='/config/plex/Library/Application Support/Plex Media Server/Media/localhost' \
+  -e GPU_THREADS=5 \
+  -e CPU_THREADS=5 \
+  -v /your/media/files:/your/media/files \
+  -v /plex/folder:/plex/folder \
+  plex_generate_vid_previews:latest
+```
+
+# Usage running locally
+
+## 1. Install Dependencies
 
 Make sure you have the following dependencies installed and available in your system's PATH:
 
 - FFmpeg: [Download FFmpeg](https://www.ffmpeg.org/download.html)
 - MediaInfo: [Download MediaInfo](https://mediaarea.net/fr/MediaInfo/Download)
 
-### 2. Install NVIDIA Container Toolkit
-
-To enable GPU access inside the Docker container, you need to install the NVIDIA Container Toolkit on your host system. Follow the installation instructions for your distribution from the official NVIDIA documentation: [NVIDIA Container Toolkit Installation Guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-
-### 3. Clone the Repository
+## 2. Clone the Repository
 
 Clone this repository to your local machine:
 
@@ -41,7 +119,7 @@ cd plex-preview-thumbnail-generator
 pip3 install -r requirements.txt
 ```
 
-### 4. Configure Environment Variables
+## 3. Configure Environment Variables
 
 Copy the `.env.example` file to `.env`:
 
@@ -49,78 +127,23 @@ Copy the `.env.example` file to `.env`:
 cp .env.example .env
 ```
 
-Open the `.env` file in a text editor and set the following environment variables:
+Open the `.env` file in a text editor and set the environment variables:
+
+## 4. Run
+
+Run the script
 
 ```
-PLEX_URL=https://your-plex-server-url:32400
-PLEX_TOKEN=your-plex-token
-PLEX_BIF_FRAME_INTERVAL=5
-THUMBNAIL_QUALITY=4
-PLEX_LOCAL_MEDIA_PATH=/path/to/plex/media
-TMP_FOLDER=/tmp/previews
-PLEX_TIMEOUT=60
-GPU_THREADS=4
-CPU_THREADS=4
-```
+python3 plex_preview_thumbnail_generator.py
+````
 
-To obtain your Plex URL and token:
+# Support and Questions
 
-1. Open Plex Web (https://app.plex.tv/) and navigate to any video file.
-2. Click the "..." menu and select "Get Info".
-3. Click "View XML" at the bottom left.
-4. Use the URL (without the path) for the `PLEX_URL` variable. For example, `https://your-plex-server-url:32400` or `http://localhost:32400` if running locally.
-5. Find the `Plex-Token` value in the URL and use it for the `PLEX_TOKEN` variable.
-
-If you want to generate previews remotely, set the following variables in the `.env` file:
-
-```
-PLEX_LOCAL_VIDEOS_PATH_MAPPING=/videos
-PLEX_VIDEOS_PATH_MAPPING=/path/to/plex/videos
-```
-
-### 5. Build and Run the Docker Container
-
-Build and run the Docker container using Docker Compose:
-
-```bash
-docker-compose up --build
-```
-
-The script will start generating preview thumbnails for your Plex media library.
-
-## Usage
-
-By default, the script will process all video files in your Plex library. If you want to limit the processing to specific files, you can pass an optional command-line argument:
-
-```bash
-docker-compose run previews python3 plex_generate_previews.py <ONLY_PROCESS_FILES_IN_PATH>
-```
-
-Replace `<ONLY_PROCESS_FILES_IN_PATH>` with the path or pattern to filter the files you want to process.
-
-## GPU Acceleration
-
-This script leverages the NVIDIA Container Toolkit to enable GPU access inside the Docker container. By default, it uses up to 4 GPU threads (`GPU_THREADS`) for hardware-accelerated video processing with FFmpeg.
-
-Make sure you have the NVIDIA Container Toolkit installed on your host system and a compatible NVIDIA GPU with CUDA support. The script automatically detects the available GPU and utilizes it for faster thumbnail generation.
-
-## Customization
-
-You can customize various settings by modifying the environment variables in the `.env` file:
-
-- `PLEX_BIF_FRAME_INTERVAL`: Interval between preview images (default: 5)
-- `THUMBNAIL_QUALITY`: Preview image quality (2-6, default: 4)
-- `PLEX_TIMEOUT`: Timeout for Plex API requests in seconds (default: 60)
-- `GPU_THREADS`: Number of GPU threads for preview generation (default: 4)
-- `CPU_THREADS`: Number of CPU threads for preview generation (default: 4)
-
-Adjust these settings based on your requirements and available resources.
-
-## Support and Questions
-
-If you have any questions or need support, please:
-
-- Create a GitHub issue in this repository
-- Visit the Plex forum thread: [Script to regenerate video previews multi-threaded](https://forums.plex.tv/t/script-to-regenerate-video-previews-multi-threaded/788360)
+If you have any questions or need support, please create a GitHub issue in this repository
 
 Feel free to contribute to this project by submitting pull requests or reporting issues.
+
+
+
+
+
