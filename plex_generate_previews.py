@@ -83,14 +83,14 @@ if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
 
+# Logging setup
 console = Console()
 logger.remove()
 logger.add(
-    sys.stderr,
-    level='TRACE',
+    lambda _: console.print(_, end=''),
+    level='INFO',
     format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
     + '  - <level>{message}</level>',
-    colorize=True,
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -195,6 +195,7 @@ def generate_bif(bif_filename, images_path):
 
 
 def process_item(item_key):
+    results = []
     sess = requests.Session()
     sess.verify = False
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
@@ -212,7 +213,7 @@ def process_item(item_key):
             try:
                 bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
             except Exception as e:
-                logger.error(e)
+                results.append(('error', str(e)))
                 continue
 
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
@@ -230,10 +231,11 @@ def process_item(item_key):
                     # Remove bif, as it prob failed to generate
                     if os.path.exists(index_bif):
                         os.remove(index_bif)
-                    logger.exception(e)
+                    results.append(('error', str(e)))
                 finally:
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
+    return results
 
 
 def run():
@@ -257,15 +259,11 @@ def run():
             with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
                 futures = [process_pool.submit(process_item, key) for key in media]
                 for future in progress.track(futures):
-                    future.result()
+                    for msg in future.result():
+                        progress.console.print(msg)
 
 
 if __name__ == '__main__':
-    logger.remove()  # Remove default 'stderr' handler
-    # We need to specify end=''" as log message already ends with \n (thus the lambda function)
-    # Also forcing 'colorize=True' otherwise Loguru won't recognize that the sink support colors
-    logger.add(lambda m: console.print('\n%s' % m, end=""), colorize=True)
-
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
         logger.error(
             '%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
