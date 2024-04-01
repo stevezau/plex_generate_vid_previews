@@ -91,6 +91,7 @@ logger.add(
     level='INFO',
     format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
     + '  - <level>{message}</level>',
+    enqueue=True
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -143,13 +144,14 @@ def generate_images(video_file_param, output_folder):
     speed = re.findall('speed= ?([0-9]+\\.?[0-9]*|\\.[0-9]+)x', err.decode('utf-8', 'ignore'))
     if speed:
         speed = speed[-1]
-    logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
 
     # Optimize and Rename Images
     for image in glob.glob('{}/img*.jpg'.format(output_folder)):
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
         os.rename(image, os.path.join(output_folder, '{:010d}.jpg'.format(frame_second)))
+
+    logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
 
 
 def generate_bif(bif_filename, images_path):
@@ -195,7 +197,6 @@ def generate_bif(bif_filename, images_path):
 
 
 def process_item(item_key):
-    results = []
     sess = requests.Session()
     sess.verify = False
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
@@ -213,7 +214,7 @@ def process_item(item_key):
             try:
                 bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
             except Exception as e:
-                results.append(('error', str(e)))
+                logger.error(str(e))
                 continue
 
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
@@ -231,11 +232,10 @@ def process_item(item_key):
                     # Remove bif, as it prob failed to generate
                     if os.path.exists(index_bif):
                         os.remove(index_bif)
-                    results.append(('error', str(e)))
+                    logger.error(str(e))
                 finally:
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
-    return results
 
 
 def run():
@@ -256,11 +256,16 @@ def run():
         logger.info('Got {} media files'.format(len(media)))
 
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
+            progress_log = logger.add(
+                lambda _: console.print(_, end=''),
+                level='INFO',
+                format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
+                + '  - <level>{message}</level>',
+            )
             with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
                 futures = [process_pool.submit(process_item, key) for key in media]
                 for future in progress.track(futures):
-                    for msg in future.result():
-                        progress.console.print(msg)
+                    future.result()
 
 
 if __name__ == '__main__':
