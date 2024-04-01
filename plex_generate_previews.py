@@ -6,7 +6,11 @@ import shutil
 import glob
 import os
 import struct
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import urllib3
+import array
+import time
+from concurrent.futures import ProcessPoolExecutor
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,20 +53,26 @@ try:
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install requests".')
     sys.exit(1)
-import array
 
 try:
     from plexapi.server import PlexServer
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install plexapi".')
     sys.exit(1)
+
 try:
     from loguru import logger
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install loguru".')
     sys.exit(1)
+
 try:
     from rich.console import Console
+except ImportError:
+    print('Dependencies Missing!  Please run "pip3 install rich".')
+    sys.exit(1)
+
+try:
     from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
@@ -73,9 +83,15 @@ if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
 
-console = Console(color_system=None, stderr=True)
-
-import urllib3
+console = Console()
+logger.remove()
+logger.add(
+    sys.stderr,
+    level='TRACE',
+    format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
+    + '  - <level>{message}</level>',
+    colorize=True,
+)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
