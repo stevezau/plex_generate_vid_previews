@@ -256,12 +256,6 @@ def run():
         logger.info('Got {} media files'.format(len(media)))
 
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
-            progress_log = logger.add(
-                lambda _: console.print(_, end=''),
-                level='INFO',
-                format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
-                + '  - <level>{message}</level>',
-            )
             with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
                 futures = [process_pool.submit(process_item, key) for key in media]
                 for future in progress.track(futures):
