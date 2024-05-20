@@ -214,7 +214,7 @@ def process_item(item_key):
             try:
                 bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
             except Exception as e:
-                logger.error(str(e))
+                logger.error('Problem generating bundle_file for {} due to {}'.format(media_part.attrib['file'], e))
                 continue
 
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
@@ -232,7 +232,7 @@ def process_item(item_key):
                     # Remove bif, as it prob failed to generate
                     if os.path.exists(index_bif):
                         os.remove(index_bif)
-                    logger.error(str(e))
+                    logger.error('Problem generating bif images for {} due to {}'.format(media_part.attrib['file'], e))
                 finally:
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
