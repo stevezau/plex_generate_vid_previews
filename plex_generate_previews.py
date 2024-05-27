@@ -127,15 +127,12 @@ def generate_images(video_file_param, output_folder):
             args.insert(5, "-hwaccel")
             args.insert(6, "cuda")
 
-    logger.info('running {}'.format(args))
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # Allow time for it to start
     time.sleep(1)
 
-    logger.info('debug test 1')
     out, err = proc.communicate()
-    logger.info('debug test 2')
     if proc.returncode != 0:
         err_lines = err.decode('utf-8', 'ignore').split('\n')[-5:]
         logger.error(err_lines)
@@ -242,7 +239,6 @@ def process_item(item_key):
                 try:
                     generate_images(media_part.attrib['file'], tmp_path)
                 except Exception as e:
-                    logger.exception(e)
                     logger.error('Error generating images for {}. `{}` error when generating images'.format(media_file, str(e)))
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
