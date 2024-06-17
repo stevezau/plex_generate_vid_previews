@@ -265,14 +265,17 @@ def run():
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=sess)
 
     for section in plex.library.sections():
-        logger.info('Getting media files from library {}'.format(section.title))
+        logger.info('Getting the media files from library \'{}\''.format(section.title))
 
         if section.METADATA_TYPE == 'episode':
             media = [m.key for m in section.search(libtype='episode')]
-        else:
+        elif section.METADATA_TYPE == 'movie':
             media = [m.key for m in section.search()]
+        else:
+            logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
+            continue
 
-        logger.info('Got {} media files'.format(len(media)))
+        logger.info('Got {} media files for library {}'.format(len(media), section.title))
 
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
             with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
