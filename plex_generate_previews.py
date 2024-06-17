@@ -212,10 +212,14 @@ def process_item(item_key):
             bundle_hash = media_part.attrib['hash']
             media_file = media_part.attrib['file']
 
+            if not os.path.isfile(media_file):
+                logger.error('Skipping as file not found {}'.format(media_file))
+                continue
+
             try:
                 bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
             except Exception as e:
-                logger.error('Error generating bundle_file for {} due to {}'.format(media_file, str(e)))
+                logger.error('Error generating bundle_file for {} due to {}:{}'.format(media_file, type(e).__name__, str(e)))
                 continue
 
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
@@ -227,19 +231,19 @@ def process_item(item_key):
                     try:
                         os.makedirs(indexes_path)
                     except OSError as e:
-                        logger.error('Error generating images for {}. `{}` error when creating index path {}'.format(media_file, str(e), indexes_path))
+                        logger.error('Error generating images for {}. `{}:{}` error when creating index path {}'.format(media_file, type(e).__name__, str(e), indexes_path))
                         continue
 
                 try:
                     os.makedirs(tmp_path)
                 except OSError as e:
-                    logger.error('Error generating images for {}. `{}` error when creating tmp path {}'.format(media_file, str(e), tmp_path))
+                    logger.error('Error generating images for {}. `{}:{}` error when creating tmp path {}'.format(media_file, type(e).__name__, str(e), tmp_path))
                     continue
 
                 try:
                     generate_images(media_part.attrib['file'], tmp_path)
                 except Exception as e:
-                    logger.error('Error generating images for {}. `{}` error when generating images'.format(media_file, str(e)))
+                    logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
                     continue
@@ -250,7 +254,7 @@ def process_item(item_key):
                     # Remove bif, as it prob failed to generate
                     if os.path.exists(index_bif):
                         os.remove(index_bif)
-                    logger.error('Error generating images for {}. `{}` error when generating bif'.format(media_file, str(e)))
+                    logger.error('Error generating images for {}. `{}:{}` error when generating bif'.format(media_file, type(e).__name__, str(e)))
                     continue
                 finally:
                     if os.path.exists(tmp_path):
