@@ -225,13 +225,13 @@ def process_item(item_key):
             if (not os.path.isfile(index_bif)) and (not os.path.isdir(tmp_path)):
                 if not os.path.isdir(indexes_path):
                     try:
-                        os.mkdir(indexes_path)
+                        os.makedirs(indexes_path)
                     except OSError as e:
                         logger.error('Error generating images for {}. `{}` error when creating index path {}'.format(media_file, str(e), indexes_path))
                         continue
 
                 try:
-                    os.mkdir(tmp_path)
+                    os.makedirs(tmp_path)
                 except OSError as e:
                     logger.error('Error generating images for {}. `{}` error when creating tmp path {}'.format(media_file, str(e), tmp_path))
                     continue
@@ -302,7 +302,7 @@ if __name__ == '__main__':
         # Clean TMP Folder
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
-        os.mkdir(TMP_FOLDER)
+        os.makedirs(TMP_FOLDER)
         run()
     finally:
         if os.path.isdir(TMP_FOLDER):
