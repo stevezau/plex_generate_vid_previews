@@ -222,7 +222,7 @@ def process_item(item_key):
                 logger.error('Error generating bundle_file for {} due to {}:{}'.format(media_file, type(e).__name__, str(e)))
                 continue
 
-            bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, bundle_file)
+            bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost', bundle_file)
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
             tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
@@ -292,6 +292,11 @@ if __name__ == '__main__':
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
         logger.error(
             '%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
+        exit(1)
+
+    if not os.path.exists(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost')):
+        logger.error(
+            'You set PLEX_LOCAL_MEDIA_PATH to "%s". There should be a folder called "localhost" in that directory but it does not exist which suggests you haven\'t mapped it correctly. Please fix the PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
         exit(1)
 
     if PLEX_URL == '':
