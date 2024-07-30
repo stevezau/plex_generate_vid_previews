@@ -97,6 +97,25 @@ logger.add(
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+# todo: need test
+def detect_gpu():
+    gpu_info = subprocess.run(['lspci'], stdout=subprocess.PIPE, text=True).stdout.lower()
+    if 'vga compatible controller' in gpu_info or '3d controller' in gpu_info:
+        if 'nvidia' in gpu_info:
+            return 'nvidia'
+        elif 'amd' in gpu_info or 'radeon' in gpu_info:
+            return 'amd'
+    return None        
+    
+# todo: In this case, you may need to access `/dev/` as a Docker volume.
+def find_vaapi_device():
+    vaapi_device_dir = "/dev/dri"
+    if os.path.exists(vaapi_device_dir):
+        for entry in os.listdir(vaapi_device_dir):
+            if entry.startswith("renderD"):
+                return os.path.join(vaapi_device_dir, entry)
+    return None
+
 def generate_images(video_file_param, output_folder):
     video_file = video_file_param.replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
     media_info = MediaInfo.parse(video_file)
@@ -118,14 +137,28 @@ def generate_images(video_file_param, output_folder):
     start = time.time()
     hw = False
 
-    gpu_stats_query = gpustat.core.new_query()
-    gpu = gpu_stats_query[0] if gpu_stats_query else None
-    if gpu:
-        gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower().startswith("ffmpeg")]
-        if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
+    gpu_type = detect_gpu()
+    if gpu_type == 'nvidia':
+        gpu_stats_query = gpustat.core.new_query()
+        gpu = gpu_stats_query[0] if gpu_stats_query else None
+        if gpu:
+            gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower().startswith("ffmpeg")]
+            if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
+                hw = True
+                args.insert(5, "-hwaccel")
+                args.insert(6, "cuda")
+    elif gpu_type == 'amd':
+        # Check for VAAPI device availability
+        vaapi_device = find_vaapi_device()
+        if vaapi_device:
             hw = True
             args.insert(5, "-hwaccel")
-            args.insert(6, "cuda")
+            args.insert(6, "vaapi")
+            args.insert(7, "-vaapi_device")
+            args.insert(8, vaapi_device)
+            # Adjust vf_parameters for AMD VAAPI
+            vf_parameters = vf_parameters.replace("scale=w=320:h=240:force_original_aspect_ratio=decrease", "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
+            args[args.index("-vf") + 1] = vf_parameters
 
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -152,7 +185,6 @@ def generate_images(video_file_param, output_folder):
         os.rename(image, os.path.join(output_folder, '{:010d}.jpg'.format(frame_second)))
 
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
-
 
 def generate_bif(bif_filename, images_path):
     """
