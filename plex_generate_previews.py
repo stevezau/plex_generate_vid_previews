@@ -225,40 +225,41 @@ def process_item(item_key):
             bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost', bundle_file)
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
-            if not os.path.isdir(indexes_path):
+            tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+            if not os.path.isfile(index_bif):
+                if not os.path.isdir(indexes_path):
+                    try:
+                        os.makedirs(indexes_path)
+                    except OSError as e:
+                        logger.error('Error generating images for {}. `{}:{}` error when creating index path {}'.format(media_file, type(e).__name__, str(e), indexes_path))
+                        continue
+
                 try:
-                    os.makedirs(indexes_path)
+                    if not os.path.isdir(tmp_path):
+                        os.makedirs(tmp_path)
                 except OSError as e:
-                    logger.error('Error generating images for {}. `{}:{}` error when creating index path {}'.format(media_file, type(e).__name__, str(e), indexes_path))
+                    logger.error('Error generating images for {}. `{}:{}` error when creating tmp path {}'.format(media_file, type(e).__name__, str(e), tmp_path))
                     continue
 
-            tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
-            try:
-                os.makedirs(tmp_path)
-            except OSError as e:
-                logger.error(
-                    'Error generating images for {}. `{}:{}` error when creating tmp path {}'.format(media_file, type(e).__name__, str(e), tmp_path))
-                continue
+                try:
+                    generate_images(media_part.attrib['file'], tmp_path)
+                except Exception as e:
+                    logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
+                    if os.path.exists(tmp_path):
+                        shutil.rmtree(tmp_path)
+                    continue
 
-            try:
-                generate_images(media_part.attrib['file'], tmp_path)
-            except Exception as e:
-                logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
-                if os.path.exists(tmp_path):
-                    shutil.rmtree(tmp_path)
-                continue
-
-            try:
-                generate_bif(index_bif, tmp_path)
-            except Exception as e:
-                if os.path.exists(tmp_path):
-                    shutil.rmtree(tmp_path)
-
-                # Remove bif, as it prob failed to generate
-                if os.path.exists(index_bif):
-                    os.remove(index_bif)
-                logger.error('Error generating images for {}. `{}:{}` error when generating bif'.format(media_file, type(e).__name__, str(e)))
-                continue
+                try:
+                    generate_bif(index_bif, tmp_path)
+                except Exception as e:
+                    # Remove bif, as it prob failed to generate
+                    if os.path.exists(index_bif):
+                        os.remove(index_bif)
+                    logger.error('Error generating images for {}. `{}:{}` error when generating bif'.format(media_file, type(e).__name__, str(e)))
+                    continue
+                finally:
+                    if os.path.exists(tmp_path):
+                        shutil.rmtree(tmp_path)
 
 
 def run():
