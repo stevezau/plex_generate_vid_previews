@@ -6,7 +6,7 @@ This script is designed to speed up the process of generating preview thumbnails
 utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
 
 ## Known issues
-- There is a known issue where AV1 codes are very slow via the docker container. If there are any ffmpeg experts out there, please help [here](https://github.com/stevezau/plex_generate_vid_previews/issues/33)
+- None
 
 ## Features
 
