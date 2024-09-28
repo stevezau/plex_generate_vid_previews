@@ -388,8 +388,8 @@ if __name__ == '__main__':
     elif GPU:
         logger.info(f'Found AMD GPU {GPU}')
     if not GPU:
-        logger.info('No GPUs detected. Defaulting to CPU')
-        logger.info('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
+        logger.warning('No GPUs detected. Defaulting to CPU ONLY.')
+        logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
     try:
         # Clean TMP Folder
