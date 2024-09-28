@@ -6,7 +6,7 @@ This script is designed to speed up the process of generating preview thumbnails
 utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
 
 ## Known issues
-- None
+- AMD GPU Support was recently added, this is untested as i don't have an AMD GPU. Please log an issue if you find problems
 
 ## Features
 
@@ -98,7 +98,7 @@ docker run -it --rm \
   -e PLEX_TOKEN='XXXXXX' \
   -e PLEX_BIF_FRAME_INTERVAL=2 \
   -e THUMBNAIL_QUALITY=4 \
-  -e PLEX_LOCAL_MEDIA_PATH='/config/plex/Library/Application Support/Plex Media Server/Media/localhost' \
+  -e PLEX_LOCAL_MEDIA_PATH='/config/plex/Library/Application Support/Plex Media Server/Media' \
   -e GPU_THREADS=5 \
   -e CPU_THREADS=5 \
   -v /your/media/files:/your/media/files \

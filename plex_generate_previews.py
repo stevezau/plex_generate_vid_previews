@@ -96,6 +96,63 @@ logger.add(
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+GPU = None
+
+
+def detect_gpu():
+    # Check for NVIDIA GPUs
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        num_nvidia_gpus = pynvml.nvmlDeviceGetCount()
+        pynvml.nvmlShutdown()
+        if num_nvidia_gpus > 0:
+            return 'NVIDIA'
+    except ImportError:
+        logger.warning("NVIDIA GPU detection library (pynvml) not found. NVIDIA GPUs will not be detected.")
+    except pynvml.NVMLError as e:
+        logger.warning(f"Error initializing NVIDIA GPU detection {e}. NVIDIA GPUs will not be detected.")
+
+    # Check for AMD GPUs
+    try:
+        from amdsmi import amdsmi_interface
+        amdsmi_interface.amdsmi_init()
+        devices = amdsmi_interface.amdsmi_get_processor_handles()
+        found = None
+        if len(devices) > 0:
+            for device in devices:
+                processor_type = amdsmi_interface.amdsmi_get_processor_type(device)
+                if processor_type == amdsmi_interface.AMDSMI_PROCESSOR_TYPE_GPU:
+                    found = True
+        amdsmi_interface.amdsmi_shut_down()
+        if found:
+                vaapi_device_dir = "/dev/dri"
+                if os.path.exists(vaapi_device_dir):
+                    for entry in os.listdir(vaapi_device_dir):
+                        if entry.startswith("renderD"):
+                            return os.path.join(vaapi_device_dir, entry)
+    except ImportError:
+        logger.warning("AMD GPU detection library (amdsmi) not found. AMD GPUs will not be detected.")
+    except Exception as e:
+        logger.warning(f"Error initializing AMD GPU detection: {e}. AMD GPUs will not be detected.")
+
+
+def get_amd_ffmpeg_processes():
+    from amdsmi import amdsmi_init, amdsmi_shut_down, amdsmi_get_processor_handles, amdsmi_get_gpu_process_list
+    try:
+        amdsmi_init()
+        gpu_handles = amdsmi_get_processor_handles()
+        ffmpeg_processes = []
+
+        for gpu in gpu_handles:
+            processes = amdsmi_get_gpu_process_list(gpu)
+            for process in processes:
+                if process['name'].lower().startswith('ffmpeg'):
+                    ffmpeg_processes.append(process)
+
+        return ffmpeg_processes
+    finally:
+        amdsmi_shut_down()
 
 def generate_images(video_file_param, output_folder):
     video_file = video_file_param.replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
@@ -118,14 +175,27 @@ def generate_images(video_file_param, output_folder):
     start = time.time()
     hw = False
 
-    gpu_stats_query = gpustat.core.new_query()
-    gpu = gpu_stats_query[0] if gpu_stats_query else None
-    if gpu:
-        gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower().startswith("ffmpeg")]
+    if GPU == 'NVIDIA':
+        gpu_stats_query = gpustat.core.new_query()
+        gpu = gpu_stats_query[0] if gpu_stats_query else None
+        if gpu:
+            gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower().startswith("ffmpeg")]
+            if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
+                hw = True
+                args.insert(5, "-hwaccel")
+                args.insert(6, "cuda")
+    elif GPU:
+        # Must be AMD
+        gpu_ffmpeg = get_amd_ffmpeg_processes()
         if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
             hw = True
             args.insert(5, "-hwaccel")
-            args.insert(6, "auto")
+            args.insert(6, "vaapi")
+            args.insert(7, "-vaapi_device")
+            args.insert(8, GPU)
+            # Adjust vf_parameters for AMD VAAPI
+            vf_parameters = vf_parameters.replace("scale=w=320:h=240:force_original_aspect_ratio=decrease", "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
+            args[args.index("-vf") + 1] = vf_parameters
 
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -290,6 +360,9 @@ def run():
 
 
 if __name__ == '__main__':
+    logger.info('GPU Detection (with AMD Support) was recently added to this script.')
+    logger.info('Please log issues here https://github.com/stevezau/plex_generate_vid_previews/issues')
+
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
         logger.error(
             '%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
@@ -307,6 +380,16 @@ if __name__ == '__main__':
     if PLEX_TOKEN == '':
         logger.error('Please set the PLEX_TOKEN environment variable')
         exit(1)
+
+    # detect GPU's
+    GPU = detect_gpu()
+    if GPU == 'NVIDIA':
+        logger.info('Found NVIDIA GPU')
+    elif GPU:
+        logger.info(f'Found AMD GPU {GPU}')
+    if not GPU:
+        logger.info('No GPUs detected. Defaulting to CPU')
+        logger.info('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
     try:
         # Clean TMP Folder
