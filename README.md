@@ -1,25 +1,35 @@
 # [stevezau/plex_generate_vid_previews](https://github.com/stevezau/plex_generate_vid_previews/)
 
-## Plex Preview Thumbnail Generator
+## Table of Contents
+
+- [Known issues](#known-issues)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Environment variables](#environment-variables)
+- [Guide for Docker](#guide-for-docker)
+- [Guide for running locally](#guide-for-running-locally)
+- [Guide for Unraid](#guide-for-unraid)
+- [Support and Questions](#support-and-questions)
+
+
+## Plex Preview Thumbnail Generator Overview
 
 This script is designed to speed up the process of generating preview thumbnails for your Plex media library. It
-utilizes multi-threaded processes and leverages both NVIDIA GPUs and CPUs for maximum throughput.
+utilizes multi-threaded processes and leverages NVIDIA/AMD GPUs and CPUs for maximum throughput.
+
+It supports
+- Accelerating preview thumbnail generation using GPU and multi-threaded CPU processing
+- Remote generation of previews for your Plex server
+- Customizable settings for thumbnail quality, frame interval, and more
+- Easy setup with Docker and Docker Compose
 
 ## Known issues
 - AMD GPU Support was recently added, this is untested as i don't have an AMD GPU. Please log an issue if you find problems
 
-## Features
-
-- Accelerates preview thumbnail generation using NVIDIA GPUs and multi-threaded CPU processing
-- Supports remote generation of previews for your Plex server
-- Customizable settings for thumbnail quality, frame interval, and more
-- Easy setup with Docker and Docker Compose
-- Utilizes the NVIDIA Container Toolkit for seamless GPU access inside the container
-
 ## Requirements
 
-- NVIDIA GPU with CUDA support
-- NVIDIA Container Toolkit (if using Docker)
+- NVIDIA GPU + NVIDIA Container Toolkit (if using Docker)
+- AMC GPU + [amdgpu](https://github.com/ROCm/ROCm-docker/blob/master/quick-start.md) (if using Docker)
 - Plex Media Server
 
 ## Environment variables
@@ -41,20 +51,22 @@ a `.env` file
 | `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Leave blank unless you need to map your local media files to a remote path (eg: '/path/this/script/sees/to/video/library')                  |
 |    `PLEX_VIDEOS_PATH_MAPPING`    | Leave blank unless you need to map your local media files to a remote path (eg: '/path/plex/sees/to/video/library')                         |
 
-# Usage via Docker
+# Guide for Docker
 
 > [!IMPORTANT]  
 > Note the extra "z" in the Docker Hub url [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews). 
 > stevezau was already taken on dockerhub.  
 
-## Install NVIDIA Container Toolkit
-
-Make sure you have the NVIDIA Container Toolkit installed on your host system and a compatible NVIDIA GPU with CUDA
-support. The script automatically detects the available GPU and utilizes it for faster thumbnail generation.
-
+## GPU Support
+### NVIDIA - Install NVIDIA Container Toolkit
 To enable GPU access inside the Docker container, you need to install the NVIDIA Container Toolkit on your host system.
 Follow the installation instructions for your distribution from the official NVIDIA
 documentation: [NVIDIA Container Toolkit Installation Guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+### AMD - Install AMDGPU support
+In order to access GPUs in a container explicit access to the GPUs must be granted.
+
+Please follow the steps outlined here [https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html](https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html)
 
 ## docker-compose ([click here for more info](https://docs.linuxserver.io/general/docker-compose))
 
@@ -87,6 +99,9 @@ services:
 
 ## docker cli ([click here for more info](https://docs.docker.com/engine/reference/commandline/cli/))
 
+> [!IMPORTANT]  
+> Note: If you are using AMD GPU, you'll need to modify the docker run command and remove NVIDIA add in AMD as per the instructions [here](https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html) 
+
 ```bash
 docker run -it --rm \
   --name=plex_generate_vid_previews \
@@ -106,7 +121,7 @@ docker run -it --rm \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
-# Usage running locally
+# Guide for running locally
 
 ## 1. Install Dependencies
 
@@ -142,6 +157,41 @@ Run the script
 ```
 python3 plex_preview_thumbnail_generator.py
 ````
+
+# Guide for Unraid
+
+**Note:** In this example, the server is named `server` for the network share on Windows, and the SMB share has user-accessible permissions to your media folder. This guide follows the [TRaSH Guide](https://trash-guides.info/) for folder naming structures & was done using the linuxserver plex docker image.
+
+## Steps
+
+1. **Add a Second Container Path:**
+   - In your Plex Docker container settings, add a second container path for `/server/media/plex/`.
+   - Map the host path as you normally would (e.g., `/mnt/user/media/plex/`).
+
+2. **Update Plex Library Path Mappings:**
+   - Open Plex and delete all of your current library path mappings.
+   - Replace them with paths following this format (you must add a second `/` yourself, as Plex will only show the mount with one):  
+     `//server/media/plex/<name-of-media-folder>`.  
+     - Example: `//server/media/plex/tv`
+
+3. **Modify the Script's Environment File:**
+   - The script’s `.env` file only needs one specific adjustment for Unraid:
+     - Set `PLEX_LOCAL_MEDIA_PATH` as follows:  
+       ```plaintext
+       PLEX_LOCAL_MEDIA_PATH=\\SERVER\appdata\plex\Library\Application Support\Plex Media Server\Media
+       ```
+
+4. **Grant Script Permissions to the Media Folder:**
+   - In order for the script to write to the Media folder in the Plex appdata directory, you may need to adjust the permissions.
+   - I used the following command in the Unraid console:  
+     ```bash
+     chmod -R 777 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
+     ```
+
+5. **Run the Script:**
+   - After running the script, your GPU should begin working.
+   - **Note:**  The script may appear to be frozen on 0 files, but you can still see thumbnails being created in the temporary folder you specified, and it should eventually start to update in your terminal.
+
 
 # Support and Questions
 
