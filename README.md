@@ -50,6 +50,7 @@ a `.env` file
 |          `CPU_THREADS`           | Number of CPU threads for preview generation (default: 4)                                                                                   |
 | `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Leave blank unless you need to map your local media files to a remote path (eg: '/path/this/script/sees/to/video/library')                  |
 |    `PLEX_VIDEOS_PATH_MAPPING`    | Leave blank unless you need to map your local media files to a remote path (eg: '/path/plex/sees/to/video/library')                         |
+|           `LOG_LEVEL`            | Set to debug for troubleshooting                                                                                                            |
 
 # Guide for Docker
 

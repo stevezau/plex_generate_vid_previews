@@ -88,7 +88,7 @@ console = Console()
 logger.remove()
 logger.add(
     lambda _: console.print(_, end=''),
-    level='INFO',
+    level=os.environ.get('LOG_LEVEL', 'INFO'),
     format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
     + '  - <level>{message}</level>',
     enqueue=True
@@ -178,8 +178,13 @@ def generate_images(video_file_param, output_folder):
     if GPU == 'NVIDIA':
         gpu_stats_query = gpustat.core.new_query()
         gpu = gpu_stats_query[0] if gpu_stats_query else None
+        logger.debug('Trying to determine how many GPU threads running')
+        logger.debug(gpu)
         if gpu:
             gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower().startswith("ffmpeg")]
+            logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
+            if len(gpu_ffmpeg) > GPU_THREADS:
+                logger.debug('Hit limit on GPU threads, defaulting back to CPU')
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
                 args.insert(5, "-hwaccel")
@@ -187,6 +192,10 @@ def generate_images(video_file_param, output_folder):
     elif GPU:
         # Must be AMD
         gpu_ffmpeg = get_amd_ffmpeg_processes()
+        logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
+        if len(gpu_ffmpeg) > GPU_THREADS:
+            logger.debug('Hit limit on GPU threads, defaulting back to CPU')
+
         if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
             hw = True
             args.insert(5, "-hwaccel")
@@ -197,6 +206,8 @@ def generate_images(video_file_param, output_folder):
             vf_parameters = vf_parameters.replace("scale=w=320:h=240:force_original_aspect_ratio=decrease", "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
             args[args.index("-vf") + 1] = vf_parameters
 
+    logger.debug('Running ffmpeg')
+    logger.debug(' '.join(args))
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # Allow time for it to start
@@ -207,6 +218,9 @@ def generate_images(video_file_param, output_folder):
         err_lines = err.decode('utf-8', 'ignore').split('\n')[-5:]
         logger.error(err_lines)
         logger.error('Problem trying to ffmpeg images for {}'.format(video_file))
+
+    logger.debug('FFMPEG Command output')
+    logger.debug(out)
 
     # Speed
     end = time.time()
@@ -296,6 +310,9 @@ def process_item(item_key):
             indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
             tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+
+            logger.debug('Generating bundle_file for {} at {}'.format(media_file, bundle_path))
+
             if not os.path.isfile(index_bif):
                 if not os.path.isdir(indexes_path):
                     try:
