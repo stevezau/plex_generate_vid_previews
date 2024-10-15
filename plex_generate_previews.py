@@ -88,15 +88,13 @@ console = Console()
 logger.remove()
 logger.add(
     lambda _: console.print(_, end=''),
-    level=os.environ.get('LOG_LEVEL', 'INFO'),
+    level=os.environ.get('LOG_LEVEL', 'INFO').upper(),
     format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
     + '  - <level>{message}</level>',
     enqueue=True
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-GPU = None
 
 
 def detect_gpu():
@@ -154,7 +152,8 @@ def get_amd_ffmpeg_processes():
     finally:
         amdsmi_shut_down()
 
-def generate_images(video_file_param, output_folder):
+
+def generate_images(video_file_param, output_folder, gpu):
     video_file = video_file_param.replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
     media_info = MediaInfo.parse(video_file)
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(
@@ -175,13 +174,16 @@ def generate_images(video_file_param, output_folder):
     start = time.time()
     hw = False
 
-    if GPU == 'NVIDIA':
+    if gpu == 'NVIDIA':
         gpu_stats_query = gpustat.core.new_query()
-        gpu = gpu_stats_query[0] if gpu_stats_query else None
         logger.debug('Trying to determine how many GPU threads running')
-        logger.debug(gpu)
-        if gpu:
-            gpu_ffmpeg = [c for c in gpu.processes if c["command"].lower().startswith("ffmpeg")]
+        if len(gpu_stats_query):
+            gpu_ffmpeg = []
+            for gpu_stats in gpu_stats_query:
+                for process in gpu_stats.processes:
+                    if 'ffmpeg' in process["command"].lower():
+                        gpu_ffmpeg.append(process["command"])
+
             logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
             if len(gpu_ffmpeg) > GPU_THREADS:
                 logger.debug('Hit limit on GPU threads, defaulting back to CPU')
@@ -189,7 +191,7 @@ def generate_images(video_file_param, output_folder):
                 hw = True
                 args.insert(5, "-hwaccel")
                 args.insert(6, "cuda")
-    elif GPU:
+    elif gpu:
         # Must be AMD
         gpu_ffmpeg = get_amd_ffmpeg_processes()
         logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
@@ -201,7 +203,7 @@ def generate_images(video_file_param, output_folder):
             args.insert(5, "-hwaccel")
             args.insert(6, "vaapi")
             args.insert(7, "-vaapi_device")
-            args.insert(8, GPU)
+            args.insert(8, gpu)
             # Adjust vf_parameters for AMD VAAPI
             vf_parameters = vf_parameters.replace("scale=w=320:h=240:force_original_aspect_ratio=decrease", "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
             args[args.index("-vf") + 1] = vf_parameters
@@ -280,7 +282,7 @@ def generate_bif(bif_filename, images_path):
     f.close()
 
 
-def process_item(item_key):
+def process_item(item_key, gpu):
     sess = requests.Session()
     sess.verify = False
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
@@ -311,9 +313,9 @@ def process_item(item_key):
             index_bif = os.path.join(indexes_path, 'index-sd.bif')
             tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
 
-            logger.debug('Generating bundle_file for {} at {}'.format(media_file, bundle_path))
-
             if not os.path.isfile(index_bif):
+                logger.debug('Generating bundle_file for {} at {}'.format(media_file, index_bif))
+
                 if not os.path.isdir(indexes_path):
                     try:
                         os.makedirs(indexes_path)
@@ -329,7 +331,7 @@ def process_item(item_key):
                     continue
 
                 try:
-                    generate_images(media_part.attrib['file'], tmp_path)
+                    generate_images(media_part.attrib['file'], tmp_path, gpu)
                 except Exception as e:
                     logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
                     if os.path.exists(tmp_path):
@@ -349,7 +351,7 @@ def process_item(item_key):
                         shutil.rmtree(tmp_path)
 
 
-def run():
+def run(gpu):
     # Ignore SSL Errors
     sess = requests.Session()
     sess.verify = False
@@ -371,7 +373,7 @@ def run():
 
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
             with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
-                futures = [process_pool.submit(process_item, key) for key in media]
+                futures = [process_pool.submit(process_item, key, gpu) for key in media]
                 for future in progress.track(futures):
                     future.result()
 
@@ -399,12 +401,12 @@ if __name__ == '__main__':
         exit(1)
 
     # detect GPU's
-    GPU = detect_gpu()
-    if GPU == 'NVIDIA':
+    gpu = detect_gpu()
+    if gpu == 'NVIDIA':
         logger.info('Found NVIDIA GPU')
-    elif GPU:
-        logger.info(f'Found AMD GPU {GPU}')
-    if not GPU:
+    elif gpu:
+        logger.info(f'Found AMD GPU {gpu}')
+    if not gpu:
         logger.warning('No GPUs detected. Defaulting to CPU ONLY.')
         logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
@@ -413,7 +415,7 @@ if __name__ == '__main__':
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
         os.makedirs(TMP_FOLDER)
-        run()
+        run(gpu)
     finally:
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
