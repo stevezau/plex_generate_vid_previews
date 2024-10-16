@@ -153,8 +153,7 @@ def get_amd_ffmpeg_processes():
         amdsmi_shut_down()
 
 
-def generate_images(video_file_param, output_folder, gpu):
-    video_file = video_file_param.replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
+def generate_images(video_file, output_folder, gpu):
     media_info = MediaInfo.parse(video_file)
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(
         round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
@@ -296,7 +295,7 @@ def process_item(item_key, gpu):
                 if sys.argv[1] not in media_part.attrib['file']:
                     return
             bundle_hash = media_part.attrib['hash']
-            media_file = media_part.attrib['file']
+            media_file = media_part.attrib['file'].replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
 
             if not os.path.isfile(media_file):
                 logger.error('Skipping as file not found {}'.format(media_file))
@@ -331,7 +330,7 @@ def process_item(item_key, gpu):
                     continue
 
                 try:
-                    generate_images(media_part.attrib['file'], tmp_path, gpu)
+                    generate_images(media_file, tmp_path, gpu)
                 except Exception as e:
                     logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
                     if os.path.exists(tmp_path):
