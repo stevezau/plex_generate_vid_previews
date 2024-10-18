@@ -9,6 +9,7 @@ import struct
 import urllib3
 import array
 import time
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
 from dotenv import load_dotenv
@@ -288,6 +289,11 @@ def process_item(item_key, gpu):
 
     data = plex.query('{}/tree'.format(item_key))
 
+    def sanitize_path(path):
+        if os.name == 'nt':
+            path = path.replace('/', '\\')
+        return path
+
     for media_part in data.findall('.//MediaPart'):
         if 'hash' in media_part.attrib:
             # Filter Processing by HDD Path
@@ -295,22 +301,22 @@ def process_item(item_key, gpu):
                 if sys.argv[1] not in media_part.attrib['file']:
                     return
             bundle_hash = media_part.attrib['hash']
-            media_file = media_part.attrib['file'].replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING)
+            media_file = sanitize_path(media_part.attrib['file'].replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING))
 
             if not os.path.isfile(media_file):
                 logger.error('Skipping as file not found {}'.format(media_file))
                 continue
 
             try:
-                bundle_file = '{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle')
+                bundle_file = sanitize_path('{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle'))
             except Exception as e:
                 logger.error('Error generating bundle_file for {} due to {}:{}'.format(media_file, type(e).__name__, str(e)))
                 continue
 
-            bundle_path = os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost', bundle_file)
-            indexes_path = os.path.join(bundle_path, 'Contents', 'Indexes')
-            index_bif = os.path.join(indexes_path, 'index-sd.bif')
-            tmp_path = os.path.join(TMP_FOLDER, bundle_hash)
+            bundle_path = sanitize_path(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost', bundle_file))
+            indexes_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes'))
+            index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
+            tmp_path = sanitize_path(os.path.join(TMP_FOLDER, bundle_hash))
 
             if not os.path.isfile(index_bif):
                 logger.debug('Generating bundle_file for {} at {}'.format(media_file, index_bif))
