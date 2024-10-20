@@ -9,7 +9,7 @@
 - [Guide for Docker](#guide-for-docker)
 - [Guide for running locally](#guide-for-running-locally)
 - [Guide for Unraid](#guide-for-unraid)
-- [Support and Questions](#support-and-questions)
+- [FAQ, Support and Questions](#faq-support-and-questions)
 
 
 ## Plex Preview Thumbnail Generator Overview
@@ -194,8 +194,13 @@ python3 plex_preview_thumbnail_generator.py
    - **Note:**  The script may appear to be frozen on 0 files, but you can still see thumbnails being created in the temporary folder you specified, and it should eventually start to update in your terminal.
 
 
-# Support and Questions
+# FAQ, Support and Questions
 
 If you have any questions or need support, please create a GitHub issue in this repository
 
 Feel free to contribute to this project by submitting pull requests or reporting issues.
+
+## Skipping as file not found?
+If you are getting this error it could be:
+1. If you're using docker, you haven't mapped the folder into docker correctly. Please check before opening an issue.
+2. If you are running on Windows and using a mapped drive, this can cause issues with python, please use \\<server>\\your\media\path instead (see #52)
