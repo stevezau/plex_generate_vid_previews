@@ -203,4 +203,4 @@ Feel free to contribute to this project by submitting pull requests or reporting
 ## Skipping as file not found?
 If you are getting this error it could be:
 1. If you're using docker, you haven't mapped the folder into docker correctly. Please check before opening an issue.
-2. If you are running on Windows and using a mapped drive, this can cause issues with python, please use UNC \\<server>\\your\media\path instead (see #52)
+2. If you are running on Windows and using a mapped drive, this can cause issues with python, please use UNC \\<server>\\your\media\path instead (see [#52](https://github.com/stevezau/plex_generate_vid_previews/issues/52))
