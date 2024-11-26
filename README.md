@@ -41,9 +41,9 @@ a `.env` file
 |:--------------------------------:|---------------------------------------------------------------------------------------------------------------------------------------------|
 |            `PLEX_URL`            | Plex server URL. (eg: http://localhost:32400)                                                                                               |
 |           `PLEX_TOKEN`           | Plex Token. ([click here for how to get a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)) |
-|    `PLEX_BIF_FRAME_INTERVAL`     | Interval between preview images (default: 5)                                                                                                |
+|    `PLEX_BIF_FRAME_INTERVAL`     | Interval between preview images (default: 5, plex default: 2)                                                                                      |
 |     `PLEX_LOCAL_MEDIA_PATH`      | Path to Plex Media folder (eg: /path_to/plex/Library/Application Support/Plex Media Server/Media)                                           |
-|       `THUMBNAIL_QUALITY`        | Preview image quality (2-6, default: 4). 2 being highest quality and largest file size and 6 being lowest quality and smallest file size.   |
+| `THUMBNAIL_QUALITY`              | Preview image quality (2-6, default: 4, plex default: 3). 2 being the highest quality and largest file size and 6 being the lowest quality and smallest file size.   |
 |           `TMP_FOLDER`           | Temp folder for image generation. (default: /dev/shm/plex_generate_previews)                                                                |
 |          `PLEX_TIMEOUT`          | Timeout for Plex API requests in seconds (default: 60). If you have a large library, you might need to increase the timeout.                |
 |          `GPU_THREADS`           | Number of GPU threads for preview generation (default: 4)                                                                                   |
