@@ -77,6 +77,7 @@ version: '3'
 services:
   previews:
     image: stevezzau/plex_generate_vid_previews:latest
+    user: 1024:100 # UID:GID to use when creating new files and directories. Remove to run as root.
     environment:
       - PLEX_URL=https://xxxxxx.plex.direct:32400 
       - PLEX_TOKEN=your-plex-token 
