@@ -77,7 +77,7 @@ version: '3'
 services:
   previews:
     image: stevezzau/plex_generate_vid_previews:latest
-    user: 1024:100 # UID:GID to use when creating new files and directories. Remove to run as root.
+    user: 1000:1000 # UID:GID to use when creating new files and directories. Remove to run as root.
     environment:
       - PLEX_URL=https://xxxxxx.plex.direct:32400 
       - PLEX_TOKEN=your-plex-token 
@@ -109,8 +109,7 @@ docker run -it --rm \
   --name=plex_generate_vid_previews \
   --runtime=nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all \
-  -e PUID=1000 \
-  -e PGID=1000 \
+  --user 1000:1000 \    # UID:GID to use when creating new files and directories. Remove to run as root.
   -e PLEX_URL='http://localhost:32400' \
   -e PLEX_TOKEN='XXXXXX' \
   -e PLEX_BIF_FRAME_INTERVAL=2 \
