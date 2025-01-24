@@ -5,12 +5,16 @@ import subprocess
 import shutil
 import glob
 import os
+import signal
 import struct
-import urllib3
 import array
 import time
-from pathlib import Path
+import json
+import textwrap
+#from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
+import argparse
+import urllib3
 
 from dotenv import load_dotenv
 
@@ -19,15 +23,30 @@ load_dotenv()
 PLEX_URL = os.environ.get('PLEX_URL', '')  # Plex server URL. can also use for local server: http://localhost:32400
 PLEX_TOKEN = os.environ.get('PLEX_TOKEN', '')  # Plex Authentication Token
 PLEX_BIF_FRAME_INTERVAL = int(os.environ.get('PLEX_BIF_FRAME_INTERVAL', 5))  # Interval between preview images
-THUMBNAIL_QUALITY = int(os.environ.get('THUMBNAIL_QUALITY', 4))  # Preview image quality (2-6)
+THUMBNAIL_QUALITY = int(os.environ.get('THUMBNAIL_QUALITY', 3))  # Preview image quality (2-6)
 PLEX_LOCAL_MEDIA_PATH = os.environ.get('PLEX_LOCAL_MEDIA_PATH', '/path_to/plex/Library/Application Support/Plex Media Server/Media')  # Local Plex media path
 TMP_FOLDER = os.environ.get('TMP_FOLDER', '/dev/shm/plex_generate_previews')  # Temporary folder for preview generation
 PLEX_TIMEOUT = int(os.environ.get('PLEX_TIMEOUT', 60))  # Timeout for Plex API requests (seconds)
+USE_LIB_PLACEBO = os.getenv("USE_LIB_PLACEBO", 'False').lower() in ('true', '1', 't')
+FORCE_REGENERATION_OF_BIF_FILES = os.getenv("FORCE_REGENERATION_OF_BIF_FILES", 'False').lower() in ('true', '1', 't')
+PLEX_MEDIA_TYPES_TO_PROCESS = os.getenv("PLEX_MEDIA_TYPES_TO_PROCESS", '').lower()
+PLEX_LIBRARIES_TO_PROCESS = os.getenv("PLEX_LIBRARIES_TO_PROCESS", '')
+RUN_PROCESS_AT_LOW_PRIORITY = os.getenv("RUN_PROCESS_AT_LOW_PRIORITY", "False").lower() in ('true', '1', 't')
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 
 # Path mappings for remote preview generation. # So you can have another computer generate previews for your Plex server
 # If you are running on your plex server, you can set both variables to ''
-PLEX_LOCAL_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')  # Local video path for the script
-PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '')  # Plex server video path
+#PLEX_LOCAL_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')  # Local video path for the script
+#PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '')  # Plex server video path
+
+PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON', '{}').replace('\\', r'\\')
+
+#print(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
+PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = json.loads(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
+#print("\nJSON:")
+#print(json.dumps(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS, indent=4))
+
+#sys.exit()
 
 GPU_THREADS = int(os.environ.get('GPU_THREADS', 4))  # Number of GPU threads for preview generation
 CPU_THREADS = int(os.environ.get('CPU_THREADS', 4))  # Number of CPU threads for preview generation
@@ -84,18 +103,185 @@ if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
 
-# Logging setup
-console = Console()
-logger.remove()
-logger.add(
-    lambda _: console.print(_, end=''),
-    level=os.environ.get('LOG_LEVEL', 'INFO').upper(),
-    format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}'
-    + '  - <level>{message}</level>',
-    enqueue=True
-)
+class UltimateHelpFormatter(
+    argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter
+):
+    pass
+
+parser = argparse.ArgumentParser(
+                    prog = 'plex_generate_vid_previews',
+                    description = 'What the program does',
+                    epilog = 'Text at the bottom of help',
+                    formatter_class = UltimateHelpFormatter
+                )
+parser.add_argument('-s', '--search',
+                    help = 'Search Plex for title')
+parser.add_argument('-f', '--force', action='store_true',
+                    help = 'Force regeneration of BIF')
+parser.add_argument('-l', '--lib_placebo', action='store_true',
+                    help = textwrap.dedent('''\
+                        Use libplacebo for HDR tone-mapping, otherwise
+                        use default libavfilter tone-mapping.
+                        '''))
+parser.add_argument('-q', '--thumbnail_quality', required = False,
+                    type = int, choices = range(2,6), metavar = '[2-6]', default = 3,
+                    help = textwrap.dedent('''\
+                        Preview image quality (2-6) (default: %(default)s):
+                          --thumbnail_quality=%(default)s good balance between quality and file-size (default and recommend setting)
+                          --thumbnail_quality=2 the highest quality and largest file size
+                          --thumbnail_quality=6 the lowest quality and smallest file size
+                        '''))
+parser.add_argument('-i', '--bif_interval', required = False,
+                    type = int, choices = range(1,30), metavar = '[1-30]', default = 2,
+                    help = textwrap.dedent('''\
+                        Interval between preview images in seconds (1-30) (default: %(default)s):
+                          --bif_interval=%(default)s  generate a preview thumbnail every 2 seconds (default and recommend setting)
+                          --bif_interval=1  generate a preview thumbnail every second (largest file size, longest processing time, best resolution for trick-play)
+                          --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
+                        '''))
+
+cli_args = parser.parse_args(namespace=argparse.Namespace(force = FORCE_REGENERATION_OF_BIF_FILES, bif_interval = PLEX_BIF_FRAME_INTERVAL, thumbnail_quality = THUMBNAIL_QUALITY))
+
+if cli_args.force:
+    FORCE_REGENERATION_OF_BIF_FILES = True
+
+if cli_args.lib_placebo:
+    USE_LIB_PLACEBO = True
+
+if cli_args.thumbnail_quality:
+    THUMBNAIL_QUALITY = cli_args.thumbnail_quality
+
+if cli_args.bif_interval:
+    PLEX_BIF_FRAME_INTERVAL = cli_args.bif_interval
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+pattern_fps   = re.compile(r'^fps= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?$', flags=re.MULTILINE)
+pattern_speed = re.compile(r'^speed= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?x$', flags=re.MULTILINE)
+
+def set_logger(logger_):
+    global logger
+    logger = logger_
+
+
+def setup_logging():
+    # Logging setup
+    LOG_FORMAT = '<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>'
+    global console
+    console = Console(color_system='truecolor')
+    logger.remove()
+    logger.add(
+        lambda _: console.print(_, end=''),
+        level = LOG_LEVEL,
+        format = LOG_FORMAT,
+        enqueue = True
+    )
+    logger.add(
+        os.path.join("logs", "plex_generate_previews_{time}.log"),
+        retention="14 days",
+        level = LOG_LEVEL,
+        format = LOG_FORMAT,
+        colorize = False,
+        enqueue = True
+    )
+
+
+def signal_handler(arg1, arg2):
+    """
+    Signal interrupt handler.
+
+    """
+    print(f"⚠️Received SIGTERM or SIGINT {arg1} {arg2}⚠️")
+    print("Sending SIGKILL to PPID...")
+    os.kill(os.getpid(), 9)
+
+# Register SIGERM signal handler
+signal.signal(signal.SIGTERM, signal_handler)
+
+# Register SIGINT (CTRL-C) signal handler
+signal.signal(signal.SIGINT, signal_handler)
+
+
+def set_process_niceness(niceness=25):
+    """ Set the niceness/priority of the process."""
+
+    isWindows = os.name == 'nt'
+
+    if isWindows:
+        try:
+            import win32api, win32process
+
+            # <https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass>
+            #
+            # priorityclasses:
+            #  win32process.IDLE_PRIORITY_CLASS,            # Process whose threads run only when the system is idle. The threads of the process are preempted
+                                                            # by the threads of any process running in a higher priority class. An example is a screen saver.
+                                                            # The idle-priority class is inherited by child processes.
+            #  win32process.BELOW_NORMAL_PRIORITY_CLASS,    # IDLE_PRIORITY_CLASS < x < NORMAL_PRIORITY_CLASS
+            #  win32process.NORMAL_PRIORITY_CLASS,          # Process with no special scheduling needs.
+            #  win32process.ABOVE_NORMAL_PRIORITY_CLASS,    # NORMAL_PRIORITY_CLASS < x < HIGH_PRIORITY_CLASS
+            #  win32process.HIGH_PRIORITY_CLASS,            # Process that performs time-critical tasks that must be executed immediately.  The threads of the
+                                                            # process preempt the threads of normal or idle priority class processes. An example is the Task
+                                                            # List, which must respond quickly when called by the user, regardless of the load on the operating
+                                                            # system. Use extreme care when using the high-priority class, because a high-priority class
+                                                            # application can use nearly all available CPU time.
+            #  win32process.REALTIME_PRIORITY_CLASS
+
+            win_priority_map = {
+                10  : "IDLE_PRIORITY_CLASS",                # Task Manager displays "Low"
+                25  : "BELOW_NORMAL_PRIORITY_CLASS",
+                50  : "NORMAL_PRIORITY_CLASS",
+                75  : "ABOVE_NORMAL_PRIORITY_CLASS",
+                #90  : "HIGH_PRIORITY_CLASS",
+                #100 : "REALTIME_PRIORITY_CLASS",
+            }
+
+            # Check if the niceness value is valid
+            if niceness not in win_priority_map:
+                raise ValueError(f"Invalid priority value: {niceness}. Valid values are 10, 25, 50, 75, 90, and 100.")
+
+            priority_class = win_priority_map.get(niceness, "NORMAL_PRIORITY_CLASS")
+
+            win32process.SetPriorityClass(
+                win32api.GetCurrentProcess(),
+                getattr(win32process, priority_class)
+            )
+
+            logger.info(f"Process priority set to Windows priority class {priority_class} from an input niceness value os {niceness}.")
+            if niceness > 50:
+                logger.warning(("Process priority set above normal priority class, "
+                                "this is a privileged operation and schedules the process as high priority."))
+
+        except ImportError:
+            logger.error("The 'pywin32' module is required to set priority on Windows.")
+        except ValueError as e:
+            logger.error(f"Error: {e}")
+        except Exception as e:
+            logger.critical(f"Failed to set process priority on Windows: {e}")
+
+    else:
+        nice_value_map = {
+            10: 20,
+            25: 10,
+            50: 0,
+            75: -5,
+            90: -10,
+            100: -20,
+        }
+
+        nice_value = nice_value_map.get(niceness, 0)
+
+        try:
+            os.nice(nice_value)
+        except PermissionError:
+            logger.error("Insufficient permissions to change the process priority. Try running as an administrator.")
+        except Exception as e:
+            logger.critical(f"Failed to set priority: {e}")
+
+        logger.info(f"Process niceness set to {niceness}.")
+        if niceness < 0:
+            logger.warning(f"Process niceness set to a negative value ({niceness}), a privileged operation and schedules the process as high priority.")
 
 
 def detect_gpu():
@@ -112,63 +298,75 @@ def detect_gpu():
     except pynvml.NVMLError as e:
         logger.warning(f"Error initializing NVIDIA GPU detection {e}. NVIDIA GPUs will not be detected.")
 
-    # Check for AMD GPUs
-    try:
-        from amdsmi import amdsmi_interface
-        amdsmi_interface.amdsmi_init()
-        devices = amdsmi_interface.amdsmi_get_processor_handles()
-        found = None
-        if len(devices) > 0:
-            for device in devices:
-                processor_type = amdsmi_interface.amdsmi_get_processor_type(device)
-                if processor_type == amdsmi_interface.AMDSMI_PROCESSOR_TYPE_GPU:
-                    found = True
-        amdsmi_interface.amdsmi_shut_down()
-        if found:
-                vaapi_device_dir = "/dev/dri"
-                if os.path.exists(vaapi_device_dir):
-                    for entry in os.listdir(vaapi_device_dir):
-                        if entry.startswith("renderD"):
-                            return os.path.join(vaapi_device_dir, entry)
-    except ImportError:
-        logger.warning("AMD GPU detection library (amdsmi) not found. AMD GPUs will not be detected.")
-    except Exception as e:
-        logger.warning(f"Error initializing AMD GPU detection: {e}. AMD GPUs will not be detected.")
+def sizeof_fmt(num, suffix="B", to_si=False, precision=1):
+    """Human Readable Binary(IEC)/Decimal(SI) Numbers"""
+    scale = 1000.0
+    if not to_si:
+        suffix = "i" + suffix
+        scale = 1024.0
+    for unit in ("", "K", "M", "G", "T", "P", "E", "Z"):
+        if abs(num) < scale:
+            return f"{num:3.{precision}f}{unit}{suffix}"
+        num /= scale
+    return f"{num:.1f}Y{suffix}"
 
-
-def get_amd_ffmpeg_processes():
-    from amdsmi import amdsmi_init, amdsmi_shut_down, amdsmi_get_processor_handles, amdsmi_get_gpu_process_list
-    try:
-        amdsmi_init()
-        gpu_handles = amdsmi_get_processor_handles()
-        ffmpeg_processes = []
-
-        for gpu in gpu_handles:
-            processes = amdsmi_get_gpu_process_list(gpu)
-            for process in processes:
-                if process['name'].lower().startswith('ffmpeg'):
-                    ffmpeg_processes.append(process)
-
-        return ffmpeg_processes
-    finally:
-        amdsmi_shut_down()
-
+def sanitize_path(path):
+    if os.name == 'nt':
+        path = path.replace('/', '\\')
+    return path
 
 def generate_images(video_file, output_folder, gpu):
     media_info = MediaInfo.parse(video_file)
-    vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(
-        round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+    vf_parameters = f"fps=fps={round(1 / PLEX_BIF_FRAME_INTERVAL, 6)}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease"
+    hdr = False
 
     # Check if we have a HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
-            vf_parameters = "fps=fps={}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
+            hdr = True
+            logger.debug('HDR format reported by Plex')
+            if USE_LIB_PLACEBO:
+                # libplacebo - Flexible GPU-accelerated processing filter based on libplacebo <https://code.videolan.org/videolan/libplacebo>
+                #   -init_hw_device vulkan ^
+                #   dithering=ordered_fixed  (for max performance)
+                #   dither_lut_size=6 (x=1...8, 2^x)
+                #   apply_filmgrain=false
+                #
+                # Convert input to standard sRGB JPEG:
+                #   libplacebo=format=yuv420p:colorspace=bt470bg:color_primaries=bt709:color_trc=iec61966-2-1:range=pc
+                #
+                #
+                # Rescale input to fit into standard 1080p, with high quality scaling:
+                #  libplacebo=w=1920:h=1080:force_original_aspect_ratio=decrease:normalize_sar=true:upscaler=ewa_lanczos:downscaler=ewa_lanczos
+                #
+                #
+                # Suppress CPU-based AV1/H.274 film grain application in the decoder, in favor of doing it with this filter.
+                # Note that this is only a gain if the frames are either already on the GPU, or if you’re using libplacebo
+                # for other purposes, since otherwise the VRAM roundtrip will more than offset any expected speedup.
+                #  ffmpeg -export_side_data +film_grain ... -vf libplacebo=apply_filmgrain=true
+                #
+                #
+                # Interop with VAAPI hwdec to avoid round-tripping through RAM:
+                #   ffmpeg -init_hw_device vulkan -hwaccel vaapi -hwaccel_output_format vaapi ... -vf libplacebo
+                #
+                # -vf "hwupload,libplacebo=tonemapping=bt.2446a:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=limited,hwdownload,format=yuv420p10" ^
+
+                # tonemap_opencl:
+                #   -i INPUT -vf "format=p010,hwupload,tonemap_opencl=t=bt2020:tonemap=linear:format=p010,hwdownload,format=p010" OUTPUT
+
+                # tonemap_vaapi - currently only accepts HDR10 as input:
+                #   tonemap_vaapi=format=p010:t=bt2020-10
+
+                vf_parameters = f"hwupload,libplacebo=fps=1/{PLEX_BIF_FRAME_INTERVAL}:frame_mixer=none:tonemapping=bt.2446a:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:w=320:h=240:force_original_aspect_ratio=decrease:format=yuv420p10le,hwdownload,format=yuv420p10le"
+            else:
+                vf_parameters = f"fps=fps={round(1 / PLEX_BIF_FRAME_INTERVAL, 6)}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease"
+
 
     args = [
-        FFMPEG_PATH, "-loglevel", "info", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
-        video_file, "-an", "-sn", "-dn", "-q:v", str(THUMBNAIL_QUALITY),
+        FFMPEG_PATH, "-loglevel", "error", "-nostats", "-progress", "-", "-stats_period", "10000000000", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
+        video_file, "-an", "-sn", "-dn", "-qscale:v", str(THUMBNAIL_QUALITY),
         "-vf",
-        vf_parameters, '{}/img-%06d.jpg'.format(output_folder)
+        vf_parameters, sanitize_path(f"{output_folder}/img-%06d.jpg")
     ]
 
     start = time.time()
@@ -184,60 +382,129 @@ def generate_images(video_file, output_folder, gpu):
                     if 'ffmpeg' in process["command"].lower():
                         gpu_ffmpeg.append(process["command"])
 
-            logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
+            logger.debug(f"Counted {len(gpu_ffmpeg)} ffmpeg GPU threads running")
             if len(gpu_ffmpeg) > GPU_THREADS:
                 logger.debug('Hit limit on GPU threads, defaulting back to CPU')
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
-                args.insert(5, "-hwaccel")
-                args.insert(6, "cuda")
-    elif gpu:
-        # Must be AMD
-        gpu_ffmpeg = get_amd_ffmpeg_processes()
-        logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
-        if len(gpu_ffmpeg) > GPU_THREADS:
-            logger.debug('Hit limit on GPU threads, defaulting back to CPU')
-
-        if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
-            hw = True
-            args.insert(5, "-hwaccel")
-            args.insert(6, "vaapi")
-            args.insert(7, "-vaapi_device")
-            args.insert(8, gpu)
-            # Adjust vf_parameters for AMD VAAPI
-            vf_parameters = vf_parameters.replace("scale=w=320:h=240:force_original_aspect_ratio=decrease", "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
-            args[args.index("-vf") + 1] = vf_parameters
+                if USE_LIB_PLACEBO:
+                    args.insert(8, "-init_hw_device")
+                    args.insert(9, "vulkan")
+                else:
+                    args.insert(8, "-hwaccel")
+                    args.insert(9, "cuda")
 
     logger.debug('Running ffmpeg')
     logger.debug(' '.join(args))
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    # Allow time for it to start
-    time.sleep(1)
+    logger.debug((
+        f"{video_file}:"
+        f" video duration={(media_info.video_tracks[0].duration)}"
+        f" duration={(media_info.general_tracks[0].duration)}"
+        f"{' hdr_format=' if media_info.video_tracks[0].hdr_format else ''}"
+        f"{' other_hdr_format=' if media_info.video_tracks[0].other_hdr_format else ''}"
+        f"{' hdr_format_profile=' if media_info.video_tracks[0].hdr_format_profile else ''}"
+        f"{' hdr_format_level=' if media_info.video_tracks[0].hdr_format_level else ''}"
+        f"{' hdr_format_settings=' if media_info.video_tracks[0].hdr_format_settings else ''}"
+        f"{' hdr_format_compatibility=' if media_info.video_tracks[0].hdr_format_compatibility else ''}"
+        f" bit_rate={sizeof_fmt(media_info.video_tracks[0].bit_rate, to_si=True, suffix='bps', precision=3) or ''}"
+    ))
 
-    out, err = proc.communicate()
+    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+        # Allow time for it to start
+        time.sleep(1)
+        stdout, stderr = proc.communicate()
+
+    # @TODO add progress bar on subprocesses processing
+    # change ffmpeg -stats_periond=10(?) and collect stats
+    #
+    # progress=continue ... progress=end
+    #
+    # frame=83
+    # fps=0.00
+    # stream_0_0_q=3.0
+    # bitrate=N/A
+    # total_size=N/A
+    # out_time_us=415000000
+    # out_time_ms=415000000
+    # out_time=00:06:55.000000
+    # dup_frames=0
+    # drop_frames=0
+    # speed=1.27e+03x
+    # progress=continue
+    # frame=179
+    # fps=0.00
+    # stream_0_0_q=3.0
+    # bitrate=N/A
+    # total_size=N/A
+    # out_time_us=890000000
+    # out_time_ms=890000000
+    # out_time=00:14:50.000000
+    # dup_frames=0
+    # drop_frames=0
+    # speed=1.39e+03x
+    # progress=continue
+    # frame=272
+    # fps=0.00
+    # stream_0_0_q=3.0
+    # bitrate=N/A
+    # total_size=N/A
+    # out_time_us=1360000000
+    # out_time_ms=1360000000
+    # out_time=00:22:40.000000
+    # dup_frames=0
+    # drop_frames=0
+    # speed=1.42e+03x
+    # progress=continue
+    # frame=294
+    # fps=285.43
+    # stream_0_0_q=3.0
+    # bitrate=N/A
+    # total_size=N/A
+    # out_time_us=1470000000
+    # out_time_ms=1470000000
+    # out_time=00:24:30.000000
+    # dup_frames=0
+    # drop_frames=0
+    # speed=1.43e+03x
+    # progress=end
+
     if proc.returncode != 0:
-        err_lines = err.decode('utf-8', 'ignore').split('\n')[-5:]
+        err_lines = stderr.decode('utf-8', 'replace').split('\n')[-5:]
         logger.error(err_lines)
-        logger.error('Problem trying to ffmpeg images for {}'.format(video_file))
+        logger.error(f"Problem trying to ffmpeg images for {video_file}")
 
     logger.debug('FFMPEG Command output')
-    logger.debug(out)
+    logger.debug(stdout)
+    logger.debug(stderr)
 
     # Speed
     end = time.time()
     seconds = round(end - start, 1)
-    speed = re.findall('speed= ?([0-9]+\\.?[0-9]*|\\.[0-9]+)x', err.decode('utf-8', 'ignore'))
+
+    fps   = pattern_fps.findall(stdout.decode('utf-8', 'replace'))
+    speed = pattern_speed.findall(stdout.decode('utf-8', 'replace'))
+
+    # select first group of last match (in case stats are printed more often
     if speed:
-        speed = speed[-1]
+        speed = speed[-1][0]
+
+    if fps:
+        fps = fps[-1][0]
 
     # Optimize and Rename Images
-    for image in glob.glob('{}/img*.jpg'.format(output_folder)):
+    for image in glob.glob(f"{output_folder}/img*.jpg"):
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
-        os.rename(image, os.path.join(output_folder, '{:010d}.jpg'.format(frame_second)))
+        os.rename(image, os.path.join(output_folder, f"{frame_second:010d}.jpg"))
 
-    logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
+    return {
+        'hw' : hw,
+        'seconds' : seconds,
+        'speed' : speed,
+        'fps' : fps,
+        'hdr' : hdr
+    }
 
 
 def generate_bif(bif_filename, images_path):
@@ -252,34 +519,34 @@ def generate_bif(bif_filename, images_path):
     images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == '.jpg']
     images.sort()
 
-    f = open(bif_filename, "wb")
-    array.array('B', magic).tofile(f)
-    f.write(struct.pack("<I", version))
-    f.write(struct.pack("<I", len(images)))
-    f.write(struct.pack("<I", 1000 * PLEX_BIF_FRAME_INTERVAL))
-    array.array('B', [0x00 for x in range(20, 64)]).tofile(f)
+    with open(bif_filename, "wb") as f:
+        array.array('B', magic).tofile(f)
+        f.write(struct.pack("<I", version))
+        f.write(struct.pack("<I", len(images)))
+        f.write(struct.pack("<I", 1000 * PLEX_BIF_FRAME_INTERVAL))
+        array.array('B', [0x00 for x in range(20, 64)]).tofile(f)
 
-    bif_table_size = 8 + (8 * len(images))
-    image_index = 64 + bif_table_size
-    timestamp = 0
+        bif_table_size = 8 + (8 * len(images))
+        image_index = 64 + bif_table_size
+        timestamp = 0
 
-    # Get the length of each image
-    for image in images:
-        statinfo = os.stat(os.path.join(images_path, image))
-        f.write(struct.pack("<I", timestamp))
+        # Get the length of each image
+        for image in images:
+            statinfo = os.stat(os.path.join(images_path, image))
+            f.write(struct.pack("<I", timestamp))
+            f.write(struct.pack("<I", image_index))
+            timestamp += 1
+            image_index += statinfo.st_size
+
+        f.write(struct.pack("<I", 0xffffffff))
         f.write(struct.pack("<I", image_index))
-        timestamp += 1
-        image_index += statinfo.st_size
 
-    f.write(struct.pack("<I", 0xffffffff))
-    f.write(struct.pack("<I", image_index))
+        # Now copy the images
+        for image in images:
+            data = open(os.path.join(images_path, image), "rb").read()
+            f.write(data)
 
-    # Now copy the images
-    for image in images:
-        data = open(os.path.join(images_path, image), "rb").read()
-        f.write(data)
-
-    f.close()
+        return os.stat(bif_filename).st_size
 
 
 def process_item(item_key, gpu):
@@ -287,30 +554,40 @@ def process_item(item_key, gpu):
     sess.verify = False
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
 
-    data = plex.query('{}/tree'.format(item_key))
+    logger.debug(f"Processing Plex item-key={item_key}")
 
-    def sanitize_path(path):
-        if os.name == 'nt':
-            path = path.replace('/', '\\')
-        return path
+    data = plex.query(f"{item_key}/tree")
 
     for media_part in data.findall('.//MediaPart'):
         if 'hash' in media_part.attrib:
             # Filter Processing by HDD Path
-            if len(sys.argv) > 1:
-                if sys.argv[1] not in media_part.attrib['file']:
-                    return
+            # if len(sys.argv) > 1:
+            #     if sys.argv[1] not in media_part.attrib['file']:
+            #         logger.complete()
+            #         return
             bundle_hash = media_part.attrib['hash']
-            media_file = sanitize_path(media_part.attrib['file'].replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING))
+            media_part_file = media_part.attrib['file']
+
+            logger.debug(f"{bundle_hash=} {media_part_file=}")
+
+            local_path = [value for key, value in PLEX_LOCAL_VIDEOS_PATH_MAPPINGS.items() if media_part_file.startswith(key)]
+            if len(local_path) > 1:
+                logger.error(f"More than one server paths matched, something is wrong with the local<->server mappings {local_path=}")
+
+            server_path = [key for key, value in PLEX_LOCAL_VIDEOS_PATH_MAPPINGS.items() if value == local_path[0]]
+
+            logger.debug(f"{server_path=} {local_path=}")
+
+            media_file = sanitize_path(media_part_file.replace(server_path[0], local_path[0]))
 
             if not os.path.isfile(media_file):
-                logger.error('Skipping as file not found {}'.format(media_file))
+                logger.error(f'Skipping as file not found {media_file}')
                 continue
 
             try:
-                bundle_file = sanitize_path('{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle'))
+                bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1::1]}.bundle")
             except Exception as e:
-                logger.error('Error generating bundle_file for {} due to {}:{}'.format(media_file, type(e).__name__, str(e)))
+                logger.error(f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}")
                 continue
 
             bundle_path = sanitize_path(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost', bundle_file))
@@ -318,83 +595,138 @@ def process_item(item_key, gpu):
             index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
             tmp_path = sanitize_path(os.path.join(TMP_FOLDER, bundle_hash))
 
-            if not os.path.isfile(index_bif):
-                logger.debug('Generating bundle_file for {} at {}'.format(media_file, index_bif))
+            if not os.path.isfile(index_bif) or FORCE_REGENERATION_OF_BIF_FILES:
+                logger.debug(f"Generating bundle_file for {media_file} at {index_bif}")
 
                 if not os.path.isdir(indexes_path):
                     try:
                         os.makedirs(indexes_path)
                     except OSError as e:
-                        logger.error('Error generating images for {}. `{}:{}` error when creating index path {}'.format(media_file, type(e).__name__, str(e), indexes_path))
+                        logger.error(f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating index path {indexes_path}")
                         continue
 
                 try:
                     if not os.path.isdir(tmp_path):
                         os.makedirs(tmp_path)
                 except OSError as e:
-                    logger.error('Error generating images for {}. `{}:{}` error when creating tmp path {}'.format(media_file, type(e).__name__, str(e), tmp_path))
+                    logger.error(f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating tmp path {tmp_path}")
                     continue
 
                 try:
-                    generate_images(media_file, tmp_path, gpu)
+                    results_gen_imgs = generate_images(media_file, tmp_path, gpu)
                 except Exception as e:
-                    logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
+                    logger.error(f"Error generating images for {media_file}. `{type(e).__name__}: {str(e)}` error when generating images")
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
                     continue
 
                 try:
-                    generate_bif(index_bif, tmp_path)
+                    bif_filesize = generate_bif(index_bif, tmp_path)
                 except Exception as e:
                     # Remove bif, as it prob failed to generate
                     if os.path.exists(index_bif):
                         os.remove(index_bif)
-                    logger.error('Error generating images for {}. `{}:{}` error when generating bif'.format(media_file, type(e).__name__, str(e)))
+                    logger.error(f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating bif")
                     continue
                 finally:
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
 
+                logger.info((
+                    f"Generated Video Preview SIZE={sizeof_fmt(bif_filesize, precision=2):>9}"
+                    f" HW={results_gen_imgs['hw']!r:<5}"
+                    f" {'HDR' if results_gen_imgs['hdr'] else 'SDR'}"
+                    f" TIME={results_gen_imgs['seconds']:>6} seconds"
+                    f" SPEED={(str(results_gen_imgs['speed']) + 'x'):>6}"
+                    f" FPS={results_gen_imgs['fps']:>6}"
+                    f" for {media_file}"
+                ))
+            else:
+                logger.debug(f"Not generating bundle_file for {media_file} at {index_bif} as it already exists!")
+
+#   logger.complete()
 
 def run(gpu):
     # Ignore SSL Errors
     sess = requests.Session()
     sess.verify = False
 
-    plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=sess)
+    plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=sess, timeout = 60)
 
     for section in plex.library.sections():
-        logger.info('Getting the media files from library \'{}\''.format(section.title))
-
-        if section.METADATA_TYPE == 'episode':
-            media = [m.key for m in section.search(libtype='episode')]
-        elif section.METADATA_TYPE == 'movie':
-            media = [m.key for m in section.search()]
-        else:
-            logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
+        if section.title not in PLEX_LIBRARIES_TO_PROCESS:
+            logger.info(f"Skipping library {section.title} as not in list of libraries to process {PLEX_LIBRARIES_TO_PROCESS}")
             continue
 
-        logger.info('Got {} media files for library {}'.format(len(media), section.title))
+        if section.type not in PLEX_MEDIA_TYPES_TO_PROCESS:
+            logger.info(f"Skipping library {section.title} as not in list of media types to process {PLEX_MEDIA_TYPES_TO_PROCESS}")
+            continue
+
+        logger.info(f"Getting the media files from library \'{section.title}\'")
+
+        # ['movie', 'show', 'artist', 'photo']
+        if section.type == 'show':
+            if cli_args.search:
+                # this returns show(s) that match the title search string, not all the episodes of the show.
+                # process_item() fetches the XML tree of the show, and the episodes are then iterated.
+                # This impacts the progress bar, and ProcessPoolExecuter()
+                # @TODO add show episode title searching
+                # @TODO add enhanced Plex filter searching
+                media = [m.key for m in section.search(title=cli_args.search)]                     # Show Title search
+                #media = [m.key for m in section.search(title=cli_args.search, libtype='episode')]   # Episode Title search
+            else:
+                media = [m.key for m in section.search(libtype='episode')]
+        elif section.type == 'movie':
+            if cli_args.search:
+                media = [m.key for m in section.search(title=cli_args.search)]
+            else:
+                media = [m.key for m in section.search()]
+            #media = [m.key for m in section.search(title="Star Wars")]
+            #media = [m.key for m in section.search(title="Twilight")]
+        else:
+            logger.info(f"Skipping library {section.title} as \'{section.type}\' is unsupported")
+            continue
+
+        logger.info(f"Got {len(media)} media files for library {section.title}")
+
+        if len(media) == 0:
+            continue
 
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
-            with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
+            with ProcessPoolExecutor(initializer=set_logger, initargs=(logger, ), max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
                 futures = [process_pool.submit(process_item, key, gpu) for key in media]
                 for future in progress.track(futures):
                     future.result()
 
-
 if __name__ == '__main__':
-    logger.info('GPU Detection (with AMD Support) was recently added to this script.')
-    logger.info('Please log issues here https://github.com/stevezau/plex_generate_vid_previews/issues')
+
+    setup_logging()
+
+    logger.info(f"⚠️NVIDIA GPUs only supported.")
+    logger.info(f"PLEX_LIBRARIES_TO_PROCESS={PLEX_LIBRARIES_TO_PROCESS}")
+    logger.info(f"PLEX_MEDIA_TYPES_TO_PROCESS={PLEX_MEDIA_TYPES_TO_PROCESS}")
+    logger.info(f"PLEX_BIF_FRAME_INTERVAL={PLEX_BIF_FRAME_INTERVAL}")
+    logger.info(f"THUMBNAIL_QUALITY={THUMBNAIL_QUALITY}")
+    logger.info(f"FORCE_REGENERATION_OF_BIF_FILES={FORCE_REGENERATION_OF_BIF_FILES}")
+    logger.info(f"USE_LIB_PLACEBO={USE_LIB_PLACEBO}")
+    logger.info(f"RUN_PROCESS_AT_LOW_PRIORITY={RUN_PROCESS_AT_LOW_PRIORITY}")
+    logger.info(f"LOG_LEVEL={LOG_LEVEL}")
+    if USE_LIB_PLACEBO:
+        logger.info('Using libplacebo for HDR tone-mapping.')
+    if FORCE_REGENERATION_OF_BIF_FILES:
+        logger.warning('⚠️Force regeneration of BIF files is enabled, this will regenerate *all* files!⚠️')
+    if RUN_PROCESS_AT_LOW_PRIORITY:
+        set_process_niceness()
+        logger.info('Running processes at lower-priority')
+    if cli_args.search:
+        logger.info(f"🔸Searching for media titles matching {cli_args.search}🔸")
 
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
-        logger.error(
-            '%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
+        logger.error(f'{PLEX_LOCAL_MEDIA_PATH} does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable')
         exit(1)
 
     if not os.path.exists(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost')):
-        logger.error(
-            'You set PLEX_LOCAL_MEDIA_PATH to "%s". There should be a folder called "localhost" in that directory but it does not exist which suggests you haven\'t mapped it correctly. Please fix the PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
+        logger.error(f'You set PLEX_LOCAL_MEDIA_PATH to "{PLEX_LOCAL_MEDIA_PATH}". There should be a folder called "localhost" in that directory but it does not exist which suggests you haven\'t mapped it correctly. Please fix the PLEX_LOCAL_MEDIA_PATH environment variable')
         exit(1)
 
     if PLEX_URL == '':
@@ -409,11 +741,8 @@ if __name__ == '__main__':
     gpu = detect_gpu()
     if gpu == 'NVIDIA':
         logger.info('Found NVIDIA GPU')
-    elif gpu:
-        logger.info(f'Found AMD GPU {gpu}')
     if not gpu:
-        logger.warning('No GPUs detected. Defaulting to CPU ONLY.')
-        logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
+        logger.warning('No NVIDIA GPUs detected. Defaulting to CPU ONLY.')
 
     try:
         # Clean TMP Folder
