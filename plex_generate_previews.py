@@ -489,7 +489,7 @@ def generate_images(video_file, output_folder, gpu):
         f"{' hdr_format_level=' if media_info.video_tracks[0].hdr_format_level else ''}"
         f"{' hdr_format_settings=' if media_info.video_tracks[0].hdr_format_settings else ''}"
         f"{' hdr_format_compatibility=' if media_info.video_tracks[0].hdr_format_compatibility else ''}"
-        f" bit_rate={sizeof_fmt(media_info.video_tracks[0].bit_rate, to_si=True, suffix='bps', precision=3) or ''}"
+        f"{' bit_rate={sizeof_fmt(media_info.video_tracks[0].bit_rate, to_si=True, suffix=''bps'', precision=3)}' if media_info.video_tracks[0].bit_rate else ''}"
     ))
 
     with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
