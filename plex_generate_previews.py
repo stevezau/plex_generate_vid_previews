@@ -31,7 +31,6 @@ USE_LIB_PLACEBO = os.getenv("USE_LIB_PLACEBO", 'False').lower() in ('true', '1',
 FORCE_REGENERATION_OF_BIF_FILES = os.getenv("FORCE_REGENERATION_OF_BIF_FILES", 'False').lower() in ('true', '1', 't')
 PLEX_MEDIA_TYPES_TO_PROCESS = os.getenv("PLEX_MEDIA_TYPES_TO_PROCESS", '').lower()
 PLEX_LIBRARIES_TO_PROCESS = os.getenv("PLEX_LIBRARIES_TO_PROCESS", '')
-PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = "{}"
 RUN_PROCESS_AT_LOW_PRIORITY = os.getenv("RUN_PROCESS_AT_LOW_PRIORITY", "False").lower() in ('true', '1', 't')
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 # |Level name | Severity value | Logger method     |
@@ -105,26 +104,34 @@ class UltimateHelpFormatter(
 ):
     pass
 
-#print(sys.argv)
+ansi_plex_orange = "\033[48;5;166;97;1m"
+ansi_default = "\033[0m"
 
 parser = argparse.ArgumentParser(
                     prog = "plex_generate_vid_previews",
-                    description = "What the program does",
+                    description = textwrap.dedent(f"""\
+                        {ansi_plex_orange}✱Plex Preview Thumbnail Generator✱{ansi_default}
+                        This program is designed to speed up the process of generating preview thumbnails for your Plex media library.
+                    """),
                     epilog = "Text at the bottom of help",
                     formatter_class = UltimateHelpFormatter
                 )
 parser.add_argument("-s",
                     "--search",
-                    help = "Search Plex for title")
+                    help = "search Plex for title")
+parser.add_argument("-e",
+                    "--episode_title",
+                    action="store_true",
+                    help = "if searching a library with shows then search episode titles, if not specified show titles are searched")
 parser.add_argument("-f",
                     "--force",
                     action="store_true",
-                    help = "Force regeneration of BIF")
+                    help = "force regeneration of BIF")
 parser.add_argument("-p",
                     "--lib_placebo",
                     action="store_true",
                     help = textwrap.dedent("""\
-                        Use libplacebo for HDR tone-mapping, otherwise
+                        use libplacebo for HDR tone-mapping, otherwise
                         use default libavfilter tone-mapping.
                         """))
 parser.add_argument("-q",
@@ -135,10 +142,10 @@ parser.add_argument("-q",
                     metavar = "[2-6]",
                     default = 3,
                     help = textwrap.dedent("""\
-                        Preview image quality (2-6) (default: %(default)s):
-                          --thumbnail_quality=%(default)s good balance between quality and file-size (default and recommend setting)
-                          --thumbnail_quality=2 the highest quality and largest file size
-                          --thumbnail_quality=6 the lowest quality and smallest file size
+                        preview image quality %(metavar)s (default: %(default)s):
+                          -q, --thumbnail_quality=%(default)s good balance between quality and file-size (default and recommend setting)
+                          -q, --thumbnail_quality=2 the highest quality and largest file size
+                          -q, --thumbnail_quality=6 the lowest quality and smallest file size
                         """))
 parser.add_argument("-i",
                     "--bif_interval",
@@ -146,19 +153,29 @@ parser.add_argument("-i",
                     type = int,
                     choices = range(1,30),
                     metavar = "[1-30]",
-                    default = 2,
+                    default = 5,
                     help = textwrap.dedent("""\
-                        Interval between preview images in seconds (1-30) (default: %(default)s):
-                          --bif_interval=%(default)s  generate a preview thumbnail every 2 seconds (default and recommend setting)
-                          --bif_interval=1  generate a preview thumbnail every second (largest file size, longest processing time, best resolution for trick-play)
-                          --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
+                        interval between preview images in seconds %(metavar)s (default: %(default)s):
+                          -i, --bif_interval=%(default)s  generate a preview thumbnail every 5 seconds (default and recommend setting)†
+                          -i, --bif_interval=1  generate a preview thumbnail every second (largest file size, longest processing time, best resolution for trick-play)
+                          -i, --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
+                        †preview thumbnails are only generated from keyframes, in some video sources these can be 10+seconds apart,
                         """))
 parser.add_argument("-l",
                     "--loglevel",
                     required = False,
                     default = "INFO",
                     choices = list(logger._core.levels.keys()), #pylint: disable=protected-access # logouru Delgan provides no methods to access logoru state "WONTFIX"
-                    help="Set log level")
+                    help = textwrap.dedent("""\
+                        set the log level (default: %(default)s)
+                          --loglevel=TRACE
+                          --loglevel=DEBUG
+                          --loglevel=INFO
+                          --loglevel=SUCCESS
+                          --loglevel=WARNING
+                          --loglevel=ERROR
+                          --loglevel=CRITICAL
+                        """))
 
 cli_args = parser.parse_args(namespace=argparse.Namespace(
                                 force = FORCE_REGENERATION_OF_BIF_FILES,
@@ -343,7 +360,6 @@ def parse_path_mappings():
     So you can have another computer generate previews for your Plex server.
     If you are running on your plex server, you can set both variables to ''
     """
-    global PLEX_LOCAL_VIDEOS_PATH_MAPPINGS  # @TODO add as class attribute
 
     PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON = os.environ.get(
         'PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON',
@@ -360,6 +376,8 @@ def parse_path_mappings():
         logger.error("Check the environmental variable PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON for correct JSON formatting:")
         logger.error(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
         sys.exit(1)
+
+    return PLEX_LOCAL_VIDEOS_PATH_MAPPINGS
 
 
 def sizeof_fmt(num, suffix="B", to_si=False, precision=1):
@@ -549,7 +567,7 @@ def generate_images(video_file, output_folder, gpu):
     fps   = pattern_fps.findall(stdout.decode('utf-8', 'replace'))
     speed = pattern_speed.findall(stdout.decode('utf-8', 'replace'))
 
-    # select first group of last match (in case stats are printed more often
+    # select first group of last match (in case stats are printed more often)
     if speed:
         speed = speed[-1][0]
 
@@ -613,7 +631,7 @@ def generate_bif(bif_filename, images_path):
         return os.stat(bif_filename).st_size
 
 
-def process_item(item_key, gpu):
+def process_item(item_key, gpu, path_mappings):
     sess = requests.Session()
     sess.verify = False
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
@@ -634,11 +652,11 @@ def process_item(item_key, gpu):
 
             logger.debug(f"{bundle_hash=} {media_part_file=}")
 
-            local_path = [value for key, value in PLEX_LOCAL_VIDEOS_PATH_MAPPINGS.items() if media_part_file.startswith(key)]
+            local_path = [value for key, value in path_mappings.items() if media_part_file.startswith(key)]
             if len(local_path) > 1:
                 logger.error(f"More than one server paths matched, something is wrong with the local<->server mappings {local_path=}")
 
-            server_path = [key for key, value in PLEX_LOCAL_VIDEOS_PATH_MAPPINGS.items() if value == local_path[0]]
+            server_path = [key for key, value in path_mappings.items() if value == local_path[0]]
 
             logger.debug(f"{server_path=} {local_path=}")
 
@@ -710,7 +728,7 @@ def process_item(item_key, gpu):
 
 #   logger.complete()
 
-def run(gpu):
+def run(gpu, path_mappings):
     # Ignore SSL Errors
     sess = requests.Session()
     sess.verify = False
@@ -734,19 +752,19 @@ def run(gpu):
                 # this returns show(s) that match the title search string, not all the episodes of the show.
                 # process_item() fetches the XML tree of the show, and the episodes are then iterated.
                 # This impacts the progress bar, and ProcessPoolExecuter()
-                # @TODO add show episode title searching
                 # @TODO add enhanced Plex filter searching
-                media = [m.key for m in section.search(title=cli_args.search)]                     # Show Title search
-                #media = [m.key for m in section.search(title=cli_args.search, libtype='episode')]   # Episode Title search
+                if cli_args.episode_title:
+                    media = [m.key for m in section.search(title = cli_args.search, libtype = 'episode')]   # Episode Title search
+                else:
+                    media = [m.key for m in section.search(title = cli_args.search)]                      # Show Title search
+
             else:
-                media = [m.key for m in section.search(libtype='episode')]
+                media = [m.key for m in section.search(libtype = 'episode')]
         elif section.type == 'movie':
             if cli_args.search:
-                media = [m.key for m in section.search(title=cli_args.search)]
+                media = [m.key for m in section.search(title = cli_args.search)]
             else:
                 media = [m.key for m in section.search()]
-            #media = [m.key for m in section.search(title="Anora")]
-            #media = [m.key for m in section.search(title="Twilight")]
         else:
             logger.info(f"Skipping library {section.title} as \'{section.type}\' is unsupported")
             continue
@@ -758,14 +776,14 @@ def run(gpu):
 
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
             with ProcessPoolExecutor(initializer=set_logger, initargs=(logger, ), max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
-                futures = [process_pool.submit(process_item, key, gpu) for key in media]
+                futures = [process_pool.submit(process_item, key, gpu, path_mappings) for key in media]
                 for future in progress.track(futures):
                     future.result()
 
 if __name__ == '__main__':
 
     setup_logging()
-    parse_path_mappings()
+    plex_local_videos_path_mappings = parse_path_mappings()
 
     logger.info(f"⚠️NVIDIA GPUs only supported.")
     logger.debug("LOG_LEVELS" + str(list(logger._core.levels.keys()))) #pylint: disable=protected-access
@@ -777,7 +795,7 @@ if __name__ == '__main__':
     logger.info(f"USE_LIB_PLACEBO={USE_LIB_PLACEBO}")
     logger.info(f"RUN_PROCESS_AT_LOW_PRIORITY={RUN_PROCESS_AT_LOW_PRIORITY}")
     logger.info(f"LOG_LEVEL={LOG_LEVEL}")
-    logger.debug("PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = " + json.dumps(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS, indent=4))
+    logger.debug("PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = " + json.dumps(plex_local_videos_path_mappings, indent=4))
     if USE_LIB_PLACEBO:
         logger.info('Using libplacebo for HDR tone-mapping.')
     if FORCE_REGENERATION_OF_BIF_FILES:
@@ -787,6 +805,9 @@ if __name__ == '__main__':
         logger.info('Running processes at lower-priority')
     if cli_args.search:
         logger.info(f"🔸Searching for media titles matching {cli_args.search}🔸")
+    if "show" in PLEX_MEDIA_TYPES_TO_PROCESS:
+        if cli_args.episode_title:
+            logger.info("🔸If media library contains shows, searching episode titles🔸")
 
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
         logger.error(f'{PLEX_LOCAL_MEDIA_PATH} does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable')
@@ -805,10 +826,10 @@ if __name__ == '__main__':
         sys.exit(1)
 
     # detect GPU's
-    gpu = detect_gpu()
-    if gpu == 'NVIDIA':
+    DETECTED_GPU = detect_gpu()
+    if DETECTED_GPU == 'NVIDIA':
         logger.info('Found NVIDIA GPU')
-    if not gpu:
+    if not DETECTED_GPU:
         logger.warning('No NVIDIA GPUs detected. Defaulting to CPU ONLY.')
 
     try:
@@ -816,7 +837,7 @@ if __name__ == '__main__':
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
         os.makedirs(TMP_FOLDER)
-        run(gpu)
+        run(DETECTED_GPU, plex_local_videos_path_mappings)
     finally:
         if os.path.isdir(TMP_FOLDER):
             shutil.rmtree(TMP_FOLDER)
