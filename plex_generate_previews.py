@@ -31,22 +31,18 @@ USE_LIB_PLACEBO = os.getenv("USE_LIB_PLACEBO", 'False').lower() in ('true', '1',
 FORCE_REGENERATION_OF_BIF_FILES = os.getenv("FORCE_REGENERATION_OF_BIF_FILES", 'False').lower() in ('true', '1', 't')
 PLEX_MEDIA_TYPES_TO_PROCESS = os.getenv("PLEX_MEDIA_TYPES_TO_PROCESS", '').lower()
 PLEX_LIBRARIES_TO_PROCESS = os.getenv("PLEX_LIBRARIES_TO_PROCESS", '')
+PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = "{}"
 RUN_PROCESS_AT_LOW_PRIORITY = os.getenv("RUN_PROCESS_AT_LOW_PRIORITY", "False").lower() in ('true', '1', 't')
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
-
-# Path mappings for remote preview generation. # So you can have another computer generate previews for your Plex server
-# If you are running on your plex server, you can set both variables to ''
-#PLEX_LOCAL_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')  # Local video path for the script
-#PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '')  # Plex server video path
-
-PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON', '{}').replace('\\', r'\\')
-
-#print(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
-PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = json.loads(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
-#print("\nJSON:")
-#print(json.dumps(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS, indent=4))
-
-#sys.exit()
+# |Level name | Severity value | Logger method     |
+# |-----------|----------------|-------------------|
+# | TRACE     |  5             | logger.trace()    |
+# | DEBUG     | 10             | logger.debug()    |
+# | INFO      | 20             | logger.info()     |
+# | SUCCESS   | 25             | logger.success()  |
+# | WARNING   | 30             | logger.warning()  |
+# | ERROR     | 40             | logger.error()    |
+# | CRITICAL  | 50             | logger.critical() |
 
 GPU_THREADS = int(os.environ.get('GPU_THREADS', 4))  # Number of GPU threads for preview generation
 CPU_THREADS = int(os.environ.get('CPU_THREADS', 4))  # Number of CPU threads for preview generation
@@ -104,43 +100,72 @@ if not FFMPEG_PATH:
     sys.exit(1)
 
 class UltimateHelpFormatter(
-    argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter
+    argparse.RawTextHelpFormatter,
+    argparse.ArgumentDefaultsHelpFormatter
 ):
     pass
 
+#print(sys.argv)
+
 parser = argparse.ArgumentParser(
-                    prog = 'plex_generate_vid_previews',
-                    description = 'What the program does',
-                    epilog = 'Text at the bottom of help',
+                    prog = "plex_generate_vid_previews",
+                    description = "What the program does",
+                    epilog = "Text at the bottom of help",
                     formatter_class = UltimateHelpFormatter
                 )
-parser.add_argument('-s', '--search',
-                    help = 'Search Plex for title')
-parser.add_argument('-f', '--force', action='store_true',
-                    help = 'Force regeneration of BIF')
-parser.add_argument('-l', '--lib_placebo', action='store_true',
-                    help = textwrap.dedent('''\
+parser.add_argument("-s",
+                    "--search",
+                    help = "Search Plex for title")
+parser.add_argument("-f",
+                    "--force",
+                    action="store_true",
+                    help = "Force regeneration of BIF")
+parser.add_argument("-p",
+                    "--lib_placebo",
+                    action="store_true",
+                    help = textwrap.dedent("""\
                         Use libplacebo for HDR tone-mapping, otherwise
                         use default libavfilter tone-mapping.
-                        '''))
-parser.add_argument('-q', '--thumbnail_quality', required = False,
-                    type = int, choices = range(2,6), metavar = '[2-6]', default = 3,
-                    help = textwrap.dedent('''\
+                        """))
+parser.add_argument("-q",
+                    "--thumbnail_quality",
+                    required = False,
+                    type = int,
+                    choices = range(2,6),
+                    metavar = "[2-6]",
+                    default = 3,
+                    help = textwrap.dedent("""\
                         Preview image quality (2-6) (default: %(default)s):
                           --thumbnail_quality=%(default)s good balance between quality and file-size (default and recommend setting)
                           --thumbnail_quality=2 the highest quality and largest file size
                           --thumbnail_quality=6 the lowest quality and smallest file size
-                        '''))
-parser.add_argument('-i', '--bif_interval', required = False,
-                    type = int, choices = range(1,30), metavar = '[1-30]', default = 2,
-                    help = textwrap.dedent('''\
+                        """))
+parser.add_argument("-i",
+                    "--bif_interval",
+                    required = False,
+                    type = int,
+                    choices = range(1,30),
+                    metavar = "[1-30]",
+                    default = 2,
+                    help = textwrap.dedent("""\
                         Interval between preview images in seconds (1-30) (default: %(default)s):
                           --bif_interval=%(default)s  generate a preview thumbnail every 2 seconds (default and recommend setting)
                           --bif_interval=1  generate a preview thumbnail every second (largest file size, longest processing time, best resolution for trick-play)
                           --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
-                        '''))
+                        """))
+parser.add_argument("-l",
+                    "--loglevel",
+                    required = False,
+                    default = "INFO",
+                    choices = list(logger._core.levels.keys()), #pylint: disable=protected-access # logouru Delgan provides no methods to access logoru state "WONTFIX"
+                    help="Set log level")
 
-cli_args = parser.parse_args(namespace=argparse.Namespace(force = FORCE_REGENERATION_OF_BIF_FILES, bif_interval = PLEX_BIF_FRAME_INTERVAL, thumbnail_quality = THUMBNAIL_QUALITY))
+cli_args = parser.parse_args(namespace=argparse.Namespace(
+                                force = FORCE_REGENERATION_OF_BIF_FILES,
+                                bif_interval = PLEX_BIF_FRAME_INTERVAL,
+                                thumbnail_quality = THUMBNAIL_QUALITY,
+                                loglevel = LOG_LEVEL
+                            ))
 
 if cli_args.force:
     FORCE_REGENERATION_OF_BIF_FILES = True
@@ -154,19 +179,32 @@ if cli_args.thumbnail_quality:
 if cli_args.bif_interval:
     PLEX_BIF_FRAME_INTERVAL = cli_args.bif_interval
 
+if cli_args.loglevel:
+    LOG_LEVEL = cli_args.loglevel.upper()
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
-pattern_fps   = re.compile(r'^fps= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?$', flags=re.MULTILINE)
-pattern_speed = re.compile(r'^speed= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?x$', flags=re.MULTILINE)
+# Compile REGEXs
+pattern_fps   = re.compile(
+    r'^fps= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?$',
+    flags=re.MULTILINE
+)
+pattern_speed = re.compile(
+    r'^speed= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?x$',
+    flags=re.MULTILINE
+)
 
 def set_logger(logger_):
+    """
+    Pass logger handler to spawned Windows processes.
+    (NB Linux fork wouldn't require this).
+    """
     global logger
     logger = logger_
 
 
 def setup_logging():
-    # Logging setup
+    """Logging setup"""
     LOG_FORMAT = '<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>'
     global console
     console = Console(color_system='truecolor')
@@ -206,7 +244,7 @@ signal.signal(signal.SIGINT, signal_handler)
 def set_process_niceness(niceness=25):
     """ Set the niceness/priority of the process."""
 
-    isWindows = os.name == 'nt'
+    isWindows = os.name == "nt"
 
     if isWindows:
         try:
@@ -297,6 +335,32 @@ def detect_gpu():
         logger.warning("NVIDIA GPU detection library (pynvml) not found. NVIDIA GPUs will not be detected.")
     except pynvml.NVMLError as e:
         logger.warning(f"Error initializing NVIDIA GPU detection {e}. NVIDIA GPUs will not be detected.")
+
+
+def parse_path_mappings():
+    """
+    Path mappings for remote preview generation.
+    So you can have another computer generate previews for your Plex server.
+    If you are running on your plex server, you can set both variables to ''
+    """
+    global PLEX_LOCAL_VIDEOS_PATH_MAPPINGS  # @TODO add as class attribute
+
+    PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON = os.environ.get(
+        'PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON',
+        '{}'
+    ).replace('\\', r'\\')
+
+    try:
+        PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = json.loads(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
+    except json.JSONDecodeError as e:
+        logger.error((
+            f"PLEX_LOCAL_VIDEOS_PATH_MAPPINGS:"
+            f" Unable to decode JSON, Error: {e}."
+        ))
+        logger.error("Check the environmental variable PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON for correct JSON formatting:")
+        logger.error(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS_JSON)
+        sys.exit(1)
+
 
 def sizeof_fmt(num, suffix="B", to_si=False, precision=1):
     """Human Readable Binary(IEC)/Decimal(SI) Numbers"""
@@ -681,7 +745,7 @@ def run(gpu):
                 media = [m.key for m in section.search(title=cli_args.search)]
             else:
                 media = [m.key for m in section.search()]
-            #media = [m.key for m in section.search(title="Star Wars")]
+            #media = [m.key for m in section.search(title="Anora")]
             #media = [m.key for m in section.search(title="Twilight")]
         else:
             logger.info(f"Skipping library {section.title} as \'{section.type}\' is unsupported")
@@ -701,8 +765,10 @@ def run(gpu):
 if __name__ == '__main__':
 
     setup_logging()
+    parse_path_mappings()
 
     logger.info(f"⚠️NVIDIA GPUs only supported.")
+    logger.debug("LOG_LEVELS" + str(list(logger._core.levels.keys()))) #pylint: disable=protected-access
     logger.info(f"PLEX_LIBRARIES_TO_PROCESS={PLEX_LIBRARIES_TO_PROCESS}")
     logger.info(f"PLEX_MEDIA_TYPES_TO_PROCESS={PLEX_MEDIA_TYPES_TO_PROCESS}")
     logger.info(f"PLEX_BIF_FRAME_INTERVAL={PLEX_BIF_FRAME_INTERVAL}")
@@ -711,6 +777,7 @@ if __name__ == '__main__':
     logger.info(f"USE_LIB_PLACEBO={USE_LIB_PLACEBO}")
     logger.info(f"RUN_PROCESS_AT_LOW_PRIORITY={RUN_PROCESS_AT_LOW_PRIORITY}")
     logger.info(f"LOG_LEVEL={LOG_LEVEL}")
+    logger.debug("PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = " + json.dumps(PLEX_LOCAL_VIDEOS_PATH_MAPPINGS, indent=4))
     if USE_LIB_PLACEBO:
         logger.info('Using libplacebo for HDR tone-mapping.')
     if FORCE_REGENERATION_OF_BIF_FILES:
@@ -723,19 +790,19 @@ if __name__ == '__main__':
 
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
         logger.error(f'{PLEX_LOCAL_MEDIA_PATH} does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable')
-        exit(1)
+        sys.exit(1)
 
     if not os.path.exists(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost')):
         logger.error(f'You set PLEX_LOCAL_MEDIA_PATH to "{PLEX_LOCAL_MEDIA_PATH}". There should be a folder called "localhost" in that directory but it does not exist which suggests you haven\'t mapped it correctly. Please fix the PLEX_LOCAL_MEDIA_PATH environment variable')
-        exit(1)
+        sys.exit(1)
 
     if PLEX_URL == '':
         logger.error('Please set the PLEX_URL environment variable')
-        exit(1)
+        sys.exit(1)
 
     if PLEX_TOKEN == '':
         logger.error('Please set the PLEX_TOKEN environment variable')
-        exit(1)
+        sys.exit(1)
 
     # detect GPU's
     gpu = detect_gpu()
