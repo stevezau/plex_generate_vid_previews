@@ -573,12 +573,12 @@ def generate_images(video_file, output_folder, gpu):
     # progress=end
 
     if proc.returncode != 0:
-        err_lines = stderr.decode('utf-8', 'replace').split('\n')[-5:]
+        err_lines = stderr.decode("utf-8", "replace").split("\n")[-5:]
         logger.error(err_lines)
         logger.error(f"ffmpeg error whilst generating images for {video_file}")
-        raise FfmpegError('ffmpeg error whilst generating images')
+        raise FfmpegError("ffmpeg error whilst generating images")
 
-    logger.debug('FFMPEG Command output')
+    logger.debug("FFMPEG Command output")
     logger.debug(stdout)
     logger.debug(stderr)
 
@@ -586,8 +586,8 @@ def generate_images(video_file, output_folder, gpu):
     end = time.time()
     seconds = round(end - start, 1)
 
-    fps   = pattern_fps.findall(stdout.decode('utf-8', 'replace'))
-    speed = pattern_speed.findall(stdout.decode('utf-8', 'replace'))
+    fps   = pattern_fps.findall(stdout.decode("utf-8", "replace"))
+    speed = pattern_speed.findall(stdout.decode("utf-8", "replace"))
 
     # select first group of last match (in case stats are printed more often)
     if speed:
@@ -598,7 +598,7 @@ def generate_images(video_file, output_folder, gpu):
 
     # Optimize and Rename Images
     for image in glob.glob(f"{output_folder}/img*.jpg"):
-        frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
+        frame_no = int(os.path.basename(image).strip("-img").strip(".jpg")) - 1
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
         os.rename(image, os.path.join(output_folder, f"{frame_second:010d}.jpg"))
 
@@ -622,6 +622,10 @@ def generate_bif(bif_filename, images_path):
 
     images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == '.jpg']
     images.sort()
+
+    if len(images) == 0:
+        logger.error(f"No images found when generating BIF {images_path} {bif_filename}")
+        raise FfmpegError("No images found when generating BIF")
 
     with open(bif_filename, "wb") as f:
         array.array('B', magic).tofile(f)
