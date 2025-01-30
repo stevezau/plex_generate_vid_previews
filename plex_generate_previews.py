@@ -56,42 +56,52 @@ if not shutil.which("mediainfo"):
     sys.exit(1)
 try:
     from pymediainfo import MediaInfo
-except ImportError:
+    if MediaInfo.can_parse() is False:
+        raise ImportError("MediaInfo can't parse input files")
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install pymediainfo".')
     sys.exit(1)
+
 try:
     import gpustat
-except ImportError:
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install gpustat".')
     sys.exit(1)
 
 try:
     import requests
-except ImportError:
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install requests".')
     sys.exit(1)
 
 try:
     from plexapi.server import PlexServer
-except ImportError:
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install plexapi".')
     sys.exit(1)
 
 try:
     from loguru import logger
-except ImportError:
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install loguru".')
     sys.exit(1)
 
 try:
     from rich.console import Console
-except ImportError:
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
 
 try:
     from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
-except ImportError:
+except ImportError as e:
+    print(e)
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
 
@@ -418,7 +428,44 @@ def sanitize_path(path):
 class FfmpegError(ValueError):
     '''raise this when FFmpeg fails to generate preview images'''
 
+def hdr_format_str(video_track):
+    video_parameters = ""
+    if video_track:
+        if video_track.duration:
+            video_parameters += f", duration={(video_track.duration)}"
+        if video_track.hdr_format:
+            video_parameters += f", hdr_format={(video_track.hdr_format)}"
+        if video_track.other_hdr_format:
+            video_parameters += f", other_hdr_format={(video_track.other_hdr_format)}"
+        if video_track.hdr_format_profile:
+            video_parameters += f", hdr_format_profile={(video_track.hdr_format_profile)}"
+        if video_track.hdr_format_level:
+            video_parameters += f", hdr_format_level={(video_track.hdr_format_level)}"
+        if video_track.hdr_format_settings:
+            video_parameters += f", hdr_format_settings={(video_track.hdr_format_settings)}"
+        if video_track.hdr_format_compatibility:
+            video_parameters += f", hdr_format_compatibility={(video_track.hdr_format_compatibility)}"
+        if video_track.bit_rate:
+            video_parameters += f", bit_rate={sizeof_fmt(video_track.bit_rate, to_si=True, suffix='bps', precision=3)}"
+        return video_parameters
+    else:
+        return "no video_track"
+
+# hdr_format=Dolby Vision
+# other_hdr_format=['Dolby Vision, Version 1.0, dvhe.05.06, BL+RPU']
+# hdr_format_profile=dvhe.05, hdr_format_level=06, hdr_format_settings=BL+RPU
+
+# hdr_format=SMPTE ST 2086
+# other_hdr_format=['SMPTE ST 2086, HDR10 compatible']
+# hdr_format_compatibility=HDR10
+
+# hdr_format=Dolby Vision / SMPTE ST 2086
+# other_hdr_format=['Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086, HDR10 compatible']
+# hdr_format_profile=dvhe.08, hdr_format_level=06, hdr_format_settings=BL+RPU
+# hdr_format_compatibility=HDR10 / HDR10
+
 def generate_images(video_file, output_folder, gpu):
+    """generate video preview images"""
     media_info = MediaInfo.parse(video_file)
     vf_parameters = f"fps=fps={round(1 / PLEX_BIF_FRAME_INTERVAL, 6)}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease"
     hdr = False
@@ -427,8 +474,10 @@ def generate_images(video_file, output_folder, gpu):
     if media_info.video_tracks:
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
             hdr = True
-            logger.debug('HDR format reported by Plex')
-            if USE_LIB_PLACEBO:
+            logger.debug("HDR format reported by MediaInfo")
+            if USE_LIB_PLACEBO or media_info.video_tracks[0].hdr_format_compatibility is None:
+                if USE_LIB_PLACEBO is False and media_info.video_tracks[0].hdr_format_compatibility is None:
+                    logger.debug("Video file contains only DoVi, forcing use of libplacebo for this file")
                 # libplacebo - Flexible GPU-accelerated processing filter based on libplacebo <https://code.videolan.org/videolan/libplacebo>
                 #   -init_hw_device vulkan ^
                 #   dithering=ordered_fixed  (for max performance)
@@ -490,7 +539,7 @@ def generate_images(video_file, output_folder, gpu):
                 logger.debug('Hit limit on GPU threads, defaulting back to CPU')
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
-                if USE_LIB_PLACEBO:
+                if USE_LIB_PLACEBO or media_info.video_tracks[0].hdr_format_compatibility is None:
                     args.insert(8, "-init_hw_device")
                     args.insert(9, "vulkan")
                 else:
@@ -500,18 +549,7 @@ def generate_images(video_file, output_folder, gpu):
     logger.debug('Running ffmpeg')
     logger.debug(' '.join(args))
 
-    logger.debug((
-        f"{video_file}:"
-        f" video duration={(media_info.video_tracks[0].duration)}"
-        f" duration={(media_info.general_tracks[0].duration)}"
-        f"{' hdr_format=' if media_info.video_tracks[0].hdr_format else ''}"
-        f"{' other_hdr_format=' if media_info.video_tracks[0].other_hdr_format else ''}"
-        f"{' hdr_format_profile=' if media_info.video_tracks[0].hdr_format_profile else ''}"
-        f"{' hdr_format_level=' if media_info.video_tracks[0].hdr_format_level else ''}"
-        f"{' hdr_format_settings=' if media_info.video_tracks[0].hdr_format_settings else ''}"
-        f"{' hdr_format_compatibility=' if media_info.video_tracks[0].hdr_format_compatibility else ''}"
-        f"{' bit_rate={sizeof_fmt(media_info.video_tracks[0].bit_rate, to_si=True, suffix=''bps'', precision=3)}' if media_info.video_tracks[0].bit_rate else ''}"
-    ))
+    logger.debug(f"{video_file}:" + hdr_format_str(media_info.video_tracks[0]))
 
     with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
         # Allow time for it to start
