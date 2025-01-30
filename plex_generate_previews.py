@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#import traceback
 import sys
 import re
 import subprocess
@@ -425,6 +426,9 @@ def sanitize_path(path):
         path = path.replace('/', '\\')
     return path
 
+class MediaError(ValueError):
+    '''raise this when there is an error with the video media file'''
+
 class FfmpegError(ValueError):
     '''raise this when FFmpeg fails to generate preview images'''
 
@@ -466,17 +470,21 @@ def hdr_format_str(video_track):
 
 def generate_images(video_file, output_folder, gpu):
     """generate video preview images"""
+
     media_info = MediaInfo.parse(video_file)
+
     vf_parameters = f"fps=fps={round(1 / PLEX_BIF_FRAME_INTERVAL, 6)}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease"
     hdr = False
+    dovi_only = False
 
     # Check if we have a HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
             hdr = True
+            dovi_only = media_info.video_tracks[0].hdr_format_compatibility is None
             logger.debug("HDR format reported by MediaInfo")
-            if USE_LIB_PLACEBO or media_info.video_tracks[0].hdr_format_compatibility is None:
-                if USE_LIB_PLACEBO is False and media_info.video_tracks[0].hdr_format_compatibility is None:
+            if USE_LIB_PLACEBO or dovi_only:
+                if not USE_LIB_PLACEBO and dovi_only:
                     logger.debug("Video file contains only DoVi, forcing use of libplacebo for this file")
                 # libplacebo - Flexible GPU-accelerated processing filter based on libplacebo <https://code.videolan.org/videolan/libplacebo>
                 #   -init_hw_device vulkan ^
@@ -512,7 +520,8 @@ def generate_images(video_file, output_folder, gpu):
                 vf_parameters = f"hwupload,libplacebo=fps=1/{PLEX_BIF_FRAME_INTERVAL}:frame_mixer=none:tonemapping=bt.2446a:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:w=320:h=240:force_original_aspect_ratio=decrease:format=yuv420p10le,hwdownload,format=yuv420p10le"
             else:
                 vf_parameters = f"fps=fps={round(1 / PLEX_BIF_FRAME_INTERVAL, 6)}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease"
-
+    else:
+        raise MediaError("No video tracks were detected by MediaInfo")
 
     args = [
         FFMPEG_PATH, "-loglevel", "error", "-nostats", "-progress", "-", "-stats_period", "10000000000", "-skip_frame:v", "nokey", "-threads:0", "1", "-i",
@@ -539,7 +548,7 @@ def generate_images(video_file, output_folder, gpu):
                 logger.debug('Hit limit on GPU threads, defaulting back to CPU')
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
-                if USE_LIB_PLACEBO or media_info.video_tracks[0].hdr_format_compatibility is None:
+                if USE_LIB_PLACEBO or dovi_only:
                     args.insert(8, "-init_hw_device")
                     args.insert(9, "vulkan")
                 else:
@@ -761,7 +770,8 @@ def process_item(item_key, gpu, path_mappings):
                 try:
                     results_gen_imgs = generate_images(media_file, tmp_path, gpu)
                 except Exception as e:
-                    logger.error(f"Error generating images for {media_file}. `{type(e).__name__}: {str(e)}` error when generating images")
+                    logger.error(f"Error generating images for {media_file}. `{type(e).__name__}: {str(e)}` error when generating images.")
+                    # logger.error(f"{traceback.print_exception(e)}")
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
                     continue
