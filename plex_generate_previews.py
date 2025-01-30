@@ -33,6 +33,8 @@ PLEX_MEDIA_TYPES_TO_PROCESS = os.getenv("PLEX_MEDIA_TYPES_TO_PROCESS", '').lower
 PLEX_LIBRARIES_TO_PROCESS = os.getenv("PLEX_LIBRARIES_TO_PROCESS", '')
 RUN_PROCESS_AT_LOW_PRIORITY = os.getenv("RUN_PROCESS_AT_LOW_PRIORITY", "False").lower() in ('true', '1', 't')
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+LOG_FILES_RETENTION = os.environ.get('LOG_FILES_RETENTION', '14 days')
+
 # |Level name | Severity value | Logger method     |
 # |-----------|----------------|-------------------|
 # | TRACE     |  5             | logger.trace()    |
@@ -108,81 +110,97 @@ ansi_plex_orange = "\033[48;5;166;97;1m"
 ansi_default = "\033[0m"
 
 parser = argparse.ArgumentParser(
-                    prog = "plex_generate_vid_previews",
-                    description = textwrap.dedent(f"""\
-                        {ansi_plex_orange}✱Plex Preview Thumbnail Generator✱{ansi_default}
-                        This program is designed to speed up the process of generating preview thumbnails for your Plex media library.
-                    """),
-                    epilog = "Text at the bottom of help",
-                    formatter_class = UltimateHelpFormatter
-                )
-parser.add_argument("-s",
-                    "--search",
-                    help = "search Plex for title")
-parser.add_argument("-e",
-                    "--episode_title",
-                    action="store_true",
-                    help = "if searching a library with shows then search episode titles, if not specified show titles are searched")
-parser.add_argument("-f",
-                    "--force",
-                    action="store_true",
-                    help = "force regeneration of BIF")
-parser.add_argument("-p",
-                    "--lib_placebo",
-                    action="store_true",
-                    help = textwrap.dedent("""\
-                        use libplacebo for HDR tone-mapping, otherwise
-                        use default libavfilter tone-mapping.
-                        """))
-parser.add_argument("-q",
-                    "--thumbnail_quality",
-                    required = False,
-                    type = int,
-                    choices = range(2,6),
-                    metavar = "[2-6]",
-                    default = 3,
-                    help = textwrap.dedent("""\
-                        preview image quality %(metavar)s (default: %(default)s):
-                          -q, --thumbnail_quality=%(default)s good balance between quality and file-size (default and recommend setting)
-                          -q, --thumbnail_quality=2 the highest quality and largest file size
-                          -q, --thumbnail_quality=6 the lowest quality and smallest file size
-                        """))
-parser.add_argument("-i",
-                    "--bif_interval",
-                    required = False,
-                    type = int,
-                    choices = range(1,30),
-                    metavar = "[1-30]",
-                    default = 5,
-                    help = textwrap.dedent("""\
-                        interval between preview images in seconds %(metavar)s (default: %(default)s):
-                          -i, --bif_interval=%(default)s  generate a preview thumbnail every 5 seconds (default and recommend setting)†
-                          -i, --bif_interval=1  generate a preview thumbnail every second (largest file size, longest processing time, best resolution for trick-play)
-                          -i, --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
-                        †preview thumbnails are only generated from keyframes, in some video sources these can be 10+seconds apart,
-                        """))
-parser.add_argument("-l",
-                    "--loglevel",
-                    required = False,
-                    default = "INFO",
-                    choices = list(logger._core.levels.keys()), #pylint: disable=protected-access # logouru Delgan provides no methods to access logoru state "WONTFIX"
-                    help = textwrap.dedent("""\
-                        set the log level (default: %(default)s)
-                          --loglevel=TRACE
-                          --loglevel=DEBUG
-                          --loglevel=INFO
-                          --loglevel=SUCCESS
-                          --loglevel=WARNING
-                          --loglevel=ERROR
-                          --loglevel=CRITICAL
-                        """))
+    prog = "plex_generate_vid_previews",
+    description = textwrap.dedent(f"""\
+        {ansi_plex_orange}✱Plex Preview Thumbnail Generator✱{ansi_default}
+        This program is designed to speed up the process of generating preview thumbnails for your Plex media library.
+    """),
+    epilog = "Text at the bottom of help",
+    formatter_class = UltimateHelpFormatter
+)
+parser.add_argument(
+    "-s",
+    "--search",
+    help = "search Plex for title"
+)
+parser.add_argument(
+    "-e",
+    "--episode_title",
+    action="store_true",
+    help = "if searching a library with shows then search episode titles, if not specified show titles are searched"
+)
+parser.add_argument(
+    "-f",
+    "--force",
+    action="store_true",
+    help = "force regeneration of BIF"
+)
+parser.add_argument(
+    "-p",
+    "--lib_placebo",
+    action="store_true",
+    help = textwrap.dedent("""\
+        use libplacebo for HDR tone-mapping, otherwise
+        use default libavfilter tone-mapping.
+        """)
+)
+parser.add_argument(
+    "-q",
+    "--thumbnail_quality",
+    required = False,
+    type = int,
+    choices = range(2,6),
+    metavar = "[2-6]",
+    default = 3,
+    help = textwrap.dedent("""\
+        preview image quality %(metavar)s (default: %(default)s):
+            -q, --thumbnail_quality=%(default)s good balance between quality and file-size (default and recommend setting)
+            -q, --thumbnail_quality=2 the highest quality and largest file size
+            -q, --thumbnail_quality=6 the lowest quality and smallest file size
+        """)
+)
+parser.add_argument(
+    "-i",
+    "--bif_interval",
+    required = False,
+    type = int,
+    choices = range(1,30),
+    metavar = "[1-30]",
+    default = 5,
+    help = textwrap.dedent("""\
+        interval between preview images in seconds %(metavar)s (default: %(default)s):
+            -i, --bif_interval=%(default)s  generate a preview thumbnail every %(default)s seconds (default and recommend setting)†
+            -i, --bif_interval=1  generate a preview thumbnail every second (largest file size, longest processing time, best resolution for trick-play)
+            -i, --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
+        †preview thumbnails are only generated from keyframes, in some video sources these can be 10+seconds apart,
+        """)
+)
+parser.add_argument(
+    "-l",
+    "--loglevel",
+    required = False,
+    default = "INFO",
+    choices = list(logger._core.levels.keys()), #pylint: disable=protected-access # logouru Delgan provides no methods to access logoru state "WONTFIX"
+    help = textwrap.dedent("""\
+        set the log level (default: %(default)s)
+            --loglevel=TRACE
+            --loglevel=DEBUG
+            --loglevel=INFO
+            --loglevel=SUCCESS
+            --loglevel=WARNING
+            --loglevel=ERROR
+            --loglevel=CRITICAL
+        """)
+)
 
-cli_args = parser.parse_args(namespace=argparse.Namespace(
-                                force = FORCE_REGENERATION_OF_BIF_FILES,
-                                bif_interval = PLEX_BIF_FRAME_INTERVAL,
-                                thumbnail_quality = THUMBNAIL_QUALITY,
-                                loglevel = LOG_LEVEL
-                            ))
+cli_args = parser.parse_args(
+    namespace=argparse.Namespace(
+        force = FORCE_REGENERATION_OF_BIF_FILES,
+        bif_interval = PLEX_BIF_FRAME_INTERVAL,
+        thumbnail_quality = THUMBNAIL_QUALITY,
+        loglevel = LOG_LEVEL
+    )
+)
 
 if cli_args.force:
     FORCE_REGENERATION_OF_BIF_FILES = True
@@ -234,7 +252,7 @@ def setup_logging():
     )
     logger.add(
         os.path.join("logs", "plex_generate_previews_{time}.log"),
-        retention="14 days",
+        retention=LOG_FILES_RETENTION,
         level = LOG_LEVEL,
         format = LOG_FORMAT,
         colorize = False,
@@ -397,6 +415,9 @@ def sanitize_path(path):
         path = path.replace('/', '\\')
     return path
 
+class FfmpegError(ValueError):
+    '''raise this when FFmpeg fails to generate preview images'''
+
 def generate_images(video_file, output_folder, gpu):
     media_info = MediaInfo.parse(video_file)
     vf_parameters = f"fps=fps={round(1 / PLEX_BIF_FRAME_INTERVAL, 6)}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease"
@@ -554,7 +575,8 @@ def generate_images(video_file, output_folder, gpu):
     if proc.returncode != 0:
         err_lines = stderr.decode('utf-8', 'replace').split('\n')[-5:]
         logger.error(err_lines)
-        logger.error(f"Problem trying to ffmpeg images for {video_file}")
+        logger.error(f"ffmpeg error whilst generating images for {video_file}")
+        raise FfmpegError('ffmpeg error whilst generating images')
 
     logger.debug('FFMPEG Command output')
     logger.debug(stdout)
@@ -726,7 +748,7 @@ def process_item(item_key, gpu, path_mappings):
             else:
                 logger.debug(f"Not generating bundle_file for {media_file} at {index_bif} as it already exists!")
 
-#   logger.complete()
+    logger.complete()
 
 def run(gpu, path_mappings):
     # Ignore SSL Errors
@@ -795,6 +817,7 @@ if __name__ == '__main__':
     logger.info(f"USE_LIB_PLACEBO={USE_LIB_PLACEBO}")
     logger.info(f"RUN_PROCESS_AT_LOW_PRIORITY={RUN_PROCESS_AT_LOW_PRIORITY}")
     logger.info(f"LOG_LEVEL={LOG_LEVEL}")
+    logger.info(f"LOG_FILES_RETENTION={LOG_FILES_RETENTION}")
     logger.debug("PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = " + json.dumps(plex_local_videos_path_mappings, indent=4))
     if USE_LIB_PLACEBO:
         logger.info('Using libplacebo for HDR tone-mapping.')
