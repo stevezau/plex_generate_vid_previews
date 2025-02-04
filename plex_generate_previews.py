@@ -177,7 +177,7 @@ parser.add_argument(
     type = int,
     choices = range(1,30),
     metavar = "[1-30]",
-    default = 5,
+    default = 4,
     help = textwrap.dedent("""\
         interval between preview images in seconds %(metavar)s (default: %(default)s):
             -i, --bif_interval=%(default)s  generate a preview thumbnail every %(default)s seconds (default and recommend setting)†
