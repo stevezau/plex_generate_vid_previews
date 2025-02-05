@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+#
+# pylint: disable=missing-module-docstring
+# pylint: disable=missing-class-docstring
+# pylint: disable=missing-function-docstring
+#
 #import traceback
 import sys
 import re
@@ -111,19 +116,49 @@ if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
 
+if os.name == "nt":
+    import ctypes
+    # https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-seterrormode
+    #
+    # Errhandlingapi.h
+    #
+    # The system does not display the critical-error-handler message box.
+    # Instead, the system sends the error to the calling process.  Best
+    # practice is that all applications call the process-wide SetErrorMode
+    # function with a parameter of SEM_FAILCRITICALERRORS at startup. This is
+    # to prevent error mode dialogs from hanging the application.
+    SEM_FAILCRITICALERRORS = 0x0001
+
+    # The system does not invoke Windows Error Reporting. To disable Windows
+    # Error Reporting UI, call WerSetFlags with the WER_FAULT_REPORTING_NO_UI
+    # flag.
+    SEM_NOGPFAULTERRORBOX = 0x0002
+
+    #ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
+
+    # https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+    #
+    # The process is a console application that is being run without a console
+    # window. Therefore, the console handle for the application is not set.
+    # This flag is ignored if the application is not a console application, or
+    # if it is used with either CREATE_NEW_CONSOLE or DETACHED_PROCESS.
+    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
+else:
+    SUBPROCESS_FLAGS = 0
+
 class UltimateHelpFormatter(
     argparse.RawTextHelpFormatter,
     argparse.ArgumentDefaultsHelpFormatter
 ):
     pass
 
-ansi_plex_orange = "\033[48;5;166;97;1m"
-ansi_default = "\033[0m"
+ANSI_PLEX_ORANGE = "\033[48;5;166;97;1m"
+ANSI_DEFAULT = "\033[0m"
 
 parser = argparse.ArgumentParser(
     prog = "plex_generate_vid_previews",
     description = textwrap.dedent(f"""\
-        {ansi_plex_orange}✱Plex Preview Thumbnail Generator✱{ansi_default}
+        {ANSI_PLEX_ORANGE}✱Plex Preview Thumbnail Generator✱{ANSI_DEFAULT}
         This program is designed to speed up the process of generating preview thumbnails for your Plex media library.
     """),
     epilog = "Text at the bottom of help",
@@ -160,7 +195,7 @@ parser.add_argument(
     "--thumbnail_quality",
     required = False,
     type = int,
-    choices = range(2,6),
+    choices = range(2,7),
     metavar = "[2-6]",
     default = 3,
     help = textwrap.dedent("""\
@@ -175,7 +210,7 @@ parser.add_argument(
     "--bif_interval",
     required = False,
     type = int,
-    choices = range(1,30),
+    choices = range(1,31),
     metavar = "[1-30]",
     default = 4,
     help = textwrap.dedent("""\
@@ -560,64 +595,15 @@ def generate_images(video_file, output_folder, gpu):
 
     logger.debug(f"{video_file}:" + hdr_format_str(media_info.video_tracks[0]))
 
-    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+    with subprocess.Popen(
+        args,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        creationflags = SUBPROCESS_FLAGS
+    ) as proc:
         # Allow time for it to start
         time.sleep(1)
         stdout, stderr = proc.communicate()
-
-    # @TODO add progress bar on subprocesses processing
-    # change ffmpeg -stats_periond=10(?) and collect stats
-    #
-    # progress=continue ... progress=end
-    #
-    # frame=83
-    # fps=0.00
-    # stream_0_0_q=3.0
-    # bitrate=N/A
-    # total_size=N/A
-    # out_time_us=415000000
-    # out_time_ms=415000000
-    # out_time=00:06:55.000000
-    # dup_frames=0
-    # drop_frames=0
-    # speed=1.27e+03x
-    # progress=continue
-    # frame=179
-    # fps=0.00
-    # stream_0_0_q=3.0
-    # bitrate=N/A
-    # total_size=N/A
-    # out_time_us=890000000
-    # out_time_ms=890000000
-    # out_time=00:14:50.000000
-    # dup_frames=0
-    # drop_frames=0
-    # speed=1.39e+03x
-    # progress=continue
-    # frame=272
-    # fps=0.00
-    # stream_0_0_q=3.0
-    # bitrate=N/A
-    # total_size=N/A
-    # out_time_us=1360000000
-    # out_time_ms=1360000000
-    # out_time=00:22:40.000000
-    # dup_frames=0
-    # drop_frames=0
-    # speed=1.42e+03x
-    # progress=continue
-    # frame=294
-    # fps=285.43
-    # stream_0_0_q=3.0
-    # bitrate=N/A
-    # total_size=N/A
-    # out_time_us=1470000000
-    # out_time_ms=1470000000
-    # out_time=00:24:30.000000
-    # dup_frames=0
-    # drop_frames=0
-    # speed=1.43e+03x
-    # progress=end
 
     if proc.returncode != 0:
         err_lines = stderr.decode("utf-8", "replace").split("\n")[-5:]
@@ -827,10 +813,14 @@ def run(gpu, path_mappings):
                 # process_item() fetches the XML tree of the show, and the episodes are then iterated.
                 # This impacts the progress bar, and ProcessPoolExecuter()
                 # @TODO add enhanced Plex filter searching
+                # https://python-plexapi.readthedocs.io/en/latest/modules/library.html#plexapi.library.LibrarySection.search
+                #
+                # for f in section.listFields():
+                #     print(f)
                 if cli_args.episode_title:
                     media = [m.key for m in section.search(title = cli_args.search, libtype = 'episode')]   # Episode Title search
                 else:
-                    media = [m.key for m in section.search(title = cli_args.search)]                      # Show Title search
+                    media = [m.key for m in section.search(title = cli_args.search)]                        # Show Title search
 
             else:
                 media = [m.key for m in section.search(libtype = 'episode')]
