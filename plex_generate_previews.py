@@ -134,7 +134,7 @@ if os.name == "nt":
     # flag.
     SEM_NOGPFAULTERRORBOX = 0x0002
 
-    #ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
+    ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
 
     # https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
     #
@@ -210,7 +210,7 @@ parser.add_argument(
     "--bif_interval",
     required = False,
     type = int,
-    choices = range(1,31),
+    choices = range(1,361),
     metavar = "[1-30]",
     default = 4,
     help = textwrap.dedent("""\
