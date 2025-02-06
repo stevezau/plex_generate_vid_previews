@@ -167,13 +167,58 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "-s",
     "--search",
-    help = "search Plex for title"
+    action="store_true",
+    help = "enable searching"
+)
+parser.add_argument(
+    "-t",
+    "--title",
+    help = "search Plex for show or movie title"
 )
 parser.add_argument(
     "-e",
     "--episode_title",
+    help = "search Plex for episode titles"
+)
+parser.add_argument(
+    "-y",
+    "--year",
+    type = int,
+    help = "search Plex for media in year"
+)
+parser.add_argument(
+    "-u",
+    "--unwatched",
     action="store_true",
-    help = "if searching a library with shows then search episode titles, if not specified show titles are searched"
+    help = "search Plex for unwatched media"
+)
+parser.add_argument(
+    "--added",
+    help = textwrap.dedent("""\
+                search Plex for recently added media
+                examples: '30d', '7d', '12h', '1w', etc.
+
+                Relative date suffixes:
+
+                    s: seconds
+                    m: minutes
+                    h: hours
+                    d: days
+                    w: weeks
+                    mon: months
+                    y: years
+    """)
+)
+group = parser.add_mutually_exclusive_group()
+group.add_argument(
+    "--hdr",
+    action="store_true",
+    help = "search Plex for hdr media"
+)
+group.add_argument(
+    "--sdr",
+    action="store_true",
+    help = "search Plex for sdr media"
 )
 parser.add_argument(
     "-f",
@@ -795,6 +840,34 @@ def run(gpu, path_mappings):
 
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=sess, timeout = 60)
 
+    movie_filters = {}
+    show_filters = {}
+
+    if cli_args.search:
+        if cli_args.title:
+            movie_filters["title"] = cli_args.title
+            show_filters["show.title"] = cli_args.title
+        if cli_args.year:
+            movie_filters["year"] = cli_args.year
+            show_filters["show.year"] = cli_args.year
+        if cli_args.episode_title:
+            show_filters["show.title"] = cli_args.episode_title
+        if cli_args.unwatched:
+            movie_filters["unwatched"] = True
+            show_filters["show.unwatchedLeaves"] = True
+        if cli_args.hdr:
+            movie_filters["hdr"] = True
+            show_filters["show.hdr"] = True
+        if cli_args.sdr:
+            movie_filters["hdr"] = False
+            show_filters["show.hdr"] = False
+        if cli_args.added:
+            movie_filters["addedAt>>"] = cli_args.added
+            show_filters["addedAt>>"] = cli_args.added
+
+    # print(movie_filters)
+    # print(show_filters)
+
     for section in plex.library.sections():
         if section.title not in PLEX_LIBRARIES_TO_PROCESS:
             logger.info(f"Skipping library {section.title} as not in list of libraries to process {PLEX_LIBRARIES_TO_PROCESS}")
@@ -809,24 +882,12 @@ def run(gpu, path_mappings):
         # ['movie', 'show', 'artist', 'photo']
         if section.type == 'show':
             if cli_args.search:
-                # this returns show(s) that match the title search string, not all the episodes of the show.
-                # process_item() fetches the XML tree of the show, and the episodes are then iterated.
-                # This impacts the progress bar, and ProcessPoolExecuter()
-                # @TODO add enhanced Plex filter searching
-                # https://python-plexapi.readthedocs.io/en/latest/modules/library.html#plexapi.library.LibrarySection.search
-                #
-                # for f in section.listFields():
-                #     print(f)
-                if cli_args.episode_title:
-                    media = [m.key for m in section.search(title = cli_args.search, libtype = 'episode')]   # Episode Title search
-                else:
-                    media = [m.key for m in section.search(title = cli_args.search)]                        # Show Title search
-
+                media = [m.key for m in section.searchEpisodes(filters = show_filters)]
             else:
-                media = [m.key for m in section.search(libtype = 'episode')]
+                media = [m.key for m in section.searchEpisodes()]
         elif section.type == 'movie':
             if cli_args.search:
-                media = [m.key for m in section.search(title = cli_args.search)]
+                media = [m.key for m in section.search(filters = movie_filters)]
             else:
                 media = [m.key for m in section.search()]
         else:
