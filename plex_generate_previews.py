@@ -158,17 +158,11 @@ ANSI_DEFAULT = "\033[0m"
 parser = argparse.ArgumentParser(
     prog = "plex_generate_vid_previews",
     description = textwrap.dedent(f"""\
-        {ANSI_PLEX_ORANGE}✱Plex Preview Thumbnail Generator✱{ANSI_DEFAULT}
-        This program is designed to speed up the process of generating preview thumbnails for your Plex media library.
+        {ANSI_PLEX_ORANGE} ✱Plex Preview Thumbnail Generator✱ {ANSI_DEFAULT}
+        this program is designed to speed up the process of generating preview thumbnails for your Plex media library.
     """),
     epilog = "Text at the bottom of help",
     formatter_class = UltimateHelpFormatter
-)
-parser.add_argument(
-    "-s",
-    "--search",
-    action="store_true",
-    help = "enable searching"
 )
 parser.add_argument(
     "-t",
@@ -193,20 +187,19 @@ parser.add_argument(
     help = "search Plex for unwatched media"
 )
 parser.add_argument(
+    "-a",
     "--added",
     help = textwrap.dedent("""\
                 search Plex for recently added media
                 examples: '30d', '7d', '12h', '1w', etc.
-
-                Relative date suffixes:
-
-                    s: seconds
-                    m: minutes
-                    h: hours
-                    d: days
-                    w: weeks
-                    mon: months
-                    y: years
+                relative date suffixes:
+                    - s: seconds
+                    - m: minutes
+                    - h: hours
+                    - d: days
+                    - w: weeks
+                    - mon: months
+                    - y: years
     """)
 )
 group = parser.add_mutually_exclusive_group()
@@ -307,6 +300,16 @@ if cli_args.bif_interval:
 
 if cli_args.loglevel:
     LOG_LEVEL = cli_args.loglevel.upper()
+
+PLEX_SEARCH = (
+        cli_args.title
+        or cli_args.episode_title
+        or cli_args.year
+        or cli_args.unwatched
+        or cli_args.added
+        or cli_args.hdr
+        or cli_args.sdr
+)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -843,7 +846,7 @@ def run(gpu, path_mappings):
     movie_filters = {}
     show_filters = {}
 
-    if cli_args.search:
+    if PLEX_SEARCH:
         if cli_args.title:
             movie_filters["title"] = cli_args.title
             show_filters["show.title"] = cli_args.title
@@ -881,12 +884,14 @@ def run(gpu, path_mappings):
 
         # ['movie', 'show', 'artist', 'photo']
         if section.type == 'show':
-            if cli_args.search:
+            if PLEX_SEARCH:
+                logger.info(f"🔸Searching for show episodes with filter={show_filters}🔸")
                 media = [m.key for m in section.searchEpisodes(filters = show_filters)]
             else:
                 media = [m.key for m in section.searchEpisodes()]
         elif section.type == 'movie':
-            if cli_args.search:
+            if PLEX_SEARCH:
+                logger.info(f"🔸Searching for movies with filter={movie_filters}🔸")
                 media = [m.key for m in section.search(filters = movie_filters)]
             else:
                 media = [m.key for m in section.search()]
@@ -929,8 +934,8 @@ if __name__ == '__main__':
     if RUN_PROCESS_AT_LOW_PRIORITY:
         set_process_niceness()
         logger.info('Running processes at lower-priority')
-    if cli_args.search:
-        logger.info(f"🔸Searching for media titles matching {cli_args.search}🔸")
+    if PLEX_SEARCH:
+        logger.info("🔸Search is enabled🔸")
     if "show" in PLEX_MEDIA_TYPES_TO_PROCESS:
         if cli_args.episode_title:
             logger.info("🔸If media library contains shows, searching episode titles🔸")
