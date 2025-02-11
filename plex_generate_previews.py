@@ -31,6 +31,7 @@ PLEX_TOKEN = os.environ.get('PLEX_TOKEN', '')  # Plex Authentication Token
 PLEX_BIF_FRAME_INTERVAL = int(os.environ.get('PLEX_BIF_FRAME_INTERVAL', 5))  # Interval between preview images
 THUMBNAIL_QUALITY = int(os.environ.get('THUMBNAIL_QUALITY', 3))  # Preview image quality (2-6)
 PLEX_LOCAL_MEDIA_PATH = os.environ.get('PLEX_LOCAL_MEDIA_PATH', '/path_to/plex/Library/Application Support/Plex Media Server/Media')  # Local Plex media path
+FFMPEG_PATH = os.environ.get('FFMPEG_PATH', 'ffmpeg')  # location of ffmpeg
 TMP_FOLDER = os.environ.get('TMP_FOLDER', '/dev/shm/plex_generate_previews')  # Temporary folder for preview generation
 PLEX_TIMEOUT = int(os.environ.get('PLEX_TIMEOUT', 60))  # Timeout for Plex API requests (seconds)
 USE_LIB_PLACEBO = os.getenv("USE_LIB_PLACEBO", 'False').lower() in ('true', '1', 't')
@@ -111,7 +112,10 @@ except ImportError as e:
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
 
-FFMPEG_PATH = shutil.which("ffmpeg")
+if FFMPEG_PATH == "ffmpeg":
+    SHELL_FFMPEG_PATH = shutil.which("ffmpeg")
+    if SHELL_FFMPEG_PATH:
+        FFMPEG_PATH = SHELL_FFMPEG_PATH
 if not FFMPEG_PATH:
     print('FFmpeg not found.  FFmpeg must be installed and available in PATH.')
     sys.exit(1)
@@ -492,7 +496,7 @@ def parse_path_mappings():
     return PLEX_LOCAL_VIDEOS_PATH_MAPPINGS
 
 
-def sizeof_fmt(num, suffix="B", to_si=False, precision=1):
+def sizeof_fmt(num: int | float, suffix: str = "B", to_si: bool = False, precision: int = 1) -> str:
     """Human Readable Binary(IEC)/Decimal(SI) Numbers"""
     scale = 1000.0
     if not to_si:
@@ -568,7 +572,7 @@ def generate_images(video_file, output_folder, gpu):
             logger.debug("HDR format reported by MediaInfo")
             if USE_LIB_PLACEBO or dovi_only:
                 if not USE_LIB_PLACEBO and dovi_only:
-                    logger.debug("Video file contains only DoVi, forcing use of libplacebo for this file")
+                    logger.debug("⚠️Video file contains only DoVi, forcing use of libplacebo for this file")
                 # libplacebo - Flexible GPU-accelerated processing filter based on libplacebo <https://code.videolan.org/videolan/libplacebo>
                 #   -init_hw_device vulkan ^
                 #   dithering=ordered_fixed  (for max performance)
@@ -692,13 +696,15 @@ def generate_images(video_file, output_folder, gpu):
     }
 
 
-def generate_bif(bif_filename, images_path):
+def generate_bif(bif_filename, images_path) -> int:
     """
     Build a .bif file
     @param bif_filename name of .bif file to create
     @param images_path Directory of image files 00000001.jpg
     """
+    # b'\x89BIF\r\n\x1a\n'
     magic = [0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]
+    # ROKU BIF file format version 0
     version = 0
 
     images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == '.jpg']
@@ -709,17 +715,32 @@ def generate_bif(bif_filename, images_path):
         raise FfmpegError("No images found when generating BIF")
 
     with open(bif_filename, "wb") as f:
+        # magic number file id = b'\x89BIF\r\n\x1a\n'
+        # bytes 0...7
         array.array('B', magic).tofile(f)
+
+        # ROKU BIF file format version 0
+        # bytes 8...11
         f.write(struct.pack("<I", version))
+
+        # number of BIF images (N)
+        # bytes 12...15
         f.write(struct.pack("<I", len(images)))
+
+        # Timestamp Multiplier (in milliseconds)
+        # bytes 16...19
         f.write(struct.pack("<I", 1000 * PLEX_BIF_FRAME_INTERVAL))
-        array.array('B', [0x00 for x in range(20, 64)]).tofile(f)
 
-        bif_table_size = 8 + (8 * len(images))
-        image_index = 64 + bif_table_size
+        # bytes 20...63 are reseved and must be set to zero
+        array.array('B', [0x00 for x in range(20, 63 + 1)]).tofile(f)
+
+        # Generate the BIF Index (N + 1)
+        # The number of entries in the index will be N+1, including the
+        # end-of-data entry.
+        # BIF index starts at byte 64
+        bif_index_size = 8 * (len(images) + 1)
+        image_index = 64 + bif_index_size
         timestamp = 0
-
-        # Get the length of each image
         for image in images:
             statinfo = os.stat(os.path.join(images_path, image))
             f.write(struct.pack("<I", timestamp))
@@ -727,13 +748,14 @@ def generate_bif(bif_filename, images_path):
             timestamp += 1
             image_index += statinfo.st_size
 
-        f.write(struct.pack("<I", 0xffffffff))
-        f.write(struct.pack("<I", image_index))
+        # end-of-data entry is the final BIF Index
+        f.write(struct.pack("<I", 0xffffffff))      # timestamp = 0xffffffff
+        f.write(struct.pack("<I", image_index))     # last byte of data + 1
 
         # Now copy the images
         for image in images:
-            data = open(os.path.join(images_path, image), "rb").read()
-            f.write(data)
+            with open(os.path.join(images_path, image), "rb") as file_image:
+                f.write(file_image.read())
 
         return os.stat(bif_filename).st_size
 
@@ -823,7 +845,7 @@ def process_item(item_key, gpu, path_mappings):
                         shutil.rmtree(tmp_path)
 
                 logger.info((
-                    f"Generated Video Preview SIZE={sizeof_fmt(bif_filesize, precision=2):>9}"
+                    f"✅🖼️Generated Video Preview SIZE={sizeof_fmt(bif_filesize, precision=2):>9}"
                     f" HW={results_gen_imgs['hw']!r:<5}"
                     f" {'HDR' if results_gen_imgs['hdr'] else 'SDR'}"
                     f" TIME={results_gen_imgs['seconds']:>6} seconds"
@@ -926,6 +948,7 @@ if __name__ == '__main__':
     logger.info(f"RUN_PROCESS_AT_LOW_PRIORITY={RUN_PROCESS_AT_LOW_PRIORITY}")
     logger.info(f"LOG_LEVEL={LOG_LEVEL}")
     logger.info(f"LOG_FILES_RETENTION={LOG_FILES_RETENTION}")
+    logger.debug(f"FFMPEG_PATH={FFMPEG_PATH}")
     logger.debug("PLEX_LOCAL_VIDEOS_PATH_MAPPINGS = " + json.dumps(plex_local_videos_path_mappings, indent=4))
     if USE_LIB_PLACEBO:
         logger.info('Using libplacebo for HDR tone-mapping.')
