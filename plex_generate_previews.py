@@ -897,7 +897,7 @@ def process_item(item_key, gpu, path_mappings):
                         shutil.rmtree(tmp_path)
 
                 logger.info((
-                    f"✅Generated Video Preview 🖼️"
+                    f"✅ Generated Video Preview 🖼️"
                     f"  SIZE={sizeof_fmt(bif_filesize, precision=2):>9}"
                     f", HW={results_gen_imgs.hw!r:<5}"
                     f", {'HDR' if results_gen_imgs.hdr else 'SDR'}"
