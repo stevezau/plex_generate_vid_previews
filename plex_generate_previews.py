@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 #
-# pylint: disable=missing-module-docstring
-# pylint: disable=missing-class-docstring
-# pylint: disable=missing-function-docstring
+# pylint: disable=missing-module-docstring, missing-class-docstring, missing-function-docstring, line-too-long
 #
-#import traceback
+import traceback
 import sys
-import re
 import subprocess
 import shutil
 import glob
@@ -15,6 +12,7 @@ import signal
 import struct
 import array
 import time
+from typing import NamedTuple
 import json
 import textwrap
 #from pathlib import Path
@@ -317,16 +315,6 @@ PLEX_SEARCH = (
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Compile REGEXs
-pattern_fps   = re.compile(
-    r'^fps= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?$',
-    flags=re.MULTILINE
-)
-pattern_speed = re.compile(
-    r'^speed= ?(?=.)([+-]?([0-9]*)(\.([0-9]+))?)([eE][+-]?\d+)?x$',
-    flags=re.MULTILINE
-)
-
 def set_logger(logger_):
     """
     Pass logger handler to spawned Windows processes.
@@ -555,7 +543,14 @@ def hdr_format_str(video_track):
 # hdr_format_profile=dvhe.08, hdr_format_level=06, hdr_format_settings=BL+RPU
 # hdr_format_compatibility=HDR10 / HDR10
 
-def generate_images(video_file, output_folder, gpu):
+class GenImageStats(NamedTuple):
+    hw : bool
+    seconds : float
+    speed : str
+    fps : str
+    hdr : bool
+
+def generate_images(video_file, output_folder, gpu) -> GenImageStats:
     """generate video preview images"""
 
     media_info = MediaInfo.parse(video_file)
@@ -572,7 +567,7 @@ def generate_images(video_file, output_folder, gpu):
             logger.debug("HDR format reported by MediaInfo")
             if USE_LIB_PLACEBO or dovi_only:
                 if not USE_LIB_PLACEBO and dovi_only:
-                    logger.debug("⚠️Video file contains only DoVi, forcing use of libplacebo for this file")
+                    logger.info("⚠️Video file contains only DoVi, forcing use of libplacebo for this file")
                 # libplacebo - Flexible GPU-accelerated processing filter based on libplacebo <https://code.videolan.org/videolan/libplacebo>
                 #   -init_hw_device vulkan ^
                 #   dithering=ordered_fixed  (for max performance)
@@ -671,15 +666,16 @@ def generate_images(video_file, output_folder, gpu):
     end = time.time()
     seconds = round(end - start, 1)
 
-    fps   = pattern_fps.findall(stdout.decode("utf-8", "replace"))
-    speed = pattern_speed.findall(stdout.decode("utf-8", "replace"))
+    status_text = (stdout.decode("utf-8", "replace")).strip().splitlines()
 
-    # select first group of last match (in case stats are printed more often)
-    if speed:
-        speed = speed[-1][0]
+    status = {}
+    for l in status_text:
+        key, value = l.split("=")
+#       print(f"{key}={value}.")
+        status[key.strip()] = value
 
-    if fps:
-        fps = fps[-1][0]
+    fps   = status['fps']
+    speed = status['speed'].replace('x', '')
 
     # Optimize and Rename Images
     for image in glob.glob(f"{output_folder}/img*.jpg"):
@@ -687,14 +683,19 @@ def generate_images(video_file, output_folder, gpu):
         frame_second = frame_no * PLEX_BIF_FRAME_INTERVAL
         os.rename(image, os.path.join(output_folder, f"{frame_second:010d}.jpg"))
 
-    return {
-        'hw' : hw,
-        'seconds' : seconds,
-        'speed' : speed,
-        'fps' : fps,
-        'hdr' : hdr
-    }
+    return GenImageStats(
+        hw = hw,
+        seconds = seconds,
+        speed = speed,
+        fps = fps,
+        hdr =  hdr
+    )
 
+
+# b'\x89BIF\r\n\x1a\n'
+BIF_MAGIC = (0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a)
+# ROKU BIF file format version 0
+BIF_VERSION = 0
 
 def generate_bif(bif_filename, images_path) -> int:
     """
@@ -702,10 +703,6 @@ def generate_bif(bif_filename, images_path) -> int:
     @param bif_filename name of .bif file to create
     @param images_path Directory of image files 00000001.jpg
     """
-    # b'\x89BIF\r\n\x1a\n'
-    magic = [0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]
-    # ROKU BIF file format version 0
-    version = 0
 
     images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == '.jpg']
     images.sort()
@@ -717,11 +714,11 @@ def generate_bif(bif_filename, images_path) -> int:
     with open(bif_filename, "wb") as f:
         # magic number file id = b'\x89BIF\r\n\x1a\n'
         # bytes 0...7
-        array.array('B', magic).tofile(f)
+        array.array('B', BIF_MAGIC).tofile(f)
 
         # ROKU BIF file format version 0
         # bytes 8...11
-        f.write(struct.pack("<I", version))
+        f.write(struct.pack("<I", BIF_VERSION))
 
         # number of BIF images (N)
         # bytes 12...15
@@ -758,6 +755,46 @@ def generate_bif(bif_filename, images_path) -> int:
                 f.write(file_image.read())
 
         return os.stat(bif_filename).st_size
+
+
+class BifStats(NamedTuple):
+    file_size : int
+    num_images : int
+    timestamp_multiplier : float
+
+def analyze_bif(bif_filename : str) -> BifStats:
+    """
+    open a .bif file
+    @param bif_filename name of .bif file to create
+    """
+
+    if not os.path.isfile(bif_filename):
+        raise FileNotFoundError("{bif_filename} file not found")
+
+    stat_info = os.stat(bif_filename)
+    with open(bif_filename, "rb") as file:
+        file_magic = struct.unpack(f"{len(BIF_MAGIC)}B", file.read(len(BIF_MAGIC) * struct.calcsize("B")))
+
+        if file_magic != BIF_MAGIC:
+            raise MediaError(f"⚠️{bif_filename} isn't a BIF media file")
+
+        file_bif_version = struct.unpack("<I", file.read(struct.calcsize("I")))[0]
+
+        if file_bif_version != BIF_VERSION:
+            raise MediaError(f"⚠️{bif_filename} unsupported BIF media format version {file_bif_version}")
+
+        num_images = struct.unpack("<I", file.read(struct.calcsize("I")))[0]
+        timestamp_multiplier = struct.unpack("<I", file.read(struct.calcsize("I")))[0] / 1.0e3
+        file_reserved = file.read(63 - 20 + 1)
+
+        if any(file_reserved):
+            logger.debug("❌ reserved header bytes 20...63 not all zero in BIF {bif_filename}")
+
+        return BifStats(
+            file_size = stat_info.st_size,
+            num_images = num_images,
+            timestamp_multiplier = timestamp_multiplier
+        )
 
 
 def process_item(item_key, gpu, path_mappings):
@@ -797,7 +834,7 @@ def process_item(item_key, gpu, path_mappings):
 
             try:
                 bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1::1]}.bundle")
-            except Exception as e:
+            except OSError as e:
                 logger.error(f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}")
                 continue
 
@@ -806,6 +843,21 @@ def process_item(item_key, gpu, path_mappings):
             index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
             tmp_path = sanitize_path(os.path.join(TMP_FOLDER, bundle_hash))
 
+            if os.path.isfile(index_bif):
+                try:
+                    bif_stats = analyze_bif(index_bif)
+                    logger.debug((
+                        f"Existing BIF size={sizeof_fmt(bif_stats.file_size, precision = 3)},"
+                        f" Num images={bif_stats.num_images},"
+                        f" Timestamp multiplier={bif_stats.timestamp_multiplier} secs"
+                        f" at {index_bif} as it already exists!"
+                    ))
+                except MediaError as e:
+                    logger.debug(f"Failed getting BifStats() of {media_file} {e}")
+
+            # @TODO add option to force regeneration only to improve quality:
+            # 1. for better timestamp multiplier
+            # 2. for better JPEG quality of thumbnails (BIF filesize/N)
             if not os.path.isfile(index_bif) or FORCE_REGENERATION_OF_BIF_FILES:
                 logger.debug(f"Generating bundle_file for {media_file} at {index_bif}")
 
@@ -845,13 +897,14 @@ def process_item(item_key, gpu, path_mappings):
                         shutil.rmtree(tmp_path)
 
                 logger.info((
-                    f"✅🖼️Generated Video Preview SIZE={sizeof_fmt(bif_filesize, precision=2):>9}"
-                    f" HW={results_gen_imgs['hw']!r:<5}"
-                    f" {'HDR' if results_gen_imgs['hdr'] else 'SDR'}"
-                    f" TIME={results_gen_imgs['seconds']:>6} seconds"
-                    f" SPEED={(str(results_gen_imgs['speed']) + 'x'):>6}"
-                    f" FPS={results_gen_imgs['fps']:>6}"
-                    f" for {media_file}"
+                    f"✅Generated Video Preview 🖼️"
+                    f"  SIZE={sizeof_fmt(bif_filesize, precision=2):>9}"
+                    f", HW={results_gen_imgs.hw!r:<5}"
+                    f", {'HDR' if results_gen_imgs.hdr else 'SDR'}"
+                    f", TIME={results_gen_imgs.seconds:>6} seconds"
+                    f", SPEED={(str(results_gen_imgs.speed) + 'x'):>6}"
+                    f", FPS={results_gen_imgs.fps:>6}"
+                    f", for {media_file}"
                 ))
             else:
                 logger.debug(f"Not generating bundle_file for {media_file} at {index_bif} as it already exists!")
@@ -876,19 +929,19 @@ def run(gpu, path_mappings):
             movie_filters["year"] = cli_args.year
             show_filters["show.year"] = cli_args.year
         if cli_args.episode_title:
-            show_filters["show.title"] = cli_args.episode_title
+            show_filters["episode.title"] = cli_args.episode_title
         if cli_args.unwatched:
             movie_filters["unwatched"] = True
             show_filters["show.unwatchedLeaves"] = True
         if cli_args.hdr:
             movie_filters["hdr"] = True
-            show_filters["show.hdr"] = True
+            show_filters["episode.hdr"] = True
         if cli_args.sdr:
             movie_filters["hdr"] = False
-            show_filters["show.hdr"] = False
+            show_filters["episode.hdr"] = False
         if cli_args.added:
             movie_filters["addedAt>>"] = cli_args.added
-            show_filters["addedAt>>"] = cli_args.added
+            show_filters["episode.addedAt>>"] = cli_args.added # there is also a 'show.addedAt>>' search option
 
     # print(movie_filters)
     # print(show_filters)
