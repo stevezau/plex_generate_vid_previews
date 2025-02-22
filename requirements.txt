@@ -1,9 +1,10 @@
 pymediainfo==6.1.0
 gpustat==1.1.1
-requests==2.31.0
-plexapi==4.15.10
-loguru==0.7.2
-rich==13.7.1
+requests==2.32.3
+plexapi==4.16.1
+loguru==0.7.3
+rich==13.9.4
 python-dotenv==1.0.1
 amdsmi==6.2.1
-pynvml==11.5.3
+pynvml==12.0.0
+pywin32==308; sys_platform == 'win32'
