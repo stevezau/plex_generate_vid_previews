@@ -12,7 +12,7 @@ import signal
 import struct
 import array
 import time
-from typing import NamedTuple
+from typing import NamedTuple, Final
 import json
 import textwrap
 #from pathlib import Path
@@ -260,6 +260,12 @@ parser.add_argument(
             -i, --bif_interval=30 generate a preview thumbnail every 30 seconds (smaller file size, shorter processing time, worst resolutionm for trick-play)
         †preview thumbnails are only generated from keyframes, in some video sources these can be 10+seconds apart,
         """)
+)
+parser.add_argument(
+    "-x",
+    "--force_interval",
+    action="store_true",
+    help = "force regeneration of preview images if the existing BIF-interval is greater than this"
 )
 parser.add_argument(
     "-l",
@@ -691,11 +697,14 @@ def generate_images(video_file, output_folder, gpu) -> GenImageStats:
         hdr =  hdr
     )
 
-
+# ROKU BIF file format constants
+#
 # b'\x89BIF\r\n\x1a\n'
-BIF_MAGIC = (0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a)
+BIF_MAGIC: Final = (0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a)
 # ROKU BIF file format version 0
-BIF_VERSION = 0
+BIF_VERSION: Final = 0
+# BIF header size
+BIF_HEADER_SIZE: Final = 64
 
 def generate_bif(bif_filename, images_path) -> int:
     """
@@ -729,14 +738,23 @@ def generate_bif(bif_filename, images_path) -> int:
         f.write(struct.pack("<I", 1000 * PLEX_BIF_FRAME_INTERVAL))
 
         # bytes 20...63 are reseved and must be set to zero
-        array.array('B', [0x00 for x in range(20, 63 + 1)]).tofile(f)
+        array.array('B', [0x00 for x in range(20, BIF_HEADER_SIZE)]).tofile(f)
 
-        # Generate the BIF Index (N + 1)
-        # The number of entries in the index will be N+1, including the
-        # end-of-data entry.
-        # BIF index starts at byte 64
-        bif_index_size = 8 * (len(images) + 1)
-        image_index = 64 + bif_index_size
+        # the BIF Index (N + 1)
+        # The number of entries in the index will be N+1, including the end-of-data entry.
+        # BIF index starts at byte 64. Each entry contains two unsigned 32-bit values.
+        #
+        # | byte      |     64 65 66 67     |     68 69 70 71          |
+        # |-----------|---------------------|--------------------------|
+        # | index 0   | Frame 0 timestamp   | absolute offset of frame |
+        # | index 1   | Frame 1 timestamp   | absolute offset of frame |
+        # | index 2   | Frame 2 timestamp   | absolute offset of frame |
+        # | ...       |                     |                          |
+        # | index N-1 | Frame N-1 timestamp | absolute offset of frame |
+        # | index N   | `0xffffffff`        | last byte of data + 1    |
+
+        bif_index_size = (2 * struct.calcsize("I")) * (len(images) + 1)
+        image_index = BIF_HEADER_SIZE + bif_index_size
         timestamp = 0
         for image in images:
             statinfo = os.stat(os.path.join(images_path, image))
@@ -759,6 +777,8 @@ def generate_bif(bif_filename, images_path) -> int:
 
 class BifStats(NamedTuple):
     file_size : int
+    images_total_size : int
+    average_image_size : float
     num_images : int
     timestamp_multiplier : float
 
@@ -769,9 +789,15 @@ def analyze_bif(bif_filename : str) -> BifStats:
     """
 
     if not os.path.isfile(bif_filename):
-        raise FileNotFoundError("{bif_filename} file not found")
+        raise FileNotFoundError(f"{bif_filename} file not found")
 
-    stat_info = os.stat(bif_filename)
+    try:
+        stat_info = os.stat(bif_filename)
+    except OSError as e:
+        raise FileNotFoundError(f"can't stat: {bif_filename}") from e
+
+    bif_file_size = stat_info.st_size
+
     with open(bif_filename, "rb") as file:
         file_magic = struct.unpack(f"{len(BIF_MAGIC)}B", file.read(len(BIF_MAGIC) * struct.calcsize("B")))
 
@@ -783,19 +809,24 @@ def analyze_bif(bif_filename : str) -> BifStats:
         if file_bif_version != BIF_VERSION:
             raise MediaError(f"⚠️{bif_filename} unsupported BIF media format version {file_bif_version}")
 
-        num_images = struct.unpack("<I", file.read(struct.calcsize("I")))[0]
-        timestamp_multiplier = struct.unpack("<I", file.read(struct.calcsize("I")))[0] / 1.0e3
-        file_reserved = file.read(63 - 20 + 1)
+        file_num_images = struct.unpack("<I", file.read(struct.calcsize("I")))[0]
+        file_timestamp_multiplier = struct.unpack("<I", file.read(struct.calcsize("I")))[0] / 1.0e3
+        file_reserved = file.read(BIF_HEADER_SIZE - 20)
 
         if any(file_reserved):
             logger.debug("❌ reserved header bytes 20...63 not all zero in BIF {bif_filename}")
 
-        return BifStats(
-            file_size = stat_info.st_size,
-            num_images = num_images,
-            timestamp_multiplier = timestamp_multiplier
-        )
+        file_index_size = (2 * struct.calcsize("I")) * (file_num_images + 1)
+        file_images_total_size = bif_file_size - (BIF_HEADER_SIZE + file_index_size)
+        file_average_image_size = file_images_total_size / file_num_images
 
+        return BifStats(
+            file_size = bif_file_size,
+            images_total_size = file_images_total_size,
+            average_image_size = file_average_image_size,
+            num_images = file_num_images,
+            timestamp_multiplier = file_timestamp_multiplier
+        )
 
 def process_item(item_key, gpu, path_mappings):
     sess = requests.Session()
@@ -849,16 +880,23 @@ def process_item(item_key, gpu, path_mappings):
                     logger.debug((
                         f"Existing BIF size={sizeof_fmt(bif_stats.file_size, precision = 3)},"
                         f" Num images={bif_stats.num_images},"
+                        f" Mean image size={sizeof_fmt(bif_stats.average_image_size, precision = 3)},"
                         f" Timestamp multiplier={bif_stats.timestamp_multiplier} secs"
                         f" at {index_bif} as it already exists!"
                     ))
                 except MediaError as e:
                     logger.debug(f"Failed getting BifStats() of {media_file} {e}")
 
+            regenerate = False
+            if cli_args.force_interval:
+                if PLEX_BIF_FRAME_INTERVAL < bif_stats.timestamp_multiplier:
+                    logger.debug(f"Upgrading {media_file} {bif_stats.timestamp_multiplier} ➡️ {PLEX_BIF_FRAME_INTERVAL}")
+                    regenerate = True
+
             # @TODO add option to force regeneration only to improve quality:
             # 1. for better timestamp multiplier
             # 2. for better JPEG quality of thumbnails (BIF filesize/N)
-            if not os.path.isfile(index_bif) or FORCE_REGENERATION_OF_BIF_FILES:
+            if not os.path.isfile(index_bif) or FORCE_REGENERATION_OF_BIF_FILES or regenerate:
                 logger.debug(f"Generating bundle_file for {media_file} at {index_bif}")
 
                 if not os.path.isdir(indexes_path):
@@ -947,7 +985,7 @@ def run(gpu, path_mappings):
     # print(show_filters)
 
     for section in plex.library.sections():
-        if section.title not in PLEX_LIBRARIES_TO_PROCESS:
+        if section.title not in PLEX_LIBRARIES_TO_PROCESS:  # @FIXME sub-strings match
             logger.info(f"Skipping library {section.title} as not in list of libraries to process {PLEX_LIBRARIES_TO_PROCESS}")
             continue
 
@@ -1006,7 +1044,11 @@ if __name__ == '__main__':
     if USE_LIB_PLACEBO:
         logger.info('Using libplacebo for HDR tone-mapping.')
     if FORCE_REGENERATION_OF_BIF_FILES:
-        logger.warning('⚠️Force regeneration of BIF files is enabled, this will regenerate *all* files!⚠️')
+        logger.warning("⚠️Force regeneration of BIF files is enabled, this will regenerate *all* files!⚠️")
+        if cli_args.force_interval:
+            logger.warning("--force_interval argument ignored, --force overrides")
+    elif cli_args.force_interval:
+        logger.info(f"⚠️Regenerating BIF files with frame interval > {PLEX_BIF_FRAME_INTERVAL}⚠️")
     if RUN_PROCESS_AT_LOW_PRIORITY:
         set_process_niceness()
         logger.info('Running processes at lower-priority')
