@@ -15,7 +15,7 @@
 ## Plex Preview Thumbnail Generator Overview
 
 This script is designed to speed up the process of generating preview thumbnails for your Plex media library. It
-utilizes multi-threaded processes and leverages NVIDIA/AMD GPUs and CPUs for maximum throughput.
+utilizes multi-threaded processes and leverages NVIDIA/INTEL/AMD GPUs and CPUs for maximum throughput.
 
 It supports
 - Accelerating preview thumbnail generation using GPU and multi-threaded CPU processing
@@ -24,7 +24,7 @@ It supports
 - Easy setup with Docker and Docker Compose
 
 ## Known issues
-- AMD GPU Support was recently added, this is untested as i don't have an AMD GPU. Please log an issue if you find problems
+- AMD & INTEL GPU Support was recently added. It is untested as I don't have an INTEL/AMD GPU. Please log an issue if you find problems
 
 ## Requirements
 
