@@ -98,6 +98,10 @@ logger.add(
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Plex Interface
+sess = requests.Session()
+sess.verify = False
+plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
 
 def detect_gpu():
     # Check for NVIDIA GPUs
@@ -337,10 +341,6 @@ def generate_bif(bif_filename, images_path):
 
 
 def process_item(item_key, gpu, gpu_device_path):
-    sess = requests.Session()
-    sess.verify = False
-    plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
-
     data = plex.query('{}/tree'.format(item_key))
 
     def sanitize_path(path):
@@ -392,7 +392,7 @@ def process_item(item_key, gpu, gpu_device_path):
                 try:
                     generate_images(media_file, tmp_path, gpu, gpu_device_path)
                 except Exception as e:
-                    logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
+                    logger.error('Error generating images for {}. `{}: {}` error when gnerating images'.format(media_file, type(e).__name__, str(e)))
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
                     continue
@@ -411,12 +411,6 @@ def process_item(item_key, gpu, gpu_device_path):
 
 
 def run(gpu, gpu_device_path):
-    # Ignore SSL Errors
-    sess = requests.Session()
-    sess.verify = False
-
-    plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=sess)
-
     for section in plex.library.sections():
         logger.info('Getting the media files from library \'{}\''.format(section.title))
 
@@ -438,7 +432,7 @@ def run(gpu, gpu_device_path):
 
 
 if __name__ == '__main__':
-    logger.info('GPU Detection (with AMD Support) was recently added to this script.')
+    logger.info('GPU Detection (with AMD and INTEL Support) was recently added to this script.')
     logger.info('Please log issues here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
     if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
