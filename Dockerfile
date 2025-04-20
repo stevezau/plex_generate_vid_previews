@@ -1,4 +1,4 @@
-FROM linuxserver/ffmpeg:7.1-cli-ls20
+FROM linuxserver/ffmpeg:7.1.1-cli-ls27
 
 # Install Python and pip
 RUN apt-get update && apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip
