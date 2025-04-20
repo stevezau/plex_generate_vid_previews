@@ -454,16 +454,18 @@ if __name__ == '__main__':
         exit(1)
 
     # detect GPU's
-    gpu, gpu_device_path = detect_gpu()
-    if gpu == 'NVIDIA':
-        logger.info('Found NVIDIA GPU')
-    elif gpu == 'AMD':
-        logger.info(f'Found AMD GPU {gpu_device_path}')
-    elif gpu == 'INTEL':
-        logger.info(f'Found INTEL GPU {gpu_device_path}')
-    if not gpu:
-        logger.warning('No GPUs detected. Defaulting to CPU ONLY.')
-        logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
+    if GPU_THREADS:
+        gpu, gpu_device_path = detect_gpu()
+        if gpu == 'NVIDIA':
+            logger.info('Found NVIDIA GPU')
+        elif gpu == 'AMD':
+            logger.info(f'Found AMD GPU {gpu_device_path}')
+        elif gpu == 'INTEL':
+            logger.info(f'Found INTEL GPU {gpu_device_path}')
+        if not gpu:
+            # Fail due to GPU not found
+            logger.warning(f'No GPUs detected. Please set env variable GPU_THREADS to 0, it is currently set to {GPU_THREADS}.')
+            logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
     try:
         # Clean TMP Folder
