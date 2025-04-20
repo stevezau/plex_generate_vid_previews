@@ -156,6 +156,8 @@ def detect_gpu():
     except Exception as e:
         logger.warning(f"Error detecting Intel iGPU: {e}. Intel iGPUs will not be detected.")
 
+    return None, None
+
 def get_amd_ffmpeg_processes():
     from amdsmi import amdsmi_init, amdsmi_shut_down, amdsmi_get_processor_handles, amdsmi_get_gpu_process_list
     try:
