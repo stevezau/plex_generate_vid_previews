@@ -12,6 +12,8 @@ import time
 import psutil
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
+from croniter import croniter
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -32,6 +34,8 @@ PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '')  # Ple
 
 GPU_THREADS = int(os.environ.get('GPU_THREADS', 4))  # Number of GPU threads for preview generation
 CPU_THREADS = int(os.environ.get('CPU_THREADS', 4))  # Number of CPU threads for preview generation
+
+CRON = os.environ.get('CRON', '')  # optional cron string to execute processing at
 
 # Set the timeout envvar for https://github.com/pkkid/python-plexapi
 os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(PLEX_TIMEOUT)
@@ -433,6 +437,18 @@ def run(gpu, gpu_device_path):
                     future.result()
 
 
+def execute(gpu: str, gpu_device_path: str) -> None:
+    try:
+        # Clean TMP Folder
+        if os.path.isdir(TMP_FOLDER):
+            shutil.rmtree(TMP_FOLDER)
+        os.makedirs(TMP_FOLDER)
+        run(gpu, gpu_device_path)
+    finally:
+        if os.path.isdir(TMP_FOLDER):
+            shutil.rmtree(TMP_FOLDER)
+
+
 if __name__ == '__main__':
     logger.info('GPU Detection (with AMD and INTEL Support) was recently added to this script.')
     logger.info('Please log issues here https://github.com/stevezau/plex_generate_vid_previews/issues')
@@ -469,12 +485,26 @@ if __name__ == '__main__':
             logger.warning(f'No GPUs detected. Please set env variable GPU_THREADS to 0, it is currently set to {GPU_THREADS}.')
             logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
-    try:
-        # Clean TMP Folder
-        if os.path.isdir(TMP_FOLDER):
-            shutil.rmtree(TMP_FOLDER)
-        os.makedirs(TMP_FOLDER)
-        run(gpu, gpu_device_path)
-    finally:
-        if os.path.isdir(TMP_FOLDER):
-            shutil.rmtree(TMP_FOLDER)
+    # cron mode, execute processing on selected times
+    if CRON:
+        if not croniter.is_valid(CRON):
+            logger.error(f"Invalid CRON string: '{CRON}'")
+            exit(1)
+
+        logger.info(f"Running in CRON mode with schedule: '{CRON}'")
+        base = datetime.now()
+        cron = croniter(CRON, base)
+
+        while True:
+            next_run = cron.get_next(datetime)
+            sleep_seconds = (next_run - datetime.now()).total_seconds()
+
+            if sleep_seconds > 0:
+                logger.info(f"Next run scheduled at {next_run}. Sleeping for {int(sleep_seconds)} seconds...")
+                time.sleep(sleep_seconds)
+
+            logger.info(f"Started processing using a CRON: '{CRON}'")
+            execute(gpu, gpu_device_path)
+            logger.info(f"Finished processing using a CRON: '{CRON}'.")
+    else:
+        execute(gpu, gpu_device_path)
