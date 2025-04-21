@@ -8,10 +8,9 @@ import struct
 import subprocess
 import sys
 import time
-from ast import Tuple
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
-from typing import List
+from typing import List, Tuple
 
 import humanize
 import urllib3
