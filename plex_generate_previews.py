@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-import sys
-import re
-import subprocess
-import shutil
+import array
 import glob
 import os
+import re
+import shutil
 import struct
-import urllib3
-import array
+import subprocess
+import sys
 import time
-import psutil
-from pathlib import Path
+from ast import Tuple
 from concurrent.futures import ProcessPoolExecutor
-from croniter import croniter
 from datetime import datetime
+from typing import List
 
+import humanize
+import urllib3
+from croniter import croniter
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -79,7 +80,7 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
+    from rich.progress import MofNCompleteColumn, Progress, SpinnerColumn
 except ImportError:
     print('Dependencies Missing!  Please run "pip3 install rich".')
     sys.exit(1)
@@ -107,7 +108,7 @@ sess = requests.Session()
 sess.verify = False
 plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
 
-def detect_gpu():
+def detect_gpu() -> Tuple[str | None, str | None]:
     # Check for NVIDIA GPUs
     try:
         import pynvml
@@ -162,8 +163,13 @@ def detect_gpu():
 
     return None, None
 
-def get_amd_ffmpeg_processes():
-    from amdsmi import amdsmi_init, amdsmi_shut_down, amdsmi_get_processor_handles, amdsmi_get_gpu_process_list
+def get_amd_ffmpeg_processes() -> List | None:
+    from amdsmi import (
+        amdsmi_get_gpu_process_list,
+        amdsmi_get_processor_handles,
+        amdsmi_init,
+        amdsmi_shut_down,
+    )
     try:
         amdsmi_init()
         gpu_handles = amdsmi_get_processor_handles()
@@ -179,7 +185,7 @@ def get_amd_ffmpeg_processes():
     finally:
         amdsmi_shut_down()
 
-def get_intel_ffmpeg_processes():
+def get_intel_ffmpeg_processes() -> List | None:
     vaapi_device_dir = "/dev/dri"
     intel_gpu_processes = []
 
@@ -205,7 +211,7 @@ def get_intel_ffmpeg_processes():
     
     return intel_gpu_processes
 
-def generate_images(video_file, output_folder, gpu, gpu_device_path):
+def generate_images(video_file: str, output_folder: str, gpu: str, gpu_device_path: str) -> None:
     media_info = MediaInfo.parse(video_file)
     vf_parameters = "fps=fps={}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease".format(
         round(1 / PLEX_BIF_FRAME_INTERVAL, 6))
@@ -304,7 +310,7 @@ def generate_images(video_file, output_folder, gpu, gpu_device_path):
     logger.info('Generated Video Preview for {} HW={} TIME={}seconds SPEED={}x '.format(video_file, hw, seconds, speed))
 
 
-def generate_bif(bif_filename, images_path):
+def generate_bif(bif_filename: str, images_path: str) -> None:
     """
     Build a .bif file
     @param bif_filename name of .bif file to create
@@ -346,7 +352,7 @@ def generate_bif(bif_filename, images_path):
     f.close()
 
 
-def process_item(item_key, gpu, gpu_device_path):
+def process_item(item_key: str, gpu: str, gpu_device_path: str) -> None:
     data = plex.query('{}/tree'.format(item_key))
 
     def sanitize_path(path):
@@ -416,7 +422,7 @@ def process_item(item_key, gpu, gpu_device_path):
                         shutil.rmtree(tmp_path)
 
 
-def run(gpu, gpu_device_path):
+def run(gpu: str, gpu_device_path: str) -> None:
     for section in plex.library.sections():
         logger.info('Getting the media files from library \'{}\''.format(section.title))
 
@@ -497,10 +503,12 @@ if __name__ == '__main__':
 
         while True:
             next_run = cron.get_next(datetime)
-            sleep_seconds = (next_run - datetime.now()).total_seconds()
+            now = datetime.now()
+            sleep_seconds = (next_run - now).total_seconds()
 
             if sleep_seconds > 0:
-                logger.info(f"Next run scheduled at {next_run}. Sleeping for {int(sleep_seconds)} seconds...")
+                readable_sleep = humanize.precisedelta(int(sleep_seconds))
+                logger.info(f"Next run scheduled at {next_run}. Sleeping for {readable_sleep}...")
                 time.sleep(sleep_seconds)
 
             logger.info(f"Started processing using a CRON: '{CRON}'")

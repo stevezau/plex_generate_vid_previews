@@ -9,3 +9,4 @@ amdsmi==6.2.1
 pynvml==11.5.3
 psutil==7.0.0
 croniter==6.0.0
+humanize==4.12.2
