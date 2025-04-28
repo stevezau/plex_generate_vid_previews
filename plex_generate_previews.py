@@ -9,8 +9,9 @@ import struct
 import urllib3
 import array
 import time
-import psutil
-from pathlib import Path
+import http.client
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from concurrent.futures import ProcessPoolExecutor
 
 from dotenv import load_dotenv
@@ -109,7 +110,7 @@ session = requests.Session()
 session.verify = False
 session.mount("http://", adapter)
 session.mount("https://", adapter)
-plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
+plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=session)
 
 def detect_gpu():
     # Check for NVIDIA GPUs
