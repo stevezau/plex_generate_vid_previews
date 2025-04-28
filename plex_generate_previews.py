@@ -99,8 +99,16 @@ logger.add(
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Plex Interface
-sess = requests.Session()
-sess.verify = False
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=0.3,
+    status_forcelist=[500, 502, 503, 504],
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session = requests.Session()
+session.verify = False
+session.mount("http://", adapter)
+session.mount("https://", adapter)
 plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=sess)
 
 def detect_gpu():
@@ -343,7 +351,22 @@ def generate_bif(bif_filename, images_path):
 
 
 def process_item(item_key, gpu, gpu_device_path):
-    data = plex.query('{}/tree'.format(item_key))
+    try:
+        data = plex.query('{}/tree'.format(item_key))
+    except (requests.exceptions.RequestException, http.client.BadStatusLine) as e:
+        logger.error(f"Failed to query Plex for item {item_key}: {e}")
+        # Add more context for debugging
+        logger.error(f"Exception type: {type(e).__name__}")
+        # For connection errors, log more details
+        if hasattr(e, 'request') and e.request:
+            logger.error(f"Request URL: {e.request.url}")
+            logger.error(f"Request method: {e.request.method}")
+            logger.error(f"Request headers: {e.request.headers}")
+
+        # Log the full traceback for detailed debugging
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        return
 
     def sanitize_path(path):
         if os.name == 'nt':
@@ -454,6 +477,18 @@ if __name__ == '__main__':
     if PLEX_TOKEN == '':
         logger.error('Please set the PLEX_TOKEN environment variable')
         exit(1)
+
+    # Output Debug info on variables
+    logger.debug('PLEX_URL = {}'.format(PLEX_URL))
+    logger.debug('PLEX_BIF_FRAME_INTERVAL = {}'.format(PLEX_BIF_FRAME_INTERVAL))
+    logger.debug('THUMBNAIL_QUALITY = {}'.format(THUMBNAIL_QUALITY))
+    logger.debug('PLEX_LOCAL_MEDIA_PATH = {}'.format(PLEX_LOCAL_MEDIA_PATH))
+    logger.debug('TMP_FOLDER = {}'.format(TMP_FOLDER))
+    logger.debug('PLEX_TIMEOUT = {}'.format(PLEX_TIMEOUT))
+    logger.debug('PLEX_LOCAL_VIDEOS_PATH_MAPPING = {}'.format(PLEX_LOCAL_VIDEOS_PATH_MAPPING))
+    logger.debug('PLEX_VIDEOS_PATH_MAPPING = {}'.format(PLEX_VIDEOS_PATH_MAPPING))
+    logger.debug('GPU_THREADS = {}'.format(GPU_THREADS))
+    logger.debug('CPU_THREADS = {}'.format(CPU_THREADS))
 
     # detect GPU's
     if GPU_THREADS:
