@@ -74,7 +74,8 @@ If you're using Intel VAAPI for hardware acceleration and running the container 
 
 Add the following to your docker-compose.yml:
 
-```services:
+```yaml
+services:
   previews:
     image: stevezau/plex_generate_vid_previews:latest
     user: 1000:1000  # Replace with your user:group ID
@@ -90,7 +91,6 @@ Add the following to your docker-compose.yml:
 The below exmapl is for Nvidia, you'll need to update it for Intel or AMD. 
 
 ```yaml
----
 version: '3'
 services:
   previews:
