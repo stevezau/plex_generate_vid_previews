@@ -500,9 +500,11 @@ if __name__ == '__main__':
     logger.debug('PLEX_VIDEOS_PATH_MAPPING = {}'.format(PLEX_VIDEOS_PATH_MAPPING))
     logger.debug('GPU_THREADS = {}'.format(GPU_THREADS))
     logger.debug('CPU_THREADS = {}'.format(CPU_THREADS))
+    logger.debug('REGENERATE_THUMBNAILS = {}'.format(REGENERATE_THUMBNAILS))
 
     # detect GPU's
-    if GPU_THREADS:
+    gpu, gpu_device_path = None, None
+    if GPU_THREADS > 0:
         gpu, gpu_device_path = detect_gpu()
         if gpu == 'NVIDIA':
             logger.info('Found NVIDIA GPU')
