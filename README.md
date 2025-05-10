@@ -69,7 +69,25 @@ In order to access GPUs in a container explicit access to the GPUs must be grant
 
 Please follow the steps outlined here [https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html](https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html)
 
+### Intel iGPU / VAAPI
+If you're using Intel VAAPI for hardware acceleration and running the container as a non-root user, you must ensure the container user has permission to access /dev/dri/renderD128. This device is typically owned by the render group.
+
+Add the following to your docker-compose.yml:
+
+```services:
+  previews:
+    image: stevezau/plex_generate_vid_previews:latest
+    user: 1000:1000  # Replace with your user:group ID
+    group_add:
+      - 109  # Replace with GID of 'render' group (check with `getent group render`)
+    devices:
+      - /dev/dri:/dev/dri
+    ...
+```
+
 ## docker-compose ([click here for more info](https://docs.linuxserver.io/general/docker-compose))
+
+The below exmapl is for Nvidia, you'll need to update it for Intel or AMD. 
 
 ```yaml
 ---
