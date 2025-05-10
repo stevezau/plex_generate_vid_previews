@@ -26,6 +26,8 @@ PLEX_LOCAL_MEDIA_PATH = os.environ.get('PLEX_LOCAL_MEDIA_PATH', '/path_to/plex/L
 TMP_FOLDER = os.environ.get('TMP_FOLDER', '/dev/shm/plex_generate_previews')  # Temporary folder for preview generation
 PLEX_TIMEOUT = int(os.environ.get('PLEX_TIMEOUT', 60))  # Timeout for Plex API requests (seconds)
 
+REGENERATE_THUMBNAILS = os.environ.get('REGENERATE_THUMBNAILS', 'false').strip().lower() in ('true', '1', 'yes')  # Force regeneration of thumbnails
+
 # Path mappings for remote preview generation. # So you can have another computer generate previews for your Plex server
 # If you are running on your plex server, you can set both variables to ''
 PLEX_LOCAL_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')  # Local video path for the script
@@ -397,6 +399,14 @@ def process_item(item_key, gpu, gpu_device_path):
             indexes_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes'))
             index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
             tmp_path = sanitize_path(os.path.join(TMP_FOLDER, bundle_hash))
+
+            if os.path.isfile(index_bif) and REGENERATE_THUMBNAILS:
+                logger.debug('Found existing thumbnails for {}, deleting the thumbnail index at {} so we can regenerate'.format(media_file, index_bif))
+                try:
+                    os.remove(index_bif)
+                except Exception as e:
+                    logger.error('Error {} deleting index file {}: {}'.format(type(e).__name__, media_file, str(e)))
+                    continue
 
             if not os.path.isfile(index_bif):
                 logger.debug('Generating bundle_file for {} at {}'.format(media_file, index_bif))
