@@ -24,7 +24,9 @@ PLEX_BIF_FRAME_INTERVAL = int(os.environ.get('PLEX_BIF_FRAME_INTERVAL', 5))  # I
 THUMBNAIL_QUALITY = int(os.environ.get('THUMBNAIL_QUALITY', 4))  # Preview image quality (2-6)
 PLEX_LOCAL_MEDIA_PATH = os.environ.get('PLEX_LOCAL_MEDIA_PATH', '/path_to/plex/Library/Application Support/Plex Media Server/Media')  # Local Plex media path
 TMP_FOLDER = os.environ.get('TMP_FOLDER', '/dev/shm/plex_generate_previews')  # Temporary folder for preview generation
+
 PLEX_TIMEOUT = int(os.environ.get('PLEX_TIMEOUT', 60))  # Timeout for Plex API requests (seconds)
+PLEX_LIBRARIES = [library.strip().lower() for library in os.environ.get('PLEX_LIBRARIES', '').split(',') if library.strip()]  # Comma-separated list of library names to process, case-insensitive
 
 REGENERATE_THUMBNAILS = os.environ.get('REGENERATE_THUMBNAILS', 'false').strip().lower() in ('true', '1', 'yes')  # Force regeneration of thumbnails
 
@@ -113,6 +115,7 @@ session.verify = False
 session.mount("http://", adapter)
 session.mount("https://", adapter)
 plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=session)
+
 
 def detect_gpu():
     # Check for NVIDIA GPUs
@@ -448,6 +451,11 @@ def process_item(item_key, gpu, gpu_device_path):
 
 def run(gpu, gpu_device_path):
     for section in plex.library.sections():
+        # Skip libraries that aren't in the PLEX_LIBRARIES list if it's not empty
+        if PLEX_LIBRARIES and section.title.lower() not in PLEX_LIBRARIES:
+            logger.info('Skipping library \'{}\' as it\'s not in the configured libraries list'.format(section.title))
+            continue
+
         logger.info('Getting the media files from library \'{}\''.format(section.title))
 
         if section.METADATA_TYPE == 'episode':

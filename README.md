@@ -40,7 +40,7 @@ a `.env` file
 |            Variables             | Function                                                                                                                                                    |
 |:--------------------------------:|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |            `PLEX_URL`            | Plex server URL. (eg: http://localhost:32400)                                                                                                               |
-|           `PLEX_TOKEN`           | Plex Token. ([click here for how to get a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))                                                                                                      |
+|           `PLEX_TOKEN`           | Plex Token. ([click here for how to get a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))                 |
 |    `PLEX_BIF_FRAME_INTERVAL`     | Interval between preview images (default: 5, plex default: 2)                                                                                               |
 |     `PLEX_LOCAL_MEDIA_PATH`      | Path to Plex Media folder (eg: /path_to/plex/Library/Application Support/Plex Media Server/Media)                                                           |
 |       `THUMBNAIL_QUALITY`        | Preview image quality (2-6, default: 4, plex default: 3). 2 being the highest quality and largest file size and 6 being the lowest quality and smallest file size. |
@@ -50,6 +50,7 @@ a `.env` file
 |          `CPU_THREADS`           | Number of CPU threads for preview generation (default: 4)                                                                                                   |
 | `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Leave blank unless you need to map your local media files to a remote path (eg: '/path/this/script/sees/to/video/library')                                  |
 |    `PLEX_VIDEOS_PATH_MAPPING`    | Leave blank unless you need to map your local media files to a remote path (eg: '/path/plex/sees/to/video/library')                                         |
+|    `PLEX_LIBRARIES`              | Leave blank unless you want to restrict which libraries this script will process. Enter the library names separated by commas. Case-insensitive. Example: "Movies, TV Shows" or "movies, tv shows"    |
 |           `LOG_LEVEL`            | Set to debug for troubleshooting                                                                                                                            |
 |    `REGENERATE_THUMBNAILS`       | Set to true to enable regeneration of thumbnails                                                                                                             |
 
@@ -195,7 +196,7 @@ python3 plex_preview_thumbnail_generator.py
      - Example: `//server/media/plex/tv`
 
 3. **Modify the Script's Environment File:**
-   - The script’s `.env` file only needs one specific adjustment for Unraid:
+   - The script's `.env` file only needs one specific adjustment for Unraid:
      - Set `PLEX_LOCAL_MEDIA_PATH` as follows:  
        ```plaintext
        PLEX_LOCAL_MEDIA_PATH=\\SERVER\appdata\plex\Library\Application Support\Plex Media Server\Media
