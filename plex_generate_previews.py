@@ -127,9 +127,9 @@ def detect_gpu():
         if num_nvidia_gpus > 0:
             return 'NVIDIA', None
     except ImportError:
-        logger.warning("NVIDIA GPU detection library (pynvml) not found. NVIDIA GPUs will not be detected.")
+        logger.debug("NVIDIA GPU detection library (pynvml) not found. NVIDIA GPUs will not be detected.")
     except pynvml.NVMLError as e:
-        logger.warning(f"Error initializing NVIDIA GPU detection {e}. NVIDIA GPUs will not be detected.")
+        logger.debug(f"Error initializing NVIDIA GPU detection {e}. NVIDIA GPUs will not be detected.")
 
     # Check for AMD GPUs
     try:
@@ -150,9 +150,9 @@ def detect_gpu():
                         if entry.startswith("renderD"):
                             return "AMD", os.path.join(vaapi_device_dir, entry)
     except ImportError:
-        logger.warning("AMD GPU detection library (amdsmi) not found. AMD GPUs will not be detected.")
+        logger.debug("AMD GPU detection library (amdsmi) not found. AMD GPUs will not be detected.")
     except Exception as e:
-        logger.warning(f"Error initializing AMD GPU detection: {e}. AMD GPUs will not be detected.")
+        logger.debug(f"Error initializing AMD GPU detection: {e}. AMD GPUs will not be detected.")
 
     # Check for Intel iGPU
     try:
@@ -168,7 +168,7 @@ def detect_gpu():
                         if dev_entry.startswith("renderD"):
                             return "INTEL", os.path.join(vaapi_device_dir, dev_entry)
     except Exception as e:
-        logger.warning(f"Error detecting Intel iGPU: {e}. Intel iGPUs will not be detected.")
+        logger.debug(f"Error detecting Intel iGPU: {e}. Intel iGPUs will not be detected.")
 
     return None, None
 
@@ -209,9 +209,9 @@ def get_intel_ffmpeg_processes():
                                     if 'ffmpeg' in process["command"].lower():
                                         intel_gpu_processes.append(process["command"])
                     else:
-                        print(f"Warning: No GPU stats found for {device_path}")
+                        logger.debug(f"No GPU stats found for {device_path}")
     except Exception as e:
-        print(f"Error detecting Intel GPU processes: {e}")
+        logger.debug(f"Error detecting Intel GPU processes: {e}")
     
     return intel_gpu_processes
 
@@ -521,7 +521,7 @@ if __name__ == '__main__':
         elif gpu == 'INTEL':
             logger.info(f'Found INTEL GPU {gpu_device_path}')
         if not gpu:
-            # Fail due to GPU not found
+            # Only show warning if no GPU was found
             logger.warning(f'No GPUs detected. Please set env variable GPU_THREADS to 0, it is currently set to {GPU_THREADS}.')
             logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
