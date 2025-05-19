@@ -357,22 +357,27 @@ def generate_bif(bif_filename, images_path):
 
 
 def process_item(item_key, gpu, gpu_device_path):
-    try:
-        data = plex.query('{}/tree'.format(item_key))
-    except (requests.exceptions.RequestException, http.client.BadStatusLine) as e:
-        logger.error(f"Failed to query Plex for item {item_key}: {e}")
-        # Add more context for debugging
-        logger.error(f"Exception type: {type(e).__name__}")
-        # For connection errors, log more details
-        if hasattr(e, 'request') and e.request:
-            logger.error(f"Request URL: {e.request.url}")
-            logger.error(f"Request method: {e.request.method}")
-            logger.error(f"Request headers: {e.request.headers}")
+    max_retries = 3
+    retry_delay = 1  # seconds
 
-        # Log the full traceback for detailed debugging
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        return
+    for attempt in range(max_retries):
+        try:
+            data = plex.query('{}/tree'.format(item_key))
+            break  # If successful, break out of retry loop
+        except (requests.exceptions.RequestException, http.client.BadStatusLine) as e:
+            if attempt == max_retries - 1:  # Last attempt
+                logger.error(f"Failed to query Plex for item {item_key} after {max_retries} attempts: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                # For connection errors, log more details
+                if hasattr(e, 'request') and e.request:
+                    logger.error(f"Request URL: {e.request.url}")
+                    logger.error(f"Request method: {e.request.method}")
+                    logger.error(f"Request headers: {e.request.headers}")
+                return  # Skip this item and continue with others
+            else:
+                logger.warning(f"Retry {attempt + 1}/{max_retries} for item {item_key} due to: {e}")
+                time.sleep(retry_delay)
+                continue
 
     def sanitize_path(path):
         if os.name == 'nt':
@@ -389,7 +394,7 @@ def process_item(item_key, gpu, gpu_device_path):
             media_file = sanitize_path(media_part.attrib['file'].replace(PLEX_VIDEOS_PATH_MAPPING, PLEX_LOCAL_VIDEOS_PATH_MAPPING))
 
             if not os.path.isfile(media_file):
-                logger.error('Skipping as file not found {}'.format(media_file))
+                logger.warning('Skipping as file not found {}'.format(media_file))
                 continue
 
             try:
@@ -431,7 +436,7 @@ def process_item(item_key, gpu, gpu_device_path):
                 try:
                     generate_images(media_file, tmp_path, gpu, gpu_device_path)
                 except Exception as e:
-                    logger.error('Error generating images for {}. `{}: {}` error when gnerating images'.format(media_file, type(e).__name__, str(e)))
+                    logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
                     continue
