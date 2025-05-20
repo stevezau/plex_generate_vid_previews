@@ -234,53 +234,54 @@ def generate_images(video_file, output_folder, gpu, gpu_device_path):
     start = time.time()
     hw = False
 
-    if gpu == 'NVIDIA':
-        gpu_stats_query = gpustat.core.new_query()
-        logger.debug('Trying to determine how many GPU threads running')
-        if len(gpu_stats_query):
-            gpu_ffmpeg = []
-            for gpu_stats in gpu_stats_query:
-                for process in gpu_stats.processes:
-                    if 'ffmpeg' in process["command"].lower():
-                        gpu_ffmpeg.append(process["command"])
+    # Only attempt GPU processing if GPU_THREADS > 0
+    if GPU_THREADS > 0:
+        if gpu == 'NVIDIA':
+            gpu_stats_query = gpustat.core.new_query()
+            logger.debug('Trying to determine how many GPU threads running')
+            if len(gpu_stats_query):
+                gpu_ffmpeg = []
+                for gpu_stats in gpu_stats_query:
+                    for process in gpu_stats.processes:
+                        if 'ffmpeg' in process["command"].lower():
+                            gpu_ffmpeg.append(process["command"])
 
+                logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
+                if len(gpu_ffmpeg) > GPU_THREADS:
+                    logger.debug('Hit limit on GPU threads, defaulting back to CPU')
+                if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
+                    hw = True
+                    args.insert(5, "-hwaccel")
+                    args.insert(6, "cuda")
+        else:
+            # AMD or Intel
+            if gpu == 'INTEL': 
+                gpu_ffmpeg = get_intel_ffmpeg_processes()
+            else:
+                gpu_ffmpeg = get_amd_ffmpeg_processes()
+                
             logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
             if len(gpu_ffmpeg) > GPU_THREADS:
                 logger.debug('Hit limit on GPU threads, defaulting back to CPU')
+
             if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
                 hw = True
                 args.insert(5, "-hwaccel")
-                args.insert(6, "cuda")
-    else:
-        # AMD or Intel
-        
-        if gpu == 'INTEL': 
-            gpu_ffmpeg = get_intel_ffmpeg_processes()
-        else:
-            gpu_ffmpeg = get_amd_ffmpeg_processes()
-            
-        logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
-        if len(gpu_ffmpeg) > GPU_THREADS:
-            logger.debug('Hit limit on GPU threads, defaulting back to CPU')
-
-        if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
-            hw = True
-            args.insert(5, "-hwaccel")
-            args.insert(6, "vaapi")
-            args.insert(7, "-vaapi_device")
-            args.insert(8, gpu_device_path)
-            # Adjust vf_parameters for Intel 
-            if gpu == 'INTEL':
-                vf_parameters = vf_parameters.replace(
-                    "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                    "format=nv12,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease,hwdownload,format=nv12")
-            else: 
-            # Adjust vf_parameters for AMD VAAPI
-                vf_parameters = vf_parameters.replace(
-                    "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                    "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
-            
-            args[args.index("-vf") + 1] = vf_parameters
+                args.insert(6, "vaapi")
+                args.insert(7, "-vaapi_device")
+                args.insert(8, gpu_device_path)
+                # Adjust vf_parameters for Intel 
+                if gpu == 'INTEL':
+                    vf_parameters = vf_parameters.replace(
+                        "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+                        "format=nv12,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease,hwdownload,format=nv12")
+                else: 
+                # Adjust vf_parameters for AMD VAAPI
+                    vf_parameters = vf_parameters.replace(
+                        "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+                        "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
+                
+                args[args.index("-vf") + 1] = vf_parameters
 
     logger.debug('Running ffmpeg')
     logger.debug(' '.join(args))
