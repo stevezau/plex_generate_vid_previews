@@ -455,6 +455,22 @@ def process_item(item_key, gpu, gpu_device_path):
                         shutil.rmtree(tmp_path)
 
 
+def filter_duplicate_locations(media_items):
+    seen_locations = set()
+    filtered_items = []
+    
+    for key, locations in media_items:            
+        # Check if any location has been seen before
+        if any(location in seen_locations for location in locations):
+            continue
+            
+        # Add all locations to seen set and keep this item
+        seen_locations.update(locations)
+        filtered_items.append(key)  # Only return the key, not the tuple
+    
+    return filtered_items
+
+
 def run(gpu, gpu_device_path):
     for section in plex.library.sections():
         # Skip libraries that aren't in the PLEX_LIBRARIES list if it's not empty
@@ -465,7 +481,10 @@ def run(gpu, gpu_device_path):
         logger.info('Getting the media files from library \'{}\''.format(section.title))
 
         if section.METADATA_TYPE == 'episode':
-            media = [m.key for m in section.search(libtype='episode')]
+            # Get episodes with locations for duplicate filtering
+            media_with_locations = [(m.key, m.locations) for m in section.search(libtype='episode')]
+            # Filter out multi episode files based on file locations
+            media = filter_duplicate_locations(media_with_locations)
         elif section.METADATA_TYPE == 'movie':
             media = [m.key for m in section.search()]
         else:
