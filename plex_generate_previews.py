@@ -10,7 +10,6 @@ import urllib3
 import array
 import time
 import http.client
-import xml.etree.ElementTree
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from concurrent.futures import ProcessPoolExecutor
@@ -366,23 +365,18 @@ def process_item(item_key, gpu, gpu_device_path):
         try:
             data = plex.query('{}/tree'.format(item_key))
             break  # If successful, break out of retry loop
-        except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
+        except (requests.exceptions.RequestException, http.client.BadStatusLine) as e:
             if attempt == max_retries - 1:  # Last attempt
                 logger.error(f"Failed to query Plex for item {item_key} after {max_retries} attempts: {e}")
                 logger.error(f"Exception type: {type(e).__name__}")
-                # For XML parsing errors, provide additional context
-                if isinstance(e, xml.etree.ElementTree.ParseError):
-                    logger.error(f"XML parsing error - Plex server returned malformed XML response")
-                    logger.error(f"This usually indicates server issues, network problems, or corrupted responses")
                 # For connection errors, log more details
-                elif hasattr(e, 'request') and e.request:
+                if hasattr(e, 'request') and e.request:
                     logger.error(f"Request URL: {e.request.url}")
                     logger.error(f"Request method: {e.request.method}")
                     logger.error(f"Request headers: {e.request.headers}")
                 return  # Skip this item and continue with others
             else:
-                error_type = "XML parsing error" if isinstance(e, xml.etree.ElementTree.ParseError) else "network error"
-                logger.warning(f"Retry {attempt + 1}/{max_retries} for item {item_key} due to {error_type}: {e}")
+                logger.warning(f"Retry {attempt + 1}/{max_retries} for item {item_key} due to: {e}")
                 time.sleep(retry_delay)
                 continue
 
@@ -461,19 +455,24 @@ def process_item(item_key, gpu, gpu_device_path):
                         shutil.rmtree(tmp_path)
 
 
-def run(gpu, gpu_device_path):
-    try:
-        sections = plex.library.sections()
-    except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
-        logger.error(f"Failed to get Plex library sections: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        if isinstance(e, xml.etree.ElementTree.ParseError):
-            logger.error(f"XML parsing error - Plex server returned malformed XML response")
-            logger.error(f"This usually indicates server issues, network problems, or corrupted responses")
-        logger.error("Cannot proceed without library access. Please check your Plex server status.")
-        return
+def filter_duplicate_locations(media_items):
+    seen_locations = set()
+    filtered_items = []
     
-    for section in sections:
+    for key, locations in media_items:            
+        # Check if any location has been seen before
+        if any(location in seen_locations for location in locations):
+            continue
+            
+        # Add all locations to seen set and keep this item
+        seen_locations.update(locations)
+        filtered_items.append(key)  # Only return the key, not the tuple
+    
+    return filtered_items
+
+
+def run(gpu, gpu_device_path):
+    for section in plex.library.sections():
         # Skip libraries that aren't in the PLEX_LIBRARIES list if it's not empty
         if PLEX_LIBRARIES and section.title.lower() not in PLEX_LIBRARIES:
             logger.info('Skipping library \'{}\' as it\'s not in the configured libraries list'.format(section.title))
@@ -481,21 +480,15 @@ def run(gpu, gpu_device_path):
 
         logger.info('Getting the media files from library \'{}\''.format(section.title))
 
-        try:
-            if section.METADATA_TYPE == 'episode':
-                media = [m.key for m in section.search(libtype='episode')]
-            elif section.METADATA_TYPE == 'movie':
-                media = [m.key for m in section.search()]
-            else:
-                logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
-                continue
-        except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
-            logger.error(f"Failed to search library '{section.title}': {e}")
-            logger.error(f"Exception type: {type(e).__name__}")
-            if isinstance(e, xml.etree.ElementTree.ParseError):
-                logger.error(f"XML parsing error - Plex server returned malformed XML response")
-                logger.error(f"This usually indicates server issues, network problems, or corrupted responses")
-            logger.warning(f"Skipping library '{section.title}' due to error")
+        if section.METADATA_TYPE == 'episode':
+            # Get episodes with locations for duplicate filtering
+            media_with_locations = [(m.key, m.locations) for m in section.search(libtype='episode')]
+            # Filter out multi episode files based on file locations
+            media = filter_duplicate_locations(media_with_locations)
+        elif section.METADATA_TYPE == 'movie':
+            media = [m.key for m in section.search()]
+        else:
+            logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
             continue
 
         logger.info('Got {} media files for library {}'.format(len(media), section.title))
