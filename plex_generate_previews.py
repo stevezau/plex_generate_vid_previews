@@ -19,6 +19,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Set default ROCM_PATH if not already set to prevent KeyError in AMD SMI
+if 'ROCM_PATH' not in os.environ:
+    os.environ['ROCM_PATH'] = '/opt/rocm'
+
 PLEX_URL = os.environ.get('PLEX_URL', '')  # Plex server URL. can also use for local server: http://localhost:32400
 PLEX_TOKEN = os.environ.get('PLEX_TOKEN', '')  # Plex Authentication Token
 PLEX_BIF_FRAME_INTERVAL = int(os.environ.get('PLEX_BIF_FRAME_INTERVAL', 5))  # Interval between preview images
@@ -143,7 +147,10 @@ def detect_gpu():
                 processor_type = amdsmi_interface.amdsmi_get_processor_type(device)
                 if processor_type == amdsmi_interface.AMDSMI_PROCESSOR_TYPE_GPU:
                     found = True
-        amdsmi_interface.amdsmi_shut_down()
+        try:
+            amdsmi_interface.amdsmi_shut_down()
+        except:
+            pass  # Ignore shutdown errors
         if found:
                 vaapi_device_dir = "/dev/dri"
                 if os.path.exists(vaapi_device_dir):
@@ -152,8 +159,18 @@ def detect_gpu():
                             return "AMD", os.path.join(vaapi_device_dir, entry)
     except ImportError:
         logger.debug("AMD GPU detection library (amdsmi) not found. AMD GPUs will not be detected.")
+    except KeyError as e:
+        if 'ROCM_PATH' in str(e):
+            logger.debug("ROCm is not properly installed or ROCM_PATH environment variable is not set. AMD GPU detection will be disabled.")
+        else:
+            logger.debug(f"KeyError in AMD GPU detection: {e}. AMD GPUs will not be detected.")
     except Exception as e:
         logger.debug(f"Error initializing AMD GPU detection: {e}. AMD GPUs will not be detected.")
+    finally:
+        try:
+            amdsmi_interface.amdsmi_shut_down()
+        except:
+            pass  # Ignore shutdown errors if init failed
 
     # Check for Intel iGPU
     try:
@@ -187,8 +204,20 @@ def get_amd_ffmpeg_processes():
                     ffmpeg_processes.append(process)
 
         return ffmpeg_processes
+    except KeyError as e:
+        if 'ROCM_PATH' in str(e):
+            logger.debug("ROCm is not properly installed or ROCM_PATH environment variable is not set. AMD GPU process detection will be disabled.")
+        else:
+            logger.debug(f"KeyError in AMD GPU process detection: {e}")
+        return []
+    except Exception as e:
+        logger.debug(f"Error detecting AMD GPU processes: {e}")
+        return []
     finally:
-        amdsmi_shut_down()
+        try:
+            amdsmi_shut_down()
+        except:
+            pass  # Ignore shutdown errors if init failed
 
 def get_intel_ffmpeg_processes():
     vaapi_device_dir = "/dev/dri"
