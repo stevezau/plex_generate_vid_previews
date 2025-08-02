@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-import sys
-import re
-import subprocess
-import shutil
-import glob
-import os
-import struct
-import urllib3
 import array
-import time
+import glob
 import http.client
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
 import xml.etree.ElementTree
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from concurrent.futures import ProcessPoolExecutor
 
+import urllib3
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
 
@@ -601,9 +601,11 @@ if __name__ == '__main__':
         elif gpu == 'INTEL':
             logger.info(f'Found INTEL GPU {gpu_device_path}')
         if not gpu:
-            # Only show warning if no GPU was found
-            logger.warning(f'No GPUs detected. Please set env variable GPU_THREADS to 0, it is currently set to {GPU_THREADS}.')
-            logger.warning('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
+            # Exit and require user to explicitly set GPU_THREADS to 0
+            logger.error(f'No GPUs detected but GPU_THREADS is set to {GPU_THREADS}.')
+            logger.error('Please set the GPU_THREADS environment variable to 0 to use CPU-only processing.')
+            logger.error('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
+            exit(1)
 
     try:
         # Clean TMP Folder
