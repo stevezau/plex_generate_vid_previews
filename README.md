@@ -53,6 +53,7 @@ a `.env` file
 |    `PLEX_LIBRARIES`              | Leave blank unless you want to restrict which libraries this script will process. Enter the library names separated by commas. Case-insensitive. Example: "Movies, TV Shows" or "movies, tv shows"    |
 |           `LOG_LEVEL`            | Set to debug for troubleshooting                                                                                                                            |
 |    `REGENERATE_THUMBNAILS`       | Set to true to enable regeneration of thumbnails                                                                                                             |
+|    `USE_SKIPLIST`       | Set to true to enable a skiplist where if files throw ffmpeg error's it stores their names and skips generating previews for those files on subsequent runs    |
 
 # Guide for Docker
 
@@ -108,6 +109,7 @@ services:
       - PLEX_TIMEOUT=60
       - GPU_THREADS=5  
       - CPU_THREADS=5
+      - USE_SKIPLIST=False
     volumes:
       - /path/to/plex/media:/path/to/plex/media
       - /path/to/plex/videos:/videos
