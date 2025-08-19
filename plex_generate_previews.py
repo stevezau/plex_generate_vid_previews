@@ -43,6 +43,8 @@ PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '')  # Ple
 GPU_THREADS = int(os.environ.get('GPU_THREADS', 4))  # Number of GPU threads for preview generation
 CPU_THREADS = int(os.environ.get('CPU_THREADS', 4))  # Number of CPU threads for preview generation
 
+USE_SKIPLIST = os.environ.get('USE_SKIPLIST', 'true').strip().lower() in ('true', '1', 'yes')
+
 # Set the timeout envvar for https://github.com/pkkid/python-plexapi
 os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(PLEX_TIMEOUT)
 
@@ -59,11 +61,14 @@ def _code_dir() -> Path:
         # Fallback when __file__ is missing (rare, e.g., some REPLs)
         return Path(sys.argv[0]).resolve().parent if sys.argv and sys.argv[0] else Path.cwd()
 
-CODE_DIR = _code_dir()
-SKIPLIST_FILE = str(CODE_DIR / "ffmpeg_failures.txt")
-SKIPLIST_LOCK = SKIPLIST_FILE + ".lock"
+if USE_SKIPLIST:
+    CODE_DIR = _code_dir()
+    SKIPLIST_FILE = str(CODE_DIR / "ffmpeg_failures.txt")
+    SKIPLIST_LOCK = SKIPLIST_FILE + ".lock"
+    os.makedirs(os.path.dirname(SKIPLIST_FILE), exist_ok=True)
+else:
+    SKIPLIST_FILE = SKIPLIST_LOCK = None
 
-os.makedirs(os.path.dirname(SKIPLIST_FILE), exist_ok=True)
 SKIP_SET = None  # per-process cache
 
 def _acquire_lock(lock_path, timeout=30.0):
@@ -87,6 +92,8 @@ def _release_lock(fd, lock_path):
         pass
 
 def load_skiplist():
+    if not USE_SKIPLIST:
+        return set()
     try:
         with open(SKIPLIST_FILE, 'r', encoding='utf-8') as f:
             return set(line.strip() for line in f if line.strip())
@@ -94,6 +101,8 @@ def load_skiplist():
         return set()
 
 def add_to_skiplist(path):
+    if not USE_SKIPLIST:
+        return
     fd = _acquire_lock(SKIPLIST_LOCK)
     try:
         with open(SKIPLIST_FILE, 'a', encoding='utf-8') as f:
@@ -493,11 +502,12 @@ def process_item(item_key, gpu, gpu_device_path):
                 continue
             # Skiplist: load once per process
             global SKIP_SET
-            if SKIP_SET is None:
-                SKIP_SET = load_skiplist()
-            if media_file in SKIP_SET:
-                logger.info('Skipping (on skiplist): {}'.format(media_file))
-                continue
+            if USE_SKIPLIST:
+                if SKIP_SET is None:
+                    SKIP_SET = load_skiplist()
+                if media_file in SKIP_SET:
+                    logger.info('Skipping (on skiplist): {}'.format(media_file))
+                    continue
 
             try:
                 bundle_file = sanitize_path('{}/{}{}'.format(bundle_hash[0], bundle_hash[1::1], '.bundle'))
@@ -538,11 +548,14 @@ def process_item(item_key, gpu, gpu_device_path):
                 try:
                     generate_images(media_file, tmp_path, gpu, gpu_device_path)
                 except FFmpegPreviewError:
-                    logger.warning('Adding to skiplist due to ffmpeg failure: {}'.format(media_file))
-                    add_to_skiplist(media_file)
-                    if SKIP_SET is None:
-                        SKIP_SET = set()
-                    SKIP_SET.add(media_file)
+                    if USE_SKIPLIST:
+                        logger.warning('Adding to skiplist due to ffmpeg failure: {}'.format(media_file))
+                        add_to_skiplist(media_file)
+                        if SKIP_SET is None:
+                            SKIP_SET = set()
+                        SKIP_SET.add(media_file)
+                    else:
+                        logger.warning('ffmpeg failure: {}'.format(media_file))
                     if os.path.exists(tmp_path):
                         shutil.rmtree(tmp_path)
                     continue
