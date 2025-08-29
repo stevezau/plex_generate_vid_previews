@@ -46,6 +46,7 @@ CPU_THREADS = int(os.environ.get('CPU_THREADS', 4))  # Number of CPU threads for
 # Set the timeout envvar for https://github.com/pkkid/python-plexapi
 os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(PLEX_TIMEOUT)
 
+
 if not shutil.which("mediainfo"):
     print('MediaInfo not found.  MediaInfo must be installed and available in PATH.')
     sys.exit(1)
@@ -120,6 +121,31 @@ session.verify = False
 session.mount("http://", adapter)
 session.mount("https://", adapter)
 plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=PLEX_TIMEOUT, session=session)
+
+# Monkey patch XML parsing to capture raw responses on parsing errors
+import plexapi.utils as utils
+import xml.etree.ElementTree as ET
+
+# Store the original function
+original_parseXMLString = utils.parseXMLString
+
+def debug_parseXMLString(xml_string):
+    try:
+        return original_parseXMLString(xml_string)
+    except ET.ParseError as e:
+        # Log the raw XML content for debugging
+        logger.error(f"XML parsing failed with error: {e}")
+        logger.debug(f"Raw XML content (first 2000 chars):")
+        logger.debug(xml_string[:2000])
+        if len(xml_string) > 2000:
+            logger.debug(f"... (truncated, total length: {len(xml_string)})")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in XML parsing: {e}")
+        raise
+
+# Replace the function to capture raw XML on parsing errors
+utils.parseXMLString = debug_parseXMLString
 
 
 def detect_gpu():
@@ -388,32 +414,24 @@ def generate_bif(bif_filename, images_path):
 
 
 def process_item(item_key, gpu, gpu_device_path):
-    max_retries = 3
-    retry_delay = 1  # seconds
-
-    for attempt in range(max_retries):
-        try:
-            data = plex.query('{}/tree'.format(item_key))
-            break  # If successful, break out of retry loop
-        except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
-            if attempt == max_retries - 1:  # Last attempt
-                logger.error(f"Failed to query Plex for item {item_key} after {max_retries} attempts: {e}")
-                logger.error(f"Exception type: {type(e).__name__}")
-                # For XML parsing errors, provide additional context
-                if isinstance(e, xml.etree.ElementTree.ParseError):
-                    logger.error(f"XML parsing error - Plex server returned malformed XML response")
-                    logger.error(f"This usually indicates server issues, network problems, or corrupted responses")
-                # For connection errors, log more details
-                elif hasattr(e, 'request') and e.request:
-                    logger.error(f"Request URL: {e.request.url}")
-                    logger.error(f"Request method: {e.request.method}")
-                    logger.error(f"Request headers: {e.request.headers}")
-                return  # Skip this item and continue with others
-            else:
-                error_type = "XML parsing error" if isinstance(e, xml.etree.ElementTree.ParseError) else "network error"
-                logger.warning(f"Retry {attempt + 1}/{max_retries} for item {item_key} due to {error_type}: {e}")
-                time.sleep(retry_delay)
-                continue
+    try:
+        data = plex.query('{}/tree'.format(item_key))
+    except (requests.exceptions.RequestException, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
+        logger.error(f"Failed to query Plex for item {item_key}: {e}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        # For XML parsing errors, provide additional context
+        if isinstance(e, xml.etree.ElementTree.ParseError):
+            logger.error(f"XML parsing error - Plex server returned malformed XML response")
+            logger.error(f"This usually indicates server issues, network problems, or corrupted responses")
+        # For connection errors, log more details
+        elif hasattr(e, 'request') and e.request:
+            logger.error(f"Request URL: {e.request.url}")
+            logger.error(f"Request method: {e.request.method}")
+            logger.error(f"Request headers: {e.request.headers}")
+            return
+    except Exception as e:
+        logger.error(f"Error querying Plex for item {item_key}: {e}")
+        return
 
     def sanitize_path(path):
         if os.name == 'nt':
