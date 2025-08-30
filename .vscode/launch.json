@@ -1,0 +1,63 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Plex Generate Previews",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/plex_generate_previews.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PLEX_URL": "http://localhost:32400",
+                "PLEX_TOKEN": "your-plex-token-here",
+                "PLEX_BIF_FRAME_INTERVAL": "5",
+                "THUMBNAIL_QUALITY": "4",
+                "PLEX_LOCAL_MEDIA_PATH": "/path_to/plex/Library/Application Support/Plex Media Server/Media",
+                "TMP_FOLDER": "/dev/shm/plex_generate_previews",
+                "PLEX_TIMEOUT": "60",
+                "PLEX_LIBRARIES": "",
+                "REGENERATE_THUMBNAILS": "false",
+                "GPU_THREADS": "4",
+                "CPU_THREADS": "4",
+                "PLEX_LOCAL_VIDEOS_PATH_MAPPING": "",
+                "PLEX_VIDEOS_PATH_MAPPING": "",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "args": [],
+            "justMyCode": false,
+            "python": "${workspaceFolder}/venv/bin/python"
+        },
+        {
+            "name": "Debug Plex Generate Previews (CPU Only)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/plex_generate_previews.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PLEX_URL": "http://localhost:32400",
+                "PLEX_TOKEN": "your-plex-token-here",
+                "PLEX_BIF_FRAME_INTERVAL": "5",
+                "THUMBNAIL_QUALITY": "4",
+                "PLEX_LOCAL_MEDIA_PATH": "/path_to/plex/Library/Application Support/Plex Media Server/Media",
+                "TMP_FOLDER": "/dev/shm/plex_generate_previews",
+                "PLEX_TIMEOUT": "60",
+                "PLEX_LIBRARIES": "",
+                "REGENERATE_THUMBNAILS": "false",
+                "GPU_THREADS": "0",
+                "CPU_THREADS": "8",
+                "PLEX_LOCAL_VIDEOS_PATH_MAPPING": "",
+                "PLEX_VIDEOS_PATH_MAPPING": "",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "args": [],
+            "justMyCode": false,
+            "python": "${workspaceFolder}/venv/bin/python"
+        }
+    ]
+}
+
+
+
+
