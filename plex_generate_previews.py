@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-import sys
-import re
-import subprocess
-import shutil
-import glob
-import os
-import struct
-import urllib3
 import array
-import time
+import glob
 import http.client
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
 import xml.etree.ElementTree
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from concurrent.futures import ProcessPoolExecutor
 
+import urllib3
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
 
@@ -339,18 +339,36 @@ def generate_images(video_file, output_folder, gpu, gpu_device_path):
                 
                 args[args.index("-vf") + 1] = vf_parameters
 
-    logger.debug('Running ffmpeg')
-    logger.debug(' '.join(args))
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def run_ffmpeg(cmd_args, label="primary"):
+        logger.debug(f'Running ffmpeg ({label})')
+        logger.debug(' '.join(cmd_args))
+        proc = subprocess.Popen(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(1)  # allow time for it to start
+        out, err = proc.communicate()
+        return proc.returncode, out, err
 
-    # Allow time for it to start
-    time.sleep(1)
+    # 1) Try with skip_frame:v nokey
+    code, out, err = run_ffmpeg(args, label="with -skip_frame:v nokey")
 
-    out, err = proc.communicate()
-    if proc.returncode != 0:
+    # 2) If it failed, retry without -skip_frame:v nokey
+    if code != 0:
         err_lines = err.decode('utf-8', 'ignore').split('\n')[-5:]
         logger.error(err_lines)
-        logger.error('Problem trying to ffmpeg images for {}'.format(video_file))
+        logger.warning('Problem trying to ffmpeg images for {} — retrying without -skip_frame:v nokey'.format(video_file))
+        start = time.time()
+
+        args_retry = [a for a in args if a not in ["-skip_frame:v", "nokey"]]
+        code, out, err = run_ffmpeg(args_retry, label="retry without -skip_frame:v nokey")
+
+        if code != 0:
+            # Still failed: log and stop
+            err_lines = err.decode('utf-8', 'ignore').split('\n')[-5:]
+            logger.error(err_lines)
+            logger.error('Problem trying to ffmpeg images for {} (retry without -skip_frame:v nokey also failed)'.format(video_file))
+            return  # bail out; nothing to rename/optimize
+        else:
+            # Use the retry args for any subsequent logging
+            args = args_retry
 
     logger.debug('FFMPEG Command output')
     logger.debug(out)
@@ -358,9 +376,8 @@ def generate_images(video_file, output_folder, gpu, gpu_device_path):
     # Speed
     end = time.time()
     seconds = round(end - start, 1)
-    speed = re.findall('speed= ?([0-9]+\\.?[0-9]*|\\.[0-9]+)x', err.decode('utf-8', 'ignore'))
-    if speed:
-        speed = speed[-1]
+    speed = re.findall(r'speed= ?([0-9]+\.?[0-9]*|\.[0-9]+)x', err.decode('utf-8', 'ignore'))
+    speed = speed[-1] if speed else None
 
     # Optimize and Rename Images
     for image in glob.glob('{}/img*.jpg'.format(output_folder)):
