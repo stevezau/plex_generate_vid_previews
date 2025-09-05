@@ -295,13 +295,9 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
     ok = (proc.returncode == 0)
     if not ok:
         last = (proc.stderr or "").strip().splitlines()[-1:]  # tail(1)
-        if 'logger' in globals():
-            logger.debug(f"skip_frame probe FAILED at 0s: rc={proc.returncode} msg={last}")
-        else:
-            print(f"[probe] fail at 0s: {last}")
+        logger.debug(f"skip_frame probe FAILED at 0s: rc={proc.returncode} msg={last}")
     else:
-        if 'logger' in globals():
-            logger.debug("skip_frame probe OK at 0s")
+        logger.debug("skip_frame probe OK at 0s")
     return ok
 
 
