@@ -467,7 +467,7 @@ def process_item(item_key, gpu, gpu_device_path):
             logger.error(f"Request URL: {e.request.url}")
             logger.error(f"Request method: {e.request.method}")
             logger.error(f"Request headers: {e.request.headers}")
-            return
+        return
     except Exception as e:
         logger.error(f"Error querying Plex for item {item_key}: {e}")
         return
