@@ -13,7 +13,7 @@ import http.client
 import xml.etree.ElementTree
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 
@@ -28,7 +28,7 @@ PLEX_TOKEN = os.environ.get('PLEX_TOKEN', '')  # Plex Authentication Token
 PLEX_BIF_FRAME_INTERVAL = int(os.environ.get('PLEX_BIF_FRAME_INTERVAL', 5))  # Interval between preview images
 THUMBNAIL_QUALITY = int(os.environ.get('THUMBNAIL_QUALITY', 4))  # Preview image quality (2-6)
 PLEX_LOCAL_MEDIA_PATH = os.environ.get('PLEX_LOCAL_MEDIA_PATH', '/path_to/plex/Library/Application Support/Plex Media Server/Media')  # Local Plex media path
-TMP_FOLDER = os.environ.get('TMP_FOLDER', '/dev/shm/plex_generate_previews')  # Temporary folder for preview generation
+TMP_FOLDER = os.environ.get('TMP_FOLDER', '/tmp/plex_generate_previews')  # Temporary folder for preview generation
 
 PLEX_TIMEOUT = int(os.environ.get('PLEX_TIMEOUT', 60))  # Timeout for Plex API requests (seconds)
 PLEX_LIBRARIES = [library.strip().lower() for library in os.environ.get('PLEX_LIBRARIES', '').split(',') if library.strip()]  # Comma-separated list of library names to process, case-insensitive
@@ -43,6 +43,9 @@ PLEX_VIDEOS_PATH_MAPPING = os.environ.get('PLEX_VIDEOS_PATH_MAPPING', '')  # Ple
 GPU_THREADS = int(os.environ.get('GPU_THREADS', 4))  # Number of GPU threads for preview generation
 CPU_THREADS = int(os.environ.get('CPU_THREADS', 4))  # Number of CPU threads for preview generation
 
+# Internal constants
+WORKER_POOL_TIMEOUT = 30  # Timeout for worker pool shutdown (seconds)
+
 # Set the timeout envvar for https://github.com/pkkid/python-plexapi
 os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(PLEX_TIMEOUT)
 
@@ -52,43 +55,13 @@ if not shutil.which("mediainfo"):
     sys.exit(1)
 try:
     from pymediainfo import MediaInfo
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install pymediainfo".')
-    sys.exit(1)
-try:
-    import gpustat
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install gpustat".')
-    sys.exit(1)
-
-try:
     import requests
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install requests".')
-    sys.exit(1)
-
-try:
     from plexapi.server import PlexServer
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install plexapi".')
-    sys.exit(1)
-
-try:
     from loguru import logger
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install loguru".')
-    sys.exit(1)
-
-try:
     from rich.console import Console
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install rich".')
-    sys.exit(1)
-
-try:
     from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn
-except ImportError:
-    print('Dependencies Missing!  Please run "pip3 install rich".')
+except ImportError as e:
+    print(f'Dependencies Missing!  Please run "pip3 install {e.name}".')
     sys.exit(1)
 
 FFMPEG_PATH = shutil.which("ffmpeg")
@@ -216,60 +189,6 @@ def detect_gpu():
 
     return None, None
 
-def get_amd_ffmpeg_processes():
-    from amdsmi import amdsmi_init, amdsmi_shut_down, amdsmi_get_processor_handles, amdsmi_get_gpu_process_list
-    try:
-        amdsmi_init()
-        gpu_handles = amdsmi_get_processor_handles()
-        ffmpeg_processes = []
-
-        for gpu in gpu_handles:
-            processes = amdsmi_get_gpu_process_list(gpu)
-            for process in processes:
-                if process['name'].lower().startswith('ffmpeg'):
-                    ffmpeg_processes.append(process)
-
-        return ffmpeg_processes
-    except KeyError as e:
-        if 'ROCM_PATH' in str(e):
-            logger.debug("ROCm is not properly installed or ROCM_PATH environment variable is not set. AMD GPU process detection will be disabled.")
-        else:
-            logger.debug(f"KeyError in AMD GPU process detection: {e}")
-        return []
-    except Exception as e:
-        logger.debug(f"Error detecting AMD GPU processes: {e}")
-        return []
-    finally:
-        try:
-            amdsmi_shut_down()
-        except:
-            pass  # Ignore shutdown errors if init failed
-
-def get_intel_ffmpeg_processes():
-    vaapi_device_dir = "/dev/dri"
-    intel_gpu_processes = []
-
-    try:
-        if os.path.exists(vaapi_device_dir):
-            for entry in os.listdir(vaapi_device_dir):
-                if entry.startswith("renderD"):
-                    device_path = os.path.join(vaapi_device_dir, entry)
-                    # Checking for processes
-                    gpu_stats_query = gpustat.core.new_query()  # Assuming gpustat is available
-
-                    # Check if gpu_stats_query is not None or empty
-                    if gpu_stats_query:
-                        for gpu_stats in gpu_stats_query:
-                            if hasattr(gpu_stats, 'processes') and gpu_stats.processes:
-                                for process in gpu_stats.processes:
-                                    if 'ffmpeg' in process["command"].lower():
-                                        intel_gpu_processes.append(process["command"])
-                    else:
-                        logger.debug(f"No GPU stats found for {device_path}")
-    except Exception as e:
-        logger.debug(f"Error detecting Intel GPU processes: {e}")
-    
-    return intel_gpu_processes
 
 def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
     """
@@ -329,57 +248,35 @@ def generate_images(video_file, output_folder, gpu, gpu_device_path):
     start = time.time()
     hw = False
 
-    # Only attempt GPU processing if GPU_THREADS > 0
-    if GPU_THREADS > 0:
+    # Determine GPU usage - if gpu is set, use GPU
+    use_gpu = gpu is not None
+    
+    # Apply GPU acceleration if using GPU
+    if use_gpu:
+        hw = True
         if gpu == 'NVIDIA':
-            gpu_stats_query = gpustat.core.new_query()
-            logger.debug('Trying to determine how many GPU threads running')
-            if len(gpu_stats_query):
-                gpu_ffmpeg = []
-                for gpu_stats in gpu_stats_query:
-                    for process in gpu_stats.processes:
-                        if 'ffmpeg' in process["command"].lower():
-                            gpu_ffmpeg.append(process["command"])
-
-                logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
-                if len(gpu_ffmpeg) > GPU_THREADS:
-                    logger.debug('Hit limit on GPU threads, defaulting back to CPU')
-                if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
-                    hw = True
-                    args.insert(5, "-hwaccel")
-                    args.insert(6, "cuda")
+            args.insert(5, "-hwaccel")
+            args.insert(6, "cuda")
         else:
-            # AMD or Intel
-            if gpu == 'INTEL': 
-                gpu_ffmpeg = get_intel_ffmpeg_processes()
-            else:
-                gpu_ffmpeg = get_amd_ffmpeg_processes()
-                
-            logger.debug('Counted {} ffmpeg GPU threads running'.format(len(gpu_ffmpeg)))
-            if len(gpu_ffmpeg) > GPU_THREADS:
-                logger.debug('Hit limit on GPU threads, defaulting back to CPU')
-
-            if len(gpu_ffmpeg) < GPU_THREADS or CPU_THREADS == 0:
-                hw = True
-                args.insert(5, "-hwaccel")
-                args.insert(6, "vaapi")
-                args.insert(7, "-vaapi_device")
-                args.insert(8, gpu_device_path)
-                # Adjust vf_parameters for Intel 
-                if gpu == 'INTEL':
-                    vf_parameters = vf_parameters.replace(
-                        "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                        "format=nv12,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease,hwdownload,format=nv12")
-                else: 
+            # AMD or Intel VAAPI
+            args.insert(5, "-hwaccel")
+            args.insert(6, "vaapi")
+            args.insert(7, "-vaapi_device")
+            args.insert(8, gpu_device_path)
+            # Check if Intel GPU (Intel devices typically have 'renderD' in path)
+            if gpu == 'INTEL':
+                vf_parameters = vf_parameters.replace(
+                    "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+                    "format=nv12,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease,hwdownload,format=nv12")
+            else: 
                 # Adjust vf_parameters for AMD VAAPI
-                    vf_parameters = vf_parameters.replace(
-                        "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                        "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
-                
-                args[args.index("-vf") + 1] = vf_parameters
+                vf_parameters = vf_parameters.replace(
+                    "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+                    "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
+            
+            args[args.index("-vf") + 1] = vf_parameters
 
-    logger.debug('Running ffmpeg')
-    logger.debug(' '.join(args))
+    logger.debug(f'Executing: {" ".join(args)}')
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # Allow time for it to start
@@ -450,6 +347,7 @@ def generate_bif(bif_filename, images_path):
         f.write(data)
 
     f.close()
+    logger.debug(f'Generated BIF file: {bif_filename}')
 
 
 def process_item(item_key, gpu, gpu_device_path):
@@ -530,21 +428,32 @@ def process_item(item_key, gpu, gpu_device_path):
                     generate_images(media_file, tmp_path, gpu, gpu_device_path)
                 except Exception as e:
                     logger.error('Error generating images for {}. `{}: {}` error when generating images'.format(media_file, type(e).__name__, str(e)))
-                    if os.path.exists(tmp_path):
-                        shutil.rmtree(tmp_path)
+                    # Clean up temp directory on error
+                    try:
+                        if os.path.exists(tmp_path):
+                            shutil.rmtree(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
                     continue
 
                 try:
                     generate_bif(index_bif, tmp_path)
                 except Exception as e:
                     # Remove bif, as it prob failed to generate
-                    if os.path.exists(index_bif):
-                        os.remove(index_bif)
+                    try:
+                        if os.path.exists(index_bif):
+                            os.remove(index_bif)
+                    except Exception as remove_error:
+                        logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
                     logger.error('Error generating images for {}. `{}:{}` error when generating bif'.format(media_file, type(e).__name__, str(e)))
                     continue
                 finally:
-                    if os.path.exists(tmp_path):
-                        shutil.rmtree(tmp_path)
+                    # Always clean up temp directory
+                    try:
+                        if os.path.exists(tmp_path):
+                            shutil.rmtree(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
 
 
 def filter_duplicate_locations(media_items):
@@ -604,35 +513,127 @@ def run(gpu, gpu_device_path):
             continue
 
         logger.info('Got {} media files for library {}'.format(len(media), section.title))
+        logger.info(f'Processing with GPU({GPU_THREADS}) + CPU({CPU_THREADS}) threads | Queue capacity: {GPU_THREADS + CPU_THREADS}')
 
+        # Create separate worker pools for CPU and GPU
+        cpu_pool = None
+        gpu_pool = None
+        
+        # Initialize CPU pool if CPU_THREADS > 0
+        if CPU_THREADS > 0:
+            cpu_pool = ProcessPoolExecutor(max_workers=CPU_THREADS)
+            logger.debug(f'Initialized CPU pool with {CPU_THREADS} workers')
+        
+        # Initialize GPU pool if GPU_THREADS > 0 and GPU is available
+        if GPU_THREADS > 0 and gpu:
+            gpu_pool = ProcessPoolExecutor(max_workers=GPU_THREADS)
+            logger.debug(f'Initialized GPU pool with {GPU_THREADS} workers')
+        
+        # Dynamic task assignment - submit tasks as slots become available
+        gpu_futures = []
+        cpu_futures = []
+        media_queue = list(media)  # Copy the list
+        completed_tasks = 0
+        failed_tasks = 0
+        
         with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), console=console) as progress:
-            with ProcessPoolExecutor(max_workers=CPU_THREADS + GPU_THREADS) as process_pool:
-                futures = [process_pool.submit(process_item, key, gpu, gpu_device_path) for key in media]
-                for future in progress.track(futures):
-                    future.result()
+            task = progress.add_task("Processing media", total=len(media))
+            
+            # Submit initial batch of tasks
+            while media_queue and (len(gpu_futures) + len(cpu_futures)) < (GPU_THREADS + CPU_THREADS):
+                key = media_queue.pop(0)
+                
+                # Prefer GPU if available
+                if gpu_pool and len(gpu_futures) < GPU_THREADS:
+                    future = gpu_pool.submit(process_item, key, gpu, gpu_device_path)
+                    gpu_futures.append(future)
+                    logger.debug(f"Queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS}) | GPU has free slot, added job to GPU queue")
+                elif cpu_pool and len(cpu_futures) < CPU_THREADS:
+                    future = cpu_pool.submit(process_item, key, None, None)
+                    cpu_futures.append(future)
+                    logger.debug(f"Queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS}) | CPU has free slot, added job to CPU queue")
+                else:
+                    # No slots available, put task back
+                    media_queue.insert(0, key)
+                    break
+            
+            # Process completed tasks and submit new ones
+            while gpu_futures or cpu_futures or media_queue:
+                # Check for completed GPU tasks
+                completed_gpu = [f for f in gpu_futures if f.done()]
+                for future in completed_gpu:
+                    gpu_futures.remove(future)
+                    try:
+                        future.result()
+                        completed_tasks += 1
+                        progress.update(task, advance=1)
+                        logger.debug(f"GPU task completed, slot freed | Queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS})")
+                    except Exception as e:
+                        failed_tasks += 1
+                        logger.error(f"GPU task failed: {e}")
+                
+                # Check for completed CPU tasks
+                completed_cpu = [f for f in cpu_futures if f.done()]
+                for future in completed_cpu:
+                    cpu_futures.remove(future)
+                    try:
+                        future.result()
+                        completed_tasks += 1
+                        progress.update(task, advance=1)
+                        logger.debug(f"CPU task completed, slot freed | Queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS})")
+                    except Exception as e:
+                        failed_tasks += 1
+                        logger.error(f"CPU task failed: {e}")
+                
+                # Submit new tasks to available slots
+                while media_queue and (len(gpu_futures) + len(cpu_futures)) < (GPU_THREADS + CPU_THREADS):
+                    key = media_queue.pop(0)
+                    
+                    # Prefer GPU if available
+                    if gpu_pool and len(gpu_futures) < GPU_THREADS:
+                        future = gpu_pool.submit(process_item, key, gpu, gpu_device_path)
+                        gpu_futures.append(future)
+                        logger.debug(f"Queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS}) | GPU has free slot, added job to GPU queue")
+                    elif cpu_pool and len(cpu_futures) < CPU_THREADS:
+                        future = cpu_pool.submit(process_item, key, None, None)
+                        cpu_futures.append(future)
+                        logger.debug(f"Queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS}) | CPU has free slot, added job to CPU queue")
+                    else:
+                        # No slots available, put task back
+                        media_queue.insert(0, key)
+                        break
+                
+                # Small delay to prevent busy waiting
+                if gpu_futures or cpu_futures:
+                    time.sleep(0.1)
+        
+        logger.info(f'Processing complete: {completed_tasks} successful, {failed_tasks} failed | Final queue: GPU({len(gpu_futures)}/{GPU_THREADS}) CPU({len(cpu_futures)}/{CPU_THREADS})')
+        
+        # Clean up worker pools with timeout
+        if cpu_pool:
+            cpu_pool.shutdown(wait=True, timeout=WORKER_POOL_TIMEOUT)
+            logger.debug("CPU pool shutdown completed")
+        if gpu_pool:
+            gpu_pool.shutdown(wait=True, timeout=WORKER_POOL_TIMEOUT)
+            logger.debug("GPU pool shutdown completed")
 
 
 if __name__ == '__main__':
-    logger.info('GPU Detection (with AMD and INTEL Support) was recently added to this script.')
     logger.info('Please log issues here https://github.com/stevezau/plex_generate_vid_previews/issues')
 
-    if not os.path.exists(PLEX_LOCAL_MEDIA_PATH):
-        logger.error(
-            '%s does not exist, please edit PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
-        exit(1)
-
-    if not os.path.exists(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost')):
-        logger.error(
-            'You set PLEX_LOCAL_MEDIA_PATH to "%s". There should be a folder called "localhost" in that directory but it does not exist which suggests you haven\'t mapped it correctly. Please fix the PLEX_LOCAL_MEDIA_PATH environment variable' % PLEX_LOCAL_MEDIA_PATH)
-        exit(1)
-
-    if PLEX_URL == '':
-        logger.error('Please set the PLEX_URL environment variable')
-        exit(1)
-
-    if PLEX_TOKEN == '':
-        logger.error('Please set the PLEX_TOKEN environment variable')
-        exit(1)
+    # Validate required configuration
+    required_config = [
+        (PLEX_URL, 'PLEX_URL'),
+        (PLEX_TOKEN, 'PLEX_TOKEN'),
+        (os.path.exists(PLEX_LOCAL_MEDIA_PATH), f'PLEX_LOCAL_MEDIA_PATH ({PLEX_LOCAL_MEDIA_PATH}) does not exist'),
+        (os.path.exists(os.path.join(PLEX_LOCAL_MEDIA_PATH, 'localhost')), 
+         f'PLEX_LOCAL_MEDIA_PATH should contain "localhost" folder - check your mapping')
+    ]
+    
+    for condition, error_msg in required_config:
+        if not condition:
+            logger.error(error_msg)
+            exit(1)
 
     # Output Debug info on variables
     logger.debug('PLEX_URL = {}'.format(PLEX_URL))
@@ -646,6 +647,13 @@ if __name__ == '__main__':
     logger.debug('GPU_THREADS = {}'.format(GPU_THREADS))
     logger.debug('CPU_THREADS = {}'.format(CPU_THREADS))
     logger.debug('REGENERATE_THUMBNAILS = {}'.format(REGENERATE_THUMBNAILS))
+
+    # Validate thread configuration
+    if CPU_THREADS == 0 and GPU_THREADS == 0:
+        logger.error('Both CPU_THREADS and GPU_THREADS are set to 0.')
+        logger.error('At least one processing method must be enabled.')
+        logger.error('Please set CPU_THREADS and/or GPU_THREADS to a value greater than 0.')
+        exit(1)
 
     # detect GPU's
     gpu, gpu_device_path = None, None
@@ -670,6 +678,17 @@ if __name__ == '__main__':
             shutil.rmtree(TMP_FOLDER)
         os.makedirs(TMP_FOLDER)
         run(gpu, gpu_device_path)
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal, shutting down gracefully...")
+        # Graceful shutdown - no need to re-raise
+    except Exception as e:
+        logger.error(f"Unexpected error in main execution: {e}")
+        raise
     finally:
-        if os.path.isdir(TMP_FOLDER):
-            shutil.rmtree(TMP_FOLDER)
+        # Always clean up temp folder
+        try:
+            if os.path.isdir(TMP_FOLDER):
+                shutil.rmtree(TMP_FOLDER)
+                logger.debug(f"Cleaned up temp folder: {TMP_FOLDER}")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to clean up temp folder {TMP_FOLDER}: {cleanup_error}")
