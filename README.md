@@ -7,7 +7,7 @@
 
 ## Table of Contents
 
-- [Why Use This Tool?](#why-use-this-tool)
+- [What This Tool Does](#what-this-tool-does)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
@@ -22,51 +22,21 @@
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
 
-## Why Use This Tool?
+## What This Tool Does
 
-Plex's built-in preview thumbnail generation can be painfully slow, especially for large media libraries. This tool dramatically speeds up the process by leveraging your GPU's hardware acceleration and parallel processing. Instead of waiting hours or days for Plex to generate previews, you can process thousands of videos in minutes.
+Generates video preview thumbnails for Plex Media Server using GPU acceleration and parallel processing. Plex's built-in preview generation is slow - this tool makes it much faster.
 
-**What are preview thumbnails?** They're the small images you see when scrubbing through videos in Plex - they make navigation much faster and more intuitive.
-
-**Perfect for:**
-- **Large Libraries**: Process thousands of movies and TV shows quickly
-- **New Plex Setups**: Generate all previews at once after adding media
-- **Library Migrations**: Rebuild previews when moving or reorganizing libraries
-- **Performance Optimization**: Use GPU acceleration for maximum speed
-- **Remote Processing**: Generate previews on a different machine than your Plex server
-
-**Key Benefits:**
-- **10-50x faster** than Plex's built-in generation
-- **GPU acceleration** for maximum performance
-- **Parallel processing** with configurable worker threads
-- **Smart detection** of existing previews to avoid duplicates
-- **Production ready** with comprehensive error handling and logging
+Preview thumbnails are the small images you see when scrubbing through videos in Plex.
 
 ## Features
 
-🚀 **High-Performance Plex Video Preview Generation**
-- **Multi-GPU Support**: Automatically detects and utilizes NVIDIA, AMD, Intel, and WSL2 GPUs
-- **Parallel Processing**: Configurable GPU and CPU worker threads for maximum throughput
-- **Smart GPU Selection**: Choose specific GPUs or use all available hardware
-- **Hardware Acceleration**: CUDA, VAAPI, QSV, and D3D11VA support for optimal performance
-
-🎯 **Advanced Configuration**
-- **Flexible Input**: Command-line arguments with environment variable fallbacks
-- **Library Filtering**: Process specific Plex libraries (Movies, TV Shows, etc.)
-- **Quality Control**: Adjustable thumbnail quality (1-10) and frame intervals
-- **Path Mapping**: Support for complex media library setups and remote servers
-
-🔧 **Production Ready**
-- **Rich Progress Display**: Real-time FFmpeg progress with animated progress bars
-- **Comprehensive Logging**: Debug, info, warning, and error levels with structured output
-- **Graceful Shutdown**: Proper cleanup and signal handling
-- **Error Recovery**: Robust error handling and validation
-
-📦 **Deployment Options**
+- **Multi-GPU Support**: NVIDIA, AMD, Intel, and WSL2 GPUs
+- **Parallel Processing**: Configurable GPU and CPU worker threads
+- **Hardware Acceleration**: CUDA, VAAPI, QSV, and D3D11VA
+- **Library Filtering**: Process specific Plex libraries
+- **Quality Control**: Adjustable thumbnail quality (1-10)
 - **Docker Support**: Pre-built images with GPU acceleration
-- **Cross-Platform**: Linux, WSL2, and containerized environments
-- **Zero Dependencies**: Self-contained with minimal external requirements
-- **Configuration Validation**: Detailed error messages and setup guidance
+- **Command-line Interface**: CLI arguments and environment variables
 
 ## Requirements
 
