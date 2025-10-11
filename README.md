@@ -8,17 +8,18 @@
 ## Table of Contents
 
 - [What This Tool Does](#what-this-tool-does)
+- [Quick Start](#quick-start)
 - [Features](#features)
 - [Requirements](#requirements)
-- [Quick Start](#quick-start)
+- [Installation Options](#installation-options)
+  - [Docker](#docker)
+  - [Pip Installation](#pip-installation)
+  - [Unraid](#unraid)
 - [Configuration](#configuration)
   - [Command-line Arguments](#command-line-arguments)
   - [Environment Variables](#environment-variables)
 - [GPU Support](#gpu-support)
-- [Installation & Usage](#installation--usage)
-  - [Docker](#docker)
-  - [Local Installation](#local-installation)
-  - [Unraid](#unraid)
+- [Usage Examples](#usage-examples)
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
 
@@ -27,6 +28,43 @@
 Generates video preview thumbnails for Plex Media Server using GPU acceleration and parallel processing. Plex's built-in preview generation is slow - this tool makes it much faster.
 
 Preview thumbnails are the small images you see when scrubbing through videos in Plex.
+
+## Quick Start
+
+**Before you begin, you'll need:**
+1. A Plex Media Server running and accessible
+2. Your Plex authentication token ([how to get it](https://support.plex.tv/articles/204059436/))
+3. The path to your Plex config folder
+
+**Docker (easiest):**
+```bash
+# 1. Check your GPUs
+docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
+
+# 2. Run with your details
+docker run --rm --gpus all \
+  -e PLEX_URL=http://localhost:32400 \
+  -e PLEX_TOKEN=your-token-here \
+  -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
+  -v /path/to/your/plex/config:/config/plex \
+  -v /path/to/your/media:/media \
+  stevezzau/plex_generate_vid_previews:latest
+```
+
+**Pip (local install):**
+```bash
+# 1. Install
+pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
+
+# 2. Check your GPUs
+plex-generate-previews --list-gpus
+
+# 3. Run with your details
+plex-generate-previews \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token-here \
+  --plex-config-folder /path/to/your/plex/Library/Application\ Support/Plex\ Media\ Server
+```
 
 ## Features
 
@@ -51,149 +89,174 @@ Preview thumbnails are the small images you see when scrubbing through videos in
 - **Intel**: QSV or VAAPI-compatible iGPU/dGPU
 - **WSL2**: D3D11VA-compatible GPU (Intel Arc, etc.)
 
-## Quick Start
+## Installation Options
+
+Choose the installation method that best fits your setup:
 
 ### Docker (Recommended)
+
+> [!IMPORTANT]  
+> Note the extra "z" in the Docker Hub URL: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)  
+> (stevezau was already taken on Docker Hub)
+
+**Quick Start:**
 ```bash
-# 1. First, check what GPUs are available
+# 1. Check available GPUs
 docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
 
-# 2. Then run with GPU acceleration (uses all detected GPUs by default)
+# 2. Run with GPU acceleration
 docker run --rm --gpus all \
   -e PLEX_URL=http://localhost:32400 \
   -e PLEX_TOKEN=your-token \
   -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
-  -v /path/to/plex/config:/config/plex \
-  -v /path/to/media:/media \
-  stevezzau/plex_generate_vid_previews:latest
-
-# 3. Or select specific GPUs (e.g., if you have multiple GPUs)
-docker run --rm --gpus all \
-  -e PLEX_URL=http://localhost:32400 \
-  -e PLEX_TOKEN=your-token \
-  -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
-  -e GPU_SELECTION="0" \
   -v /path/to/plex/config:/config/plex \
   -v /path/to/media:/media \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
-### Local Installation
+**GPU Requirements:**
+- **NVIDIA**: Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- **AMD**: Follow [ROCm Docker setup guide](https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html)
+- **Intel**: Ensure container has access to `/dev/dri` devices and render group
+- **WSL2**: No special configuration needed - automatically detects WSL2 GPUs
+
+### Pip Installation
+
+**Quick Start:**
 ```bash
 # Install from GitHub
 pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
 
-# 1. First, check what GPUs are available
+# Check available GPUs
 plex-generate-previews --list-gpus
 
-# 2. Basic usage (uses all detected GPUs by default)
+# Basic usage
 plex-generate-previews \
   --plex-url http://localhost:32400 \
   --plex-token your-token \
   --plex-config-folder /path/to/plex/Library/Application\ Support/Plex\ Media\ Server
-
-# 3. Or select specific GPUs (e.g., if you have multiple GPUs)
-plex-generate-previews \
-  --plex-url http://localhost:32400 \
-  --plex-token your-token \
-  --plex-config-folder /path/to/plex/Library/Application\ Support/Plex\ Media\ Server \
-  --gpu-selection "0"
 ```
+
+**Prerequisites:**
+Install FFmpeg and MediaInfo:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update && sudo apt install ffmpeg mediainfo
+```
+
+**macOS (with Homebrew):**
+```bash
+brew install ffmpeg mediainfo
+```
+
+**Windows:**
+Download from [FFmpeg](https://ffmpeg.org/download.html) and [MediaInfo](https://mediaarea.net/en/MediaInfo/Download)
+
+**Usage Methods:**
+```bash
+# Method 1: Console script (recommended)
+plex-generate-previews --help
+
+# Method 2: Python module
+python -m plex_generate_previews --help
+```
+
+### Unraid
+
+This guide is for Unraid users following the [TRaSH Guide](https://trash-guides.info/) folder structure with the linuxserver/plex Docker image.
+
+**Setup Steps:**
+1. **Configure Plex Container Paths:**
+   - Add a second container path: `/server/media/plex/`
+   - Map to host path: `/mnt/user/media/plex/`
+
+2. **Update Plex Library Mappings:**
+   - Delete existing library path mappings in Plex
+   - Add new mappings with format: `//server/media/plex/<media-folder>`
+   - Example: `//server/media/plex/tv`
+
+3. **Configure Environment Variables:**
+   ```bash
+   PLEX_URL=http://localhost:32400
+   PLEX_TOKEN=your-plex-token
+   PLEX_CONFIG_FOLDER=/config/plex/Library/Application Support/Plex Media Server
+   ```
+
+4. **Set Permissions:**
+   ```bash
+   chmod -R 777 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
+   ```
+
+5. **Run the Script:**
+   - The script may appear frozen initially but will start processing
+   - Check the temporary folder for generated thumbnails
 
 ## Configuration
 
-You can configure using either **command-line arguments** or **environment variables**. CLI arguments take precedence over environment variables, allowing you to override settings for specific runs.
+You can configure using either **command-line arguments** or **environment variables**. CLI arguments take precedence over environment variables.
+
+### Basic Configuration
+
+**Required settings:**
+- `PLEX_URL` - Your Plex server URL (e.g., http://localhost:32400)
+- `PLEX_TOKEN` - Your Plex authentication token
+- `PLEX_CONFIG_FOLDER` - Path to Plex config folder
+
+**Common settings:**
+- `GPU_THREADS` - Number of GPU worker threads (default: 4)
+- `CPU_THREADS` - Number of CPU worker threads (default: 4)
+- `THUMBNAIL_QUALITY` - Preview quality 1-10 (default: 4)
+- `PLEX_LIBRARIES` - Specific libraries to process (default: all)
 
 ### Command-line Arguments
 
-All configuration options are available as command-line arguments. Run `plex-generate-previews --help` to see all available options:
-
 ```bash
-# Basic usage with CLI arguments
+# Basic usage
 plex-generate-previews --plex-url http://localhost:32400 --plex-token YOUR_TOKEN
+
+# With custom settings
+plex-generate-previews \
+  --plex-url http://localhost:32400 \
+  --plex-token YOUR_TOKEN \
+  --plex-config-folder /path/to/plex/config \
+  --gpu-threads 8 \
+  --cpu-threads 4 \
+  --thumbnail-quality 2
 ```
 
 ### Environment Variables
 
-You can customize various settings by modifying the environment variables. If you are running locally you can create
-a `.env` file. **Note:** Command-line arguments take precedence over environment variables.
-
-**Precedence Order:**
-1. Command-line arguments (highest priority)
-2. Environment variables
-3. Default values (lowest priority)
-
-#### Plex Server Configuration
-
-| Variable | CLI Argument | Description | Default |
-|----------|--------------|-------------|---------|
-| `PLEX_URL` | `--plex-url` | Plex server URL (e.g., http://localhost:32400) | *Required* |
-| `PLEX_TOKEN` | `--plex-token` | Plex authentication token ([how to get](https://support.plex.tv/articles/204059436/)) | *Required* |
-| `PLEX_TIMEOUT` | `--plex-timeout` | Plex API timeout in seconds | 60 |
-| `PLEX_LIBRARIES` | `--plex-libraries` | Comma-separated library names (e.g., "Movies, TV Shows") | All libraries |
-
-#### Media Paths
-
-| Variable | CLI Argument | Description | Default |
-|----------|--------------|-------------|---------|
-| `PLEX_CONFIG_FOLDER` | `--plex-config-folder` | Path to Plex Media Server config folder | *Required* |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Local videos path mapping | Empty |
-| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Plex videos path mapping | Empty |
-
-#### Path Mappings Explained
-
-Path mappings are used when running the tool remotely (like in Docker) where Plex's file paths differ from the paths the tool can access.
-
-**When to use path mappings:**
-- Running in Docker with volume mounts
-- Plex running on a different machine than the tool
-- Different path structures between Plex and the tool
-
-**How it works:**
-1. Plex stores file paths like `/server/media/movies/Movie.mkv`
-2. The tool needs to access files at `/media/movies/Movie.mkv` (mounted volume)
-3. Path mappings translate between these two path formats
-
-**Examples:**
+Create a `.env` file for persistent settings:
 
 ```bash
-# Docker example: Plex sees /server/media, tool sees /media
---plex-videos-path-mapping "/server/media" \
---plex-local-videos-path-mapping "/media"
-
-# Remote Plex example: Plex sees /mnt/plex/media, tool sees /local/media  
---plex-videos-path-mapping "/mnt/plex/media" \
---plex-local-videos-path-mapping "/local/media"
-
-# No mapping needed for local installation (tool and Plex on same machine)
-# Just omit both parameters
+PLEX_URL=http://localhost:32400
+PLEX_TOKEN=your-token-here
+PLEX_CONFIG_FOLDER=/path/to/plex/config
+GPU_THREADS=4
+CPU_THREADS=4
+THUMBNAIL_QUALITY=4
 ```
 
-**Path mapping logic:**
-- If both mappings are provided: `Plex path` → `Local path`
-- If neither mapping is provided: Use Plex path directly (local installation)
-- If only one mapping is provided: Error (both required together)
+### Advanced Configuration
 
-#### Processing Configuration
+For detailed configuration options, see the complete reference tables below:
 
-| Variable | CLI Argument | Description | Default |
-|----------|--------------|-------------|---------|
-| `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
-| `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
-| `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
-
-#### Threading Configuration
+#### All Configuration Options
 
 | Variable | CLI Argument | Description | Default |
 |----------|--------------|-------------|---------|
+| `PLEX_URL` | `--plex-url` | Plex server URL | *Required* |
+| `PLEX_TOKEN` | `--plex-token` | Plex authentication token | *Required* |
+| `PLEX_CONFIG_FOLDER` | `--plex-config-folder` | Path to Plex config folder | *Required* |
+| `PLEX_TIMEOUT` | `--plex-timeout` | Plex API timeout in seconds | 60 |
+| `PLEX_LIBRARIES` | `--plex-libraries` | Comma-separated library names | All libraries |
 | `GPU_THREADS` | `--gpu-threads` | Number of GPU worker threads (0-32) | 4 |
 | `CPU_THREADS` | `--cpu-threads` | Number of CPU worker threads (0-32) | 4 |
 | `GPU_SELECTION` | `--gpu-selection` | GPU selection: "all" or "0,1,2" | "all" |
-
-#### System Configuration
-
-| Variable | CLI Argument | Description | Default |
-|----------|--------------|-------------|---------|
+| `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
+| `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
+| `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
 | `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp/plex_generate_previews |
 | `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
 
@@ -203,6 +266,21 @@ Path mappings are used when running the tool remotely (like in Docker) where Ple
 |---------|-------------|
 | `--list-gpus` | List detected GPUs and exit |
 | `--help` | Show help message and exit |
+
+#### Path Mappings (Docker/Remote)
+
+When running in Docker or remotely, you may need path mappings:
+
+```bash
+# Docker example: Plex sees /server/media, tool sees /media
+--plex-videos-path-mapping "/server/media" \
+--plex-local-videos-path-mapping "/media"
+```
+
+**When to use:**
+- Running in Docker with volume mounts
+- Plex running on a different machine than the tool
+- Different path structures between Plex and the tool
 
 ## GPU Support
 
@@ -277,17 +355,11 @@ services:
 #### WSL2
 No special Docker configuration needed - automatically detects WSL2 GPUs.
 
-## Installation & Usage
+## Usage Examples
 
-### Docker
+### Docker Compose Examples
 
-> [!IMPORTANT]  
-> Note the extra "z" in the Docker Hub URL: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)  
-> (stevezau was already taken on Docker Hub)
-
-#### Docker Compose
-
-**NVIDIA GPU Example:**
+**NVIDIA GPU:**
 ```yaml
 version: '3.8'
 services:
@@ -298,11 +370,6 @@ services:
       - PLEX_URL=http://localhost:32400
       - PLEX_TOKEN=your-plex-token
       - PLEX_CONFIG_FOLDER=/config/plex/Library/Application Support/Plex Media Server
-      - PLEX_BIF_FRAME_INTERVAL=5
-      - THUMBNAIL_QUALITY=4
-      - GPU_THREADS=4
-      - CPU_THREADS=4
-      - LOG_LEVEL=INFO
     volumes:
       - /path/to/plex/config:/config/plex
       - /path/to/media:/media
@@ -314,7 +381,7 @@ services:
     runtime: nvidia
 ```
 
-**AMD GPU Example:**
+**AMD GPU:**
 ```yaml
 version: '3.8'
 services:
@@ -334,27 +401,7 @@ services:
       - 109  # render group
 ```
 
-**Intel GPU Example:**
-```yaml
-version: '3.8'
-services:
-  previews:
-    image: stevezzau/plex_generate_vid_previews:latest
-    user: 1000:1000
-    environment:
-      - PLEX_URL=http://localhost:32400
-      - PLEX_TOKEN=your-plex-token
-      - PLEX_CONFIG_FOLDER=/config/plex/Library/Application Support/Plex Media Server
-    volumes:
-      - /path/to/plex/config:/config/plex
-      - /path/to/media:/media
-    devices:
-      - /dev/dri:/dev/dri
-    group_add:
-      - 109  # render group
-```
-
-#### Docker CLI
+### Docker CLI Examples
 
 **NVIDIA GPU:**
 ```bash
@@ -380,96 +427,36 @@ docker run --rm \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
-**Intel GPU:**
+### Advanced Usage
+
+**Process specific libraries:**
 ```bash
-docker run --rm \
-  --device=/dev/dri:/dev/dri \
-  --group-add 109 \
-  -e PLEX_URL=http://localhost:32400 \
-  -e PLEX_TOKEN=your-token \
-  -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
-  -v /path/to/plex/config:/config/plex \
-  -v /path/to/media:/media \
-  stevezzau/plex_generate_vid_previews:latest
-```
-
-### Local Installation
-
-> **Note:** Docker is the recommended installation method. Local installation is provided for development or when Docker is not available.
-
-#### Prerequisites
-
-Install FFmpeg and MediaInfo:
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update && sudo apt install ffmpeg mediainfo
-```
-
-**macOS (with Homebrew):**
-```bash
-brew install ffmpeg mediainfo
-```
-
-**Windows:**
-Download from [FFmpeg](https://ffmpeg.org/download.html) and [MediaInfo](https://mediaarea.net/en/MediaInfo/Download)
-
-#### Install the Package
-
-```bash
-pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
-```
-
-#### Usage
-
-**Simple execution:**
-```bash
-python -m plex_generate_previews
-```
-
-**With command-line arguments:**
-```bash
-python -m plex_generate_previews \
+plex-generate-previews \
   --plex-url http://localhost:32400 \
   --plex-token your-token \
-  --plex-config-folder "/path/to/plex/Library/Application Support/Plex Media Server"
+  --plex-config-folder /path/to/plex/config \
+  --plex-libraries "Movies, TV Shows"
 ```
 
-**Using console script (if installed):**
+**Use specific GPUs:**
 ```bash
-plex-generate-previews
+plex-generate-previews \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token \
+  --plex-config-folder /path/to/plex/config \
+  --gpu-selection "0,2" \
+  --gpu-threads 8
 ```
 
-### Unraid
-
-This guide is for Unraid users following the [TRaSH Guide](https://trash-guides.info/) folder structure with the linuxserver/plex Docker image.
-
-#### Setup Steps
-
-1. **Configure Plex Container Paths:**
-   - Add a second container path: `/server/media/plex/`
-   - Map to host path: `/mnt/user/media/plex/`
-
-2. **Update Plex Library Mappings:**
-   - Delete existing library path mappings in Plex
-   - Add new mappings with format: `//server/media/plex/<media-folder>`
-   - Example: `//server/media/plex/tv`
-
-3. **Configure Environment Variables:**
-   ```bash
-   PLEX_URL=http://localhost:32400
-   PLEX_TOKEN=your-plex-token
-   PLEX_CONFIG_FOLDER=/config/plex/Library/Application Support/Plex Media Server
-   ```
-
-4. **Set Permissions:**
-   ```bash
-   chmod -R 777 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
-   ```
-
-5. **Run the Script:**
-   - The script may appear frozen initially but will start processing
-   - Check the temporary folder for generated thumbnails
+**CPU-only processing:**
+```bash
+plex-generate-previews \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token \
+  --plex-config-folder /path/to/plex/config \
+  --gpu-threads 0 \
+  --cpu-threads 8
+```
 
 ## Troubleshooting
 
@@ -558,9 +545,6 @@ A: Lower numbers = higher quality but larger file sizes. Quality 2 is highest qu
 
 **Q: How many threads should I use?**
 A: Start with 4 GPU threads and 4 CPU threads. Adjust based on your hardware - more threads = faster processing but higher resource usage.
-
-**Q: Which GPU type is fastest?**
-A: Generally: NVIDIA (CUDA) > AMD (VAAPI) > Intel (QSV/VAAPI) > CPU-only. Actual performance depends on your specific hardware.
 
 **Q: Can I use multiple GPUs?**
 A: Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-selection "0,1,2"` to select specific GPUs.
