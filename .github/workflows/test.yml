@@ -9,6 +9,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: linuxserver/ffmpeg:8.0-cli-ls43
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12']
@@ -23,8 +25,10 @@ jobs:
     
     - name: Install system dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
+        apt-get update
+        apt-get install -y python3-dev build-essential
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
     
     - name: Install dependencies
       run: |
