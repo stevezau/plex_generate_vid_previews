@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plex-generate-previews"
+version = "2.0.0"
+authors = [
+    {name = "stevezau", email = "stevezau@example.com"},
+]
+description = "Generate video preview thumbnails for Plex Media Server"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.7"
+platforms = ["linux"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Archiving",
+]
+keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
+dependencies = [
+    "requests==2.31.0",
+    "urllib3>=1.26.0",
+    "python-dotenv==1.0.1",
+    "plexapi==4.17.1",
+    "loguru==0.7.2",
+    "rich==13.7.1",
+    "pymediainfo==6.1.0",
+    "psutil==7.0.0",
+]
+
+[project.optional-dependencies]
+nvidia = ["pynvml==11.5.3"]
+amd = ["amdsmi==6.2.1"]
+
+[project.urls]
+Homepage = "https://github.com/stevezau/plex_generate_vid_previews"
+Repository = "https://github.com/stevezau/plex_generate_vid_previews"
+Issues = "https://github.com/stevezau/plex_generate_vid_previews/issues"
+
+[project.scripts]
+plex-generate-previews = "plex_generate_previews.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["plex_generate_previews*"]

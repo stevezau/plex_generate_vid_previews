@@ -1,20 +1,29 @@
-FROM linuxserver/ffmpeg:7.1.1-cli-ls27
+FROM linuxserver/ffmpeg:8.0-cli-ls43
 
-# Install Python and pip
-RUN apt-get update && apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip
+# Install Python and pip, then clean up
+RUN apt-get update && \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r plex && useradd -r -g plex plex
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy the requirements.txt file to the working directory
-COPY requirements.txt .
+# Copy only necessary files
+COPY pyproject.toml ./
+COPY plex_generate_previews/ ./plex_generate_previews/
 
-# Install the Python dependencies
+# Install Python package
 ENV PIP_BREAK_SYSTEM_PACKAGES 1
-RUN pip3 install -r requirements.txt
+RUN pip3 install . --no-cache-dir
 
-# Copy the Python script and .env file to the working directory
-COPY plex_generate_previews.py .
+# Change ownership to non-root user
+RUN chown -R plex:plex /app
 
-# Run the Python script when the container starts
-ENTRYPOINT ["/bin/bash", "-c", "/usr/bin/python3 /app/plex_generate_previews.py"]
+# Switch to non-root user
+USER plex
+
+ENTRYPOINT ["plex-generate-previews"]
