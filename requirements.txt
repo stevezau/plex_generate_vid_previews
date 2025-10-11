@@ -1,9 +1,0 @@
-pymediainfo==6.1.0
-requests==2.31.0
-plexapi==4.17.1
-loguru==0.7.2
-rich==13.7.1
-python-dotenv==1.0.1
-amdsmi==6.2.1
-pynvml==11.5.3
-psutil==7.0.0
