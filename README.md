@@ -55,14 +55,24 @@ Preview thumbnails are the small images you see when scrubbing through videos in
 
 ### Docker (Recommended)
 ```bash
-# List available GPUs
+# 1. First, check what GPUs are available
 docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
 
-# Basic usage
+# 2. Then run with GPU acceleration (uses all detected GPUs by default)
 docker run --rm --gpus all \
   -e PLEX_URL=http://localhost:32400 \
   -e PLEX_TOKEN=your-token \
   -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
+  -v /path/to/plex/config:/config/plex \
+  -v /path/to/media:/media \
+  stevezzau/plex_generate_vid_previews:latest
+
+# 3. Or select specific GPUs (e.g., if you have multiple GPUs)
+docker run --rm --gpus all \
+  -e PLEX_URL=http://localhost:32400 \
+  -e PLEX_TOKEN=your-token \
+  -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
+  -e GPU_SELECTION="0" \
   -v /path/to/plex/config:/config/plex \
   -v /path/to/media:/media \
   stevezzau/plex_generate_vid_previews:latest
@@ -73,16 +83,26 @@ docker run --rm --gpus all \
 # Install from GitHub
 pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
 
-# Basic usage
+# 1. First, check what GPUs are available
+plex-generate-previews --list-gpus
+
+# 2. Basic usage (uses all detected GPUs by default)
 plex-generate-previews \
   --plex-url http://localhost:32400 \
   --plex-token your-token \
   --plex-config-folder /path/to/plex/Library/Application\ Support/Plex\ Media\ Server
+
+# 3. Or select specific GPUs (e.g., if you have multiple GPUs)
+plex-generate-previews \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token \
+  --plex-config-folder /path/to/plex/Library/Application\ Support/Plex\ Media\ Server \
+  --gpu-selection "0"
 ```
 
 ## Configuration
 
-You can configure the application using either **command-line arguments** or **environment variables**. CLI arguments take precedence over environment variables, allowing you to override settings for specific runs.
+You can configure using either **command-line arguments** or **environment variables**. CLI arguments take precedence over environment variables, allowing you to override settings for specific runs.
 
 ### Command-line Arguments
 
@@ -91,12 +111,6 @@ All configuration options are available as command-line arguments. Run `plex-gen
 ```bash
 # Basic usage with CLI arguments
 plex-generate-previews --plex-url http://localhost:32400 --plex-token YOUR_TOKEN
-
-# Override specific settings
-plex-generate-previews --gpu-threads 8 --log-level DEBUG
-
-# Mix CLI args with environment variables (CLI takes precedence)
-PLEX_URL=http://localhost:32400 plex-generate-previews --plex-token DIFFERENT_TOKEN
 ```
 
 ### Environment Variables
@@ -125,6 +139,40 @@ a `.env` file. **Note:** Command-line arguments take precedence over environment
 | `PLEX_CONFIG_FOLDER` | `--plex-config-folder` | Path to Plex Media Server config folder | *Required* |
 | `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Local videos path mapping | Empty |
 | `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Plex videos path mapping | Empty |
+
+#### Path Mappings Explained
+
+Path mappings are used when running the tool remotely (like in Docker) where Plex's file paths differ from the paths the tool can access.
+
+**When to use path mappings:**
+- Running in Docker with volume mounts
+- Plex running on a different machine than the tool
+- Different path structures between Plex and the tool
+
+**How it works:**
+1. Plex stores file paths like `/server/media/movies/Movie.mkv`
+2. The tool needs to access files at `/media/movies/Movie.mkv` (mounted volume)
+3. Path mappings translate between these two path formats
+
+**Examples:**
+
+```bash
+# Docker example: Plex sees /server/media, tool sees /media
+--plex-videos-path-mapping "/server/media" \
+--plex-local-videos-path-mapping "/media"
+
+# Remote Plex example: Plex sees /mnt/plex/media, tool sees /local/media  
+--plex-videos-path-mapping "/mnt/plex/media" \
+--plex-local-videos-path-mapping "/local/media"
+
+# No mapping needed for local installation (tool and Plex on same machine)
+# Just omit both parameters
+```
+
+**Path mapping logic:**
+- If both mappings are provided: `Plex path` → `Local path`
+- If neither mapping is provided: Use Plex path directly (local installation)
+- If only one mapping is provided: Error (both required together)
 
 #### Processing Configuration
 
@@ -347,26 +395,15 @@ docker run --rm \
 
 ### Local Installation
 
+> **Note:** Docker is the recommended installation method. Local installation is provided for development or when Docker is not available.
+
 #### Prerequisites
 
-Install the required system dependencies:
+Install FFmpeg and MediaInfo:
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt update
-sudo apt install ffmpeg mediainfo python3-pip
-```
-
-**CentOS/RHEL/Fedora:**
-```bash
-sudo dnf install ffmpeg mediainfo python3-pip
-# or for older versions:
-# sudo yum install ffmpeg mediainfo python3-pip
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S ffmpeg mediainfo python-pip
+sudo apt update && sudo apt install ffmpeg mediainfo
 ```
 
 **macOS (with Homebrew):**
@@ -374,75 +411,33 @@ sudo pacman -S ffmpeg mediainfo python-pip
 brew install ffmpeg mediainfo
 ```
 
+**Windows:**
+Download from [FFmpeg](https://ffmpeg.org/download.html) and [MediaInfo](https://mediaarea.net/en/MediaInfo/Download)
+
 #### Install the Package
 
-**Option A: Install from GitHub (Recommended)**
 ```bash
-pip3 install git+https://github.com/stevezau/plex_generate_vid_previews.git
-```
-
-**Option B: Install from local source**
-```bash
-git clone https://github.com/stevezau/plex_generate_vid_previews.git
-cd plex_generate_vid_previews
-pip3 install .
-```
-
-**Option C: Install with optional GPU dependencies**
-```bash
-# For NVIDIA GPU support
-pip3 install git+https://github.com/stevezau/plex_generate_vid_previews.git[nvidia]
-
-# For AMD GPU support  
-pip3 install git+https://github.com/stevezau/plex_generate_vid_previews.git[amd]
-
-# For both NVIDIA and AMD
-pip3 install git+https://github.com/stevezau/plex_generate_vid_previews.git[nvidia,amd]
-```
-
-#### Configuration
-
-Create a `.env` file in your working directory:
-
-```bash
-# Plex server configuration
-PLEX_URL=http://localhost:32400
-PLEX_TOKEN=your-plex-token
-PLEX_CONFIG_FOLDER=/path/to/plex/Library/Application Support/Plex Media Server
-
-# Processing settings
-GPU_THREADS=4
-CPU_THREADS=4
-PLEX_BIF_FRAME_INTERVAL=5
-THUMBNAIL_QUALITY=4
-
-# Optional: GPU selection
-GPU_SELECTION=all
-
-# Optional: Logging
-LOG_LEVEL=INFO
+pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
 ```
 
 #### Usage
 
-**Using the console script:**
+**Simple execution:**
 ```bash
-plex-generate-previews
-```
-
-**Using Python module:**
-```bash
-python3 -m plex_generate_previews
+python -m plex_generate_previews
 ```
 
 **With command-line arguments:**
 ```bash
-plex-generate-previews \
+python -m plex_generate_previews \
   --plex-url http://localhost:32400 \
   --plex-token your-token \
-  --plex-config-folder "/path/to/plex/Library/Application Support/Plex Media Server" \
-  --gpu-threads 4 \
-  --cpu-threads 4
+  --plex-config-folder "/path/to/plex/Library/Application Support/Plex Media Server"
+```
+
+**Using console script (if installed):**
+```bash
+plex-generate-previews
 ```
 
 ### Unraid
