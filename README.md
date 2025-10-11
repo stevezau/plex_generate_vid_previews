@@ -287,10 +287,13 @@ Path mappings tell the tool how to convert Plex's file paths to the actual file 
 
 **How to Use Path Mappings:**
 
+Using the Avatar example from above:
 ```bash
-# Basic syntax
---plex-videos-path-mapping "PLEX_PATH" \
---plex-local-videos-path-mapping "LOCAL_PATH"
+# Plex sees: /server/media/movies/avatar.mkv
+# Container sees: /media/movies/avatar.mkv
+# Solution: Map /server/media to /media
+--plex-videos-path-mapping "/server/media" \
+--plex-local-videos-path-mapping "/media"
 ```
 
 **Common Examples:**
