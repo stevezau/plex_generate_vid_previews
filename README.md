@@ -269,18 +269,119 @@ For detailed configuration options, see the complete reference tables below:
 
 #### Path Mappings (Docker/Remote)
 
-When running in Docker or remotely, you may need path mappings:
+Path mappings are crucial when running in Docker or when Plex and the tool see different file paths. This is one of the most common issues users encounter.
 
-```bash
-# Docker example: Plex sees /server/media, tool sees /media
---plex-videos-path-mapping "/server/media" \
---plex-local-videos-path-mapping "/media"
-```
+**What are Path Mappings?**
+Path mappings tell the tool how to convert Plex's file paths to the actual file paths accessible within the container or on the remote machine.
 
-**When to use:**
+**The Problem:**
+- Plex stores file paths like: `/server/media/movies/avatar.mkv`
+- Inside Docker container, files are at: `/media/movies/avatar.mkv`
+- The tool needs to know how to convert between these paths
+
+**When You Need Path Mappings:**
 - Running in Docker with volume mounts
 - Plex running on a different machine than the tool
 - Different path structures between Plex and the tool
+- Using network shares or mounted drives
+
+**How to Use Path Mappings:**
+
+```bash
+# Basic syntax
+--plex-videos-path-mapping "PLEX_PATH" \
+--plex-local-videos-path-mapping "LOCAL_PATH"
+```
+
+**Common Examples:**
+
+**Example 1: Docker with Volume Mounts**
+```bash
+# Plex sees: /server/media/movies/avatar.mkv
+# Container sees: /media/movies/avatar.mkv
+docker run --rm --gpus all \
+  -e PLEX_URL=http://localhost:32400 \
+  -e PLEX_TOKEN=your-token \
+  -e PLEX_CONFIG_FOLDER=/config/plex/Library/Application\ Support/Plex\ Media\ Server \
+  -v /path/to/plex/config:/config/plex \
+  -v /path/to/media:/media \
+  stevezzau/plex_generate_vid_previews:latest \
+  --plex-videos-path-mapping "/server/media" \
+  --plex-local-videos-path-mapping "/media"
+```
+
+**Example 2: Different Server Names**
+```bash
+# Plex sees: /mnt/media/movies/avatar.mkv
+# Container sees: /media/movies/avatar.mkv
+--plex-videos-path-mapping "/mnt/media" \
+--plex-local-videos-path-mapping "/media"
+```
+
+**Example 3: Windows Network Shares**
+```bash
+# Plex sees: \\server\media\movies\avatar.mkv
+# Container sees: /media/movies/avatar.mkv
+--plex-videos-path-mapping "\\\\server\\media" \
+--plex-local-videos-path-mapping "/media"
+```
+
+**Example 4: Multiple Path Mappings**
+```bash
+# If you have multiple different path structures
+--plex-videos-path-mapping "/server/media,/mnt/media" \
+--plex-local-videos-path-mapping "/media,/media"
+```
+
+**How to Find Your Path Mappings:**
+
+1. **Check Plex Library Settings:**
+   - Go to Plex Web → Settings → Libraries
+   - Click on a library → Edit → Folders
+   - Note the path Plex shows (e.g., `/server/media/movies`)
+
+2. **Check Your Docker Volume Mounts:**
+   ```bash
+   # Your Docker command should have something like:
+   -v /host/path/to/media:/container/path/to/media
+   ```
+
+3. **Test the Mapping:**
+   ```bash
+   # Run with debug logging to see path conversions
+   plex-generate-previews --log-level DEBUG \
+     --plex-videos-path-mapping "/server/media" \
+     --plex-local-videos-path-mapping "/media"
+   ```
+
+**Troubleshooting Path Mappings:**
+
+**Problem: "Skipping as file not found"**
+- **Cause**: Incorrect path mappings
+- **Solution**: Check that the mapping correctly converts Plex paths to accessible paths
+
+**Problem: "Permission denied"**
+- **Cause**: Container can't access the mapped path
+- **Solution**: Check Docker volume mount permissions and user mapping
+
+**Problem: "No videos found"**
+- **Cause**: Path mapping doesn't match any Plex library paths
+- **Solution**: Verify Plex library paths match your mapping
+
+**Quick Test:**
+```bash
+# Test if your paths are correct
+docker run --rm -v /your/media:/media stevezzau/plex_generate_vid_previews:latest \
+  --list-gpus --plex-videos-path-mapping "/server/media" \
+  --plex-local-videos-path-mapping "/media"
+```
+
+**Pro Tips:**
+- Always use absolute paths
+- Test with `--log-level DEBUG` to see path conversions
+- Check Plex library settings to see exact paths
+- Use forward slashes even on Windows
+- Escape backslashes in Windows paths: `\\\\server\\share`
 
 ## GPU Support
 

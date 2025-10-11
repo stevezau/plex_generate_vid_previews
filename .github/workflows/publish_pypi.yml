@@ -17,6 +17,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Extract version from Git tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Update pyproject.toml with Git tag version
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.VERSION }}\"/" pyproject.toml
+          echo "Updated version to: ${{ steps.version.outputs.VERSION }}"
+
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
