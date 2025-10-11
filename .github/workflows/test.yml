@@ -39,9 +39,3 @@ jobs:
         # Run tests that work in CI environment (no GPU hardware)
         . /opt/venv/bin/activate
         pytest tests/test_basic.py tests/test_cli.py tests/test_gpu_ci.py -v --cov=plex_generate_previews --cov-report=xml
-    
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        fail_ci_if_error: true
