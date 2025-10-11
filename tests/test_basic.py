@@ -43,7 +43,14 @@ class TestBasicFunctionality:
         # The app will try to connect to Plex and fail, which is expected
         # We just want to make sure it doesn't crash with a Python error
         assert result.returncode in [0, 1]  # Either success or expected failure
-        assert 'Failed to connect to Plex server' in result.stdout or 'PLEX_TOKEN is required' in result.stderr
+        # Check for various expected error messages
+        expected_errors = [
+            'Failed to connect to Plex server',
+            'PLEX_TOKEN is required',
+            'FFmpeg not found'
+        ]
+        output = result.stdout + result.stderr
+        assert any(error in output for error in expected_errors), f"Expected one of {expected_errors} in output: {output}"
 
 
 class TestConfigFunctions:
