@@ -21,7 +21,8 @@ class Worker:
     """Represents a worker thread for processing media items."""
     
     def __init__(self, worker_id: int, worker_type: str, gpu: Optional[str] = None, 
-                 gpu_device: Optional[str] = None, gpu_index: Optional[int] = None):
+                 gpu_device: Optional[str] = None, gpu_index: Optional[int] = None, 
+                 gpu_name: Optional[str] = None):
         """
         Initialize a worker.
         
@@ -31,12 +32,14 @@ class Worker:
             gpu: GPU type for acceleration
             gpu_device: GPU device path
             gpu_index: Index of the assigned GPU hardware
+            gpu_name: Human-readable GPU name for display
         """
         self.worker_id = worker_id
         self.worker_type = worker_type
         self.gpu = gpu
         self.gpu_device = gpu_device
         self.gpu_index = gpu_index
+        self.gpu_name = gpu_name
         
         # Task state
         self.is_busy = False
@@ -79,6 +82,50 @@ class Worker:
         """Check if this worker is available for a new task."""
         return not self.is_busy
     
+    def _format_gpu_name_for_display(self) -> str:
+        """Format GPU name for consistent display width."""
+        if not self.gpu_name:
+            return f"GPU {self.gpu_index}"
+        
+        # Create a shortened version for display (exactly 10 characters for consistent alignment)
+        gpu_name = self.gpu_name
+        
+        # Force shortening to 10 characters - be more aggressive
+        if len(gpu_name) > 10:
+            # Try to shorten intelligently
+            if "TITAN" in gpu_name and "RTX" in gpu_name:
+                gpu_name = "TITAN RTX"  # Exactly 9 chars, will be padded to 10
+            elif "RTX" in gpu_name:
+                # Extract RTX model number
+                import re
+                match = re.search(r'RTX\s*(\d+)', gpu_name)
+                if match:
+                    gpu_name = f"RTX{match.group(1)}"[:8]
+            elif "GTX" in gpu_name:
+                # Extract GTX model number
+                import re
+                match = re.search(r'GTX\s*(\d+)', gpu_name)
+                if match:
+                    gpu_name = f"GTX{match.group(1)}"[:8]
+            elif "TITAN" in gpu_name:
+                gpu_name = "TITAN"
+            elif "Intel" in gpu_name:
+                gpu_name = "Intel"
+            elif "AMD" in gpu_name:
+                gpu_name = "AMD"
+            elif "GeForce" in gpu_name:
+                # Extract GeForce model
+                import re
+                match = re.search(r'GeForce\s+([A-Z0-9\s]+)', gpu_name)
+                if match:
+                    return match.group(1).strip()[:8]
+            else:
+                # Just truncate to 8 characters
+                return gpu_name[:8]
+        
+        # Always ensure it's exactly 10 characters
+        return gpu_name.ljust(10)[:10]
+    
     def assign_task(self, item_key: str, config: Config, plex, progress_callback=None, 
                    media_title: str = "", media_type: str = "", title_max_width: int = 20) -> None:
         """
@@ -103,11 +150,12 @@ class Worker:
         self.media_type = media_type
         self.title_max_width = title_max_width
         self.display_title = format_display_title(media_title, media_type, title_max_width)
-        # Show GPU index in display for GPU workers
+        # Show GPU name in display for GPU workers, show CPU identifier for CPU workers
         if self.worker_type == 'GPU':
-            self.task_title = f"{self.worker_type} {self.worker_id} [HW:{self.gpu_index}]: {self.display_title}"
+            gpu_display = self._format_gpu_name_for_display()
+            self.task_title = f"[{gpu_display}]: {self.display_title}"
         else:
-            self.task_title = f"{self.worker_type} {self.worker_id}: {self.display_title}"
+            self.task_title = f"[CPU      ]: {self.display_title}"
         self.progress_percent = 0
         self.speed = "0.0x"
         self.current_duration = 0.0
@@ -241,7 +289,7 @@ class WorkerPool:
             gpu_type, gpu_device, gpu_info = selected_gpus[gpu_index]
             gpu_name = gpu_info.get('name', f'{gpu_type} GPU')
             
-            worker = Worker(i, 'GPU', gpu_type, gpu_device, gpu_index)
+            worker = Worker(i, 'GPU', gpu_type, gpu_device, gpu_index, gpu_name)
             self.workers.append(worker)
             
             logger.info(f'GPU Worker {i} assigned to GPU {gpu_index} ({gpu_name})')
@@ -282,11 +330,12 @@ class WorkerPool:
         
         # Create progress tasks for each worker in the worker progress instance
         for worker in self.workers:
-            # Show GPU index in initial task description for GPU workers
+            # Show GPU name in initial task description for GPU workers, show CPU identifier for CPU workers
             if worker.worker_type == 'GPU':
-                initial_desc = f"{worker.worker_type} {worker.worker_id} [HW:{worker.gpu_index}]: Idle - Waiting for task..."
+                gpu_display = worker._format_gpu_name_for_display()
+                initial_desc = f"[{gpu_display}]: Idle - Waiting for task..."
             else:
-                initial_desc = f"{worker.worker_type} {worker.worker_id}: Idle - Waiting for task..."
+                initial_desc = f"[CPU      ]: Idle - Waiting for task..."
             
             worker.progress_task_id = worker_progress.add_task(
                 initial_desc,
@@ -346,11 +395,12 @@ class WorkerPool:
                 else:
                     # Update idle worker only if it was previously busy
                     if worker.last_progress_percent != -1:
-                        # Show GPU index in idle display for GPU workers
+                        # Show GPU name in idle display for GPU workers, show CPU identifier for CPU workers
                         if worker.worker_type == 'GPU':
-                            idle_desc = f"{worker.worker_type} {worker.worker_id} [HW:{worker.gpu_index}]: Idle - Waiting for task..."
+                            gpu_display = worker._format_gpu_name_for_display()
+                            idle_desc = f"[{gpu_display}]: Idle - Waiting for task..."
                         else:
-                            idle_desc = f"{worker.worker_type} {worker.worker_id}: Idle - Waiting for task..."
+                            idle_desc = f"[CPU      ]: Idle - Waiting for task..."
                         
                         worker_progress.update(
                             worker.progress_task_id,

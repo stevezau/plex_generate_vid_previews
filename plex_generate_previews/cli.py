@@ -22,6 +22,7 @@ from .gpu_detection import detect_all_gpus, format_gpu_info
 from .plex_client import plex_server, get_library_sections
 from .worker import WorkerPool
 from .utils import calculate_title_width, setup_working_directory as create_working_directory
+from .version_check import check_for_updates
 
 # Shared console for coordinated logging and progress output
 console = Console()
@@ -158,6 +159,9 @@ def parse_arguments() -> argparse.Namespace:
     # Logging
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
     
+    # Version check
+    parser.add_argument('--skip-version-check', action='store_true', help='Skip checking for newer versions on startup')
+    
     return parser.parse_args()
 
 
@@ -219,6 +223,9 @@ def setup_application() -> tuple:
     
     logger.info('This project has been completely rewritten for better performance and reliability.')
     logger.info('Please report any issues at https://github.com/stevezau/plex_generate_vid_previews/issues')
+
+    # Check for updates (non-blocking, fails gracefully)
+    check_for_updates(skip_check=args.skip_version_check)
 
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
