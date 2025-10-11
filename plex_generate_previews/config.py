@@ -9,11 +9,12 @@ import os
 import sys
 import shutil
 import subprocess
-import argparse
 from dataclasses import dataclass
 from typing import List, Optional
 from dotenv import load_dotenv
 from loguru import logger
+
+from .utils import is_docker_environment
 
 # Load environment variables from .env file
 load_dotenv()
@@ -112,13 +113,54 @@ class Config:
     worker_pool_timeout: int = 30
 
 
+def show_docker_help():
+    """Show Docker-optimized help message with environment variables prominently displayed."""
+    logger.info('🐳 Docker Environment Detected - Configuration via Environment Variables')
+    logger.info('=' * 80)
+    logger.info('')
+    logger.info('📋 Required Environment Variables:')
+    logger.info('')
+    logger.info('  PLEX_URL                    Plex server URL (e.g., http://localhost:32400)')
+    logger.info('  PLEX_TOKEN                  Plex authentication token')
+    logger.info('  PLEX_CONFIG_FOLDER          Path to Plex Media Server configuration folder')
+    logger.info('')
+    logger.info('📋 Optional Environment Variables:')
+    logger.info('')
+    logger.info('  PLEX_TIMEOUT                Plex API timeout in seconds (default: 60)')
+    logger.info('  PLEX_LIBRARIES              Comma-separated library names (e.g., "Movies, TV Shows")')
+    logger.info('  PLEX_LOCAL_VIDEOS_PATH_MAPPING  Local videos path mapping')
+    logger.info('  PLEX_VIDEOS_PATH_MAPPING    Plex videos path mapping')
+    logger.info('  PLEX_BIF_FRAME_INTERVAL     Interval between preview images in seconds (default: 5)')
+    logger.info('  THUMBNAIL_QUALITY           Preview image quality 1-10 (default: 4)')
+    logger.info('  REGENERATE_THUMBNAILS       Regenerate existing thumbnails (true/false, default: false)')
+    logger.info('  GPU_THREADS                 Number of GPU worker threads (default: 4)')
+    logger.info('  CPU_THREADS                 Number of CPU worker threads (default: 4)')
+    logger.info('  GPU_SELECTION               GPU selection: "all" or comma-separated indices (default: all)')
+    logger.info('  TMP_FOLDER                  Temporary folder for processing (default: /tmp/plex_generate_previews)')
+    logger.info('  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)')
+    logger.info('')
+    logger.info('💡 Example Docker Run Command:')
+    logger.info('')
+    logger.info('  docker run -it --rm --runtime=nvidia \\')
+    logger.info('    -e PLEX_URL="http://localhost:32400" \\')
+    logger.info('    -e PLEX_TOKEN="your_token_here" \\')
+    logger.info('    -e PLEX_CONFIG_FOLDER="/config/plex/Library/Application Support/Plex Media Server" \\')
+    logger.info('    -e GPU_THREADS=2 \\')
+    logger.info('    -e CPU_THREADS=2 \\')
+    logger.info('    -v /path/to/plex/config:/config \\')
+    logger.info('    -v /path/to/videos:/data \\')
+    logger.info('    plex_generate_vid_previews:latest')
+    logger.info('')
+    logger.info('🔧 For CLI arguments (non-Docker), use: plex-generate-previews --help')
+
+
 def load_config(cli_args=None) -> Config:
     """
     Load and validate configuration from CLI arguments and environment variables.
     CLI arguments take precedence over environment variables.
     
     Args:
-        cli_args: Parsed CLI arguments (argparse.Namespace) or None
+        cli_args: Parsed CLI arguments or None
         
     Returns:
         Config: Validated configuration object
@@ -128,7 +170,7 @@ def load_config(cli_args=None) -> Config:
     """
     # Extract CLI values (None if not provided)
     if cli_args is None:
-        cli_args = argparse.Namespace()  # Empty namespace
+        cli_args = None  # Empty namespace
     
     # Load configuration with precedence: CLI args > env vars > defaults
     plex_url = get_config_value_str(cli_args, 'plex_url', 'PLEX_URL', '')
@@ -186,16 +228,25 @@ def load_config(cli_args=None) -> Config:
     
     # Check basic required parameters first
     if not plex_url:
-        missing_params.append('PLEX_URL is required (use --plex-url or set PLEX_URL environment variable)')
+        if is_docker_environment():
+            missing_params.append('PLEX_URL is required (set PLEX_URL environment variable)')
+        else:
+            missing_params.append('PLEX_URL is required (use --plex-url or set PLEX_URL environment variable)')
     elif not plex_url.startswith(('http://', 'https://')):
         validation_errors.append(f'PLEX_URL must start with http:// or https:// (got: {plex_url})')
     
     if not plex_token:
-        missing_params.append('PLEX_TOKEN is required (use --plex-token or set PLEX_TOKEN environment variable)')
+        if is_docker_environment():
+            missing_params.append('PLEX_TOKEN is required (set PLEX_TOKEN environment variable)')
+        else:
+            missing_params.append('PLEX_TOKEN is required (use --plex-token or set PLEX_TOKEN environment variable)')
         
     # Check PLEX_CONFIG_FOLDER
     if not plex_config_folder or plex_config_folder == '/path_to/plex/Library/Application Support/Plex Media Server':
-        missing_params.append('PLEX_CONFIG_FOLDER is required (use --plex-config-folder or set PLEX_CONFIG_FOLDER environment variable)')
+        if is_docker_environment():
+            missing_params.append('PLEX_CONFIG_FOLDER is required (set PLEX_CONFIG_FOLDER environment variable)')
+        else:
+            missing_params.append('PLEX_CONFIG_FOLDER is required (use --plex-config-folder or set PLEX_CONFIG_FOLDER environment variable)')
     else:
         # Path is provided, validate it
         if not os.path.exists(plex_config_folder):
@@ -356,15 +407,22 @@ def load_config(cli_args=None) -> Config:
         logger.error('❌ Configuration Error: Missing required parameters:')
         for i, error_msg in enumerate(missing_params, 1):
             logger.error(f'   {i}. {error_msg}')
-        logger.info('\n📋 Showing help for all available options:')
-        logger.info('=' * 60)
-        # Show help automatically
-        sys.argv = [sys.argv[0], '--help']
-        try:
-            from .cli import parse_arguments
-            parse_arguments()
-        except SystemExit:
-            pass
+        logger.info('')
+        
+        # Show Docker-optimized help if running in Docker, otherwise show CLI help
+        if is_docker_environment():
+            show_docker_help()
+        else:
+            logger.info('📋 Showing help for all available options:')
+            logger.info('=' * 60)
+            # Show help automatically
+            sys.argv = [sys.argv[0], '--help']
+            try:
+                from .cli import parse_arguments
+                parse_arguments()
+            except SystemExit:
+                pass
+        
         return None  # Return None to indicate validation failure
     
     # Handle validation errors (standard error messages)

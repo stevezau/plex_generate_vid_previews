@@ -10,8 +10,6 @@ import sys
 import shutil
 import signal
 import argparse
-import time
-import uuid
 from loguru import logger
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, MofNCompleteColumn, ProgressColumn, BarColumn, TextColumn, TimeElapsedColumn
@@ -23,6 +21,7 @@ from .config import Config, load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
 from .plex_client import plex_server, get_library_sections
 from .worker import WorkerPool
+from .utils import calculate_title_width, setup_working_directory as create_working_directory
 
 # Shared console for coordinated logging and progress output
 console = Console()
@@ -245,15 +244,10 @@ def setup_application() -> tuple:
 def setup_working_directory(config) -> None:
     """Create and set up the working temporary directory."""
     try:
-        # Create a unique subfolder for this run to avoid conflicts
-        unique_id = f"plex_previews_{int(time.time())}_{str(uuid.uuid4())[:8]}"
-        config.working_tmp_folder = os.path.join(config.tmp_folder, unique_id)
-        
-        # Create our specific working directory
-        os.makedirs(config.working_tmp_folder, exist_ok=True)
+        config.working_tmp_folder = create_working_directory(config.tmp_folder)
         logger.debug(f"Created working temp folder: {config.working_tmp_folder}")
     except Exception as cleanup_error:
-        logger.error(f"Failed to create working temp folder {config.working_tmp_folder}: {cleanup_error}")
+        logger.error(f"Failed to create working temp folder: {cleanup_error}")
         sys.exit(1)
 
 
@@ -357,6 +351,9 @@ def run_processing(config, selected_gpus):
         # Get Plex server
         plex = plex_server(config)
         
+        # Calculate title width for display formatting
+        title_max_width = calculate_title_width()
+        
         # Create worker pool
         worker_pool = WorkerPool(
             gpu_workers=config.gpu_threads,
@@ -408,7 +405,7 @@ def run_processing(config, selected_gpus):
                 main_task = main_progress.add_task(f"Processing {section.title}", total=len(media_items))
                 
                 # Process items in this section with worker progress
-                worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task)
+                worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task, title_max_width)
                 total_processed += len(media_items)
                 
                 # Remove completed task

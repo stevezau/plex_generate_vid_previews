@@ -19,6 +19,8 @@ import xml.etree.ElementTree
 from typing import Optional
 from loguru import logger
 
+from .utils import sanitize_path
+
 try:
     from pymediainfo import MediaInfo
 except ImportError:
@@ -353,11 +355,6 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
     except Exception as e:
         logger.error(f"Error querying Plex for item {item_key}: {e}")
         return
-
-    def sanitize_path(path):
-        if os.name == 'nt':
-            path = path.replace('/', '\\')
-        return path
 
     for media_part in data.findall('.//MediaPart'):
         if 'hash' in media_part.attrib:

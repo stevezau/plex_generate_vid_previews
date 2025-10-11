@@ -14,78 +14,7 @@ from loguru import logger
 
 from .config import Config
 from .media_processing import process_item
-
-
-def calculate_title_width():
-    """
-    Calculate optimal title width based on terminal size.
-    
-    This ensures progress bar titles fit well within the available
-    terminal space while maintaining readability.
-    
-    Returns:
-        int: Maximum characters for title display (20-50 range)
-    """
-    terminal_width = shutil.get_terminal_size().columns
-    
-    worker_prefix = 7  # "GPU 0: " or "CPU 0: "
-    percentage = 6     # " 100% "
-    time_elapsed = 10  # " 00:00:05 "
-    count_display = 12 # " (1234/5678) "
-    speed_display = 8  # " ━ 1.2x"
-    progress_bar = 20  # Approximate progress bar width
-    
-    reserved_space = worker_prefix + percentage + time_elapsed + count_display + speed_display + progress_bar
-    available_width = terminal_width - reserved_space
-    
-    # Set reasonable limits: minimum 20 chars, maximum 50 chars
-    return max(min(available_width, 50), 20)
-
-
-def format_display_title(title: str, media_type: str, title_max_width: int) -> str:
-    """
-    Format and truncate display title based on media type.
-    
-    Args:
-        title: The media title to format
-        media_type: 'episode' or 'movie'
-        title_max_width: Maximum width for the title
-        
-    Returns:
-        str: Formatted and padded title
-    """
-    if media_type == 'episode':
-        # For episodes, ensure S01E01 format is always visible
-        if len(title) > title_max_width:
-            # Simple truncation: keep last 6 chars (S01E01) + show title
-            season_episode = title[-6:]  # Last 6 characters (S01E01)
-            available_space = title_max_width - 6 - 3  # 6 for S01E01, 3 for "..."
-            if available_space > 0:
-                show_title = title[:-6].strip()  # Everything except last 6 chars
-                if len(show_title) > available_space:
-                    show_title = show_title[:available_space] + "..."
-                    display_title = show_title + " " + season_episode
-                else:
-                    # If very constrained, just show season/episode
-                    display_title = "..." + season_episode
-            else:
-                display_title = title
-        else:
-            display_title = title
-    else:
-        # For movies, use title as-is
-        display_title = title
-        
-        # Regular truncation for movies
-        if len(display_title) > title_max_width:
-            display_title = display_title[:title_max_width-3] + "..."  # Leave room for "..."
-    
-    # Add padding to prevent progress bar jumping (only if not already truncated)
-    if len(display_title) <= title_max_width:
-        padding_needed = title_max_width - len(display_title)
-        display_title = display_title + " " * padding_needed
-    
-    return display_title
+from .utils import format_display_title
 
 
 class Worker:
@@ -176,10 +105,7 @@ class Worker:
         self.display_title = format_display_title(media_title, media_type, title_max_width)
         # Show GPU index in display for GPU workers
         if self.worker_type == 'GPU':
-            if self.gpu_index is not None:
-                self.task_title = f"{self.worker_type} {self.worker_id} [HW:{self.gpu_index}]: {self.display_title}"
-            else:
-                self.task_title = f"{self.worker_type} {self.worker_id} [CPU]: {self.display_title}"
+            self.task_title = f"{self.worker_type} {self.worker_id} [HW:{self.gpu_index}]: {self.display_title}"
         else:
             self.task_title = f"{self.worker_type} {self.worker_id}: {self.display_title}"
         self.progress_percent = 0
@@ -309,19 +235,16 @@ class WorkerPool:
         
         # Add GPU workers first (prioritized) with round-robin GPU assignment
         for i in range(gpu_workers):
-            if selected_gpus:
-                # Round-robin assignment: worker 0 -> gpu 0, worker 1 -> gpu 1, worker 2 -> gpu 0, etc.
-                gpu_index = i % len(selected_gpus)
-                gpu_type, gpu_device, gpu_info = selected_gpus[gpu_index]
-                gpu_name = gpu_info.get('name', f'{gpu_type} GPU')
-                
-                worker = Worker(i, 'GPU', gpu_type, gpu_device, gpu_index)
-                self.workers.append(worker)
-                
-                logger.info(f'GPU Worker {i} assigned to GPU {gpu_index} ({gpu_name})')
-            else:
-                # Fallback to CPU if no GPUs available - but keep as GPU worker type for consistency
-                self.workers.append(Worker(i, 'GPU', None, None, None))
+            # selected_gpus is guaranteed to be non-empty if gpu_workers > 0
+            # because detect_and_select_gpus() exits with error if no GPUs detected
+            gpu_index = i % len(selected_gpus)
+            gpu_type, gpu_device, gpu_info = selected_gpus[gpu_index]
+            gpu_name = gpu_info.get('name', f'{gpu_type} GPU')
+            
+            worker = Worker(i, 'GPU', gpu_type, gpu_device, gpu_index)
+            self.workers.append(worker)
+            
+            logger.info(f'GPU Worker {i} assigned to GPU {gpu_index} ({gpu_name})')
         
         # Add CPU workers
         for i in range(cpu_workers):
@@ -337,7 +260,7 @@ class WorkerPool:
         """Check if any workers are available for new tasks."""
         return any(worker.is_available() for worker in self.workers)
     
-    def process_items(self, media_items: List[tuple], config: Config, plex, worker_progress, main_progress, main_task_id=None) -> None:
+    def process_items(self, media_items: List[tuple], config: Config, plex, worker_progress, main_progress, main_task_id=None, title_max_width: int = 20) -> None:
         """
         Process all media items using available workers.
         
@@ -353,9 +276,7 @@ class WorkerPool:
         media_queue = list(media_items)  # Copy the list
         completed_tasks = 0
         
-        # Calculate initial title width and track terminal resize
-        title_max_width = calculate_title_width()
-        last_terminal_width = shutil.get_terminal_size().columns
+        # Use provided title width for display formatting
         
         logger.info(f'Processing {len(media_items)} items with {len(self.workers)} workers')
         
@@ -363,10 +284,7 @@ class WorkerPool:
         for worker in self.workers:
             # Show GPU index in initial task description for GPU workers
             if worker.worker_type == 'GPU':
-                if worker.gpu_index is not None:
-                    initial_desc = f"{worker.worker_type} {worker.worker_id} [HW:{worker.gpu_index}]: Idle - Waiting for task..."
-                else:
-                    initial_desc = f"{worker.worker_type} {worker.worker_id} [CPU]: Idle - Waiting for task..."
+                initial_desc = f"{worker.worker_type} {worker.worker_id} [HW:{worker.gpu_index}]: Idle - Waiting for task..."
             else:
                 initial_desc = f"{worker.worker_type} {worker.worker_id}: Idle - Waiting for task..."
             
@@ -380,13 +298,6 @@ class WorkerPool:
         
         # Process all items
         while media_queue or self.has_busy_workers():
-            # Check for terminal resize and recalculate title width if needed
-            current_terminal_width = shutil.get_terminal_size().columns
-            if current_terminal_width != last_terminal_width:
-                title_max_width = calculate_title_width()
-                last_terminal_width = current_terminal_width
-                logger.debug(f"Terminal resized: {current_terminal_width} cols, new title width: {title_max_width}")
-            
             # Check for completed tasks and update progress
             for worker in self.workers:
                 if worker.check_completion():
@@ -437,10 +348,7 @@ class WorkerPool:
                     if worker.last_progress_percent != -1:
                         # Show GPU index in idle display for GPU workers
                         if worker.worker_type == 'GPU':
-                            if worker.gpu_index is not None:
-                                idle_desc = f"{worker.worker_type} {worker.worker_id} [HW:{worker.gpu_index}]: Idle - Waiting for task..."
-                            else:
-                                idle_desc = f"{worker.worker_type} {worker.worker_id} [CPU]: Idle - Waiting for task..."
+                            idle_desc = f"{worker.worker_type} {worker.worker_id} [HW:{worker.gpu_index}]: Idle - Waiting for task..."
                         else:
                             idle_desc = f"{worker.worker_type} {worker.worker_id}: Idle - Waiting for task..."
                         

@@ -9,7 +9,6 @@ import os
 import subprocess
 import platform
 import re
-import sys
 from typing import Tuple, Optional, List
 from loguru import logger
 
@@ -224,52 +223,15 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
     return devices
 
 
-def _find_vaapi_device() -> Optional[str]:
-    """
-    Find the best VAAPI device by intelligently mapping render devices to GPU cards.
-    Prioritizes Intel devices over AMD for VAAPI.
-    
-    Returns:
-        Optional[str]: Path to VAAPI device or None if not found
-    """
-    logger.debug("Searching for VAAPI devices with intelligent GPU mapping")
-    
-    gpu_devices = _get_gpu_devices()
-    if not gpu_devices:
-        logger.debug("No GPU devices found")
-        return None
-    
-    # Prioritize Intel devices (i915 driver) for VAAPI
-    for card_name, render_device, driver in gpu_devices:
-        if driver == "i915":
-            logger.debug(f"Found Intel VAAPI device: {render_device} (card: {card_name})")
-            return render_device
-    
-    # If no Intel device, try AMD (amdgpu driver)
-    for card_name, render_device, driver in gpu_devices:
-        if driver == "amdgpu":
-            logger.debug(f"Found AMD VAAPI device: {render_device} (card: {card_name})")
-            return render_device
-    
-    # If no Intel or AMD, return first available (but log warning)
-    if gpu_devices:
-        card_name, render_device, driver = gpu_devices[0]
-        logger.debug(f"Using first available VAAPI device: {render_device} (card: {card_name}, driver: {driver})")
-        return render_device
-    
-    logger.debug("No suitable VAAPI devices found")
-    return None
-
-
 def _determine_vaapi_gpu_type(device_path: str) -> str:
     """
-    Determine if VAAPI device is AMD or Intel.
+    Determine GPU type for VAAPI device by checking driver information.
     
     Args:
         device_path: Path to VAAPI device
         
     Returns:
-        str: 'AMD' or 'INTEL'
+        str: GPU type ('AMD', 'INTEL', 'NVIDIA', 'ARM', 'VIDEOCORE', or 'UNKNOWN')
     """
     logger.debug(f"Determining GPU type for VAAPI device: {device_path}")
     
@@ -277,7 +239,7 @@ def _determine_vaapi_gpu_type(device_path: str) -> str:
         drm_dir = "/sys/class/drm"
         if not os.path.exists(drm_dir):
             logger.debug(f"DRM directory {drm_dir} does not exist")
-            return 'AMD'
+            return 'UNKNOWN'
         
         entries = os.listdir(drm_dir)
         logger.debug(f"Found DRM entries: {entries}")
@@ -291,15 +253,74 @@ def _determine_vaapi_gpu_type(device_path: str) -> str:
                 driver_name = os.path.basename(os.readlink(driver_path))
                 logger.debug(f"Driver for {entry}: {driver_name}")
                 
+                # Intel drivers
                 if driver_name == "i915":
                     logger.debug("Detected Intel i915 driver - GPU type: INTEL")
                     return 'INTEL'
+                
+                # AMD drivers
+                elif driver_name in ("amdgpu", "radeon"):
+                    logger.debug(f"Detected AMD driver {driver_name} - GPU type: AMD")
+                    return 'AMD'
+                
+                # ARM Mali drivers
+                elif driver_name == "panfrost":
+                    logger.debug("Detected ARM Mali panfrost driver - GPU type: ARM")
+                    return 'ARM'
+                
+                # VideoCore (Raspberry Pi)
+                elif driver_name == "vc4":
+                    logger.debug("Detected VideoCore vc4 driver - GPU type: VIDEOCORE")
+                    return 'VIDEOCORE'
+                
+                # Other drivers - try to detect from lspci
+                else:
+                    logger.debug(f"Unknown driver {driver_name}, attempting lspci detection")
+                    gpu_type = _detect_gpu_type_from_lspci()
+                    if gpu_type != 'UNKNOWN':
+                        return gpu_type
         
-        logger.debug("Defaulting to AMD GPU type")
-        return 'AMD'
+        logger.debug("No suitable driver found, defaulting to UNKNOWN")
+        return 'UNKNOWN'
     except Exception as e:
         logger.debug(f"Error determining VAAPI GPU type: {e}")
-        return 'AMD'
+        return 'UNKNOWN'
+
+
+def _detect_gpu_type_from_lspci() -> str:
+    """
+    Detect GPU type using lspci as fallback when driver detection fails.
+    
+    Returns:
+        str: GPU type ('AMD', 'INTEL', 'NVIDIA', 'ARM', or 'UNKNOWN')
+    """
+    try:
+        result = subprocess.run(['lspci'], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            logger.debug("lspci command failed")
+            return 'UNKNOWN'
+        
+        for line in result.stdout.split('\n'):
+            if 'VGA' in line or 'Display' in line:
+                line_lower = line.lower()
+                if 'amd' in line_lower or 'radeon' in line_lower:
+                    logger.debug("lspci detected AMD GPU")
+                    return 'AMD'
+                elif 'intel' in line_lower:
+                    logger.debug("lspci detected Intel GPU")
+                    return 'INTEL'
+                elif 'nvidia' in line_lower or 'geforce' in line_lower:
+                    logger.debug("lspci detected NVIDIA GPU")
+                    return 'NVIDIA'
+                elif 'mali' in line_lower or 'arm' in line_lower:
+                    logger.debug("lspci detected ARM GPU")
+                    return 'ARM'
+        
+        logger.debug("lspci did not identify GPU type")
+        return 'UNKNOWN'
+    except Exception as e:
+        logger.debug(f"Error running lspci: {e}")
+        return 'UNKNOWN'
 
 
 def _log_system_info() -> None:
@@ -413,8 +434,10 @@ def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str) -> str:
         return f"{gpu_name} (D3D11VA)"
     elif gpu_type == 'INTEL' and gpu_device == 'qsv':
         return f"{gpu_name} (QSV)"
-    elif gpu_type in ('AMD', 'INTEL') and gpu_device.startswith('/dev/dri/'):
+    elif gpu_type in ('AMD', 'INTEL', 'ARM', 'VIDEOCORE') and gpu_device.startswith('/dev/dri/'):
         return f"{gpu_name} (VAAPI - {gpu_device})"
+    elif gpu_type == 'UNKNOWN':
+        return f"{gpu_name} (Unknown GPU)"
     else:
         return f"{gpu_name} ({gpu_type})"
 
@@ -516,92 +539,3 @@ def _find_all_vaapi_devices() -> List[str]:
     
     return devices
 
-
-def detect_gpu() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Detect available GPU hardware using FFmpeg capability detection.
-    
-    This is the legacy function that returns only the first working GPU
-    for backward compatibility.
-    
-    Returns:
-        Tuple[Optional[str], Optional[str]]: (gpu_type, gpu_device_or_info)
-            - gpu_type: 'NVIDIA', 'AMD', 'INTEL', 'WSL2', or None
-            - gpu_device_or_info: Device path, GPU info string, or None
-    """
-    detected_gpus = detect_all_gpus()
-    if detected_gpus:
-        gpu_type, gpu_device, _ = detected_gpus[0]
-        return gpu_type, gpu_device
-    return None, None
-
-
-def detect_and_validate_gpu() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Detect GPU hardware for processing.
-    
-    Returns:
-        Tuple[Optional[str], Optional[str]]: (gpu_type, gpu_device_path)
-        
-    Raises:
-        SystemExit: If no GPU is detected
-    """
-    logger.debug("=== GPU Detection ===")
-    logger.debug("Detecting available GPU hardware...")
-    
-    gpu, gpu_device_path = detect_gpu()
-    
-    if gpu == 'NVIDIA':
-        logger.info(f'Found NVIDIA GPU: {gpu_device_path}')
-        logger.debug(f"NVIDIA GPU acceleration will use: -hwaccel cuda")
-    elif gpu == 'AMD':
-        logger.info(f'Found AMD GPU at {gpu_device_path}')
-        logger.debug(f"AMD GPU acceleration will use: -hwaccel vaapi -vaapi_device {gpu_device_path}")
-    elif gpu == 'INTEL':
-        if gpu_device_path == 'qsv':
-            logger.info(f'Found INTEL GPU with QSV: {gpu_device_path}')
-            logger.debug(f"Intel QSV acceleration will use: -hwaccel qsv")
-        else:
-            logger.info(f'Found INTEL GPU at {gpu_device_path}')
-            logger.debug(f"Intel VAAPI acceleration will use: -hwaccel vaapi -vaapi_device {gpu_device_path}")
-    elif gpu == 'WSL2':
-        logger.info(f'Found WSL2 GPU at {gpu_device_path}')
-        logger.debug(f"WSL2 GPU acceleration will use: -hwaccel d3d11va")
-    elif gpu:
-        # Handle any other GPU types that might be detected
-        logger.info(f'Found {gpu} GPU at {gpu_device_path}')
-        logger.debug(f"GPU acceleration will use: -hwaccel {gpu.lower()}")
-    
-    if not gpu:
-        logger.error('No GPUs detected.')
-        logger.error('Please set the GPU_THREADS environment variable to 0 to use CPU-only processing.')
-        logger.error('If you think this is an error please log an issue here https://github.com/stevezau/plex_generate_vid_previews/issues')
-        logger.debug("=== GPU Detection Failed ===")
-        sys.exit(1)
-    
-    logger.debug(f"=== GPU Detection Complete ===")
-    logger.debug(f"Selected GPU: {gpu} with device: {gpu_device_path}")
-    return gpu, gpu_device_path
-
-
-def get_gpu_acceleration_args(gpu_type: str, gpu_device: str) -> List[str]:
-    """
-    Get FFmpeg hardware acceleration arguments for the detected GPU.
-    
-    Args:
-        gpu_type: Type of GPU ('NVIDIA', 'AMD', 'INTEL', 'WSL2')
-        gpu_device: GPU device path or info string
-        
-    Returns:
-        List[str]: FFmpeg arguments for hardware acceleration
-    """
-    if gpu_type == 'NVIDIA':
-        return ["-hwaccel", "cuda"]
-    elif gpu_type == 'WSL2':
-        return ["-hwaccel", "d3d11va"]
-    elif gpu_type == 'INTEL' and gpu_device == 'qsv':
-        return ["-hwaccel", "qsv"]
-    elif gpu_type in ('AMD', 'INTEL') and gpu_device.startswith('/dev/dri/'):
-        return ["-hwaccel", "vaapi", "-vaapi_device", gpu_device]
-    else:
-        return []
