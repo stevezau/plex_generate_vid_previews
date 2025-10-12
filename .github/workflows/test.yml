@@ -36,8 +36,9 @@ jobs:
     - name: Run tests with coverage
       run: |
         # Run all tests - they now use mocking for GPU/FFmpeg/Plex
+        # Fail if coverage drops below 70%
         . /opt/venv/bin/activate
-        pytest tests/ -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html
+        pytest tests/ -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html --cov-fail-under=70
     
     - name: Upload coverage reports
       uses: codecov/codecov-action@v4

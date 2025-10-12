@@ -439,13 +439,17 @@ class TestLoadConfig:
     @patch('shutil.which')
     @patch('subprocess.run')
     @patch('os.access')
+    @patch('os.listdir')
+    @patch('os.path.isdir')
     @patch('os.path.exists')
     @patch('plex_generate_previews.cli.setup_logging')
-    def test_load_config_tmp_folder_validation(self, mock_logging, mock_exists, mock_access, mock_run, mock_which):
+    def test_load_config_tmp_folder_validation(self, mock_logging, mock_exists, mock_isdir, mock_listdir, mock_access, mock_run, mock_which):
         """Test that temp folder must exist and be writable."""
         mock_which.return_value = '/usr/bin/ffmpeg'
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
         mock_exists.side_effect = lambda path: path != "/tmp/plex_generate_previews"
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ['Cache', 'Media']
         
         from types import SimpleNamespace
         args = SimpleNamespace(
