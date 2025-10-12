@@ -40,9 +40,25 @@ class ApplicationState:
     
     def cleanup(self):
         """Perform cleanup operations."""
-        # Restore terminal cursor visibility
+        # Restore terminal cursor visibility using Rich's proper methods
         if self.console:
-            self.console.show_cursor(True)
+            try:
+                # Rich's proper way to restore terminal state
+                self.console.show_cursor(True)
+                # Force Rich to restore the terminal to its original state
+                if hasattr(self.console, '_live'):
+                    self.console._live = None
+                # Clear any pending output and ensure proper terminal state
+                self.console.print("", end="")
+                # Force a newline to ensure we're on a fresh line
+                self.console.print()
+            except Exception as e:
+                # Fallback: direct terminal escape sequence
+                try:
+                    print('\033[?25h', end='', flush=True)
+                    print()  # Ensure we're on a new line
+                except:
+                    pass
         
         # Clean up working tmp folder if it exists
         try:
@@ -341,7 +357,7 @@ def create_progress_displays():
     query_progress = Progress(
         SpinnerColumn(), 
         TextColumn("[bold green]{task.description}"),
-        AnimatedBarColumn(bar_width=None, style="green", complete_style="red", finished_style="green"),
+        AnimatedBarColumn(bar_width=None, style="red", complete_style="red", finished_style="green"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
@@ -451,6 +467,17 @@ def run_processing(config, selected_gpus):
                 logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
         except Exception as cleanup_error:
             logger.warning(f"Failed to clean up working temp folder {config.working_tmp_folder}: {cleanup_error}")
+        
+        # Final terminal cleanup to ensure cursor is visible
+        try:
+            console.show_cursor(True)
+            # Force Rich to restore the terminal to its original state
+            if hasattr(console, '_live'):
+                console._live = None
+            # Ensure we're on a fresh line
+            console.print()
+        except:
+            pass
 
 
 def main() -> None:

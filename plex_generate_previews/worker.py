@@ -432,7 +432,7 @@ class WorkerPool:
             
             # Adaptive sleep to balance responsiveness and CPU usage
             if self.has_busy_workers():
-                time.sleep(0.01)  # 10ms sleep for better stability with multiple workers
+                time.sleep(0.005)  # 5ms sleep for better responsiveness with multiple workers
         
         # Final statistics
         total_completed = sum(worker.completed for worker in self.workers)
