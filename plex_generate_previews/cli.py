@@ -336,7 +336,7 @@ def create_progress_displays():
     main_progress = Progress(
         SpinnerColumn(), 
         TextColumn("[bold green]{task.description}"),
-        BarColumn(bar_width=None, style="green"),
+        BarColumn(bar_width=None, style="red", finished_style="green"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
@@ -357,7 +357,7 @@ def create_progress_displays():
     query_progress = Progress(
         SpinnerColumn(), 
         TextColumn("[bold green]{task.description}"),
-        AnimatedBarColumn(bar_width=None, style="red", complete_style="red", finished_style="green"),
+        AnimatedBarColumn(bar_width=None, style="green", complete_style="red", finished_style="green"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
