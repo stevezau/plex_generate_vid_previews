@@ -28,13 +28,13 @@ classifiers = [
 keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
 dependencies = [
     "requests==2.32.3",
-    "urllib3>=1.26.0",
+    "urllib3>=1.26.0,<3.0.0",
     "python-dotenv==1.1.1",
     "plexapi==4.17.1",
     "loguru==0.7.3",
     "rich==13.8.1",
     "pymediainfo==6.1.0",
-    "psutil>=5.9.0",
+    "psutil>=5.9.0,<6.0.0",
 ]
 
 [project.optional-dependencies]

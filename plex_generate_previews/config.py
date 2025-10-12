@@ -209,7 +209,7 @@ def load_config(cli_args=None) -> Config:
     
     # Update logging level early so debug statements work
     if log_level in valid_log_levels:
-        from .cli import setup_logging
+        from .logging_config import setup_logging
         setup_logging(log_level)
     
     # Find FFmpeg path
@@ -418,6 +418,7 @@ def load_config(cli_args=None) -> Config:
             # Show help automatically
             sys.argv = [sys.argv[0], '--help']
             try:
+                # Import locally to avoid circular imports
                 from .cli import parse_arguments
                 parse_arguments()
             except SystemExit:
@@ -464,6 +465,7 @@ def load_config(cli_args=None) -> Config:
     
     # Output debug information
     logger.debug(f'PLEX_URL = {config.plex_url}')
+    logger.debug(f'PLEX_TOKEN = {"*" * 10}...{"*" * 10}')  # Mask token for security
     logger.debug(f'PLEX_BIF_FRAME_INTERVAL = {config.plex_bif_frame_interval}')
     logger.debug(f'THUMBNAIL_QUALITY = {config.thumbnail_quality}')
     logger.debug(f'PLEX_CONFIG_FOLDER = {config.plex_config_folder}')
