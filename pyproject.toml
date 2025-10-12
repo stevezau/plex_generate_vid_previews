@@ -58,3 +58,31 @@ plex-generate-previews = "plex_generate_previews.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["plex_generate_previews*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--cov=plex_generate_previews",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+    "--cov-fail-under=70",
+    "-v"
+]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["plex_generate_previews"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/test_env/*"
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false

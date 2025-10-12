@@ -18,7 +18,7 @@ jobs:
     - name: Install system dependencies
       run: |
         apt-get update
-        apt-get install -y python3-dev python3-pip python3-venv build-essential
+        apt-get install -y python3-dev python3-pip python3-venv build-essential git
         apt-get clean
         rm -rf /var/lib/apt/lists/*
     
@@ -33,8 +33,33 @@ jobs:
         . /opt/venv/bin/activate
         pip install -e ".[test]"
     
-    - name: Run tests
+    - name: Run tests with coverage
       run: |
-        # Run tests that work in CI environment (no GPU hardware)
+        # Run all tests - they now use mocking for GPU/FFmpeg/Plex
+        # Fail if coverage drops below 70%
         . /opt/venv/bin/activate
-        pytest tests/test_basic.py tests/test_cli.py tests/test_gpu_ci.py -v --cov=plex_generate_previews --cov-report=xml
+        pytest tests/ -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html --cov-fail-under=70
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    
+    - name: Upload coverage HTML report as artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report
+        path: htmlcov/
+    
+    - name: Coverage Summary
+      if: always()
+      run: |
+        . /opt/venv/bin/activate
+        echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        python -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); root = tree.getroot(); coverage = float(root.attrib['line-rate']) * 100; print(f'**Total Coverage: {coverage:.2f}%**')" >> $GITHUB_STEP_SUMMARY || echo "Coverage report parsing failed" >> $GITHUB_STEP_SUMMARY

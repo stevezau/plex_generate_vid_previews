@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer size="1">
+    <Video ratingKey="54321" key="/library/metadata/54321" type="movie" title="Test Movie" contentRating="PG-13" summary="Test movie summary" rating="7.5" year="2024" tagline="A test movie" thumb="/library/metadata/54321/thumb/1234567890" art="/library/metadata/54321/art/1234567890" duration="7200000" originallyAvailableAt="2024-01-01" addedAt="1234567890" updatedAt="1234567890">
+        <Media id="11111" duration="7200000" bitrate="12000" width="1920" height="1080" aspectRatio="1.78" audioChannels="6" audioCodec="ac3" videoCodec="h264" videoResolution="1080" container="mkv" videoFrameRate="24p" videoProfile="high">
+            <MediaPart id="22222" key="/library/parts/22222/1234567890/file.mkv" duration="7200000" file="/data/movies/Test Movie (2024)/Test Movie (2024).mkv" size="5368709120" container="mkv" videoProfile="high" hash="xyz789abc123">
+                <Stream id="1" streamType="1" codec="h264" index="0" bitrate="11500" language="English" languageCode="eng" width="1920" height="1080" displayTitle="1080p (H.264)" extendedDisplayTitle="1080p (H.264)"/>
+                <Stream id="2" streamType="2" selected="1" codec="ac3" index="1" channels="6" bitrate="448" language="English" languageCode="eng" audioChannelLayout="5.1" displayTitle="English (AC3 5.1)" extendedDisplayTitle="English (AC3 5.1)"/>
+            </MediaPart>
+        </Media>
+    </Video>
+</MediaContainer>
+

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer size="3">
+    <Directory allowSync="1" art="/:/resources/movie-fanart.jpg" composite="/library/sections/1/composite/1234567890" filters="1" refreshing="0" thumb="/:/resources/movie.png" key="1" type="movie" title="Movies" agent="com.plexapp.agents.imdb" scanner="Plex Movie Scanner" language="en" uuid="abcd1234-5678-90ef-ghij-klmnopqrstuv" updatedAt="1234567890" createdAt="1234567890" scannedAt="1234567890">
+        <Location id="1" path="/data/movies"/>
+    </Directory>
+    <Directory allowSync="1" art="/:/resources/show-fanart.jpg" composite="/library/sections/2/composite/1234567890" filters="1" refreshing="0" thumb="/:/resources/show.png" key="2" type="show" title="TV Shows" agent="com.plexapp.agents.thetvdb" scanner="Plex Series Scanner" language="en" uuid="abcd1234-5678-90ef-ghij-klmnopqrstuv" updatedAt="1234567890" createdAt="1234567890" scannedAt="1234567890">
+        <Location id="2" path="/data/tv"/>
+    </Directory>
+    <Directory allowSync="0" art="/:/resources/photo-fanart.jpg" composite="/library/sections/3/composite/1234567890" filters="1" refreshing="0" thumb="/:/resources/photo.png" key="3" type="photo" title="Photos" agent="com.plexapp.agents.none" scanner="Plex Photo Scanner" language="en" uuid="abcd1234-5678-90ef-ghij-klmnopqrstuv" updatedAt="1234567890" createdAt="1234567890" scannedAt="1234567890">
+        <Location id="3" path="/data/photos"/>
+    </Directory>
+</MediaContainer>
+
