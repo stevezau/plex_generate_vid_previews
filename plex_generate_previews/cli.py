@@ -336,7 +336,7 @@ def create_progress_displays():
     main_progress = Progress(
         SpinnerColumn(), 
         TextColumn("[bold green]{task.description}"),
-        BarColumn(bar_width=None, style="red", finished_style="green"),
+        BarColumn(bar_width=None, style="red", complete_style="green", finished_style="green"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
