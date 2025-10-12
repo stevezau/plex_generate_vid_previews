@@ -31,3 +31,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Testing and coverage
+htmlcov/
+coverage.xml
+.coverage
+.pytest_cache/
+.tox/
+test_env/

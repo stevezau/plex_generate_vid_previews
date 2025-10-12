@@ -23,6 +23,7 @@ from .plex_client import plex_server, get_library_sections
 from .worker import WorkerPool
 from .utils import calculate_title_width, setup_working_directory as create_working_directory
 from .version_check import check_for_updates
+from .logging_config import setup_logging
 
 # Shared console for coordinated logging and progress output
 console = Console()
@@ -181,17 +182,6 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def setup_logging(log_level: str = 'INFO') -> None:
-    """Set up logging configuration with shared Rich console."""
-    logger.remove()
-    logger.add(
-        lambda msg: console.print(msg, end=''),
-        level=log_level,
-        format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>',
-        enqueue=True
-    )
-    
-
 def signal_handler(signum, frame):
     """Handle interrupt signals gracefully."""
     logger.info("Received interrupt signal, shutting down gracefully...")
@@ -227,7 +217,7 @@ def list_gpus() -> None:
 def setup_application() -> tuple:
     """Set up logging, parse arguments, and handle special flags."""
     # Set up logging with default level first
-    setup_logging()
+    setup_logging(console=console)
     
     # Parse command-line arguments
     args = parse_arguments()
@@ -259,7 +249,7 @@ def setup_application() -> tuple:
     app_state.set_config(config)
     
     # Update logging level from config (in case it wasn't set in load_config)
-    setup_logging(config.log_level)
+    setup_logging(config.log_level, console=console)
     
     return args, config
 

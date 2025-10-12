@@ -76,7 +76,7 @@ class TestApplicationState:
 class TestLogging:
     """Test logging setup."""
     
-    @patch('plex_generate_previews.cli.logger')
+    @patch('plex_generate_previews.logging_config.logger')
     def test_setup_logging(self, mock_logger):
         """Test logging setup."""
         setup_logging('DEBUG')
