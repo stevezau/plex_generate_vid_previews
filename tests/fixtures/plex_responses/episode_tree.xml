@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer size="1">
+    <Video ratingKey="12345" key="/library/metadata/12345" parentRatingKey="123" grandparentRatingKey="1" type="episode" title="Pilot" grandparentKey="/library/metadata/1" parentKey="/library/metadata/123" grandparentTitle="Test Show" contentRating="TV-14" summary="Test episode summary" index="1" parentIndex="1" year="2024" thumb="/library/metadata/12345/thumb/1234567890" art="/library/metadata/1/art/1234567890" parentThumb="/library/metadata/123/thumb/1234567890" grandparentThumb="/library/metadata/1/thumb/1234567890" grandparentArt="/library/metadata/1/art/1234567890" duration="2520000" originallyAvailableAt="2024-01-01" addedAt="1234567890" updatedAt="1234567890">
+        <Media id="67890" duration="2520000" bitrate="8000" width="1920" height="1080" aspectRatio="1.78" audioChannels="2" audioCodec="aac" videoCodec="h264" videoResolution="1080" container="mkv" videoFrameRate="24p" videoProfile="high">
+            <MediaPart id="99999" key="/library/parts/99999/1234567890/file.mkv" duration="2520000" file="/data/tv/Test Show/Season 01/Test Show - S01E01 - Pilot.mkv" size="1073741824" container="mkv" videoProfile="high" hash="abc123def456">
+                <Stream id="1" streamType="1" codec="h264" index="0" bitrate="7500" language="English" languageCode="eng" width="1920" height="1080" displayTitle="1080p (H.264)" extendedDisplayTitle="1080p (H.264)"/>
+                <Stream id="2" streamType="2" selected="1" codec="aac" index="1" channels="2" bitrate="192" language="English" languageCode="eng" audioChannelLayout="stereo" displayTitle="English (AAC Stereo)" extendedDisplayTitle="English (AAC Stereo)"/>
+            </MediaPart>
+        </Media>
+    </Video>
+</MediaContainer>
+
