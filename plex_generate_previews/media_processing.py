@@ -65,7 +65,7 @@ def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callba
         q = float(q_match.group(1)) if q_match else 0
         size = int(size_match.group(1)) if size_match else 0
         bitrate = float(bitrate_match.group(1)) if bitrate_match else 0
-        speed = speed_match.group(1) + "x" if speed_match else "0.0x"
+        speed = speed_match.group(1) + "x" if speed_match else None
         
         if time_match:
             hours, minutes, seconds = time_match.groups()
@@ -84,7 +84,7 @@ def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callba
             
             # Call progress callback with all FFmpeg data
             if progress_callback:
-                progress_callback(progress_percent, current_time, total_duration, speed, 
+                progress_callback(progress_percent, current_time, total_duration, speed or "0.0x", 
                                 remaining_time, frame, fps, q, size, time_str, bitrate)
     
     return total_duration
@@ -197,7 +197,10 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     
     # Use file polling approach for non-blocking, high-frequency progress monitoring
     # This is faster than subprocess.PIPE which would block on readline() calls
-    output_file = f'/tmp/ffmpeg_output_{os.getpid()}_{int(time.time())}.log'
+    # Use high-resolution timestamp and thread ID to ensure unique file per worker
+    import threading
+    thread_id = threading.get_ident()
+    output_file = f'/tmp/ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log'
     proc = subprocess.Popen(args, stderr=open(output_file, 'w'), stdout=subprocess.DEVNULL)
     
     # Signal that FFmpeg process has started
@@ -212,39 +215,57 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     ffmpeg_output_lines = []  # Store all FFmpeg output for debugging
     line_count = 0
     
+    # Create a wrapper callback to capture speed updates
+    def speed_capture_callback(progress_percent, current_duration, total_duration, speed_value, 
+                              remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
+        nonlocal speed
+        if speed_value and speed_value != "0.0x":
+            speed = speed_value
+        if progress_callback:
+            progress_callback(progress_percent, current_duration, total_duration, speed_value, 
+                            remaining_time, frame, fps, q, size, time_str, bitrate)
+    
     # Allow time for it to start
-    time.sleep(0.05)  # Reduced from 0.1s
+    time.sleep(0.02)
 
     # Parse FFmpeg output using file polling (much faster)
+    poll_count = 0
     while proc.poll() is None:
+        poll_count += 1
         if os.path.exists(output_file):
-            with open(output_file, 'r') as f:
-                lines = f.readlines()
-                if len(lines) > line_count:
-                    # Process new lines
-                    for i in range(line_count, len(lines)):
-                        line = lines[i].strip()
-                        if line:
-                            ffmpeg_output_lines.append(line)  # Store for debugging
-                            
-                            # Parse FFmpeg output line
-                            total_duration = parse_ffmpeg_progress_line(line, total_duration, progress_callback)
-                    line_count = len(lines)
+            try:
+                with open(output_file, 'r') as f:
+                    lines = f.readlines()
+                    if len(lines) > line_count:
+                        # Process new lines
+                        for i in range(line_count, len(lines)):
+                            line = lines[i].strip()
+                            if line:
+                                ffmpeg_output_lines.append(line)
+                                # Parse FFmpeg output line
+                                total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
+                        line_count = len(lines)
+            except (OSError, IOError):
+                # Handle file access issues gracefully
+                pass
         
         time.sleep(0.005)  # Poll every 5ms for very responsive updates
     
     # Process any remaining data in the output file
     if os.path.exists(output_file):
-        with open(output_file, 'r') as f:
-            lines = f.readlines()
-            if len(lines) > line_count:
-                # Process any remaining lines
-                for i in range(line_count, len(lines)):
-                    line = lines[i].strip()
-                    if line:
-                        ffmpeg_output_lines.append(line)
-                        # Parse any remaining progress lines
-                        total_duration = parse_ffmpeg_progress_line(line, total_duration, progress_callback)
+        try:
+            with open(output_file, 'r') as f:
+                lines = f.readlines()
+                if len(lines) > line_count:
+                    # Process any remaining lines
+                    for i in range(line_count, len(lines)):
+                        line = lines[i].strip()
+                        if line:
+                            ffmpeg_output_lines.append(line)
+                            # Parse any remaining progress lines
+                            total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
+        except (OSError, IOError):
+            pass
     
     # Clean up the output file
     try:
@@ -265,13 +286,18 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     end = time.time()
     seconds = round(end - start, 1)
 
+    # Calculate fallback speed if no valid speed was captured
+    if speed == "0.0x" and total_duration and total_duration > 0 and seconds > 0:
+        calculated_speed = total_duration / seconds
+        speed = f"{calculated_speed:.0f}x"
+
     # Optimize and Rename Images
     for image in glob.glob(f'{output_folder}/img*.jpg'):
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * config.plex_bif_frame_interval
         os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
 
-    logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed}x')
+    logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed}')
 
 
 def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
