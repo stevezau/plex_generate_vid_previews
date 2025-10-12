@@ -295,14 +295,14 @@ def load_config(cli_args=None) -> Config:
                 found_folders = [item for item in config_contents if os.path.isdir(os.path.join(plex_config_folder, item))]
                 
                 # Check for essential Plex server folders (only require Cache and Media)
-                essential_folders = ['Cache', 'Media']
+                essential_folders = ['Media']
                 found_essential = [folder for folder in essential_folders if folder in found_folders]
                 
                 if len(found_essential) < 2:  # Need both Cache and Media
                     debug_info = []
                     debug_info.append(f'PLEX_CONFIG_FOLDER exists but does not appear to be a valid Plex Media Server directory')
                     debug_info.append(f'Are you sure you mapped the right Plex folder?')
-                    debug_info.append(f'Expected: Essential Plex folders (Cache, Media)')
+                    debug_info.append(f'Expected: Essential Plex folders (Media)')
                     debug_info.append(f'Found: {sorted(found_folders)}')
                     debug_info.append(f'Missing: {sorted([f for f in essential_folders if f not in found_folders])}')
                     debug_info.append(f'💡 Tip: Point to the main Plex directory:')
