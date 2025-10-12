@@ -31,8 +31,7 @@ jobs:
     - name: Install dependencies
       run: |
         . /opt/venv/bin/activate
-        pip install -r requirements-test.txt
-        pip install -e .
+        pip install -e ".[test]"
     
     - name: Run tests
       run: |
