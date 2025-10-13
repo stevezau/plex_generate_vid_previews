@@ -1,4 +1,4 @@
 """Version information for plex-generate-previews."""
 
-__version__ = "2.1.2"
-__version_tuple__ = (2, 1, 2)
+__version__ = "2.2.0"
+__version_tuple__ = (2, 2, 0)
