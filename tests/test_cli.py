@@ -51,26 +51,54 @@ class TestApplicationState:
         state.set_config(config)
         assert state.config == config
     
+    @patch('plex_generate_previews.cli.clear_directory')
     @patch('os.path.isdir')
     @patch('shutil.rmtree')
-    def test_cleanup_with_config(self, mock_rmtree, mock_isdir):
+    def test_cleanup_with_config(self, mock_rmtree, mock_isdir, mock_clear_dir):
         """Test cleanup with configuration."""
         state = ApplicationState()
         config = MagicMock()
-        config.working_tmp_folder = '/tmp/test'
+        config.working_tmp_folder = '/tmp/test/working'
+        config.tmp_folder = '/tmp/test'
+        config.tmp_folder_created_by_us = False
         state.set_config(config)
         
         mock_isdir.return_value = True
         
         state.cleanup()
-        mock_isdir.assert_called_once_with('/tmp/test')
-        mock_rmtree.assert_called_once_with('/tmp/test')
+        
+        # Should clean up working folder first
+        assert mock_rmtree.call_count == 1
+        mock_rmtree.assert_any_call('/tmp/test/working')
+        
+        # Should clear tmp_folder contents (not delete since we didn't create it)
+        mock_clear_dir.assert_called_once_with('/tmp/test')
     
     def test_cleanup_without_config(self):
         """Test cleanup without configuration."""
         state = ApplicationState()
         # Should not raise any exceptions
         state.cleanup()
+    
+    @patch('os.path.isdir')
+    @patch('shutil.rmtree')
+    def test_cleanup_with_created_folder(self, mock_rmtree, mock_isdir):
+        """Test cleanup when we created the tmp folder."""
+        state = ApplicationState()
+        config = MagicMock()
+        config.working_tmp_folder = '/tmp/test/working'
+        config.tmp_folder = '/tmp/test'
+        config.tmp_folder_created_by_us = True
+        state.set_config(config)
+        
+        mock_isdir.return_value = True
+        
+        state.cleanup()
+        
+        # Should clean up both working folder and base tmp folder
+        assert mock_rmtree.call_count == 2
+        mock_rmtree.assert_any_call('/tmp/test/working')
+        mock_rmtree.assert_any_call('/tmp/test')
 
 
 class TestLogging:

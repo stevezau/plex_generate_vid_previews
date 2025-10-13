@@ -98,7 +98,10 @@ class TestLoadConfig:
         
         def mock_listdir_fn(path):
             # Check the specific path to determine what to return
-            if path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+            if 'tmp' in path or path.startswith('/tmp'):
+                # Tmp folder should be empty or not exist
+                return []
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
                 # Inside localhost directory - return hex folders
                 return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
             elif path.endswith('/Media'):
@@ -438,18 +441,45 @@ class TestLoadConfig:
     
     @patch('shutil.which')
     @patch('subprocess.run')
+    @patch('os.statvfs')
     @patch('os.access')
     @patch('os.listdir')
     @patch('os.path.isdir')
     @patch('os.path.exists')
+    @patch('os.makedirs')
     @patch('plex_generate_previews.cli.setup_logging')
-    def test_load_config_tmp_folder_validation(self, mock_logging, mock_exists, mock_isdir, mock_listdir, mock_access, mock_run, mock_which):
-        """Test that temp folder must exist and be writable."""
+    def test_load_config_tmp_folder_auto_creation(self, mock_logging, mock_makedirs, mock_exists, mock_isdir, 
+                                                   mock_listdir, mock_access, mock_statvfs, mock_run, mock_which):
+        """Test that temp folder is auto-created if it doesn't exist."""
         mock_which.return_value = '/usr/bin/ffmpeg'
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
-        mock_exists.side_effect = lambda path: path != "/tmp/plex_generate_previews"
+        
+        # Mock that tmp_folder doesn't exist initially, but plex_config_folder does
+        def mock_exists_side_effect(path):
+            if path == "/tmp/plex_generate_previews":
+                return False  # tmp folder doesn't exist
+            return True  # other paths exist
+        
+        def mock_listdir_fn(path):
+            if 'tmp' in path or path.startswith('/tmp'):
+                return []
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+                return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+            elif path.endswith('/Media'):
+                return ['localhost']
+            else:
+                return ['Cache', 'Media', 'Metadata', 'Plug-ins', 'Logs']
+        
+        mock_exists.side_effect = mock_exists_side_effect
         mock_isdir.return_value = True
-        mock_listdir.return_value = ['Cache', 'Media']
+        mock_listdir.side_effect = mock_listdir_fn
+        mock_access.return_value = True
+        
+        # Mock statvfs for disk space check
+        mock_stat = MagicMock()
+        mock_stat.f_frsize = 4096
+        mock_stat.f_bavail = 1024 * 1024  # Plenty of space
+        mock_statvfs.return_value = mock_stat
         
         from types import SimpleNamespace
         args = SimpleNamespace(
@@ -472,7 +502,71 @@ class TestLoadConfig:
         
         config = load_config(args)
         
-        # Should fail because tmp folder doesn't exist
+        # Should succeed and create the folder
+        assert config is not None
+        assert config.tmp_folder_created_by_us is True
+        mock_makedirs.assert_called_once_with("/tmp/plex_generate_previews", exist_ok=True)
+    
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    @patch('os.statvfs')
+    @patch('os.access')
+    @patch('os.listdir')
+    @patch('os.path.isdir')
+    @patch('os.path.exists')
+    @patch('plex_generate_previews.cli.setup_logging')
+    def test_load_config_tmp_folder_not_empty(self, mock_logging, mock_exists, mock_isdir, 
+                                               mock_listdir, mock_access, mock_statvfs, mock_run, mock_which):
+        """Test that validation fails if tmp folder exists but is not empty."""
+        mock_which.return_value = '/usr/bin/ffmpeg'
+        mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
+        
+        def mock_exists_side_effect(path):
+            return True  # All paths exist
+        
+        def mock_listdir_side_effect(path):
+            if path == "/tmp/plex_generate_previews":
+                return ['file1.txt', 'file2.txt']  # tmp folder has contents
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+                return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+            elif path.endswith('/Media'):
+                return ['localhost']
+            else:
+                return ['Cache', 'Media', 'Metadata', 'Plug-ins', 'Logs']
+        
+        mock_exists.side_effect = mock_exists_side_effect
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = mock_listdir_side_effect
+        mock_access.return_value = True
+        
+        # Mock statvfs for disk space check
+        mock_stat = MagicMock()
+        mock_stat.f_frsize = 4096
+        mock_stat.f_bavail = 1024 * 1024  # Plenty of space
+        mock_statvfs.return_value = mock_stat
+        
+        from types import SimpleNamespace
+        args = SimpleNamespace(
+            plex_url="http://localhost:32400",
+            plex_token="token",
+            plex_config_folder="/config/plex",
+            tmp_folder="/tmp/plex_generate_previews",
+            plex_timeout=None,
+            plex_libraries=None,
+            plex_local_videos_path_mapping=None,
+            plex_videos_path_mapping=None,
+            plex_bif_frame_interval=None,
+            thumbnail_quality=None,
+            regenerate_thumbnails=False,
+            gpu_threads=None,
+            cpu_threads=None,
+            gpu_selection=None,
+            log_level=None
+        )
+        
+        config = load_config(args)
+        
+        # Should fail because tmp folder is not empty
         assert config is None
     
     @patch('shutil.which')
@@ -558,7 +652,10 @@ class TestLoadConfig:
         
         def mock_listdir_fn(path):
             # Check the specific path to determine what to return
-            if path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+            if 'tmp' in path or path.startswith('/tmp'):
+                # Tmp folder should be empty or not exist
+                return []
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
                 # Inside localhost directory - return hex folders
                 return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
             elif path.endswith('/Media'):
