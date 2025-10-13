@@ -36,6 +36,7 @@ def mock_config():
     config.cpu_threads = 1
     config.gpu_selection = "all"
     config.tmp_folder = "/tmp/plex_generate_previews"
+    config.tmp_folder_created_by_us = False
     config.ffmpeg_path = "/usr/bin/ffmpeg"
     config.log_level = "INFO"
     config.worker_pool_timeout = 30

@@ -104,6 +104,7 @@ class Config:
     
     # System paths
     tmp_folder: str
+    tmp_folder_created_by_us: bool
     ffmpeg_path: str
     
     # Logging
@@ -380,17 +381,35 @@ def load_config(cli_args=None) -> Config:
         except ValueError:
             validation_errors.append(f'GPU_SELECTION must be "all" or comma-separated integers (got: {gpu_selection})')
     
-    # Validate tmp_folder exists and is writable (user must create it)
-    if not os.path.exists(tmp_folder):
-        validation_errors.append(f'TMP_FOLDER does not exist: {tmp_folder}')
-        validation_errors.append(f'Please create the directory first: mkdir -p {tmp_folder}')
-    elif not os.access(tmp_folder, os.W_OK):
-        validation_errors.append(f'TMP_FOLDER ({tmp_folder}) is not writable')
-        validation_errors.append(f'Please fix permissions: chmod 755 {tmp_folder}')
-    
     # Additional safety check: warn if tmp_folder is a system directory
     if tmp_folder in ['/tmp', '/var/tmp', '/']:
         validation_errors.append(f'TMP_FOLDER should not be a system directory like {tmp_folder}. Use a subdirectory instead (e.g., {tmp_folder}/plex_previews)')
+    
+    # Handle tmp_folder: create if missing, validate if exists
+    tmp_folder_created_by_us = False
+    if not os.path.exists(tmp_folder):
+        # Create the directory
+        try:
+            os.makedirs(tmp_folder, exist_ok=True)
+            tmp_folder_created_by_us = True
+            logger.debug(f'Created TMP_FOLDER: {tmp_folder}')
+        except OSError as e:
+            validation_errors.append(f'Failed to create TMP_FOLDER ({tmp_folder}): {e}')
+    else:
+        # Directory exists - check if it's empty
+        try:
+            contents = os.listdir(tmp_folder)
+            if contents:
+                validation_errors.append(f'TMP_FOLDER ({tmp_folder}) already exists and is not empty')
+                validation_errors.append(f'Please clear the directory first or use a different path')
+                validation_errors.append(f'Contents: {", ".join(contents[:5])}{"..." if len(contents) > 5 else ""}')
+        except PermissionError:
+            validation_errors.append(f'TMP_FOLDER ({tmp_folder}) exists but cannot read contents (permission denied)')
+    
+    # Validate tmp_folder is writable
+    if os.path.exists(tmp_folder) and not os.access(tmp_folder, os.W_OK):
+        validation_errors.append(f'TMP_FOLDER ({tmp_folder}) is not writable')
+        validation_errors.append(f'Please fix permissions: chmod 755 {tmp_folder}')
     
     # Check available disk space in tmp_folder
     if os.path.exists(tmp_folder):
@@ -456,6 +475,7 @@ def load_config(cli_args=None) -> Config:
         cpu_threads=cpu_threads,
         gpu_selection=gpu_selection,
         tmp_folder=tmp_folder,
+        tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
         log_level=log_level
     )
