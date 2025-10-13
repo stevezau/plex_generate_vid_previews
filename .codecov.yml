@@ -1,0 +1,32 @@
+codecov:
+  # Require codecov to succeed for PRs (but allow version bumps to pass)
+  require_ci_to_pass: yes
+
+coverage:
+  status:
+    # Overall project coverage
+    project:
+      default:
+        target: 70%              # Minimum overall coverage
+        threshold: 1%            # Allow 1% drop before failing
+        if_ci_failed: error
+
+    # Coverage on new code in the diff
+    patch:
+      default:
+        target: 65%              # Minimum coverage for new code
+        threshold: 5%            # More lenient for patches
+        if_ci_failed: error
+
+comment:
+  layout: "reach,diff,flags,tree"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "tests/**/*"
+  - "**/__pycache__/**/*"
+  - "**/venv/**/*"
+  - "**/test_env/**/*"
+  - "plex_generate_previews/_version.py"  # Auto-generated version file
+
