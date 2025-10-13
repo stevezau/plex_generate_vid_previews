@@ -7,9 +7,6 @@ dist/
 .eggs/
 *.egg
 
-# Auto-generated version file
-plex_generate_previews/_version.py
-
 # Python cache
 __pycache__/
 *.py[cod]

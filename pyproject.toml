@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2", "wheel"]
+requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "plex-generate-previews"
-dynamic = ["version"]
+version = "2.1.2"
 authors = [
     {name = "stevezau", email = "stevezau@example.com"},
 ]
@@ -86,8 +86,3 @@ omit = [
 precision = 2
 show_missing = true
 skip_covered = false
-
-[tool.setuptools_scm]
-write_to = "plex_generate_previews/_version.py"
-version_scheme = "post-release"
-local_scheme = "no-local-version"
