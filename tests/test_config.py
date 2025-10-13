@@ -98,7 +98,10 @@ class TestLoadConfig:
         
         def mock_listdir_fn(path):
             # Check the specific path to determine what to return
-            if path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+            if 'tmp' in path or path.startswith('/tmp'):
+                # Tmp folder should be empty or not exist
+                return []
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
                 # Inside localhost directory - return hex folders
                 return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
             elif path.endswith('/Media'):
@@ -457,9 +460,19 @@ class TestLoadConfig:
                 return False  # tmp folder doesn't exist
             return True  # other paths exist
         
+        def mock_listdir_fn(path):
+            if 'tmp' in path or path.startswith('/tmp'):
+                return []
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+                return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+            elif path.endswith('/Media'):
+                return ['localhost']
+            else:
+                return ['Cache', 'Media', 'Metadata', 'Plug-ins', 'Logs']
+        
         mock_exists.side_effect = mock_exists_side_effect
         mock_isdir.return_value = True
-        mock_listdir.return_value = ['Media']
+        mock_listdir.side_effect = mock_listdir_fn
         mock_access.return_value = True
         
         # Mock statvfs for disk space check
@@ -514,12 +527,23 @@ class TestLoadConfig:
         def mock_listdir_side_effect(path):
             if path == "/tmp/plex_generate_previews":
                 return ['file1.txt', 'file2.txt']  # tmp folder has contents
-            return ['Media']
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+                return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+            elif path.endswith('/Media'):
+                return ['localhost']
+            else:
+                return ['Cache', 'Media', 'Metadata', 'Plug-ins', 'Logs']
         
         mock_exists.side_effect = mock_exists_side_effect
         mock_isdir.return_value = True
         mock_listdir.side_effect = mock_listdir_side_effect
         mock_access.return_value = True
+        
+        # Mock statvfs for disk space check
+        mock_stat = MagicMock()
+        mock_stat.f_frsize = 4096
+        mock_stat.f_bavail = 1024 * 1024  # Plenty of space
+        mock_statvfs.return_value = mock_stat
         
         from types import SimpleNamespace
         args = SimpleNamespace(
@@ -628,7 +652,10 @@ class TestLoadConfig:
         
         def mock_listdir_fn(path):
             # Check the specific path to determine what to return
-            if path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
+            if 'tmp' in path or path.startswith('/tmp'):
+                # Tmp folder should be empty or not exist
+                return []
+            elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
                 # Inside localhost directory - return hex folders
                 return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
             elif path.endswith('/Media'):

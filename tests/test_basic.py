@@ -14,8 +14,12 @@ class TestBasicFunctionality:
     def test_package_imports(self):
         """Test that the package can be imported."""
         import plex_generate_previews
+        import re
         assert hasattr(plex_generate_previews, '__version__')
-        assert plex_generate_previews.__version__ == "2.0.0"
+        # Version should be in semver format (e.g., "2.0.0", "2.1.2.post0")
+        version_pattern = r'^\d+\.\d+\.\d+(?:\.post\d+)?(?:-[a-zA-Z0-9.-]+)?$'
+        assert re.match(version_pattern, plex_generate_previews.__version__), \
+            f"Version '{plex_generate_previews.__version__}' doesn't match semver format"
     
     def test_cli_help(self):
         """Test that CLI help works."""
