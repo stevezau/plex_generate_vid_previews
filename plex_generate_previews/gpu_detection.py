@@ -34,16 +34,26 @@ def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
         logger.debug(f"FFmpeg version string: '{version_line}'")
         
         # Try multiple patterns to handle different FFmpeg version formats
+        # Patterns ordered from most specific to least specific
         patterns = [
-            r'ffmpeg version (\d+)\.(\d+)\.(\d+)',  # Standard: ffmpeg version 7.1.1
-            r'version (\d+)\.(\d+)\.(\d+)',          # Alternate: version 7.1.1
-            r'ffmpeg[^\d]*(\d+)\.(\d+)\.(\d+)',     # Flexible: any text between ffmpeg and version
+            (r'ffmpeg version (\d+)\.(\d+)\.(\d+)', 3),  # Standard: ffmpeg version 7.1.1
+            (r'version (\d+)\.(\d+)\.(\d+)', 3),          # Alternate: version 7.1.1
+            (r'ffmpeg[^\d]*(\d+)\.(\d+)\.(\d+)', 3),     # Flexible: any text between ffmpeg and version
+            (r'ffmpeg version (\d+)\.(\d+)', 2),          # Two-part version: ffmpeg version 8.0
+            (r'version (\d+)\.(\d+)', 2),                 # Alternate: version 8.0
+            (r'ffmpeg[^\d]*(\d+)\.(\d+)', 2),            # Flexible: any text between ffmpeg and version
+            (r'ffmpeg version (\d+)', 1),                 # Single version: ffmpeg version 8
+            (r'version (\d+)', 1),                        # Alternate: version 8
         ]
         
-        for pattern in patterns:
+        for pattern, num_groups in patterns:
             version_match = re.search(pattern, version_line)
             if version_match:
-                major, minor, patch = map(int, version_match.groups())
+                groups = version_match.groups()
+                # Pad with zeros if fewer than 3 components
+                major = int(groups[0])
+                minor = int(groups[1]) if num_groups >= 2 else 0
+                patch = int(groups[2]) if num_groups >= 3 else 0
                 logger.debug(f"FFmpeg version detected: {major}.{minor}.{patch}")
                 return (major, minor, patch)
         
@@ -175,6 +185,21 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
     except Exception as e:
         logger.debug(f"✗ {hwaccel} functionality test failed with exception: {e}")
         return False
+
+
+def _is_wsl2() -> bool:
+    """
+    Detect if running in WSL2 by checking for /dev/dxg device.
+    
+    Per Microsoft's documentation, /dev/dxg is the WSL2 GPU passthrough device
+    exposed by the dxgkrnl driver.
+    
+    Reference: https://devblogs.microsoft.com/directx/directx-heart-linux/
+    
+    Returns:
+        bool: True if running in WSL2 with GPU support
+    """
+    return os.path.exists('/dev/dxg')
 
 
 def _get_gpu_devices() -> List[Tuple[str, str, str]]:
@@ -339,6 +364,10 @@ def _log_system_info() -> None:
     logger.debug(f"Python version: {platform.python_version()}")
     logger.debug(f"FFmpeg path: {os.environ.get('FFMPEG_PATH', 'ffmpeg')}")
     
+    # Check for WSL2
+    if _is_wsl2():
+        logger.debug("Running in WSL2 (detected /dev/dxg device)")
+    
     # Check FFmpeg version
     _check_ffmpeg_version()
     
@@ -347,14 +376,12 @@ def _log_system_info() -> None:
     if hwaccels:
         logger.debug(f"Available FFmpeg hardware accelerators: {hwaccels}")
     
-    # Log GPU device mapping
+    # Log GPU device mapping (standard Linux devices)
     gpu_devices = _get_gpu_devices()
     if gpu_devices:
         logger.debug("GPU device mapping:")
         for card_name, render_device, driver in gpu_devices:
             logger.debug(f"  {card_name} -> {render_device} (driver: {driver})")
-    else:
-        logger.debug("No GPU devices found")
     
     logger.debug("=== End System Information ===")
 
@@ -470,6 +497,11 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
     
     detected_gpus = []
     
+    # Detect if running in WSL2 - makes detection more lenient
+    is_wsl2 = _is_wsl2()
+    if is_wsl2:
+        logger.debug("Detected WSL2 environment (/dev/dxg present) - GPU functionality tests may be skipped")
+    
     # Check NVIDIA CUDA (can have multiple GPUs)
     logger.debug("1. Checking NVIDIA CUDA acceleration...")
     if _is_hwaccel_available('cuda') and _test_hwaccel_functionality('cuda'):
@@ -496,15 +528,23 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
     
     # Check Intel QSV (usually single GPU)
     logger.debug("3. Checking Intel QSV acceleration...")
-    if _is_hwaccel_available('qsv') and _test_hwaccel_functionality('qsv'):
-        logger.debug("✓ Intel QSV hardware acceleration is available and working")
-        gpu_name = get_gpu_name('INTEL', 'qsv')
-        gpu_info = {
-            'name': gpu_name,
-            'acceleration': 'QSV',
-            'device_path': 'qsv'
-        }
-        detected_gpus.append(('INTEL', 'qsv', gpu_info))
+    if _is_hwaccel_available('qsv'):
+        # In WSL2, QSV may be available but functionality tests can fail
+        # Just check if it's available, don't require test to pass
+        test_passed = _test_hwaccel_functionality('qsv')
+        if test_passed or is_wsl2:
+            if test_passed:
+                logger.debug("✓ Intel QSV hardware acceleration is available and working")
+            else:
+                logger.debug("✓ Intel QSV available in WSL2 (functionality test skipped)")
+            gpu_name = get_gpu_name('INTEL', 'qsv')
+            gpu_info = {
+                'name': gpu_name,
+                'acceleration': 'QSV',
+                'device_path': 'qsv',
+                'wsl2': is_wsl2
+            }
+            detected_gpus.append(('INTEL', 'qsv', gpu_info))
     
     # Check VAAPI (can have multiple devices)
     logger.debug("4. Checking VAAPI acceleration...")

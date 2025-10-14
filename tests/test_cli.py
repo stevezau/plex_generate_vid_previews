@@ -51,10 +51,9 @@ class TestApplicationState:
         state.set_config(config)
         assert state.config == config
     
-    @patch('plex_generate_previews.cli.clear_directory')
     @patch('os.path.isdir')
     @patch('shutil.rmtree')
-    def test_cleanup_with_config(self, mock_rmtree, mock_isdir, mock_clear_dir):
+    def test_cleanup_with_config(self, mock_rmtree, mock_isdir):
         """Test cleanup with configuration."""
         state = ApplicationState()
         config = MagicMock()
@@ -67,12 +66,9 @@ class TestApplicationState:
         
         state.cleanup()
         
-        # Should clean up working folder first
+        # Should only clean up working folder, not parent tmp_folder
         assert mock_rmtree.call_count == 1
-        mock_rmtree.assert_any_call('/tmp/test/working')
-        
-        # Should clear tmp_folder contents (not delete since we didn't create it)
-        mock_clear_dir.assert_called_once_with('/tmp/test')
+        mock_rmtree.assert_called_once_with('/tmp/test/working')
     
     def test_cleanup_without_config(self):
         """Test cleanup without configuration."""
@@ -95,10 +91,9 @@ class TestApplicationState:
         
         state.cleanup()
         
-        # Should clean up both working folder and base tmp folder
-        assert mock_rmtree.call_count == 2
-        mock_rmtree.assert_any_call('/tmp/test/working')
-        mock_rmtree.assert_any_call('/tmp/test')
+        # Should only clean up working folder (parent folder is persistent even if we created it)
+        assert mock_rmtree.call_count == 1
+        mock_rmtree.assert_called_once_with('/tmp/test/working')
 
 
 class TestLogging:

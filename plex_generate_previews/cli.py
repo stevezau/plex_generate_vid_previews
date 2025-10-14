@@ -21,7 +21,7 @@ from .config import Config, load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
 from .plex_client import plex_server, get_library_sections
 from .worker import WorkerPool
-from .utils import calculate_title_width, setup_working_directory as create_working_directory, clear_directory
+from .utils import calculate_title_width, setup_working_directory as create_working_directory
 from .version_check import check_for_updates
 from .logging_config import setup_logging
 
@@ -69,20 +69,6 @@ class ApplicationState:
                     logger.debug(f"Cleaned up working temp folder: {self.config.working_tmp_folder}")
         except Exception as cleanup_error:
             logger.warning(f"Failed to clean up working temp folder during interrupt: {cleanup_error}")
-        
-        # Clean up base tmp folder
-        try:
-            if self.config and hasattr(self.config, 'tmp_folder') and os.path.isdir(self.config.tmp_folder):
-                if self.config.tmp_folder_created_by_us:
-                    # We created it, so delete the entire folder
-                    shutil.rmtree(self.config.tmp_folder)
-                    logger.debug(f"Deleted tmp folder (created by us): {self.config.tmp_folder}")
-                else:
-                    # It already existed, so just clear contents
-                    clear_directory(self.config.tmp_folder)
-                    logger.debug(f"Cleared tmp folder contents (existed before): {self.config.tmp_folder}")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to clean up tmp folder {self.config.tmp_folder}: {cleanup_error}")
 
 
 # Global application state
@@ -471,20 +457,6 @@ def run_processing(config, selected_gpus):
                 logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
         except Exception as cleanup_error:
             logger.warning(f"Failed to clean up working temp folder {config.working_tmp_folder}: {cleanup_error}")
-        
-        # Clean up base tmp folder
-        try:
-            if os.path.isdir(config.tmp_folder):
-                if config.tmp_folder_created_by_us:
-                    # We created it, so delete the entire folder
-                    shutil.rmtree(config.tmp_folder)
-                    logger.debug(f"Deleted tmp folder (created by us): {config.tmp_folder}")
-                else:
-                    # It already existed, so just clear contents
-                    clear_directory(config.tmp_folder)
-                    logger.debug(f"Cleared tmp folder contents (existed before): {config.tmp_folder}")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to clean up tmp folder {config.tmp_folder}: {cleanup_error}")
         
         # Final terminal cleanup to ensure cursor is visible
         try:

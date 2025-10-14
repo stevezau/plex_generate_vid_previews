@@ -517,7 +517,7 @@ class TestLoadConfig:
     @patch('plex_generate_previews.cli.setup_logging')
     def test_load_config_tmp_folder_not_empty(self, mock_logging, mock_exists, mock_isdir, 
                                                mock_listdir, mock_access, mock_statvfs, mock_run, mock_which):
-        """Test that validation fails if tmp folder exists but is not empty."""
+        """Test that config loads successfully even if tmp folder is not empty."""
         mock_which.return_value = '/usr/bin/ffmpeg'
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
         
@@ -526,7 +526,7 @@ class TestLoadConfig:
         
         def mock_listdir_side_effect(path):
             if path == "/tmp/plex_generate_previews":
-                return ['file1.txt', 'file2.txt']  # tmp folder has contents
+                return ['file1.txt', 'file2.txt']  # tmp folder has contents - should be OK
             elif path.endswith('/localhost') or '/localhost' in path and not path.endswith('Media'):
                 return ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
             elif path.endswith('/Media'):
@@ -566,8 +566,9 @@ class TestLoadConfig:
         
         config = load_config(args)
         
-        # Should fail because tmp folder is not empty
-        assert config is None
+        # Should succeed even though tmp folder is not empty
+        assert config is not None
+        assert config.tmp_folder == "/tmp/plex_generate_previews"
     
     @patch('shutil.which')
     @patch('plex_generate_previews.cli.setup_logging')

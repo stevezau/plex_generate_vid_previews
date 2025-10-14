@@ -385,7 +385,7 @@ def load_config(cli_args=None) -> Config:
     if tmp_folder in ['/tmp', '/var/tmp', '/']:
         validation_errors.append(f'TMP_FOLDER should not be a system directory like {tmp_folder}. Use a subdirectory instead (e.g., {tmp_folder}/plex_previews)')
     
-    # Handle tmp_folder: create if missing, validate if exists
+    # Handle tmp_folder: create if missing
     tmp_folder_created_by_us = False
     if not os.path.exists(tmp_folder):
         # Create the directory
@@ -395,16 +395,6 @@ def load_config(cli_args=None) -> Config:
             logger.debug(f'Created TMP_FOLDER: {tmp_folder}')
         except OSError as e:
             validation_errors.append(f'Failed to create TMP_FOLDER ({tmp_folder}): {e}')
-    else:
-        # Directory exists - check if it's empty
-        try:
-            contents = os.listdir(tmp_folder)
-            if contents:
-                validation_errors.append(f'TMP_FOLDER ({tmp_folder}) already exists and is not empty')
-                validation_errors.append(f'Please clear the directory first or use a different path')
-                validation_errors.append(f'Contents: {", ".join(contents[:5])}{"..." if len(contents) > 5 else ""}')
-        except PermissionError:
-            validation_errors.append(f'TMP_FOLDER ({tmp_folder}) exists but cannot read contents (permission denied)')
     
     # Validate tmp_folder is writable
     if os.path.exists(tmp_folder) and not os.access(tmp_folder, os.W_OK):

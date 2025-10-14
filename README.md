@@ -398,7 +398,7 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 | **NVIDIA** | CUDA | NVIDIA drivers + CUDA toolkit | ✅ NVIDIA Container Toolkit |
 | **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
 | **Intel** | QSV/VAAPI | Intel drivers + Media SDK | ✅ Device access |
-| **WSL2** | D3D11VA | WSL2 + compatible GPU | ✅ Native WSL2 |
+| **WSL2** | QSV/OpenCL/CUDA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
 
 ### GPU Detection
 
@@ -434,7 +434,10 @@ plex-generate-previews --gpu-selection "0"
 - **NVIDIA**: Uses CUDA for maximum performance
 - **AMD**: Uses VAAPI with ROCm drivers
 - **Intel**: Uses QSV (Quick Sync Video) or VAAPI
-- **WSL2**: Uses D3D11VA for Windows GPU passthrough
+- **WSL2**: Automatically detects GPU via `/dev/dxg` and configures:
+  - Intel GPUs: QSV or OpenCL
+  - AMD GPUs: OpenCL
+  - NVIDIA GPUs: CUDA
 
 ### Docker GPU Requirements
 
