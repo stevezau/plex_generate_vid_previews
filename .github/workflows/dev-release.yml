@@ -1,6 +1,8 @@
 name: Dev Container Release
 
 on:
+  push:
+    branches: [ develop ]
   workflow_dispatch:
     inputs:
       reason:
