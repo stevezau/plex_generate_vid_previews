@@ -1,14 +1,14 @@
 FROM linuxserver/ffmpeg:8.0-cli-ls43
 
-# Install Python, pip, and gosu
+# Install Python, pip, and dependencies
 RUN apt-get update && \
-    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu && \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create plex user/group (will be modified by entrypoint to match PUID/PGID)
-RUN groupadd -g 1000 plex && \
-    useradd -u 1000 -g 1000 -s /bin/bash plex
+# Replace init-adduser with clean version (no branding)
+COPY docker-init-user.sh /etc/s6-overlay/s6-rc.d/init-adduser/run
+RUN chmod +x /etc/s6-overlay/s6-rc.d/init-adduser/run
 
 # Set working directory
 WORKDIR /app
@@ -19,12 +19,17 @@ COPY plex_generate_previews/ ./plex_generate_previews/
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 RUN pip3 install . --no-cache-dir
 
-# Copy entrypoint
-COPY docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Copy wrapper script
+COPY wrapper.sh /app/wrapper.sh
+RUN chmod +x /app/wrapper.sh
 
-# Default PUID/PGID
+# Default PUID/PGID (override with environment variables)
 ENV PUID=1000 \
     PGID=1000
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh", "plex-generate-previews"]
+# Use LinuxServer's /init for PUID/PGID handling
+ENTRYPOINT ["/init", "/app/wrapper.sh"]
+
+# Default: run without arguments (use environment variables for config)
+# Users can override with: docker run image:tag --list-gpus
+CMD []

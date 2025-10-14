@@ -84,6 +84,15 @@ plex-generate-previews \
 - **Python 3.7+**: For local installation
 - **Docker**: For containerized deployment (optional)
 
+### Platform Support
+
+> [!WARNING]  
+> **Windows is not natively supported.**
+
+**For Windows users, use one of these alternatives:**
+- 🐳 **Docker** (Recommended): Run the Docker container on Windows
+- 🐧 **[WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)**: Install and run this tool inside a WSL2 Linux environment
+
 ### GPU Requirements
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
 - **AMD**: ROCm-compatible GPU + amdgpu drivers  
@@ -648,6 +657,9 @@ plex-generate-previews --log-level DEBUG
 
 **Q: What's new in version 2.0.0?**
 A: Version 2.0.0 introduces multi-GPU support, improved CLI interface, better error handling, WSL2 support, and a complete rewrite with modern Python practices.
+
+**Q: Does this work on Windows?**
+A: Native Windows is not supported. Windows users should use Docker or run the tool inside [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) 
 
 **Q: Can I use this without a GPU?**
 A: Yes! Set `--gpu-threads 0` and use `--cpu-threads 4` (or higher) for CPU-only processing.
