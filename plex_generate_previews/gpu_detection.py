@@ -504,15 +504,21 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
     
     # Check NVIDIA CUDA (can have multiple GPUs)
     logger.debug("1. Checking NVIDIA CUDA acceleration...")
-    if _is_hwaccel_available('cuda') and _test_hwaccel_functionality('cuda'):
-        logger.debug("✓ NVIDIA CUDA hardware acceleration is available and working")
-        gpu_name = get_gpu_name('NVIDIA', 'cuda')
-        gpu_info = {
-            'name': gpu_name,
-            'acceleration': 'CUDA',
-            'device_path': 'cuda'
-        }
-        detected_gpus.append(('NVIDIA', 'cuda', gpu_info))
+    if _is_hwaccel_available('cuda'):
+        test_passed = _test_hwaccel_functionality('cuda')
+        if test_passed or is_wsl2:
+            if test_passed:
+                logger.debug("✓ NVIDIA CUDA hardware acceleration is available and working")
+            else:
+                logger.debug("✓ NVIDIA CUDA available in WSL2 (functionality test skipped)")
+            gpu_name = get_gpu_name('NVIDIA', 'cuda')
+            gpu_info = {
+                'name': gpu_name,
+                'acceleration': 'CUDA',
+                'device_path': 'cuda',
+                'wsl2': is_wsl2
+            }
+            detected_gpus.append(('NVIDIA', 'cuda', gpu_info))
     
     # Check WSL2 D3D11VA (usually single GPU)
     logger.debug("2. Checking WSL2 D3D11VA acceleration...")
@@ -552,16 +558,21 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         logger.debug("VAAPI acceleration is available, searching for devices...")
         vaapi_devices = _find_all_vaapi_devices()
         for device_path in vaapi_devices:
-            if _test_hwaccel_functionality('vaapi', device_path):
+            test_passed = _test_hwaccel_functionality('vaapi', device_path)
+            if test_passed or is_wsl2:
                 gpu_type = _determine_vaapi_gpu_type(device_path)
                 gpu_name = get_gpu_name(gpu_type, device_path)
                 gpu_info = {
                     'name': gpu_name,
                     'acceleration': 'VAAPI',
-                    'device_path': device_path
+                    'device_path': device_path,
+                    'wsl2': is_wsl2
                 }
                 detected_gpus.append((gpu_type, device_path, gpu_info))
-                logger.debug(f"✓ {gpu_type} VAAPI hardware acceleration is available and working with device {device_path}")
+                if test_passed:
+                    logger.debug(f"✓ {gpu_type} VAAPI hardware acceleration is available and working with device {device_path}")
+                else:
+                    logger.debug(f"✓ {gpu_type} VAAPI available in WSL2 (functionality test skipped)")
     
     logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} GPUs ===")
     return detected_gpus
