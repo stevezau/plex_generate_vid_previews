@@ -1,0 +1,96 @@
+name: Dev Container Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for dev release'
+        required: false
+        type: string
+        default: 'Testing fixes'
+
+jobs:
+  # Step 1: Run tests before building
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    container:
+      image: linuxserver/ffmpeg:8.0-cli-ls43
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install system dependencies
+      run: |
+        apt-get update
+        apt-get install -y python3-dev python3-pip python3-venv build-essential git
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+    
+    - name: Create virtual environment
+      run: |
+        python3 -m venv /opt/venv
+        . /opt/venv/bin/activate
+        python -m pip install --upgrade pip
+    
+    - name: Install dependencies
+      run: |
+        . /opt/venv/bin/activate
+        pip install -e ".[test]"
+    
+    - name: Run tests with coverage
+      run: |
+        . /opt/venv/bin/activate
+        pytest tests/ -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html --cov-fail-under=70
+    
+    - name: Upload coverage HTML report as artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report
+        path: htmlcov/
+
+  # Step 2: Build and push dev Docker image (only if tests pass)
+  publish-dev-docker:
+    name: Publish Dev Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: stevezzau/plex_generate_vid_previews:dev
+          labels: |
+            org.opencontainers.image.title=plex_generate_vid_previews
+            org.opencontainers.image.description=Dev build for testing
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      
+      - name: Summary
+        run: |
+          echo "## Dev Container Published! 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Docker Image:** \`stevezzau/plex_generate_vid_previews:dev\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pull Command:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull stevezzau/plex_generate_vid_previews:dev" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason:** ${{ github.event.inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+
