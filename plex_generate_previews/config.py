@@ -116,7 +116,7 @@ class Config:
 
 def show_docker_help():
     """Show Docker-optimized help message with environment variables prominently displayed."""
-    logger.info('🐳 Docker Environment Detected - Configuration via Environment Variables')
+    logger.info('🐳 Docker Environment Detected - Configuration via Environment Variables or CLI Arguments')
     logger.info('=' * 80)
     logger.info('')
     logger.info('📋 Required Environment Variables:')
@@ -140,7 +140,7 @@ def show_docker_help():
     logger.info('  TMP_FOLDER                  Temporary folder for processing (default: /tmp/plex_generate_previews)')
     logger.info('  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)')
     logger.info('')
-    logger.info('💡 Example Docker Run Command:')
+    logger.info('💡 Example Docker Run Command (using environment variables):')
     logger.info('')
     logger.info('  docker run -it --rm --runtime=nvidia \\')
     logger.info('    -e PLEX_URL="http://localhost:32400" \\')
@@ -152,7 +152,19 @@ def show_docker_help():
     logger.info('    -v /path/to/videos:/data \\')
     logger.info('    plex_generate_vid_previews:latest')
     logger.info('')
-    logger.info('🔧 For CLI arguments (non-Docker), use: plex-generate-previews --help')
+    logger.info('💡 Example Docker Run Command (using CLI arguments):')
+    logger.info('')
+    logger.info('  docker run -it --rm --runtime=nvidia \\')
+    logger.info('    -v /path/to/plex/config:/config \\')
+    logger.info('    -v /path/to/videos:/data \\')
+    logger.info('    plex_generate_vid_previews:latest \\')
+    logger.info('    --plex-url "http://localhost:32400" \\')
+    logger.info('    --plex-token "your_token_here" \\')
+    logger.info('    --plex-config-folder "/config/plex/Library/Application Support/Plex Media Server" \\')
+    logger.info('    --gpu-threads 1 \\')
+    logger.info('    --cpu-threads 1')
+    logger.info('')
+    logger.info('🔧 For more options, use: plex-generate-previews --help')
 
 
 def load_config(cli_args=None) -> Config:
@@ -194,7 +206,7 @@ def load_config(cli_args=None) -> Config:
     cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
     gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
     
-    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', '/tmp/plex_generate_previews')
+    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', '/tmp')
     
     # Handle log_level (case insensitive)
     log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
@@ -381,10 +393,6 @@ def load_config(cli_args=None) -> Config:
         except ValueError:
             validation_errors.append(f'GPU_SELECTION must be "all" or comma-separated integers (got: {gpu_selection})')
     
-    # Additional safety check: warn if tmp_folder is a system directory
-    if tmp_folder in ['/tmp', '/var/tmp', '/']:
-        validation_errors.append(f'TMP_FOLDER should not be a system directory like {tmp_folder}. Use a subdirectory instead (e.g., {tmp_folder}/plex_previews)')
-    
     # Handle tmp_folder: create if missing
     tmp_folder_created_by_us = False
     if not os.path.exists(tmp_folder):
@@ -408,8 +416,10 @@ def load_config(cli_args=None) -> Config:
             free_space_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
             if free_space_gb < 1:  # Less than 1GB
                 validation_errors.append(f'TMP_FOLDER has less than 1GB free space ({free_space_gb:.1f}GB available)')
-        except OSError:
-            validation_errors.append(f'Cannot check disk space for TMP_FOLDER ({tmp_folder})')
+        except (OSError, AttributeError):
+            # AttributeError: os.statvfs doesn't exist on Windows
+            # OSError: Cannot access the folder for other reasons
+            logger.debug(f'Cannot check disk space for TMP_FOLDER ({tmp_folder}) - skipping disk space check')
     
     # Handle missing parameters (show help)
     if missing_params:

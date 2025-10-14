@@ -92,6 +92,11 @@ def is_docker_environment() -> bool:
     )
 
 
+def is_windows() -> bool:
+    """Check if running on Windows operating system."""
+    return os.name == 'nt'
+
+
 def sanitize_path(path: str) -> str:
     """
     Sanitize file path for cross-platform compatibility.

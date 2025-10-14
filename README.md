@@ -42,7 +42,7 @@ Preview thumbnails are the small images you see when scrubbing through videos in
 # 1. Check your GPUs
 docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
 
-# 2. Run with your details
+# 2. Run with your details (using environment variables)
 docker run --rm --gpus all \
   -e PLEX_URL=http://localhost:32400 \
   -e PLEX_TOKEN=your-token-here \
@@ -50,6 +50,15 @@ docker run --rm --gpus all \
   -v /path/to/your/plex/config:/config/plex \
   -v /path/to/your/media:/media \
   stevezzau/plex_generate_vid_previews:latest
+
+# Or use CLI arguments instead (both work)
+docker run --rm --gpus all \
+  -v /path/to/your/plex/config:/config/plex \
+  -v /path/to/your/media:/media \
+  stevezzau/plex_generate_vid_previews:latest \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token-here \
+  --plex-config-folder /config/plex/Library/Application\ Support/Plex\ Media\ Server
 ```
 
 **Pip (local install):**
@@ -84,6 +93,15 @@ plex-generate-previews \
 - **Python 3.7+**: For local installation
 - **Docker**: For containerized deployment (optional)
 
+### Platform Support
+
+> [!WARNING]  
+> **Windows is not natively supported.**
+
+**For Windows users, use one of these alternatives:**
+- 🐳 **Docker** (Recommended): Run the Docker container on Windows
+- 🐧 **[WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)**: Install and run this tool inside a WSL2 Linux environment
+
 ### GPU Requirements
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
 - **AMD**: ROCm-compatible GPU + amdgpu drivers  
@@ -105,7 +123,7 @@ Choose the installation method that best fits your setup:
 # 1. Check available GPUs
 docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
 
-# 2. Run with GPU acceleration
+# 2. Run with GPU acceleration (using environment variables)
 docker run --rm --gpus all \
   -e PLEX_URL=http://localhost:32400 \
   -e PLEX_TOKEN=your-token \
@@ -113,12 +131,20 @@ docker run --rm --gpus all \
   -v /path/to/plex/config:/config/plex \
   -v /path/to/media:/media \
   stevezzau/plex_generate_vid_previews:latest
+
+# 3. Alternative: using CLI arguments (environment variables and CLI arguments both work)
+docker run --rm --gpus all \
+  -v /path/to/plex/config:/config/plex \
+  -v /path/to/media:/media \
+  stevezzau/plex_generate_vid_previews:latest \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token \
+  --plex-config-folder /config/plex/Library/Application\ Support/Plex\ Media\ Server
 ```
 
 **GPU Requirements:**
 - **NVIDIA**: Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- **AMD**: Follow [ROCm Docker setup guide](https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html)
-- **Intel**: Ensure container has access to `/dev/dri` devices and render group
+- **AMD/Intel**: Mount `/dev/dri` with `--device /dev/dri:/dev/dri` (see [Troubleshooting](#troubleshooting) if you get permission errors)
 - **WSL2**: No special configuration needed - automatically detects WSL2 GPUs
 
 ### Pip Installation
@@ -258,8 +284,12 @@ For detailed configuration options, see the complete reference tables below:
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
-| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp/plex_generate_previews |
+| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp |
 | `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
+| `PUID` | N/A | User ID to run container as (Docker only) | 1000 |
+| `PGID` | N/A | Group ID to run container as (Docker only) | 1000 |
+
+**Note:** `PUID`/`PGID` let you run the container as your host user (prevents file permission issues). Defaults to 1000. For GPU access, you may also need `--group-add` (see [Troubleshooting](#troubleshooting)).
 
 #### Special Commands
 
@@ -511,6 +541,8 @@ services:
 
 ### Docker CLI Examples
 
+> **Note:** Docker supports both environment variables (shown below) and CLI arguments. To use CLI arguments, append them after the image name (e.g., `stevezzau/plex_generate_vid_previews:latest --plex-url http://... --plex-token ...`). See [Quick Start](#quick-start) for CLI argument examples.
+
 **NVIDIA GPU:**
 ```bash
 docker run --rm --gpus all \
@@ -578,6 +610,15 @@ plex-generate-previews \
   - Use `--list-gpus` to check detection
   - Fall back to CPU-only: `--gpu-threads 0 --cpu-threads 4`
 
+#### "GPU permission denied" (Intel/AMD VAAPI)
+- **Cause**: The container needs to run as a user that has GPU device permissions
+- **Solution**: Set `PUID` and `PGID` environment variables on the container
+- **The error message tells you what values to use** - look for your user ID in the output
+- **Example**:
+  ```bash
+  docker run -e PUID=1000 -e PGID=1000 --device /dev/dri:/dev/dri ...
+  ```
+
 #### "PLEX_CONFIG_FOLDER does not exist"
 - **Cause**: Incorrect path to Plex Media Server configuration folder
 - **Solution**:
@@ -636,6 +677,9 @@ plex-generate-previews --log-level DEBUG
 
 **Q: What's new in version 2.0.0?**
 A: Version 2.0.0 introduces multi-GPU support, improved CLI interface, better error handling, WSL2 support, and a complete rewrite with modern Python practices.
+
+**Q: Does this work on Windows?**
+A: Native Windows is not supported. Windows users should use Docker or run the tool inside [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) 
 
 **Q: Can I use this without a GPU?**
 A: Yes! Set `--gpu-threads 0` and use `--cpu-threads 4` (or higher) for CPU-only processing.
