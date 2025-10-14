@@ -116,7 +116,7 @@ class Config:
 
 def show_docker_help():
     """Show Docker-optimized help message with environment variables prominently displayed."""
-    logger.info('🐳 Docker Environment Detected - Configuration via Environment Variables')
+    logger.info('🐳 Docker Environment Detected - Configuration via Environment Variables or CLI Arguments')
     logger.info('=' * 80)
     logger.info('')
     logger.info('📋 Required Environment Variables:')
@@ -140,7 +140,7 @@ def show_docker_help():
     logger.info('  TMP_FOLDER                  Temporary folder for processing (default: /tmp/plex_generate_previews)')
     logger.info('  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)')
     logger.info('')
-    logger.info('💡 Example Docker Run Command:')
+    logger.info('💡 Example Docker Run Command (using environment variables):')
     logger.info('')
     logger.info('  docker run -it --rm --runtime=nvidia \\')
     logger.info('    -e PLEX_URL="http://localhost:32400" \\')
@@ -152,7 +152,19 @@ def show_docker_help():
     logger.info('    -v /path/to/videos:/data \\')
     logger.info('    plex_generate_vid_previews:latest')
     logger.info('')
-    logger.info('🔧 For CLI arguments (non-Docker), use: plex-generate-previews --help')
+    logger.info('💡 Example Docker Run Command (using CLI arguments):')
+    logger.info('')
+    logger.info('  docker run -it --rm --runtime=nvidia \\')
+    logger.info('    -v /path/to/plex/config:/config \\')
+    logger.info('    -v /path/to/videos:/data \\')
+    logger.info('    plex_generate_vid_previews:latest \\')
+    logger.info('    --plex-url "http://localhost:32400" \\')
+    logger.info('    --plex-token "your_token_here" \\')
+    logger.info('    --plex-config-folder "/config/plex/Library/Application Support/Plex Media Server" \\')
+    logger.info('    --gpu-threads 1 \\')
+    logger.info('    --cpu-threads 1')
+    logger.info('')
+    logger.info('🔧 For more options, use: plex-generate-previews --help')
 
 
 def load_config(cli_args=None) -> Config:

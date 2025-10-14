@@ -42,7 +42,7 @@ Preview thumbnails are the small images you see when scrubbing through videos in
 # 1. Check your GPUs
 docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
 
-# 2. Run with your details
+# 2. Run with your details (using environment variables)
 docker run --rm --gpus all \
   -e PLEX_URL=http://localhost:32400 \
   -e PLEX_TOKEN=your-token-here \
@@ -50,6 +50,15 @@ docker run --rm --gpus all \
   -v /path/to/your/plex/config:/config/plex \
   -v /path/to/your/media:/media \
   stevezzau/plex_generate_vid_previews:latest
+
+# Or use CLI arguments instead (both work)
+docker run --rm --gpus all \
+  -v /path/to/your/plex/config:/config/plex \
+  -v /path/to/your/media:/media \
+  stevezzau/plex_generate_vid_previews:latest \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token-here \
+  --plex-config-folder /config/plex/Library/Application\ Support/Plex\ Media\ Server
 ```
 
 **Pip (local install):**
@@ -114,7 +123,7 @@ Choose the installation method that best fits your setup:
 # 1. Check available GPUs
 docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
 
-# 2. Run with GPU acceleration
+# 2. Run with GPU acceleration (using environment variables)
 docker run --rm --gpus all \
   -e PLEX_URL=http://localhost:32400 \
   -e PLEX_TOKEN=your-token \
@@ -122,6 +131,15 @@ docker run --rm --gpus all \
   -v /path/to/plex/config:/config/plex \
   -v /path/to/media:/media \
   stevezzau/plex_generate_vid_previews:latest
+
+# 3. Alternative: using CLI arguments (environment variables and CLI arguments both work)
+docker run --rm --gpus all \
+  -v /path/to/plex/config:/config/plex \
+  -v /path/to/media:/media \
+  stevezzau/plex_generate_vid_previews:latest \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token \
+  --plex-config-folder /config/plex/Library/Application\ Support/Plex\ Media\ Server
 ```
 
 **GPU Requirements:**
@@ -522,6 +540,8 @@ services:
 ```
 
 ### Docker CLI Examples
+
+> **Note:** Docker supports both environment variables (shown below) and CLI arguments. To use CLI arguments, append them after the image name (e.g., `stevezzau/plex_generate_vid_previews:latest --plex-url http://... --plex-token ...`). See [Quick Start](#quick-start) for CLI argument examples.
 
 **NVIDIA GPU:**
 ```bash

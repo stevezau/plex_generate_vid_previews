@@ -30,6 +30,6 @@ ENV PUID=1000 \
 # Use LinuxServer's /init for PUID/PGID handling
 ENTRYPOINT ["/init", "/app/wrapper.sh"]
 
-# Default: run without arguments (use environment variables for config)
-# Users can override with: docker run image:tag --list-gpus
+# Default: run without arguments (environment variables will be used)
+# CLI arguments are supported: docker run image:tag --list-gpus --plex-url http://... --plex-token ...
 CMD []
