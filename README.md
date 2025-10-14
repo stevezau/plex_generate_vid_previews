@@ -117,8 +117,7 @@ docker run --rm --gpus all \
 
 **GPU Requirements:**
 - **NVIDIA**: Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- **AMD**: Follow [ROCm Docker setup guide](https://rocm.docs.amd.com/en/docs-5.0.2/deploy/docker.html)
-- **Intel**: Ensure container has access to `/dev/dri` devices and render group
+- **AMD/Intel**: Mount `/dev/dri` with `--device /dev/dri:/dev/dri` (see [Troubleshooting](#troubleshooting) if you get permission errors)
 - **WSL2**: No special configuration needed - automatically detects WSL2 GPUs
 
 ### Pip Installation
@@ -260,6 +259,10 @@ For detailed configuration options, see the complete reference tables below:
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
 | `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp |
 | `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
+| `PUID` | N/A | User ID to run container as (Docker only) | 1000 |
+| `PGID` | N/A | Group ID to run container as (Docker only) | 1000 |
+
+**Note:** `PUID`/`PGID` let you run the container as your host user (prevents file permission issues). Defaults to 1000. For GPU access, you may also need `--group-add` (see [Troubleshooting](#troubleshooting)).
 
 #### Special Commands
 
@@ -577,6 +580,15 @@ plex-generate-previews \
   - Update FFmpeg to version 7.0+
   - Use `--list-gpus` to check detection
   - Fall back to CPU-only: `--gpu-threads 0 --cpu-threads 4`
+
+#### "GPU permission denied" (Intel/AMD VAAPI)
+- **Cause**: The container needs to run as a user that has GPU device permissions
+- **Solution**: Set `PUID` and `PGID` environment variables on the container
+- **The error message tells you what values to use** - look for your user ID in the output
+- **Example**:
+  ```bash
+  docker run -e PUID=1000 -e PGID=1000 --device /dev/dri:/dev/dri ...
+  ```
 
 #### "PLEX_CONFIG_FOLDER does not exist"
 - **Cause**: Incorrect path to Plex Media Server configuration folder

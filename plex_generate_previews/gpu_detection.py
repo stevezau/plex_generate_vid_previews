@@ -150,8 +150,22 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
         return False, 'not_found'
     
     if not os.access(device_path, os.R_OK):
-        logger.debug(f"✗ Device exists but is not readable: {device_path}")
-        logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
+        # Get device file stats for better diagnostics
+        try:
+            stat_info = os.stat(device_path)
+            import stat as stat_module
+            mode = stat_info.st_mode
+            owner_uid = stat_info.st_uid
+            group_gid = stat_info.st_gid
+            perms = stat_module.filemode(mode)
+            
+            logger.debug(f"✗ Device exists but is not readable: {device_path}")
+            logger.debug(f"  Device permissions: {perms} (owner={owner_uid}, group={group_gid})")
+            logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
+        except Exception as e:
+            logger.debug(f"✗ Device exists but is not readable: {device_path}")
+            logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
+            logger.debug(f"  Could not get device stats: {e}")
         return False, 'permission_denied'
     
     logger.debug(f"✓ Device is accessible: {device_path}")
@@ -176,10 +190,24 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
             if not accessible:
                 # Only show permission warnings if the device exists but is not accessible
                 if reason == 'permission_denied':
-                    logger.warning(f"⚠ VAAPI device {device_path} exists but is not accessible due to permissions")
-                    logger.warning(f"⚠ This is a permission issue. Ensure:")
-                    logger.warning(f"⚠   1. The device is mounted: --device {device_path}:{device_path}")
-                    logger.warning(f"⚠   2. The user is in the 'video' and 'render' groups")
+                    # Get device group for specific recommendation
+                    try:
+                        stat_info = os.stat(device_path)
+                        device_gid = stat_info.st_gid
+                        user_groups = os.getgroups()
+                        
+                        logger.warning(f"⚠ VAAPI device {device_path} is not accessible (permission denied)")
+                        logger.warning(f"⚠ Device group: {device_gid}, your groups: {user_groups}")
+                        
+                        if device_gid not in user_groups:
+                            logger.warning(f"⚠ Solution: Set PUID and PGID environment variables")
+                            logger.warning(f"⚠ Example: docker run -e PUID=1000 -e PGID=1000 --device /dev/dri:/dev/dri ...")
+                        else:
+                            logger.warning(f"⚠ You are in group {device_gid}, but device is still not accessible")
+                            logger.warning(f"⚠ Check host device permissions: ls -l {device_path}")
+                    except Exception:
+                        logger.warning(f"⚠ VAAPI device {device_path} is not accessible (permission denied)")
+                        logger.warning(f"⚠ Solution: Set PUID and PGID environment variables")
                 # If device doesn't exist, just skip silently (expected for wrong GPU type)
                 return False
         # Build FFmpeg command based on acceleration type
