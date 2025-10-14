@@ -171,7 +171,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--list-gpus', action='store_true', help='List detected GPUs and exit')
     
     # System paths
-    parser.add_argument('--tmp-folder', help='Temporary folder for processing (default: /tmp/plex_generate_previews)')
+    parser.add_argument('--tmp-folder', help='Temporary folder for processing (default: /tmp)')
     
     # Logging
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')

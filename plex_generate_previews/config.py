@@ -194,7 +194,7 @@ def load_config(cli_args=None) -> Config:
     cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
     gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
     
-    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', '/tmp/plex_generate_previews')
+    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', '/tmp')
     
     # Handle log_level (case insensitive)
     log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
@@ -380,10 +380,6 @@ def load_config(cli_args=None) -> Config:
                 validation_errors.append(f'GPU_SELECTION indices must be non-negative (got: {gpu_selection})')
         except ValueError:
             validation_errors.append(f'GPU_SELECTION must be "all" or comma-separated integers (got: {gpu_selection})')
-    
-    # Additional safety check: warn if tmp_folder is a system directory
-    if tmp_folder in ['/tmp', '/var/tmp', '/']:
-        validation_errors.append(f'TMP_FOLDER should not be a system directory like {tmp_folder}. Use a subdirectory instead (e.g., {tmp_folder}/plex_previews)')
     
     # Handle tmp_folder: create if missing
     tmp_folder_created_by_us = False

@@ -258,7 +258,7 @@ For detailed configuration options, see the complete reference tables below:
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
-| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp/plex_generate_previews |
+| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp |
 | `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
 
 #### Special Commands
