@@ -132,6 +132,32 @@ def _is_hwaccel_available(hwaccel: str) -> bool:
     return is_available
 
 
+def _check_device_access(device_path: str) -> tuple[bool, str]:
+    """
+    Check if a device is accessible (exists and readable).
+    
+    Args:
+        device_path: Path to device to check
+        
+    Returns:
+        tuple[bool, str]: (is_accessible, reason) where reason is:
+            'accessible' - device exists and is readable
+            'not_found' - device does not exist
+            'permission_denied' - device exists but is not readable
+    """
+    if not os.path.exists(device_path):
+        logger.debug(f"✗ Device does not exist: {device_path}")
+        return False, 'not_found'
+    
+    if not os.access(device_path, os.R_OK):
+        logger.debug(f"✗ Device exists but is not readable: {device_path}")
+        logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
+        return False, 'permission_denied'
+    
+    logger.debug(f"✓ Device is accessible: {device_path}")
+    return True, 'accessible'
+
+
 def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None) -> bool:
     """
     Test if hardware acceleration actually works by running a simple FFmpeg command.
@@ -144,6 +170,18 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
         bool: True if hardware acceleration works, False otherwise
     """
     try:
+        # For VAAPI, check device accessibility first
+        if hwaccel == 'vaapi' and device_path:
+            accessible, reason = _check_device_access(device_path)
+            if not accessible:
+                # Only show permission warnings if the device exists but is not accessible
+                if reason == 'permission_denied':
+                    logger.warning(f"⚠ VAAPI device {device_path} exists but is not accessible due to permissions")
+                    logger.warning(f"⚠ This is a permission issue. Ensure:")
+                    logger.warning(f"⚠   1. The device is mounted: --device {device_path}:{device_path}")
+                    logger.warning(f"⚠   2. The user is in the 'video' and 'render' groups")
+                # If device doesn't exist, just skip silently (expected for wrong GPU type)
+                return False
         # Build FFmpeg command based on acceleration type
         if hwaccel == 'cuda':
             cmd = ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
@@ -175,8 +213,19 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
         else:
             logger.debug(f"✗ {hwaccel} functionality test failed (exit code: {result.returncode})")
             if result.stderr:
-                stderr_lines = result.stderr.decode('utf-8', 'ignore').split('\n')[-3:]
+                stderr_text = result.stderr.decode('utf-8', 'ignore')
+                stderr_lines = stderr_text.split('\n')[-3:]
                 logger.debug(f"Error output: {' '.join(stderr_lines)}")
+                
+                # Only show warnings for permission/access issues on devices that should exist
+                # For VAAPI, we already checked device accessibility above
+                stderr_lower = stderr_text.lower()
+                
+                # Only warn about permission issues for non-VAAPI or if we didn't check the device
+                if hwaccel != 'vaapi':
+                    if 'permission denied' in stderr_lower or 'cannot open' in stderr_lower:
+                        logger.warning(f"⚠ Permission denied accessing {hwaccel} device")
+                        logger.warning(f"⚠ Ensure the container has access to the device and the user is in the correct group")
             return False
             
     except subprocess.TimeoutExpired:

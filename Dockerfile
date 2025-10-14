@@ -6,8 +6,12 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN groupadd -r plex && useradd -r -g plex plex
+# Create non-root user and add to video/render groups for GPU access
+# The render group (GID 109) is standard for DRI device access
+RUN groupadd -r plex && useradd -r -g plex plex && \
+    usermod -a -G video plex && \
+    groupadd -f -g 109 render && \
+    usermod -a -G render plex
 
 # Set the working directory in the container
 WORKDIR /app
