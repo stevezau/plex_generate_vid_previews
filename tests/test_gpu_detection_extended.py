@@ -154,7 +154,7 @@ class TestGetGPUDevices:
     def test_get_gpu_devices(self, mock_exists, mock_listdir, mock_readlink, mock_islink):
         """Test enumerating GPU devices from /sys/class/drm."""
         mock_exists.return_value = True
-        mock_listdir.return_value = ['card0', 'card0-HDMI-A-1', 'renderD129', 'card1', 'renderD128']
+        mock_listdir.return_value = ['card0', 'card0-HDMI-A-1', 'renderD128', 'card1', 'renderD129']
         mock_islink.return_value = True
         mock_readlink.return_value = '/path/to/amdgpu'
         
@@ -188,7 +188,7 @@ class TestDetermineVAAPIGPUType:
         mock_islink.return_value = True
         mock_readlink.return_value = '/path/to/i915'
         
-        gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD129')
+        gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
         
         assert gpu_type == 'INTEL'
     

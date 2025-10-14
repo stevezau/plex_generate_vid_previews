@@ -30,16 +30,25 @@ def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
             return None
         
         # Extract version from first line: "ffmpeg version 7.1.1-1ubuntu1.2 Copyright..."
-        version_line = result.stdout.split('\n')[0]
-        version_match = re.search(r'ffmpeg version (\d+)\.(\d+)\.(\d+)', version_line)
+        version_line = result.stdout.split('\n')[0] if result.stdout else ""
+        logger.debug(f"FFmpeg version string: '{version_line}'")
         
-        if version_match:
-            major, minor, patch = map(int, version_match.groups())
-            logger.debug(f"FFmpeg version: {major}.{minor}.{patch}")
-            return (major, minor, patch)
-        else:
-            logger.debug(f"Could not parse FFmpeg version from: {version_line}")
-            return None
+        # Try multiple patterns to handle different FFmpeg version formats
+        patterns = [
+            r'ffmpeg version (\d+)\.(\d+)\.(\d+)',  # Standard: ffmpeg version 7.1.1
+            r'version (\d+)\.(\d+)\.(\d+)',          # Alternate: version 7.1.1
+            r'ffmpeg[^\d]*(\d+)\.(\d+)\.(\d+)',     # Flexible: any text between ffmpeg and version
+        ]
+        
+        for pattern in patterns:
+            version_match = re.search(pattern, version_line)
+            if version_match:
+                major, minor, patch = map(int, version_match.groups())
+                logger.debug(f"FFmpeg version detected: {major}.{minor}.{patch}")
+                return (major, minor, patch)
+        
+        logger.debug(f"Could not parse FFmpeg version from: '{version_line}'")
+        return None
             
     except Exception as e:
         logger.debug(f"Error getting FFmpeg version: {e}")
@@ -197,10 +206,10 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
                 continue
             
             # Get render device for this card
-            # The mapping is: card0 -> renderD129, card1 -> renderD128
+            # The mapping is: card0 -> renderD128, card1 -> renderD129
             render_device = None
             for render_entry in entries:
-                if render_entry == f"renderD{129 - card_num}":  # card0 -> renderD129, card1 -> renderD128
+                if render_entry == f"renderD{128 + card_num}":  # card0 -> renderD128, card1 -> renderD129
                     render_device = f"/dev/dri/{render_entry}"
                     break
             
