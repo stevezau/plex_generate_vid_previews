@@ -200,14 +200,16 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
                         logger.warning(f"⚠ Device group: {device_gid}, your groups: {user_groups}")
                         
                         if device_gid not in user_groups:
-                            logger.warning(f"⚠ Solution: Set PUID and PGID environment variables")
-                            logger.warning(f"⚠ Example: docker run -e PUID=1000 -e PGID=1000 --device /dev/dri:/dev/dri ...")
+                            current_uid = os.getuid()
+                            logger.warning(f"⚠ Solution: Set PGID to {device_gid} to access this device")
+                            logger.warning(f"⚠ Example: docker run -e PUID={current_uid} -e PGID={device_gid} --device /dev/dri:/dev/dri ...")
                         else:
                             logger.warning(f"⚠ You are in group {device_gid}, but device is still not accessible")
                             logger.warning(f"⚠ Check host device permissions: ls -l {device_path}")
                     except Exception:
                         logger.warning(f"⚠ VAAPI device {device_path} is not accessible (permission denied)")
-                        logger.warning(f"⚠ Solution: Set PUID and PGID environment variables")
+                        logger.warning(f"⚠ Solution: Add your user to the 'render' or 'video' group, or set PGID to match the device group")
+                        logger.warning(f"⚠ Example: docker run -e PGID=<device_group_id> --device /dev/dri:/dev/dri ...")
                 # If device doesn't exist, just skip silently (expected for wrong GPU type)
                 return False
         # Build FFmpeg command based on acceleration type
