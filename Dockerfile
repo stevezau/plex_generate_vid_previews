@@ -1,8 +1,8 @@
 FROM linuxserver/ffmpeg:8.0-cli-ls43
 
-# Install Python, pip, and dependencies
+# Install Python, pip, gosu, and dependencies
 RUN apt-get update && \
-    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip && \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -26,6 +26,9 @@ RUN chmod +x /app/wrapper.sh
 # Default PUID/PGID (override with environment variables)
 ENV PUID=1000 \
     PGID=1000
+
+# Tell s6-overlay to preserve environment variables
+ENV S6_KEEP_ENV=1
 
 # Use LinuxServer's /init for PUID/PGID handling
 ENTRYPOINT ["/init", "/app/wrapper.sh"]

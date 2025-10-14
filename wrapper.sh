@@ -7,7 +7,8 @@ cd /app || exit 1
 # Check if we're running as root (UID 0)
 if [ "$(id -u)" = "0" ]; then
     # Running as root - drop privileges to abc user
-    exec /usr/bin/s6-setuidgid abc plex-generate-previews "$@"
+    # gosu preserves environment variables
+    exec gosu abc plex-generate-previews "$@"
 else
     # Already running as non-root - just run directly
     exec plex-generate-previews "$@"
