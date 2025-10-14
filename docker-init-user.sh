@@ -12,10 +12,3 @@ if [[ -z ${LSIO_READ_ONLY_FS} ]] && [[ -z ${LSIO_NON_ROOT_USER} ]]; then
     usermod -o -u "${PUID}" abc
     usermod -d "${USERHOME}" abc
 fi
-
-if [[ -z ${LSIO_READ_ONLY_FS} ]] && [[ -z ${LSIO_NON_ROOT_USER} ]]; then
-    lsiown abc:abc /app
-    lsiown abc:abc /config 2>/dev/null || true
-    lsiown abc:abc /defaults 2>/dev/null || true
-fi
-
