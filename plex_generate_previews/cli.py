@@ -21,7 +21,7 @@ from .config import Config, load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
 from .plex_client import plex_server, get_library_sections
 from .worker import WorkerPool
-from .utils import calculate_title_width, setup_working_directory as create_working_directory
+from .utils import calculate_title_width, setup_working_directory as create_working_directory, is_windows
 from .version_check import check_for_updates
 from .logging_config import setup_logging
 
@@ -218,6 +218,26 @@ def setup_application() -> tuple:
     """Set up logging, parse arguments, and handle special flags."""
     # Set up logging with default level first
     setup_logging(console=console)
+    
+    # Check for Windows and show warning
+    if is_windows():
+        logger.error('=' * 80)
+        logger.error('❌ Windows is not supported')
+        logger.error('=' * 80)
+        logger.error('')
+        logger.error('Please use one of the following alternatives:')
+        logger.error('')
+        logger.error('1. 🐳 Docker (Recommended):')
+        logger.error('   Run this tool in a Docker container on Windows using WSL2')
+        logger.error('   https://github.com/stevezau/plex_generate_vid_previews#docker')
+        logger.error('')
+        logger.error('2. 🐧 WSL2 (Windows Subsystem for Linux):')
+        logger.error('   Install and run this tool inside a WSL2 Linux environment')
+        logger.error('   https://learn.microsoft.com/en-us/windows/wsl/install')
+        logger.error('')
+        logger.error('For more help, see: https://github.com/stevezau/plex_generate_vid_previews/issues/104')
+        logger.error('')
+        sys.exit(1)
     
     # Parse command-line arguments
     args = parse_arguments()

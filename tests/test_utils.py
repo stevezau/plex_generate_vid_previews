@@ -16,6 +16,7 @@ from plex_generate_previews.utils import (
     format_display_title,
     sanitize_path,
     is_docker_environment,
+    is_windows,
     setup_working_directory,
     clear_directory
 )
@@ -147,6 +148,22 @@ class TestSanitizePath:
         # All slashes should be backslashes
         assert "/" not in result
         assert "\\" in result
+
+
+class TestIsWindows:
+    """Test Windows platform detection."""
+    
+    @patch('os.name', 'nt')
+    def test_is_windows_on_windows(self):
+        """Test detection on Windows platform."""
+        result = is_windows()
+        assert result is True
+    
+    @patch('os.name', 'posix')
+    def test_is_windows_on_posix(self):
+        """Test detection on POSIX platform (Linux/macOS)."""
+        result = is_windows()
+        assert result is False
 
 
 class TestIsDockerEnvironment:

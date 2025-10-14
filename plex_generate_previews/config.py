@@ -404,8 +404,10 @@ def load_config(cli_args=None) -> Config:
             free_space_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
             if free_space_gb < 1:  # Less than 1GB
                 validation_errors.append(f'TMP_FOLDER has less than 1GB free space ({free_space_gb:.1f}GB available)')
-        except OSError:
-            validation_errors.append(f'Cannot check disk space for TMP_FOLDER ({tmp_folder})')
+        except (OSError, AttributeError):
+            # AttributeError: os.statvfs doesn't exist on Windows
+            # OSError: Cannot access the folder for other reasons
+            logger.debug(f'Cannot check disk space for TMP_FOLDER ({tmp_folder}) - skipping disk space check')
     
     # Handle missing parameters (show help)
     if missing_params:
