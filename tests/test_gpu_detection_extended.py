@@ -126,13 +126,40 @@ class TestHwaccelFunctionality:
         result = _test_hwaccel_functionality('cuda')
         assert result is False
     
+    @patch('os.access')
+    @patch('os.path.exists')
     @patch('subprocess.run')
-    def test_test_hwaccel_functionality_vaapi_success(self, mock_run):
+    def test_test_hwaccel_functionality_vaapi_success(self, mock_run, mock_exists, mock_access):
         """Test VAAPI functionality test success."""
+        mock_exists.return_value = True  # Device exists
+        mock_access.return_value = True  # Device is accessible
         mock_run.return_value = MagicMock(returncode=0)
         
         result = _test_hwaccel_functionality('vaapi', '/dev/dri/renderD128')
         assert result is True
+    
+    @patch('os.access')
+    @patch('os.path.exists')
+    def test_test_hwaccel_functionality_vaapi_device_not_found(self, mock_exists, mock_access):
+        """Test VAAPI when device doesn't exist (should fail silently)."""
+        mock_exists.return_value = False  # Device doesn't exist
+        
+        result = _test_hwaccel_functionality('vaapi', '/dev/dri/renderD128')
+        assert result is False
+    
+    @patch('os.getgroups')
+    @patch('os.getuid')
+    @patch('os.access')
+    @patch('os.path.exists')
+    def test_test_hwaccel_functionality_vaapi_permission_denied(self, mock_exists, mock_access, mock_uid, mock_groups):
+        """Test VAAPI when device exists but permission denied."""
+        mock_exists.return_value = True   # Device exists
+        mock_access.return_value = False  # But not accessible
+        mock_uid.return_value = 1000
+        mock_groups.return_value = [1000]
+        
+        result = _test_hwaccel_functionality('vaapi', '/dev/dri/renderD128')
+        assert result is False
     
     @patch('subprocess.run')
     def test_test_hwaccel_functionality_timeout(self, mock_run):
