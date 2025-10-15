@@ -762,26 +762,38 @@ class TestLogSystemInfo:
 class TestParseLspciGPUName:
     """Test parsing lspci GPU names."""
     
-    def test_parse_lspci_gpu_name_nvidia(self):
+    @patch('subprocess.run')
+    def test_parse_lspci_gpu_name_nvidia(self, mock_run):
         """Test parsing NVIDIA GPU name."""
         from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
         
+        # Mock lspci failure - should return fallback
+        mock_run.return_value = MagicMock(returncode=1)
+        
         result = _parse_lspci_gpu_name('NVIDIA')
-        assert 'NVIDIA' in result
+        assert result == 'NVIDIA GPU'
     
-    def test_parse_lspci_gpu_name_amd(self):
+    @patch('subprocess.run')
+    def test_parse_lspci_gpu_name_amd(self, mock_run):
         """Test parsing AMD GPU name."""
         from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
         
+        # Mock lspci failure - should return fallback
+        mock_run.return_value = MagicMock(returncode=1)
+        
         result = _parse_lspci_gpu_name('AMD')
-        assert 'AMD' in result
+        assert result == 'AMD GPU'
     
-    def test_parse_lspci_gpu_name_intel(self):
+    @patch('subprocess.run')
+    def test_parse_lspci_gpu_name_intel(self, mock_run):
         """Test parsing Intel GPU name."""
         from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
         
+        # Mock lspci failure - should return fallback
+        mock_run.return_value = MagicMock(returncode=1)
+        
         result = _parse_lspci_gpu_name('INTEL')
-        assert 'Intel' in result
+        assert result == 'INTEL GPU'
 
 
 class TestAccelerationMethodTesting:
