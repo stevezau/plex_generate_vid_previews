@@ -74,6 +74,9 @@ class Worker:
         self.last_speed = ""
         self.last_update_time = 0
         
+        # Track verbose logging
+        self.last_verbose_log_time = 0
+        
         # Statistics
         self.completed = 0
         self.failed = 0
@@ -176,6 +179,13 @@ class Worker:
         self.last_progress_percent = -1
         self.last_speed = ""
         self.last_update_time = 0
+        self.last_verbose_log_time = 0
+        
+        # Log task start at INFO level (visible to all users)
+        if self.worker_type == 'GPU':
+            logger.info(f"[GPU {self.gpu_index}]: Started processing {media_title}")
+        else:
+            logger.info(f"[CPU]: Started processing {media_title}")
         
         # Start processing in background thread
         self.current_thread = threading.Thread(
@@ -469,6 +479,16 @@ class WorkerPool:
             
             # Mark that FFmpeg has started outputting progress
             worker.ffmpeg_started = True
+            
+            # Emit verbose progress logs (if VERBOSE level is enabled)
+            current_time = time.time()
+            if current_time - worker.last_verbose_log_time >= 5.0:
+                worker.last_verbose_log_time = current_time
+                speed_display = speed if speed else "0.0x"
+                if worker.worker_type == 'GPU':
+                    logger.log("VERBOSE", f"[GPU {worker.gpu_index}]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
+                else:
+                    logger.log("VERBOSE", f"[CPU]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
     
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""

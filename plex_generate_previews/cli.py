@@ -174,7 +174,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--tmp-folder', help='Temporary folder for processing')
     
     # Logging
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'VERBOSE', 'WARNING', 'ERROR', 'debug', 'info', 'verbose', 'warning', 'error'], help='Logging level (default: INFO, VERBOSE enables periodic progress logging)')
     
     # Version check
     parser.add_argument('--skip-version-check', action='store_true', help='Skip checking for newer versions on startup')

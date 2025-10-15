@@ -330,7 +330,7 @@ For detailed configuration options, see the complete reference tables below:
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
 | `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | System temp dir |
-| `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
+| `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, VERBOSE, WARNING, ERROR) | INFO |
 | `PUID` | N/A | User ID to run container as (Docker only) | 1000 |
 | `PGID` | N/A | Group ID to run container as (Docker only) | 1000 |
 
