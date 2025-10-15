@@ -128,7 +128,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     Args:
         video_file: Path to input video file
         output_folder: Directory to save thumbnail images
-        gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WSL2', or None)
+        gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WSL2', 'APPLE', or None)
         gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI, 'cuda' for NVIDIA)
         config: Configuration object
         progress_callback: Callback function for progress updates
@@ -164,6 +164,9 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         elif gpu == 'WSL2':
             # WSL2 D3D11VA hardware decoding
             args += ["-hwaccel", "d3d11va"]
+        elif gpu == 'APPLE':
+            # Apple VideoToolbox hardware decoding
+            args += ["-hwaccel", "videotoolbox"]
         elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
             # VAAPI hardware decoding (Intel, AMD, ARM, etc.)
             args += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]

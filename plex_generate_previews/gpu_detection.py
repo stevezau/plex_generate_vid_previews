@@ -2,7 +2,7 @@
 GPU detection for video processing acceleration.
 
 Detects available GPU hardware and returns appropriate configuration
-for FFmpeg hardware acceleration. Supports NVIDIA, AMD, Intel, and WSL2 GPUs.
+for FFmpeg hardware acceleration. Supports NVIDIA, AMD, Intel, Apple (macOS), and WSL2 GPUs.
 """
 
 import os
@@ -47,6 +47,12 @@ GPU_ACCELERATION_MAP = {
         'fallback': None,
         'requires_runtime': False,
         'test_encoder': None
+    },
+    'APPLE': {
+        'primary': 'VIDEOTOOLBOX',
+        'fallback': None,
+        'requires_runtime': False,
+        'test_encoder': None  # Use hwaccel test instead
     }
 }
 
@@ -286,6 +292,8 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
             cmd += ['-hwaccel', 'vaapi', '-vaapi_device', device_path]
         elif hwaccel == 'd3d11va':
             cmd += ['-hwaccel', 'd3d11va']
+        elif hwaccel == 'videotoolbox':
+            cmd += ['-hwaccel', 'videotoolbox']
         else:
             cmd += ['-hwaccel', hwaccel]
         
@@ -351,6 +359,49 @@ def _is_wsl2() -> bool:
         bool: True if running in WSL2 with GPU support
     """
     return os.path.exists('/dev/dxg')
+
+
+def _is_macos() -> bool:
+    """
+    Detect if running on macOS.
+    
+    Returns:
+        bool: True if running on macOS
+    """
+    return platform.system() == 'Darwin'
+
+
+def _get_apple_gpu_name() -> str:
+    """
+    Get Apple GPU name from system_profiler.
+    
+    Returns:
+        str: GPU name or fallback description
+    """
+    try:
+        result = subprocess.run(
+            ['system_profiler', 'SPDisplaysDataType'], 
+            capture_output=True, 
+            text=True, 
+            timeout=5
+        )
+        if result.returncode == 0:
+            # Parse output for GPU name
+            # Look for "Chipset Model:" line
+            for line in result.stdout.split('\n'):
+                if 'Chipset Model:' in line:
+                    gpu_name = line.split(':', 1)[1].strip()
+                    logger.debug(f"Detected Apple GPU: {gpu_name}")
+                    return gpu_name
+    except Exception as e:
+        logger.debug(f"Error getting Apple GPU name: {e}")
+    
+    # Fallback - check for Apple Silicon using platform
+    machine = platform.machine()
+    if machine == 'arm64':
+        return "Apple Silicon GPU"
+    
+    return "Apple GPU"
 
 
 def _get_gpu_devices() -> List[Tuple[str, str, str]]:
@@ -601,7 +652,7 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
     Extract GPU model name from system.
     
     Args:
-        gpu_type: Type of GPU ('NVIDIA', 'AMD', 'INTEL', 'WSL2')
+        gpu_type: Type of GPU ('NVIDIA', 'AMD', 'INTEL', 'WSL2', 'APPLE')
         gpu_device: GPU device path or info string
         
     Returns:
@@ -620,6 +671,9 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
             
         elif gpu_type == 'WSL2':
             return "WSL2 GPU"
+            
+        elif gpu_type == 'APPLE':
+            return _get_apple_gpu_name()
             
         elif gpu_type in ('AMD', 'INTEL') and gpu_device.startswith('/dev/dri/'):
             # Try to get GPU info from lspci
@@ -658,6 +712,8 @@ def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str, acceleration:
         return f"{gpu_name} (CUDA)"
     elif gpu_type == 'WSL2':
         return f"{gpu_name} (D3D11VA)"
+    elif gpu_type == 'APPLE':
+        return f"{gpu_name} (VideoToolbox)"
     elif gpu_type in ('AMD', 'INTEL', 'ARM', 'VIDEOCORE') and gpu_device.startswith('/dev/dri/'):
         return f"{gpu_name} (VAAPI - {gpu_device})"
     elif gpu_type == 'UNKNOWN':
@@ -703,6 +759,8 @@ def _test_acceleration_method(vendor: str, acceleration: str, device_path: Optio
         test_passed = _test_hwaccel_functionality('vaapi', device_path)
     elif acceleration == 'D3D11VA':
         test_passed = _test_hwaccel_functionality('d3d11va')
+    elif acceleration == 'VIDEOTOOLBOX':
+        test_passed = _test_hwaccel_functionality('videotoolbox')
     else:
         logger.debug(f"Unknown acceleration method: {acceleration}")
         return False
@@ -846,6 +904,24 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
             }
             detected_gpus.append(('WSL2', 'd3d11va', gpu_info))
             logger.info("  ✅ WSL2 D3D11VA working")
+    
+    # Step 4: Check for macOS VideoToolbox (doesn't use /dev/dri)
+    if _is_macos():
+        logger.debug("Detected macOS platform, testing VideoToolbox acceleration...")
+        logger.info("  Checking Apple GPU...")
+        logger.info("    Testing VideoToolbox acceleration...")
+        if _test_acceleration_method('APPLE', 'VIDEOTOOLBOX', 'videotoolbox', False):
+            gpu_name = get_gpu_name('APPLE', 'videotoolbox')
+            gpu_info = {
+                'name': gpu_name,
+                'acceleration': 'VIDEOTOOLBOX',
+                'device_path': 'videotoolbox',
+                'wsl2': False
+            }
+            detected_gpus.append(('APPLE', 'videotoolbox', gpu_info))
+            logger.info("  ✅ Apple VideoToolbox working")
+        else:
+            logger.warning("  ❌ Apple VideoToolbox test failed")
     
     logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} working GPU(s) ===")
     return detected_gpus
