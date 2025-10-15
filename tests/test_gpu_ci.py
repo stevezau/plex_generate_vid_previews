@@ -56,21 +56,21 @@ class TestGPUFormattingCI:
     
     def test_format_gpu_info_nvidia(self):
         """Test NVIDIA GPU info formatting."""
-        info = format_gpu_info('cuda', 0, 'NVIDIA GeForce RTX 3080')
+        info = format_gpu_info('NVIDIA', 'cuda', 'NVIDIA GeForce RTX 3080', 'CUDA')
         assert 'NVIDIA' in info
         assert 'RTX 3080' in info
-        assert 'cuda' in info.lower()
+        assert 'CUDA' in info
     
     def test_format_gpu_info_amd(self):
         """Test AMD GPU info formatting."""
-        info = format_gpu_info('vaapi', '/dev/dri/renderD128', 'AMD Radeon RX 6800 XT')
+        info = format_gpu_info('AMD', '/dev/dri/renderD128', 'AMD Radeon RX 6800 XT', 'VAAPI')
         assert 'AMD' in info
         assert 'RX 6800 XT' in info
-        assert 'vaapi' in info.lower()
+        assert 'VAAPI' in info
     
     def test_format_gpu_info_intel(self):
         """Test Intel GPU info formatting."""
-        info = format_gpu_info('qsv', 0, 'Intel UHD Graphics 770')
+        info = format_gpu_info('INTEL', '/dev/dri/renderD128', 'Intel UHD Graphics 770', 'VAAPI')
         assert 'Intel' in info
         assert 'UHD Graphics 770' in info
-        assert 'qsv' in info.lower()
+        assert 'VAAPI' in info

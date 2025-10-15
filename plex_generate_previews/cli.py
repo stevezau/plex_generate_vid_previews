@@ -206,7 +206,8 @@ def list_gpus() -> None:
     logger.info(f'✅ Found {len(detected_gpus)} GPU(s):')
     for i, (gpu_type, gpu_device, gpu_info) in enumerate(detected_gpus):
         gpu_name = gpu_info.get('name', f'{gpu_type} GPU')
-        gpu_desc = format_gpu_info(gpu_type, gpu_device, gpu_name)
+        acceleration = gpu_info.get('acceleration', None)
+        gpu_desc = format_gpu_info(gpu_type, gpu_device, gpu_name, acceleration)
         logger.info(f'  [{i}] {gpu_desc}')
     
     logger.info('')
@@ -241,6 +242,10 @@ def setup_application() -> tuple:
     
     # Parse command-line arguments
     args = parse_arguments()
+    
+    # Apply log level from arguments if provided (before --list-gpus handling)
+    if args.log_level:
+        setup_logging(args.log_level.upper(), console=console)
     
     # Handle --list-gpus flag
     if args.list_gpus:
@@ -301,7 +306,8 @@ def detect_and_select_gpus(config) -> list:
         logger.info(f'🔍 Detected {len(detected_gpus)} GPU(s):')
         for i, (gpu_type, gpu_device, gpu_info) in enumerate(detected_gpus):
             gpu_name = gpu_info.get('name', f'{gpu_type} GPU')
-            gpu_desc = format_gpu_info(gpu_type, gpu_device, gpu_name)
+            acceleration = gpu_info.get('acceleration', None)
+            gpu_desc = format_gpu_info(gpu_type, gpu_device, gpu_name, acceleration)
             logger.info(f'  [{i}] {gpu_desc}')
         
         # Filter GPUs based on selection

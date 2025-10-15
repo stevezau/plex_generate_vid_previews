@@ -80,7 +80,7 @@ plex-generate-previews \
 
 - **Multi-GPU Support**: NVIDIA, AMD, Intel, and WSL2 GPUs
 - **Parallel Processing**: Configurable GPU and CPU worker threads
-- **Hardware Acceleration**: CUDA, VAAPI, QSV, and D3D11VA
+- **Hardware Acceleration**: CUDA, VAAPI, and D3D11VA
 - **Library Filtering**: Process specific Plex libraries
 - **Quality Control**: Adjustable thumbnail quality (1-10)
 - **Docker Support**: Pre-built images with GPU acceleration
@@ -105,7 +105,7 @@ plex-generate-previews \
 ### GPU Requirements
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
 - **AMD**: ROCm-compatible GPU + amdgpu drivers  
-- **Intel**: QSV or VAAPI-compatible iGPU/dGPU
+- **Intel**: VAAPI-compatible iGPU/dGPU
 - **WSL2**: D3D11VA-compatible GPU (Intel Arc, etc.)
 
 ## Installation Options
@@ -427,8 +427,8 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 |----------|--------------|--------------|----------------|
 | **NVIDIA** | CUDA | NVIDIA drivers + CUDA toolkit | ✅ NVIDIA Container Toolkit |
 | **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
-| **Intel** | QSV/VAAPI | Intel drivers + Media SDK | ✅ Device access |
-| **WSL2** | QSV/OpenCL/CUDA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
+| **Intel** | VAAPI | Intel drivers + VA-API | ✅ Device access |
+| **WSL2** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
 
 ### GPU Detection
 
@@ -441,7 +441,7 @@ plex-generate-previews --list-gpus
 # Example output:
 # ✅ Found 2 GPU(s):
 #   [0] NVIDIA GeForce RTX 4090 (CUDA)
-#   [1] Intel UHD Graphics 770 (QSV)
+#   [1] Intel UHD Graphics 770 (VAAPI - /dev/dri/renderD128)
 ```
 
 ### Multi-GPU Support
@@ -463,11 +463,8 @@ plex-generate-previews --gpu-selection "0"
 
 - **NVIDIA**: Uses CUDA for maximum performance
 - **AMD**: Uses VAAPI with ROCm drivers
-- **Intel**: Uses QSV (Quick Sync Video) or VAAPI
-- **WSL2**: Automatically detects GPU via `/dev/dxg` and configures:
-  - Intel GPUs: QSV or OpenCL
-  - AMD GPUs: OpenCL
-  - NVIDIA GPUs: CUDA
+- **Intel**: Uses VAAPI (Video Acceleration API)
+- **WSL2**: Automatically detects GPU via `/dev/dxg` and configures D3D11VA acceleration
 
 ### Docker GPU Requirements
 

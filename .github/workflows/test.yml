@@ -22,6 +22,14 @@ jobs:
         apt-get clean
         rm -rf /var/lib/apt/lists/*
     
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
     - name: Create virtual environment
       run: |
         python3 -m venv /opt/venv
@@ -35,10 +43,10 @@ jobs:
     
     - name: Run tests with coverage
       run: |
-        # Run all tests - they now use mocking for GPU/FFmpeg/Plex
+        # Run all tests in parallel - they now use mocking for GPU/FFmpeg/Plex
         # Fail if coverage drops below 70%
         . /opt/venv/bin/activate
-        pytest tests/ -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html --cov-fail-under=70
+        pytest tests/ -n auto -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html --cov-fail-under=70
     
     - name: Upload coverage reports
       uses: codecov/codecov-action@v4

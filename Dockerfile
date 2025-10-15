@@ -1,8 +1,17 @@
 FROM linuxserver/ffmpeg:8.0-cli-ls43
 
 # Install Python, pip, gosu, and dependencies
+# Install GPU drivers for hardware acceleration:
+# - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9)
+# - AMD: mesa-va-drivers (AMD GPUs via VAAPI)
+# - ARM: mesa-va-drivers (ARM Mali GPUs)
+# - VideoCore: mesa-va-drivers (Raspberry Pi)
+# - libva2, libva-drm2: VA-API libraries
+# - vainfo: Tool to test/verify VA-API functionality
+# - pciutils: Provides lspci for better GPU naming
 RUN apt-get update && \
-    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu && \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu pciutils \
+    intel-media-va-driver-non-free i965-va-driver mesa-va-drivers libva2 libva-drm2 vainfo && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

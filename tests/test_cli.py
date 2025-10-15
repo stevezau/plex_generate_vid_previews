@@ -127,8 +127,8 @@ class TestGPUListing:
     def test_list_gpus_with_gpus(self, mock_logger, mock_format, mock_detect):
         """Test listing GPUs when GPUs are detected."""
         mock_detect.return_value = [
-            ('cuda', 0, {'name': 'NVIDIA GeForce RTX 3080'}),
-            ('vaapi', '/dev/dri/renderD128', {'name': 'AMD Radeon RX 6800 XT'})
+            ('NVIDIA', 'cuda', {'name': 'NVIDIA GeForce RTX 3080', 'acceleration': 'CUDA'}),
+            ('AMD', '/dev/dri/renderD128', {'name': 'AMD Radeon RX 6800 XT', 'acceleration': 'VAAPI'})
         ]
         mock_format.side_effect = ['NVIDIA GeForce RTX 3080 (CUDA)', 'AMD Radeon RX 6800 XT (VAAPI)']
         

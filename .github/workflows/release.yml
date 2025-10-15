@@ -28,7 +28,7 @@ jobs:
       
       - name: Run tests with coverage
         run: |
-          pytest
+          pytest -n auto
       
       - name: Upload coverage reports
         if: always()

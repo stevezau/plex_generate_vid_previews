@@ -59,6 +59,9 @@ plex-generate-previews = "plex_generate_previews.cli:main"
 where = ["."]
 include = ["plex_generate_previews*"]
 
+[tool.setuptools.package-data]
+plex_generate_previews = ["fixtures/*.mp4"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [

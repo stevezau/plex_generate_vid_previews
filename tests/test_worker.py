@@ -153,7 +153,7 @@ class TestWorker:
         assert len(name) == 10
         
         # Test Intel GPU
-        worker = Worker(2, 'GPU', 'INTEL', 'qsv', 0, 'Intel UHD Graphics 770')
+        worker = Worker(2, 'GPU', 'INTEL', '/dev/dri/renderD128', 0, 'Intel UHD Graphics 770')
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
     
