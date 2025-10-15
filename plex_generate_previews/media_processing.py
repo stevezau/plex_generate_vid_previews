@@ -129,7 +129,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         video_file: Path to input video file
         output_folder: Directory to save thumbnail images
         gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WSL2', or None)
-        gpu_device_path: GPU device path for VAAPI
+        gpu_device_path: GPU device path for VAAPI, or 'qsv' for Intel QSV
         config: Configuration object
         progress_callback: Callback function for progress updates
     """
@@ -174,8 +174,17 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         elif gpu == 'WSL2':
             args.insert(5, "-hwaccel")
             args.insert(6, "d3d11va")
+        elif gpu == 'INTEL' and gpu_device_path == 'qsv':
+            # Intel QSV - uses hwaccel qsv (no device path needed)
+            args.insert(5, "-hwaccel")
+            args.insert(6, "qsv")
+            # QSV requires special video filter setup
+            vf_parameters = vf_parameters.replace(
+                "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+                "format=nv12,hwupload=extra_hw_frames=64,scale_qsv=w=320:h=240,hwdownload,format=nv12")
+            args[args.index("-vf") + 1] = vf_parameters
         else:
-            # AMD or Intel VAAPI
+            # AMD or Intel VAAPI (gpu_device_path is /dev/dri/renderDXXX)
             args.insert(5, "-hwaccel")
             args.insert(6, "vaapi")
             args.insert(7, "-vaapi_device")
@@ -362,7 +371,7 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
     Args:
         item_key: Plex media item key
         gpu: GPU type for acceleration
-        gpu_device_path: GPU device path
+        gpu_device_path: GPU device path (or 'qsv' for Intel QSV)
         config: Configuration object
         plex: Plex server instance
         progress_callback: Callback function for progress updates
@@ -405,7 +414,7 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
             bundle_path = sanitize_path(os.path.join(config.plex_config_folder, 'Media', 'localhost', bundle_file))
             indexes_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes'))
             index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
-            tmp_path = sanitize_path(os.path.join(config.tmp_folder, bundle_hash))
+            tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
 
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
                 logger.debug(f'Found existing thumbnails for {media_file}, deleting the thumbnail index at {index_bif} so we can regenerate')

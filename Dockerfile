@@ -2,7 +2,7 @@ FROM linuxserver/ffmpeg:8.0-cli-ls43
 
 # Install Python, pip, gosu, and dependencies
 RUN apt-get update && \
-    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu && \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu pciutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
