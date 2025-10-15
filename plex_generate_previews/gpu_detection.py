@@ -310,20 +310,24 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
             return True
         else:
             logger.debug(f"✗ {hwaccel} functionality test failed (exit code: {result.returncode})")
+            
+            # Show the actual FFmpeg error
             if result.stderr:
                 stderr_text = result.stderr.decode('utf-8', 'ignore')
                 stderr_lines = stderr_text.split('\n')[-3:]
-                logger.debug(f"Error output: {' '.join(stderr_lines)}")
+                logger.debug(f"Error output: {' '.join(line.strip() for line in stderr_lines if line.strip())}")
                 
-                # Only show warnings for permission/access issues on devices that should exist
-                # For VAAPI, we already checked device accessibility above
+                # Add helpful context for common errors
                 stderr_lower = stderr_text.lower()
-                
-                # Only warn about permission issues for non-VAAPI or if we didn't check the device
-                if hwaccel != 'vaapi':
-                    if 'permission denied' in stderr_lower or 'cannot open' in stderr_lower:
-                        logger.warning(f"⚠ Permission denied accessing {hwaccel} device")
-                        logger.warning(f"⚠ Ensure the container has access to the device and the user is in the correct group")
+                if hwaccel == 'cuda':
+                    if '/dev/null' in stderr_lower and 'operation not permitted' in stderr_lower:
+                        logger.debug(f"Note: /dev/null errors usually indicate missing NVIDIA Container Toolkit")
+                        logger.debug(f"      Run with --gpus all or configure nvidia-docker runtime")
+                elif hwaccel == 'vaapi':
+                    if 'permission denied' in stderr_lower:
+                        logger.warning(f"⚠ VAAPI device permission denied")
+                        logger.warning(f"⚠ Add user to 'render' or 'video' group, or adjust PGID")
+            
             return False
             
     except subprocess.TimeoutExpired:
