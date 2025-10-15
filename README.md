@@ -494,6 +494,9 @@ No special Docker configuration needed - automatically detects WSL2 GPUs.
 
 ### Docker Compose Examples
 
+> [!WARNING]  
+> **Do NOT use `init: true` in your compose file!** This container uses LinuxServer.io's s6-overlay which is a more capable init system. Adding `init: true` will cause errors and disable important features like PUID/PGID support. See `docker-compose.example.yml` for a complete working example.
+
 **NVIDIA GPU:**
 ```yaml
 version: '3.8'
@@ -598,6 +601,19 @@ plex-generate-previews \
 ## Troubleshooting
 
 ### Common Issues
+
+#### "s6-overlay-suexec: fatal: can only run as pid 1" or container fails to start
+- **Cause**: You have `init: true` in your docker-compose.yml or using `--init` with docker run
+- **Why this breaks**: This container uses s6-overlay (LinuxServer.io base) as its init system. Docker's init conflicts with it.
+- **What you lose with `init: true`**:
+  - ❌ PUID/PGID support (file permissions will be wrong)
+  - ❌ Process supervision
+  - ❌ Proper initialization
+- **Solution**: 
+  - **Docker Compose**: Remove `init: true` from your compose file
+  - **Docker CLI**: Remove the `--init` flag
+  - s6-overlay is MORE capable than Docker's basic init - you don't need both!
+- **Example**: See `docker-compose.example.yml` for correct configuration
 
 #### "No GPUs detected"
 - **Cause**: GPU drivers not installed or FFmpeg doesn't support hardware acceleration
