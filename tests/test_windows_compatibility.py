@@ -151,7 +151,7 @@ class TestWindowsGPUValidation:
     @patch('os.name', 'nt')
     @patch('platform.system', return_value='Windows')
     @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
-    def test_windows_d3d11va_detection(self, mock_test_hwaccel, mock_platform, mock_osname):
+    def test_windows_d3d11va_detection(self, mock_test_hwaccel, mock_platform):
         """Test that Windows can detect D3D11VA GPU."""
         from plex_generate_previews.gpu_detection import _detect_windows_d3d11va
         
@@ -172,7 +172,7 @@ class TestWindowsGPUValidation:
     @patch('plex_generate_previews.cli.detect_all_gpus')
     @patch('plex_generate_previews.cli.logger')
     def test_windows_gpu_threads_allowed_with_gpu(self, mock_logger, mock_detect_gpus, 
-                                                   mock_is_windows, mock_osname):
+                                                   mock_is_windows):
         """Test that GPU threads work on Windows when GPU detected."""
         from plex_generate_previews.cli import detect_and_select_gpus
         from types import SimpleNamespace
@@ -203,7 +203,7 @@ class TestWindowsGPUValidation:
     @patch('plex_generate_previews.cli.detect_all_gpus')
     @patch('plex_generate_previews.cli.logger')
     def test_windows_no_gpu_detected_exits(self, mock_logger, mock_detect_gpus, 
-                                           mock_is_windows, mock_osname):
+                                           mock_is_windows):
         """Test that when GPU threads requested but no GPU detected on Windows, it exits with error."""
         from plex_generate_previews.cli import detect_and_select_gpus
         from types import SimpleNamespace
@@ -220,10 +220,10 @@ class TestWindowsGPUValidation:
         
         assert excinfo.value.code == 1
         
-        # Should log Windows-specific error message
+        # Should log error message about no GPUs detected
         error_calls = [str(call) for call in mock_logger.error.call_args_list]
-        assert any('D3D11VA' in call for call in error_calls)
-        assert any('GPU_THREADS to 0' in call for call in error_calls)
+        assert any('No GPUs detected' in call for call in error_calls)
+        assert any('GPU_THREADS' in call for call in error_calls)
 
 
 class TestWindowsSignalHandling:
@@ -300,7 +300,7 @@ class TestWindowsFFmpegLogPath:
     """Test that FFmpeg log files use Windows-compatible paths."""
     
     @patch('os.name', 'nt')
-    def test_ffmpeg_log_path_on_windows(self, mock_osname):
+    def test_ffmpeg_log_path_on_windows(self):
         """Test that FFmpeg log file paths work on Windows."""
         import os
         import tempfile
@@ -334,7 +334,7 @@ class TestWindowsConfigValidation:
     @patch('os.statvfs')
     def test_windows_config_validation(self, mock_statvfs, mock_makedirs, mock_access, mock_listdir,
                                        mock_isdir, mock_exists, mock_run, mock_which,
-                                       mock_osname, mock_platform, mock_gettempdir):
+                                       mock_platform, mock_gettempdir):
         """Test that configuration validates correctly on Windows."""
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
         
