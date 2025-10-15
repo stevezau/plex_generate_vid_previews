@@ -204,6 +204,67 @@ class TestHwaccelFunctionality:
         
         result = _test_hwaccel_functionality('cuda')
         assert result is False
+    
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_d3d11va_error(self, mock_run):
+        """Test D3D11VA error handling (generic hwaccel path)."""
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr=b'Failed to initialize D3D11VA\nError creating device'
+        )
+        
+        result = _test_hwaccel_functionality('d3d11va')
+        assert result is False
+    
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_sigpipe(self, mock_run):
+        """Test SIGPIPE handling (exit code 141 is acceptable)."""
+        mock_run.return_value = MagicMock(returncode=141)
+        
+        result = _test_hwaccel_functionality('cuda')
+        assert result is True
+    
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_exception(self, mock_run):
+        """Test exception handling during test."""
+        mock_run.side_effect = RuntimeError("Unexpected error")
+        
+        result = _test_hwaccel_functionality('cuda')
+        assert result is False
+    
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_empty_stderr(self, mock_run):
+        """Test failure with no stderr output."""
+        mock_run.return_value = MagicMock(returncode=1, stderr=b'')
+        
+        result = _test_hwaccel_functionality('cuda')
+        assert result is False
+    
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_stderr_with_empty_lines(self, mock_run):
+        """Test stderr parsing with empty lines."""
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr=b'\n\nError occurred\n\n'
+        )
+        
+        result = _test_hwaccel_functionality('cuda')
+        assert result is False
+    
+    @patch('os.access')
+    @patch('os.path.exists')
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_vaapi_generic_error(self, mock_run, mock_exists, mock_access):
+        """Test VAAPI failure without permission denied in stderr."""
+        mock_exists.return_value = True
+        mock_access.return_value = True
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr=b'Failed to initialize VAAPI\nDevice error occurred'
+        )
+        
+        result = _test_hwaccel_functionality('vaapi', '/dev/dri/renderD128')
+        assert result is False
 
 
 class TestGetGPUDevices:
