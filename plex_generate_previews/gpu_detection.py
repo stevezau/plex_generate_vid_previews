@@ -31,10 +31,10 @@ GPU_ACCELERATION_MAP = {
         'test_encoder': None  # Use hwaccel test instead
     },
     'INTEL': {
-        'primary': 'QSV',
-        'fallback': 'VAAPI',  # Same hardware, different API
+        'primary': 'VAAPI',
+        'fallback': None,
         'requires_runtime': False,
-        'test_encoder': 'h264_qsv'
+        'test_encoder': None
     },
     'ARM': {
         'primary': 'VAAPI',
@@ -259,26 +259,47 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
                         logger.warning(f"⚠ Example: docker run -e PGID=<device_group_id> --device /dev/dri:/dev/dri ...")
                 # If device doesn't exist, just skip silently (expected for wrong GPU type)
                 return False
-        # Build FFmpeg command based on acceleration type
+        # Get test video fixture - all GPU tests use real H.264 video for accurate testing
+        test_video = None
+        possible_paths = [
+            os.path.join(os.path.dirname(__file__), 'fixtures', 'test_video.mp4'),
+            os.path.join(os.getcwd(), 'plex_generate_previews', 'fixtures', 'test_video.mp4'),
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                test_video = path
+                break
+        
+        if not test_video:
+            logger.debug("Test video fixture not found, cannot test GPU acceleration")
+            return False
+        
+        # Build FFmpeg command - all GPU types use the SAME real-world JPEG extraction command
+        # This tests the actual production pipeline: hardware decode -> scale -> JPEG encode
+        cmd = ['ffmpeg']
+        
+        # Add hardware acceleration flags (before -i)
         if hwaccel == 'cuda':
-            cmd = ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
-                   '-c:v', 'h264_nvenc', '-t', '0.1', '-f', 'null', '/dev/null']
+            cmd += ['-hwaccel', 'cuda']
         elif hwaccel == 'vaapi' and device_path:
-            # For VAAPI, test hardware acceleration initialization rather than encoding
-            # since encoding often fails due to driver issues even when hwaccel works
-            cmd = ['ffmpeg', '-hwaccel', 'vaapi', '-vaapi_device', device_path, 
-                   '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
-                   '-t', '0.1', '-f', 'null', '/dev/null']
-        elif hwaccel == 'qsv':
-            cmd = ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
-                   '-c:v', 'h264_qsv', '-t', '0.1', '-f', 'null', '/dev/null']
+            cmd += ['-hwaccel', 'vaapi', '-vaapi_device', device_path]
         elif hwaccel == 'd3d11va':
-            cmd = ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
-                   '-c:v', 'h264_nvenc', '-t', '0.1', '-f', 'null', '/dev/null']  # WSL2 can use NVENC
+            cmd += ['-hwaccel', 'd3d11va']
         else:
-            # For other types, just test basic hardware acceleration
-            cmd = ['ffmpeg', '-hwaccel', hwaccel, '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
-                   '-t', '0.1', '-f', 'null', '/dev/null']
+            cmd += ['-hwaccel', hwaccel]
+        
+        # Add input file and JPEG extraction (same for all GPU types)
+        cmd += [
+            '-i', test_video,
+            '-vf', 'select=eq(n\\,0),scale=320:240',  # Extract first frame and scale
+            '-frames:v', '1',                          # Only 1 frame
+            '-f', 'image2',                            # Output as image
+            '-c:v', 'mjpeg',                           # JPEG codec
+            '-q:v', '2',                               # Quality
+            '-y',                                      # Overwrite without asking
+            '/dev/null'                                # Discard output
+        ]
         
         logger.debug(f"Testing {hwaccel} functionality: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, timeout=10)
@@ -356,13 +377,21 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
             except ValueError:
                 continue
             
-            # Get render device for this card
-            # The mapping is: card0 -> renderD128, card1 -> renderD129
+            # Get render device for this card by checking device symlinks
+            # Cannot assume renderD128 -> card0, must check actual device paths
+            card_device_path = os.path.realpath(os.path.join(drm_dir, entry, "device"))
             render_device = None
+            
             for render_entry in entries:
-                if render_entry == f"renderD{128 + card_num}":  # card0 -> renderD128, card1 -> renderD129
-                    render_device = f"/dev/dri/{render_entry}"
-                    break
+                if not render_entry.startswith("renderD"):
+                    continue
+                try:
+                    render_device_path = os.path.realpath(os.path.join(drm_dir, render_entry, "device"))
+                    if card_device_path == render_device_path:
+                        render_device = f"/dev/dri/{render_entry}"
+                        break
+                except OSError:
+                    continue
             
             if not render_device:
                 logger.debug(f"No render device found for {entry}")
@@ -415,34 +444,45 @@ def _determine_vaapi_gpu_type(device_path: str) -> str:
     logger.debug(f"Determining GPU vendor for device: {device_path}")
     
     try:
-        # Extract the render device number from path (e.g., renderD128 -> 128)
-        render_match = re.search(r'renderD(\d+)$', device_path)
+        # Extract render device name from path (e.g., /dev/dri/renderD128 -> renderD128)
+        render_match = re.search(r'(renderD\d+)$', device_path)
         if not render_match:
             logger.debug(f"Could not parse render device from {device_path}")
             return 'UNKNOWN'
         
-        render_num = int(render_match.group(1))
-        # renderD128 -> card0, renderD129 -> card1, etc.
-        card_num = render_num - 128
-        card_name = f"card{card_num}"
-        logger.debug(f"Mapped {device_path} to {card_name}")
-        
+        render_name = render_match.group(1)
         drm_dir = "/sys/class/drm"
+        
         if not os.path.exists(drm_dir):
             logger.debug(f"DRM directory {drm_dir} does not exist")
             return 'UNKNOWN'
         
-        # Check the driver for the specific card
-        driver_path = os.path.join(drm_dir, card_name, "device", "driver")
-        if os.path.islink(driver_path):
-            driver_name = os.path.basename(os.readlink(driver_path))
-            logger.debug(f"Driver for {card_name}: {driver_name}")
+        # Get the actual device path for this render device
+        render_sys_path = os.path.join(drm_dir, render_name, "device")
+        if not os.path.exists(render_sys_path):
+            logger.debug(f"Render device path {render_sys_path} does not exist")
+            return 'UNKNOWN'
             
-            vendor = _get_gpu_vendor_from_driver(driver_name)
-            logger.debug(f"Mapped driver '{driver_name}' to vendor: {vendor}")
-            return vendor
+        render_device_path = os.path.realpath(render_sys_path)
         
-        logger.debug(f"No driver found for {card_name}, defaulting to UNKNOWN")
+        # Find matching card by comparing device paths
+        for entry in os.listdir(drm_dir):
+            if not entry.startswith("card") or "-" in entry:
+                continue
+            
+            card_device_path = os.path.realpath(os.path.join(drm_dir, entry, "device"))
+            if card_device_path == render_device_path:
+                # Found matching card, get its driver
+                driver_path = os.path.join(drm_dir, entry, "device", "driver")
+                if os.path.islink(driver_path):
+                    driver_name = os.path.basename(os.readlink(driver_path))
+                    logger.debug(f"Mapped {device_path} to {entry} (driver: {driver_name})")
+                    
+                    vendor = _get_gpu_vendor_from_driver(driver_name)
+                    logger.debug(f"Mapped driver '{driver_name}' to vendor: {vendor}")
+                    return vendor
+        
+        logger.debug(f"No matching card found for {device_path}, defaulting to UNKNOWN")
         return 'UNKNOWN'
     except Exception as e:
         logger.debug(f"Error determining GPU vendor: {e}")
@@ -577,11 +617,6 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
         elif gpu_type == 'WSL2':
             return "WSL2 GPU"
             
-        elif gpu_type == 'INTEL' and gpu_device == 'qsv':
-            # Try to get Intel GPU info
-            gpu_name = _parse_lspci_gpu_name('INTEL')
-            return gpu_name  # Don't add (QSV) here, format_gpu_info will add it
-            
         elif gpu_type in ('AMD', 'INTEL') and gpu_device.startswith('/dev/dri/'):
             # Try to get GPU info from lspci
             gpu_name = _parse_lspci_gpu_name(gpu_type)
@@ -602,7 +637,7 @@ def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str, acceleration:
         gpu_type: Type of GPU
         gpu_device: GPU device path or info
         gpu_name: GPU model name
-        acceleration: Acceleration method (CUDA, QSV, VAAPI, D3D11VA)
+        acceleration: Acceleration method (CUDA, VAAPI, D3D11VA)
         
     Returns:
         str: Formatted GPU description
@@ -619,8 +654,6 @@ def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str, acceleration:
         return f"{gpu_name} (CUDA)"
     elif gpu_type == 'WSL2':
         return f"{gpu_name} (D3D11VA)"
-    elif gpu_type == 'INTEL' and gpu_device == 'qsv':
-        return f"{gpu_name} (QSV)"
     elif gpu_type in ('AMD', 'INTEL', 'ARM', 'VIDEOCORE') and gpu_device.startswith('/dev/dri/'):
         return f"{gpu_name} (VAAPI - {gpu_device})"
     elif gpu_type == 'UNKNOWN':
@@ -635,8 +668,8 @@ def _test_acceleration_method(vendor: str, acceleration: str, device_path: Optio
     
     Args:
         vendor: GPU vendor ('NVIDIA', 'AMD', 'INTEL', etc.)
-        acceleration: Acceleration method ('CUDA', 'QSV', 'VAAPI', etc.)
-        device_path: Device path for VAAPI (e.g., '/dev/dri/renderD128'), or 'qsv'/'cuda' for others
+        acceleration: Acceleration method ('CUDA', 'VAAPI', 'D3D11VA', etc.)
+        device_path: Device path for VAAPI (e.g., '/dev/dri/renderD128'), or 'cuda' for NVIDIA
         is_wsl2: Whether running in WSL2 environment
         
     Returns:
@@ -657,9 +690,7 @@ def _test_acceleration_method(vendor: str, acceleration: str, device_path: Optio
     config = GPU_ACCELERATION_MAP[vendor]
     
     # Test the acceleration functionality
-    if acceleration == 'QSV':
-        test_passed = _test_hwaccel_functionality('qsv')
-    elif acceleration == 'CUDA':
+    if acceleration == 'CUDA':
         test_passed = _test_hwaccel_functionality('cuda')
     elif acceleration == 'VAAPI':
         if not device_path:
@@ -729,6 +760,7 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
             continue
         
         logger.debug(f"Testing {card_name} ({vendor} - {driver})...")
+        logger.info(f"  Checking {card_name} ({vendor})...")
         
         accel_config = GPU_ACCELERATION_MAP[vendor]
         primary_method = accel_config['primary']
@@ -737,8 +769,6 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         # Determine device path for testing
         if primary_method == 'CUDA':
             device_path = 'cuda'
-        elif primary_method == 'QSV':
-            device_path = 'qsv'
         elif primary_method == 'VAAPI':
             device_path = render_device
         else:
@@ -746,12 +776,14 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         
         # Test primary acceleration method
         logger.debug(f"  Testing primary method: {primary_method}")
+        logger.info(f"    Testing {primary_method} acceleration...")
         if _test_acceleration_method(vendor, primary_method, device_path, is_wsl2):
             gpu_name = get_gpu_name(vendor, device_path)
             gpu_info = {
                 'name': gpu_name,
                 'acceleration': primary_method,
                 'device_path': device_path,
+                'render_device': render_device,  # Store the actual /dev/dri device
                 'wsl2': is_wsl2,
                 'card': card_name,
                 'driver': driver
@@ -773,6 +805,7 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         # Test fallback method if available
         if fallback_method:
             logger.debug(f"  Testing fallback method: {fallback_method}")
+            logger.info(f"    Testing fallback {fallback_method} acceleration...")
             fallback_device_path = render_device if fallback_method == 'VAAPI' else device_path
             
             if _test_acceleration_method(vendor, fallback_method, fallback_device_path, is_wsl2):
@@ -781,6 +814,7 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
                     'name': gpu_name,
                     'acceleration': fallback_method,
                     'device_path': fallback_device_path,
+                    'render_device': render_device,
                     'wsl2': is_wsl2,
                     'card': card_name,
                     'driver': driver
@@ -794,17 +828,20 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
             logger.warning(f"  ❌ {card_name}: No fallback available, GPU unusable")
     
     # Step 3: Check for WSL2 D3D11VA (doesn't show up as physical GPU)
-    if is_wsl2 and _test_acceleration_method('WSL2', 'D3D11VA', 'd3d11va', is_wsl2):
+    if is_wsl2:
         logger.debug("Testing WSL2 D3D11VA acceleration...")
-        gpu_name = get_gpu_name('WSL2', 'd3d11va')
-        gpu_info = {
-            'name': gpu_name,
-            'acceleration': 'D3D11VA',
-            'device_path': 'd3d11va',
-            'wsl2': is_wsl2
-        }
-        detected_gpus.append(('WSL2', 'd3d11va', gpu_info))
-        logger.info("  ✅ WSL2 D3D11VA working")
+        logger.info("  Checking WSL2 GPU...")
+        logger.info("    Testing D3D11VA acceleration...")
+        if _test_acceleration_method('WSL2', 'D3D11VA', 'd3d11va', is_wsl2):
+            gpu_name = get_gpu_name('WSL2', 'd3d11va')
+            gpu_info = {
+                'name': gpu_name,
+                'acceleration': 'D3D11VA',
+                'device_path': 'd3d11va',
+                'wsl2': is_wsl2
+            }
+            detected_gpus.append(('WSL2', 'd3d11va', gpu_info))
+            logger.info("  ✅ WSL2 D3D11VA working")
     
     logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} working GPU(s) ===")
     return detected_gpus

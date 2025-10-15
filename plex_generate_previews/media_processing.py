@@ -129,28 +129,51 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         video_file: Path to input video file
         output_folder: Directory to save thumbnail images
         gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WSL2', or None)
-        gpu_device_path: GPU device path for VAAPI, or 'qsv' for Intel QSV
+        gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI, 'cuda' for NVIDIA)
         config: Configuration object
         progress_callback: Callback function for progress updates
     """
     media_info = MediaInfo.parse(video_file)
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
-    vf_parameters = f"fps=fps={fps_value}:round=up,scale=w=320:h=240:force_original_aspect_ratio=decrease"
+    
+    # Base video filter for SDR content
+    base_scale = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
+    vf_parameters = f"fps=fps={fps_value}:round=up,{base_scale}"
 
-    # Check if we have a HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
+    # Check if we have HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
-            vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=w=320:h=240:force_original_aspect_ratio=decrease"
+            vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
+    # Build FFmpeg command with proper argument ordering
+    # Hardware acceleration flags must come BEFORE the input file (-i)
     args = [
         config.ffmpeg_path, "-loglevel", "info",
-        "-threads:v", "1",  # fix: was '-threads:0 1'
+        "-threads:v", "1",
     ]
 
+    # Add hardware acceleration for decoding (before -i flag)
+    hw = False
+    use_gpu = gpu is not None
+    
+    if use_gpu:
+        hw = True
+        if gpu == 'NVIDIA':
+            # NVIDIA CUDA hardware decoding
+            args += ["-hwaccel", "cuda"]
+        elif gpu == 'WSL2':
+            # WSL2 D3D11VA hardware decoding
+            args += ["-hwaccel", "d3d11va"]
+        elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
+            # VAAPI hardware decoding (Intel, AMD, ARM, etc.)
+            args += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]
+
+    # Add skip_frame option for faster decoding (if safe)
     use_skip = heuristic_allows_skip(config.ffmpeg_path, video_file)
     if use_skip:
         args += ["-skip_frame:v", "nokey"]
 
+    # Add input file and output options
     args += [
         "-i", video_file, "-an", "-sn", "-dn",
         "-q:v", str(config.thumbnail_quality),
@@ -159,48 +182,6 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     ]
 
     start = time.time()
-    hw = False
-
-    # Determine GPU usage - if gpu is set, use GPU
-    use_gpu = gpu is not None
-    
-    # Apply GPU acceleration if using GPU
-    if use_gpu:
-        hw = True
-        
-        if gpu == 'NVIDIA':
-            args.insert(5, "-hwaccel")
-            args.insert(6, "cuda")
-        elif gpu == 'WSL2':
-            args.insert(5, "-hwaccel")
-            args.insert(6, "d3d11va")
-        elif gpu == 'INTEL' and gpu_device_path == 'qsv':
-            # Intel QSV - uses hwaccel qsv (no device path needed)
-            args.insert(5, "-hwaccel")
-            args.insert(6, "qsv")
-            # QSV requires special video filter setup
-            vf_parameters = vf_parameters.replace(
-                "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                "format=nv12,hwupload=extra_hw_frames=64,scale_qsv=w=320:h=240,hwdownload,format=nv12")
-            args[args.index("-vf") + 1] = vf_parameters
-        else:
-            # AMD or Intel VAAPI (gpu_device_path is /dev/dri/renderDXXX)
-            args.insert(5, "-hwaccel")
-            args.insert(6, "vaapi")
-            args.insert(7, "-vaapi_device")
-            args.insert(8, gpu_device_path)
-            # Check if Intel GPU (Intel devices typically have 'renderD' in path)
-            if gpu == 'INTEL':
-                vf_parameters = vf_parameters.replace(
-                    "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                    "format=nv12,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease,hwdownload,format=nv12")
-            else: 
-                # Adjust vf_parameters for AMD VAAPI
-                vf_parameters = vf_parameters.replace(
-                    "scale=w=320:h=240:force_original_aspect_ratio=decrease",
-                    "format=nv12|vaapi,hwupload,scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease")
-            
-            args[args.index("-vf") + 1] = vf_parameters
 
     logger.debug(f'Executing: {" ".join(args)}')
     
@@ -371,7 +352,7 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
     Args:
         item_key: Plex media item key
         gpu: GPU type for acceleration
-        gpu_device_path: GPU device path (or 'qsv' for Intel QSV)
+        gpu_device_path: GPU device path
         config: Configuration object
         plex: Plex server instance
         progress_callback: Callback function for progress updates

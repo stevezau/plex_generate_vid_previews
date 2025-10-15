@@ -243,6 +243,10 @@ def setup_application() -> tuple:
     # Parse command-line arguments
     args = parse_arguments()
     
+    # Apply log level from arguments if provided (before --list-gpus handling)
+    if args.log_level:
+        setup_logging(args.log_level.upper(), console=console)
+    
     # Handle --list-gpus flag
     if args.list_gpus:
         list_gpus()

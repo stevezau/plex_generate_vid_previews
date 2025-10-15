@@ -11,6 +11,7 @@ from plex_generate_previews.gpu_detection import (
     detect_all_gpus,
     _is_hwaccel_available,
     _test_hwaccel_functionality,
+    _test_acceleration_method,
     _get_gpu_devices,
     _determine_vaapi_gpu_type,
     get_gpu_name,
@@ -21,65 +22,62 @@ from plex_generate_previews.gpu_detection import (
 class TestDetectAllGPUs:
     """Test comprehensive GPU detection."""
     
-    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
-    @patch('plex_generate_previews.gpu_detection._is_hwaccel_available')
+    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
+    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
     @patch('plex_generate_previews.gpu_detection.get_gpu_name')
-    def test_detect_all_gpus_nvidia(self, mock_name, mock_available, mock_test):
+    def test_detect_all_gpus_nvidia(self, mock_name, mock_devices, mock_test):
         """Test NVIDIA CUDA GPU detection."""
-        mock_available.side_effect = lambda x: x == 'cuda'
+        mock_devices.return_value = [('card0', '/dev/dri/renderD128', 'nvidia')]
         mock_test.return_value = True
         mock_name.return_value = 'NVIDIA GeForce RTX 3080'
         
         gpus = detect_all_gpus()
         
-        # Should detect NVIDIA GPU
+        # Should detect NVIDIA GPU via CUDA
         nvidia_gpus = [g for g in gpus if g[0] == 'NVIDIA']
         assert len(nvidia_gpus) > 0
         assert nvidia_gpus[0][1] == 'cuda'
         assert 'RTX 3080' in nvidia_gpus[0][2]['name']
+        assert nvidia_gpus[0][2]['acceleration'] == 'CUDA'
     
-    @patch('plex_generate_previews.gpu_detection._find_all_vaapi_devices')
-    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
-    @patch('plex_generate_previews.gpu_detection._is_hwaccel_available')
-    @patch('plex_generate_previews.gpu_detection._determine_vaapi_gpu_type')
+    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
+    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
     @patch('plex_generate_previews.gpu_detection.get_gpu_name')
-    def test_detect_all_gpus_amd(self, mock_name, mock_type, mock_available, mock_test, mock_find):
+    def test_detect_all_gpus_amd(self, mock_name, mock_devices, mock_test):
         """Test AMD VAAPI GPU detection."""
-        mock_available.side_effect = lambda x: x == 'vaapi'
-        mock_find.return_value = ['/dev/dri/renderD128']
+        mock_devices.return_value = [('card0', '/dev/dri/renderD128', 'amdgpu')]
         mock_test.return_value = True
-        mock_type.return_value = 'AMD'
         mock_name.return_value = 'AMD Radeon RX 6800 XT'
         
         gpus = detect_all_gpus()
         
-        # Should detect AMD GPU
+        # Should detect AMD GPU via VAAPI
         amd_gpus = [g for g in gpus if g[0] == 'AMD']
         assert len(amd_gpus) > 0
         assert '/dev/dri/renderD128' in amd_gpus[0][1]
+        assert amd_gpus[0][2]['acceleration'] == 'VAAPI'
     
-    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
-    @patch('plex_generate_previews.gpu_detection._is_hwaccel_available')
+    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
+    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
     @patch('plex_generate_previews.gpu_detection.get_gpu_name')
-    def test_detect_all_gpus_intel(self, mock_name, mock_available, mock_test):
-        """Test Intel QSV GPU detection."""
-        mock_available.side_effect = lambda x: x == 'qsv'
+    def test_detect_all_gpus_intel(self, mock_name, mock_devices, mock_test):
+        """Test Intel VAAPI GPU detection."""
+        mock_devices.return_value = [('card0', '/dev/dri/renderD128', 'i915')]
         mock_test.return_value = True
         mock_name.return_value = 'Intel UHD Graphics 770'
         
         gpus = detect_all_gpus()
         
-        # Should detect Intel GPU
+        # Should detect Intel GPU via VAAPI
         intel_gpus = [g for g in gpus if g[0] == 'INTEL']
         assert len(intel_gpus) > 0
-        assert intel_gpus[0][1] == 'qsv'
+        assert intel_gpus[0][1] == '/dev/dri/renderD128'
+        assert intel_gpus[0][2]['acceleration'] == 'VAAPI'
     
-    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
-    @patch('plex_generate_previews.gpu_detection._is_hwaccel_available')
-    def test_detect_all_gpus_none(self, mock_available, mock_test):
+    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
+    def test_detect_all_gpus_none(self, mock_devices):
         """Test when no GPUs are detected."""
-        mock_available.return_value = False
-        mock_test.return_value = False
+        mock_devices.return_value = []
         
         gpus = detect_all_gpus()
         
@@ -93,7 +91,7 @@ class TestHwaccelAvailability:
     @patch('plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels')
     def test_is_hwaccel_available_cuda(self, mock_hwaccels):
         """Test CUDA availability check."""
-        mock_hwaccels.return_value = ['cuda', 'vaapi', 'qsv']
+        mock_hwaccels.return_value = ['cuda', 'vaapi']
         
         assert _is_hwaccel_available('cuda') is True
         assert _is_hwaccel_available('d3d11va') is False
@@ -282,24 +280,24 @@ class TestGetGPUName:
         name = get_gpu_name('NVIDIA', 'cuda')
         
         assert 'NVIDIA' in name
-        assert 'CUDA' in name
+        assert 'GPU' in name
     
     def test_get_gpu_name_wsl2(self):
         """Test WSL2 GPU name."""
         name = get_gpu_name('WSL2', 'd3d11va')
         
         assert 'WSL2' in name
-        assert 'D3D11VA' in name
+        assert 'GPU' in name
     
     @patch('subprocess.run')
-    def test_get_gpu_name_intel_qsv(self, mock_run):
-        """Test getting Intel GPU name for QSV."""
+    def test_get_gpu_name_intel_vaapi(self, mock_run):
+        """Test getting Intel GPU name for VAAPI."""
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 770\n'
         )
         
-        name = get_gpu_name('INTEL', 'qsv')
+        name = get_gpu_name('INTEL', '/dev/dri/renderD128')
         
         assert 'Intel' in name or 'UHD' in name
     
@@ -327,7 +325,6 @@ class TestGetFFmpegHwaccels:
             stdout='''Hardware acceleration methods:
 cuda
 vaapi
-qsv
 d3d11va
 '''
         )
@@ -336,7 +333,6 @@ d3d11va
         
         assert 'cuda' in hwaccels
         assert 'vaapi' in hwaccels
-        assert 'qsv' in hwaccels
         assert 'Hardware acceleration methods:' not in hwaccels
     
     @patch('subprocess.run')
