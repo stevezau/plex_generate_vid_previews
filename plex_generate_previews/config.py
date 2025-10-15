@@ -138,7 +138,7 @@ def show_docker_help():
     logger.info('  GPU_THREADS                 Number of GPU worker threads (default: 1)')
     logger.info('  CPU_THREADS                 Number of CPU worker threads (default: 1)')
     logger.info('  GPU_SELECTION               GPU selection: "all" or comma-separated indices (default: all)')
-    logger.info('  TMP_FOLDER                  Temporary folder for processing (default: /tmp/plex_generate_previews)')
+    logger.info('  TMP_FOLDER                  Temporary folder for processing (default: system temp dir)')
     logger.info('  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)')
     logger.info('')
     logger.info('💡 Example Docker Run Command (using environment variables):')
