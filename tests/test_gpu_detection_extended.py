@@ -124,6 +124,28 @@ class TestHwaccelFunctionality:
         result = _test_hwaccel_functionality('cuda')
         assert result is False
     
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_cuda_devnull_error(self, mock_run):
+        """Test CUDA failure with /dev/null error (container without nvidia runtime)."""
+        mock_run.return_value = MagicMock(
+            returncode=255,
+            stderr=b'Error opening output file /dev/null.\nError opening output files: Operation not permitted'
+        )
+        
+        result = _test_hwaccel_functionality('cuda')
+        assert result is False
+    
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_cuda_init_error(self, mock_run):
+        """Test CUDA initialization failure."""
+        mock_run.return_value = MagicMock(
+            returncode=255,
+            stderr=b'cuda_check_ret failed\nCUDA initialization failed'
+        )
+        
+        result = _test_hwaccel_functionality('cuda')
+        assert result is False
+    
     @patch('os.access')
     @patch('os.path.exists')
     @patch('subprocess.run')
@@ -155,6 +177,21 @@ class TestHwaccelFunctionality:
         mock_access.return_value = False  # But not accessible
         mock_uid.return_value = 1000
         mock_groups.return_value = [1000]
+        
+        result = _test_hwaccel_functionality('vaapi', '/dev/dri/renderD128')
+        assert result is False
+    
+    @patch('os.access')
+    @patch('os.path.exists')
+    @patch('subprocess.run')
+    def test_test_hwaccel_functionality_vaapi_stderr_error(self, mock_run, mock_exists, mock_access):
+        """Test VAAPI failure with stderr containing permission denied."""
+        mock_exists.return_value = True
+        mock_access.return_value = True
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr=b'Failed to initialize VAAPI connection\nvaapi: permission denied'
+        )
         
         result = _test_hwaccel_functionality('vaapi', '/dev/dri/renderD128')
         assert result is False
