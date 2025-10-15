@@ -53,6 +53,12 @@ GPU_ACCELERATION_MAP = {
         'fallback': None,
         'requires_runtime': False,
         'test_encoder': None  # Use hwaccel test instead
+    },
+    'WSL2': {
+        'primary': 'D3D11VA',
+        'fallback': None,
+        'requires_runtime': False,
+        'test_encoder': None  # Use hwaccel test instead
     }
 }
 
@@ -361,6 +367,18 @@ def _is_wsl2() -> bool:
     return os.path.exists('/dev/dxg')
 
 
+def _detect_rocm_gpu() -> bool:
+    """
+    Detect if ROCm (AMD GPU runtime) is available in WSL2.
+    
+    Checks for /dev/kfd (Kernel Fusion Driver) which is the ROCm device.
+    
+    Returns:
+        bool: True if ROCm device is available
+    """
+    return os.path.exists('/dev/kfd')
+
+
 def _is_macos() -> bool:
     """
     Detect if running on macOS.
@@ -463,6 +481,60 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
     
     except Exception as e:
         logger.debug(f"Error scanning GPU devices: {e}")
+    
+    return devices
+
+
+def _get_wsl2_render_devices() -> List[Tuple[str, str, str]]:
+    """
+    Fallback GPU detection for WSL2 when /sys/class/drm enumeration fails.
+    
+    In WSL2, especially with AMD GPUs, /sys/class/drm may not properly enumerate
+    devices, but render devices might still exist in /dev/dri. This function
+    directly checks for render devices and attempts to identify their vendor.
+    
+    Returns:
+        List[Tuple[str, str, str]]: List of (card_name, render_device, driver) tuples
+    """
+    devices = []
+    dri_dir = "/dev/dri"
+    
+    if not os.path.exists(dri_dir):
+        logger.debug(f"DRI directory {dri_dir} does not exist")
+        return devices
+    
+    try:
+        entries = os.listdir(dri_dir)
+        render_devices = [e for e in entries if e.startswith("renderD")]
+        
+        if not render_devices:
+            logger.debug("No render devices found in /dev/dri")
+            return devices
+        
+        logger.debug(f"Found render devices in WSL2: {render_devices}")
+        
+        for render_device_name in sorted(render_devices):
+            render_device_path = f"/dev/dri/{render_device_name}"
+            
+            # Try to determine vendor using lspci
+            vendor = _detect_gpu_type_from_lspci()
+            if vendor == 'UNKNOWN':
+                # Check if ROCm is available (indicates AMD GPU)
+                if _detect_rocm_gpu():
+                    vendor = 'AMD'
+                    logger.debug(f"Detected AMD GPU via ROCm for {render_device_path}")
+                else:
+                    vendor = 'amdgpu'  # fallback to amdgpu driver name
+            
+            # Create a synthetic card name
+            card_name = f"wsl2-{render_device_name}"
+            driver = vendor.lower()
+            
+            devices.append((card_name, render_device_path, driver))
+            logger.debug(f"WSL2 GPU detected: {card_name} -> {render_device_path} (driver: {driver})")
+    
+    except Exception as e:
+        logger.debug(f"Error detecting WSL2 render devices: {e}")
     
     return devices
 
@@ -807,6 +879,15 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
     
     if not physical_gpus:
         logger.debug("No physical GPUs found in /dev/dri")
+        
+        # In WSL2, try fallback detection for render devices
+        if is_wsl2:
+            logger.debug("WSL2 detected - trying fallback render device detection")
+            physical_gpus = _get_wsl2_render_devices()
+            if physical_gpus:
+                logger.debug(f"Found {len(physical_gpus)} GPU(s) via WSL2 fallback detection")
+                for card_name, render_device, driver in physical_gpus:
+                    logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
     else:
         logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
         for card_name, render_device, driver in physical_gpus:
@@ -889,13 +970,20 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         else:
             logger.warning(f"  ❌ {card_name}: No fallback available, GPU unusable")
     
-    # Step 3: Check for WSL2 D3D11VA (doesn't show up as physical GPU)
-    if is_wsl2:
-        logger.debug("Testing WSL2 D3D11VA acceleration...")
-        logger.info("  Checking WSL2 GPU...")
+    # Step 3: Check for WSL2 D3D11VA (universal DirectX acceleration for all GPU vendors)
+    # D3D11VA via /dev/dxg should work for NVIDIA, AMD, and Intel GPUs in WSL2
+    if is_wsl2 and not detected_gpus:
+        logger.debug("No GPUs detected via vendor-specific methods, trying WSL2 D3D11VA...")
+        logger.info("  Checking WSL2 DirectX GPU acceleration...")
         logger.info("    Testing D3D11VA acceleration...")
         if _test_acceleration_method('WSL2', 'D3D11VA', 'd3d11va', is_wsl2):
-            gpu_name = get_gpu_name('WSL2', 'd3d11va')
+            # Try to identify actual GPU for better naming
+            gpu_vendor = _detect_gpu_type_from_lspci()
+            if gpu_vendor != 'UNKNOWN':
+                gpu_name = f"{gpu_vendor} GPU (WSL2 DirectX)"
+            else:
+                gpu_name = "WSL2 GPU (DirectX)"
+            
             gpu_info = {
                 'name': gpu_name,
                 'acceleration': 'D3D11VA',
@@ -903,7 +991,11 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
                 'wsl2': is_wsl2
             }
             detected_gpus.append(('WSL2', 'd3d11va', gpu_info))
-            logger.info("  ✅ WSL2 D3D11VA working")
+            logger.info(f"  ✅ {gpu_name} working")
+            logger.info("  💡 Using DirectX acceleration (universal WSL2 method)")
+            if gpu_vendor == 'AMD':
+                logger.info("  💡 Note: AMD GPUs in WSL2 may have better performance with native Linux drivers")
+                logger.info("      if properly configured, but DirectX acceleration is working.")
     
     # Step 4: Check for macOS VideoToolbox (doesn't use /dev/dri)
     if _is_macos():

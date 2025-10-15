@@ -429,7 +429,8 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 | **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
 | **Intel** | VAAPI | Intel drivers + VA-API | ✅ Device access |
 | **Apple Silicon** | VideoToolbox | macOS with FFmpeg + mediainfo | ❌ Native macOS only |
-| **WSL2** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
+| **WSL2 (NVIDIA)** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
+| **WSL2 (AMD)** | VAAPI | WSL2 + ROCm + /dev/dri devices | ✅ Native WSL2 |
 
 ### GPU Detection
 
@@ -463,10 +464,12 @@ plex-generate-previews --gpu-selection "0"
 ### Hardware Acceleration Methods
 
 - **NVIDIA**: Uses CUDA for maximum performance
-- **AMD**: Uses VAAPI with ROCm drivers
+- **AMD**: Uses VAAPI with ROCm drivers (native Linux and WSL2)
 - **Intel**: Uses VAAPI (Video Acceleration API)
 - **Apple Silicon**: Uses VideoToolbox (M1/M2/M3/M4 chips on macOS)
-- **WSL2**: Automatically detects GPU via `/dev/dxg` and configures D3D11VA acceleration
+- **WSL2**: Automatically detects GPU type and uses appropriate acceleration:
+  - **NVIDIA GPUs**: D3D11VA via `/dev/dxg`
+  - **AMD GPUs**: VAAPI via `/dev/dri` with ROCm support
 
 ### Docker GPU Requirements
 
@@ -490,7 +493,23 @@ services:
 ```
 
 #### WSL2
-No special Docker configuration needed - automatically detects WSL2 GPUs.
+GPU support in WSL2 uses a hybrid detection approach:
+
+**Primary Method (All Vendors):**
+- Uses DirectX acceleration (D3D11VA) via `/dev/dxg`
+- Works universally for NVIDIA, AMD, and Intel GPUs
+- No special configuration needed
+
+**Alternative Method (AMD/Intel):**
+- If Linux drivers are properly loaded, may use VAAPI via `/dev/dri`
+- Requires proper driver configuration in WSL2
+- May offer better performance but is less reliable
+
+**Important Notes:**
+- AMD GPU support in WSL2 is still evolving
+- ROCm support is limited and not officially supported by AMD in WSL2
+- The script automatically detects and uses the best available method
+- If VAAPI fails, automatically falls back to D3D11VA
 
 ## Usage Examples
 

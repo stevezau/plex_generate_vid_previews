@@ -4,12 +4,21 @@ Tests for CLI functionality.
 
 import pytest
 import sys
-from unittest.mock import patch, MagicMock
+import signal
+from unittest.mock import patch, MagicMock, Mock, call
 from plex_generate_previews.cli import (
     parse_arguments,
     setup_logging,
     list_gpus,
-    ApplicationState
+    ApplicationState,
+    signal_handler,
+    setup_application,
+    setup_working_directory,
+    detect_and_select_gpus,
+    create_progress_displays,
+    run_processing,
+    main,
+    app_state
 )
 
 
@@ -137,3 +146,152 @@ class TestGPUListing:
         mock_logger.info.assert_any_call('✅ Found 2 GPU(s):')
         mock_logger.info.assert_any_call('  [0] NVIDIA GeForce RTX 3080 (CUDA)')
         mock_logger.info.assert_any_call('  [1] AMD Radeon RX 6800 XT (VAAPI)')
+
+
+class TestAnimatedBarColumn:
+    """Test animated bar column for progress display."""
+    
+    def test_animated_bar_column_init(self):
+        """Test AnimatedBarColumn initialization."""
+        from plex_generate_previews.cli import AnimatedBarColumn
+        
+        bar = AnimatedBarColumn(bar_width=40)
+        assert bar.bar_width == 40
+        assert bar._animation_offset == 0
+    
+    def test_animated_bar_column_render_no_total(self):
+        """Test rendering when task has no total."""
+        from plex_generate_previews.cli import AnimatedBarColumn
+        from rich.progress import Task
+        from unittest.mock import MagicMock
+        
+        bar = AnimatedBarColumn()
+        task = MagicMock()
+        task.total = None
+        
+        result = bar.render(task)
+        assert result is not None
+    
+    def test_animated_bar_column_render_in_progress(self):
+        """Test rendering an in-progress task."""
+        from plex_generate_previews.cli import AnimatedBarColumn
+        from unittest.mock import MagicMock
+        
+        bar = AnimatedBarColumn(bar_width=40)
+        task = MagicMock()
+        task.total = 100
+        task.completed = 50
+        task.finished = False
+        
+        result = bar.render(task)
+        assert result is not None
+    
+    def test_animated_bar_column_render_finished(self):
+        """Test rendering a finished task."""
+        from plex_generate_previews.cli import AnimatedBarColumn
+        from unittest.mock import MagicMock
+        
+        bar = AnimatedBarColumn(bar_width=40)
+        task = MagicMock()
+        task.total = 100
+        task.completed = 100
+        task.finished = True
+        
+        result = bar.render(task)
+        assert result is not None
+
+
+class TestFFmpegDataColumn:
+    """Test FFmpeg data column for progress display."""
+    
+    def test_ffmpeg_data_column_render_with_data(self):
+        """Test rendering with FFmpeg data."""
+        from plex_generate_previews.cli import FFmpegDataColumn
+        from unittest.mock import MagicMock
+        
+        column = FFmpegDataColumn()
+        task = MagicMock()
+        task.fields = {
+            'frame': 100,
+            'fps': 30.0,
+            'time_str': '00:00:03.33',
+            'speed': '1.0x'
+        }
+        
+        result = column.render(task)
+        assert result is not None
+        assert 'frame' in str(result)
+    
+    def test_ffmpeg_data_column_render_no_data(self):
+        """Test rendering without FFmpeg data."""
+        from plex_generate_previews.cli import FFmpegDataColumn
+        from unittest.mock import MagicMock
+        
+        column = FFmpegDataColumn()
+        task = MagicMock()
+        task.fields = {}
+        
+        result = column.render(task)
+        assert result is not None
+        assert 'Waiting' in str(result)
+
+
+class TestSignalHandler:
+    """Test signal handling functionality."""
+    
+    @patch('plex_generate_previews.cli.app_state')
+    @patch('sys.exit')
+    @patch('plex_generate_previews.cli.logger')
+    def test_signal_handler_interrupt(self, mock_logger, mock_exit, mock_state):
+        """Test handling interrupt signal."""
+        signal_handler(signal.SIGINT, None)
+        
+        mock_logger.info.assert_called_once_with("Received interrupt signal, shutting down gracefully...")
+        mock_state.cleanup.assert_called_once()
+        mock_exit.assert_called_once_with(0)
+    
+    @patch('plex_generate_previews.cli.app_state')
+    @patch('sys.exit')
+    @patch('plex_generate_previews.cli.logger')
+    def test_signal_handler_term(self, mock_logger, mock_exit, mock_state):
+        """Test handling terminate signal."""
+        signal_handler(signal.SIGTERM, None)
+        
+        mock_logger.info.assert_called_once_with("Received interrupt signal, shutting down gracefully...")
+        mock_state.cleanup.assert_called_once()
+        mock_exit.assert_called_once_with(0)
+
+
+
+
+class TestSetupWorkingDirectory:
+    """Test working directory setup."""
+    
+    @patch('plex_generate_previews.cli.create_working_directory')
+    @patch('plex_generate_previews.cli.logger')
+    def test_setup_working_directory_success(self, mock_logger, mock_create_dir):
+        """Test successful working directory setup."""
+        mock_config = MagicMock()
+        mock_config.tmp_folder = '/tmp/test'
+        mock_create_dir.return_value = '/tmp/test/working'
+        
+        setup_working_directory(mock_config)
+        
+        assert mock_config.working_tmp_folder == '/tmp/test/working'
+        mock_logger.debug.assert_called_once()
+    
+    @patch('plex_generate_previews.cli.create_working_directory')
+    @patch('plex_generate_previews.cli.logger')
+    @patch('sys.exit')
+    def test_setup_working_directory_failure(self, mock_exit, mock_logger, mock_create_dir):
+        """Test working directory setup failure."""
+        mock_config = MagicMock()
+        mock_config.tmp_folder = '/tmp/test'
+        mock_create_dir.side_effect = Exception("Failed to create directory")
+        
+        setup_working_directory(mock_config)
+        
+        mock_logger.error.assert_called_once()
+        mock_exit.assert_called_once_with(1)
+
+

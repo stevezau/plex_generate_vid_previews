@@ -15,7 +15,9 @@ from plex_generate_previews.gpu_detection import (
     _get_gpu_devices,
     _determine_vaapi_gpu_type,
     get_gpu_name,
-    _get_ffmpeg_hwaccels
+    _get_ffmpeg_hwaccels,
+    _get_wsl2_render_devices,
+    _detect_rocm_gpu
 )
 
 
@@ -449,4 +451,404 @@ d3d11va
         hwaccels = _get_ffmpeg_hwaccels()
         
         assert hwaccels == []
+
+
+class TestWSL2AMDGPUDetection:
+    """Test WSL2 AMD GPU detection functionality."""
+    
+    @patch('os.path.exists')
+    def test_detect_rocm_gpu_available(self, mock_exists):
+        """Test ROCm GPU detection when /dev/kfd exists."""
+        mock_exists.return_value = True
+        
+        result = _detect_rocm_gpu()
+        
+        assert result is True
+        mock_exists.assert_called_with('/dev/kfd')
+    
+    @patch('os.path.exists')
+    def test_detect_rocm_gpu_not_available(self, mock_exists):
+        """Test ROCm GPU detection when /dev/kfd doesn't exist."""
+        mock_exists.return_value = False
+        
+        result = _detect_rocm_gpu()
+        
+        assert result is False
+        mock_exists.assert_called_with('/dev/kfd')
+    
+    @patch('plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci')
+    @patch('plex_generate_previews.gpu_detection._detect_rocm_gpu')
+    @patch('os.listdir')
+    @patch('os.path.exists')
+    def test_get_wsl2_render_devices_amd_with_rocm(self, mock_exists, mock_listdir, 
+                                                     mock_rocm, mock_lspci):
+        """Test WSL2 render device detection with AMD GPU and ROCm."""
+        mock_exists.return_value = True
+        mock_listdir.return_value = ['renderD128', 'card0']
+        mock_lspci.return_value = 'UNKNOWN'
+        mock_rocm.return_value = True
+        
+        devices = _get_wsl2_render_devices()
+        
+        assert len(devices) == 1
+        assert devices[0][0] == 'wsl2-renderD128'
+        assert devices[0][1] == '/dev/dri/renderD128'
+        assert devices[0][2] == 'amd'
+    
+    @patch('plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci')
+    @patch('plex_generate_previews.gpu_detection._detect_rocm_gpu')
+    @patch('os.listdir')
+    @patch('os.path.exists')
+    def test_get_wsl2_render_devices_amd_via_lspci(self, mock_exists, mock_listdir, 
+                                                     mock_rocm, mock_lspci):
+        """Test WSL2 render device detection with AMD GPU detected via lspci."""
+        mock_exists.return_value = True
+        mock_listdir.return_value = ['renderD128']
+        mock_lspci.return_value = 'AMD'
+        mock_rocm.return_value = False
+        
+        devices = _get_wsl2_render_devices()
+        
+        assert len(devices) == 1
+        assert devices[0][0] == 'wsl2-renderD128'
+        assert devices[0][1] == '/dev/dri/renderD128'
+        assert devices[0][2] == 'amd'
+    
+    @patch('os.path.exists')
+    def test_get_wsl2_render_devices_no_dri(self, mock_exists):
+        """Test WSL2 render device detection when /dev/dri doesn't exist."""
+        mock_exists.return_value = False
+        
+        devices = _get_wsl2_render_devices()
+        
+        assert devices == []
+    
+    @patch('os.listdir')
+    @patch('os.path.exists')
+    def test_get_wsl2_render_devices_no_render_devices(self, mock_exists, mock_listdir):
+        """Test WSL2 render device detection when no render devices exist."""
+        mock_exists.return_value = True
+        mock_listdir.return_value = ['card0', 'card1']
+        
+        devices = _get_wsl2_render_devices()
+        
+        assert devices == []
+    
+    @patch('plex_generate_previews.gpu_detection._get_wsl2_render_devices')
+    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
+    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
+    @patch('plex_generate_previews.gpu_detection._is_wsl2')
+    @patch('plex_generate_previews.gpu_detection.get_gpu_name')
+    def test_detect_all_gpus_wsl2_amd_fallback(self, mock_name, mock_wsl2, 
+                                                 mock_devices, mock_test, mock_wsl2_devices):
+        """Test full GPU detection in WSL2 with AMD GPU using fallback detection."""
+        # Simulate WSL2 environment with no /sys/class/drm enumeration
+        mock_wsl2.return_value = True
+        mock_devices.return_value = []  # No devices from standard enumeration
+        mock_wsl2_devices.return_value = [('wsl2-renderD128', '/dev/dri/renderD128', 'amdgpu')]
+        mock_test.return_value = True
+        mock_name.return_value = 'AMD Radeon RX 7900 XT'
+        
+        gpus = detect_all_gpus()
+        
+        # Should detect AMD GPU via WSL2 fallback
+        amd_gpus = [g for g in gpus if g[0] == 'AMD']
+        assert len(amd_gpus) > 0
+        assert 'RX 7900 XT' in amd_gpus[0][2]['name']
+        assert amd_gpus[0][2]['acceleration'] == 'VAAPI'
+        assert amd_gpus[0][1] == '/dev/dri/renderD128'
+
+
+class TestFFmpegVersion:
+    """Test FFmpeg version detection."""
+    
+    @patch('subprocess.run')
+    def test_get_ffmpeg_version_parse_error(self, mock_run):
+        """Test FFmpeg version parsing with invalid output."""
+        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='Invalid version output'
+        )
+        
+        result = _get_ffmpeg_version()
+        assert result is None
+    
+    @patch('subprocess.run')
+    def test_get_ffmpeg_version_error(self, mock_run):
+        """Test FFmpeg version with subprocess error."""
+        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        
+        mock_run.side_effect = Exception("Command failed")
+        
+        result = _get_ffmpeg_version()
+        assert result is None
+    
+    @patch('plex_generate_previews.gpu_detection._get_ffmpeg_version')
+    def test_check_ffmpeg_version_none(self, mock_get_version):
+        """Test check FFmpeg version when version is None."""
+        from plex_generate_previews.gpu_detection import _check_ffmpeg_version
+        
+        mock_get_version.return_value = None
+        
+        result = _check_ffmpeg_version()
+        # Should return True to not fail if version can't be determined
+        assert result is True
+
+
+
+
+class TestAppleGPU:
+    """Test Apple GPU detection functions."""
+    
+    @patch('subprocess.run')
+    def test_get_apple_gpu_name_success(self, mock_run):
+        """Test getting Apple GPU name successfully."""
+        from plex_generate_previews.gpu_detection import _get_apple_gpu_name
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='Graphics/Displays:\n\n  Chipset Model: Apple M1 Pro\n  Type: GPU'
+        )
+        
+        result = _get_apple_gpu_name()
+        assert result == 'Apple M1 Pro'
+    
+    @patch('subprocess.run')
+    def test_get_apple_gpu_name_error(self, mock_run):
+        """Test getting Apple GPU name with error."""
+        from plex_generate_previews.gpu_detection import _get_apple_gpu_name
+        
+        mock_run.side_effect = Exception("Command failed")
+        
+        result = _get_apple_gpu_name()
+        assert 'Apple' in result  # Should return fallback
+    
+    @patch('platform.machine')
+    @patch('subprocess.run')
+    def test_get_apple_gpu_name_arm64_fallback(self, mock_run, mock_machine):
+        """Test getting Apple GPU name with ARM64 fallback."""
+        from plex_generate_previews.gpu_detection import _get_apple_gpu_name
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='No chipset info'
+        )
+        mock_machine.return_value = 'arm64'
+        
+        result = _get_apple_gpu_name()
+        assert result == 'Apple Silicon GPU'
+
+
+class TestLspciGPUDetection:
+    """Test lspci GPU detection."""
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_failure(self, mock_run):
+        """Test lspci GPU detection with command failure."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.return_value = MagicMock(returncode=1)
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'UNKNOWN'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_amd(self, mock_run):
+        """Test lspci detecting AMD GPU."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='00:02.0 VGA compatible controller: Advanced Micro Devices [AMD/ATI] Radeon RX 6800 XT'
+        )
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'AMD'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_intel(self, mock_run):
+        """Test lspci detecting Intel GPU."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='00:02.0 Display controller: Intel Corporation UHD Graphics 630'
+        )
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'INTEL'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_nvidia(self, mock_run):
+        """Test lspci detecting NVIDIA GPU."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='01:00.0 VGA compatible controller: NVIDIA Corporation GeForce RTX 3080'
+        )
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'NVIDIA'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_arm(self, mock_run):
+        """Test lspci detecting ARM GPU."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='00:02.0 Display controller: ARM Mali GPU'
+        )
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'ARM'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_not_found(self, mock_run):
+        """Test lspci when lspci is not installed."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.side_effect = FileNotFoundError()
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'UNKNOWN'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_exception(self, mock_run):
+        """Test lspci with exception."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.side_effect = Exception("Unexpected error")
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'UNKNOWN'
+    
+    @patch('subprocess.run')
+    def test_detect_gpu_type_from_lspci_no_match(self, mock_run):
+        """Test lspci with no GPU match."""
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='00:1f.3 Audio device: Intel Corporation'
+        )
+        
+        result = _detect_gpu_type_from_lspci()
+        assert result == 'UNKNOWN'
+
+
+class TestLogSystemInfo:
+    """Test system info logging."""
+    
+    @patch('platform.system')
+    @patch('platform.release')
+    @patch('plex_generate_previews.gpu_detection.logger')
+    def test_log_system_info(self, mock_logger, mock_release, mock_system):
+        """Test logging system information."""
+        from plex_generate_previews.gpu_detection import _log_system_info
+        
+        mock_system.return_value = 'Linux'
+        mock_release.return_value = '5.15.0'
+        
+        _log_system_info()
+        
+        # Should log system information
+        assert mock_logger.debug.called
+
+
+class TestParseLspciGPUName:
+    """Test parsing lspci GPU names."""
+    
+    def test_parse_lspci_gpu_name_nvidia(self):
+        """Test parsing NVIDIA GPU name."""
+        from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
+        
+        result = _parse_lspci_gpu_name('NVIDIA')
+        assert 'NVIDIA' in result
+    
+    def test_parse_lspci_gpu_name_amd(self):
+        """Test parsing AMD GPU name."""
+        from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
+        
+        result = _parse_lspci_gpu_name('AMD')
+        assert 'AMD' in result
+    
+    def test_parse_lspci_gpu_name_intel(self):
+        """Test parsing Intel GPU name."""
+        from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
+        
+        result = _parse_lspci_gpu_name('INTEL')
+        assert 'Intel' in result
+
+
+class TestAccelerationMethodTesting:
+    """Test acceleration method testing."""
+    
+    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
+    def test_test_acceleration_method_cuda_failure(self, mock_test):
+        """Test CUDA acceleration method failure."""
+        from plex_generate_previews.gpu_detection import _test_acceleration_method
+        
+        mock_test.return_value = False
+        
+        result = _test_acceleration_method('nvidia', 'CUDA', None, False)
+        assert result is False
+    
+    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
+    def test_test_acceleration_method_vaapi_failure(self, mock_test):
+        """Test VAAPI acceleration method failure."""
+        from plex_generate_previews.gpu_detection import _test_acceleration_method
+        
+        mock_test.return_value = False
+        
+        result = _test_acceleration_method('amd', 'VAAPI', '/dev/dri/renderD128', False)
+        assert result is False
+
+
+
+
+class TestDetectAllGPUsEdgeCases:
+    """Test edge cases in detect_all_gpus."""
+    
+    @patch('plex_generate_previews.gpu_detection._is_macos')
+    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
+    @patch('plex_generate_previews.gpu_detection._get_apple_gpu_name')
+    def test_detect_all_gpus_macos_videotoolbox(self, mock_apple_name, mock_test, mock_is_macos):
+        """Test macOS VideoToolbox detection."""
+        mock_is_macos.return_value = True
+        mock_test.return_value = True
+        mock_apple_name.return_value = 'Apple M1 Max'
+        
+        gpus = detect_all_gpus()
+        
+        # Should detect Apple GPU
+        apple_gpus = [g for g in gpus if g[0] == 'APPLE']
+        assert len(apple_gpus) > 0
+        assert 'M1 Max' in apple_gpus[0][2]['name']
+    
+    @patch('plex_generate_previews.gpu_detection._is_macos')
+    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
+    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
+    def test_detect_all_gpus_nvidia_nvenc(self, mock_test, mock_devices, mock_is_macos):
+        """Test NVIDIA NVENC detection."""
+        mock_is_macos.return_value = False
+        mock_devices.return_value = [('card0', '/dev/dri/renderD128', 'nvidia')]
+        
+        def test_side_effect(vendor, accel, device, is_wsl2):
+            if accel == 'CUDA':
+                return True
+            elif accel == 'NVENC':
+                return True
+            return False
+        
+        mock_test.side_effect = test_side_effect
+        
+        gpus = detect_all_gpus()
+        
+        # Should detect NVIDIA with both CUDA and NVENC
+        nvidia_gpus = [g for g in gpus if g[0] == 'NVIDIA']
+        assert len(nvidia_gpus) >= 1
 

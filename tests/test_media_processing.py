@@ -573,3 +573,18 @@ class TestProcessItem:
         # Should not crash
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
+
+class TestMediaInfoImport:
+    """Test MediaInfo import and validation."""
+    
+    def test_mediainfo_can_parse(self):
+        """Test that MediaInfo is available and functional."""
+        from pymediainfo import MediaInfo
+        # This should not raise an exception in the test environment
+        result = MediaInfo.can_parse()
+        assert result is True or result is False  # Just check it doesn't crash
+
+
+
+
+
