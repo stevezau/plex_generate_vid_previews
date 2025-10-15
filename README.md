@@ -428,6 +428,7 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 | **NVIDIA** | CUDA | NVIDIA drivers + CUDA toolkit | ✅ NVIDIA Container Toolkit |
 | **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
 | **Intel** | VAAPI | Intel drivers + VA-API | ✅ Device access |
+| **Apple Silicon** | VideoToolbox | macOS with FFmpeg + mediainfo | ❌ Native macOS only |
 | **WSL2** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
 
 ### GPU Detection
@@ -464,6 +465,7 @@ plex-generate-previews --gpu-selection "0"
 - **NVIDIA**: Uses CUDA for maximum performance
 - **AMD**: Uses VAAPI with ROCm drivers
 - **Intel**: Uses VAAPI (Video Acceleration API)
+- **Apple Silicon**: Uses VideoToolbox (M1/M2/M3/M4 chips on macOS)
 - **WSL2**: Automatically detects GPU via `/dev/dxg` and configures D3D11VA acceleration
 
 ### Docker GPU Requirements

@@ -23,9 +23,27 @@ from .utils import sanitize_path
 
 try:
     from pymediainfo import MediaInfo
+    # Test that native library is available
+    MediaInfo.can_parse()
 except ImportError:
-    print('MediaInfo not found. MediaInfo must be installed and available in PATH.')
+    print('ERROR: pymediainfo Python package not found.')
+    print('Please install: pip install pymediainfo')
     sys.exit(1)
+except OSError as e:
+    if 'libmediainfo' in str(e).lower():
+        print('ERROR: MediaInfo native library not found.')
+        print('Please install MediaInfo:')
+        if sys.platform == 'darwin':  # macOS
+            print('  macOS: brew install media-info')
+        elif sys.platform.startswith('linux'):
+            print('  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev')
+            print('  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel')
+        else:
+            print('  See: https://mediaarea.net/en/MediaInfo/Download')
+        sys.exit(1)
+except Exception as e:
+    print(f'WARNING: Could not validate MediaInfo library: {e}')
+    print('Proceeding anyway, but errors may occur during processing')
 
 from .config import Config
 from .plex_client import retry_plex_call
