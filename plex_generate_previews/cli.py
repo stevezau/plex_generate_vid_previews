@@ -174,7 +174,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--tmp-folder', help='Temporary folder for processing')
     
     # Logging
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'VERBOSE', 'WARNING', 'ERROR', 'debug', 'info', 'verbose', 'warning', 'error'], help='Logging level (default: INFO, VERBOSE enables periodic progress logging)')
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
     
     # Version check
     parser.add_argument('--skip-version-check', action='store_true', help='Skip checking for newer versions on startup')
@@ -441,7 +441,7 @@ def run_processing(config, selected_gpus):
                 main_task = main_progress.add_task(f"Processing {section.title}", total=len(media_items))
                 
                 # Process items in this section with worker progress
-                worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task, title_max_width)
+                worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task, title_max_width, library_name=section.title)
                 total_processed += len(media_items)
                 
                 # Remove completed task

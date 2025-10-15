@@ -217,7 +217,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     
     # Signal that FFmpeg process has started
     if progress_callback:
-        progress_callback(0, 0, 0, "0.0x")
+        progress_callback(0, 0, 0, "0.0x", media_file=video_file)
 
     # Track progress
     total_duration = None
@@ -235,7 +235,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             speed = speed_value
         if progress_callback:
             progress_callback(progress_percent, current_duration, total_duration, speed_value, 
-                            remaining_time, frame, fps, q, size, time_str, bitrate)
+                            remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
     
     # Allow time for it to start
     time.sleep(0.02)

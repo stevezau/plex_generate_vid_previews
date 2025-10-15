@@ -218,7 +218,7 @@ def load_config(cli_args=None) -> Config:
     validation_errors = []
     
     # Validate log level
-    valid_log_levels = ['DEBUG', 'INFO', 'VERBOSE', 'WARNING', 'ERROR', 'CRITICAL']
+    valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
     if log_level not in valid_log_levels:
         validation_errors.append(f'LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})')
     

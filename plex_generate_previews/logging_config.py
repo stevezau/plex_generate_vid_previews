@@ -14,16 +14,9 @@ def setup_logging(log_level: str = 'INFO', console: Console = None) -> None:
     Set up logging configuration with shared Rich console.
     
     Args:
-        log_level: Logging level (DEBUG, INFO, VERBOSE, WARNING, ERROR, CRITICAL)
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         console: Rich Console instance for coordinated output (optional)
     """
-    # Register custom VERBOSE level (between INFO=20 and DEBUG=10)
-    try:
-        logger.level("VERBOSE", no=15, color="<cyan>", icon="ℹ️")
-    except (TypeError, ValueError):
-        # Level already exists, which is fine
-        pass
-    
     logger.remove()
     
     if console:
