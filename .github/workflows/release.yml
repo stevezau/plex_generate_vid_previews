@@ -98,11 +98,18 @@ jobs:
           echo "Updated pyproject.toml to $VERSION"
           grep "^version = " pyproject.toml
       
+      - name: Update README.md version badge
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          sed -i "s/badge\/version-[0-9.]*-blue/badge\/version-$VERSION-blue/" README.md
+          echo "Updated README.md badge to $VERSION"
+          grep "badge/version-" README.md
+      
       - name: Commit and push changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add plex_generate_previews/_version.py pyproject.toml
+          git add plex_generate_previews/_version.py pyproject.toml README.md
           git commit -m "chore: bump version to ${{ steps.get_version.outputs.version }} [skip ci]"
           git push origin HEAD:${{ github.event.release.target_commitish }}
 
