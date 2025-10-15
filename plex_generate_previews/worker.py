@@ -181,12 +181,6 @@ class Worker:
         self.last_update_time = 0
         self.last_verbose_log_time = 0
         
-        # Log task start at INFO level (visible to all users)
-        if self.worker_type == 'GPU':
-            logger.info(f"[GPU {self.gpu_index}]: Started processing {media_title}")
-        else:
-            logger.info(f"[CPU]: Started processing {media_title}")
-        
         # Start processing in background thread
         self.current_thread = threading.Thread(
             target=self._process_item, 
@@ -476,6 +470,13 @@ class WorkerPool:
             worker.size = size
             worker.time_str = time_str
             worker.bitrate = bitrate
+            
+            # Log when FFmpeg actually starts processing (only once)
+            if not worker.ffmpeg_started:
+                if worker.worker_type == 'GPU':
+                    logger.info(f"[GPU {worker.gpu_index}]: Started processing {worker.media_title}")
+                else:
+                    logger.info(f"[CPU]: Started processing {worker.media_title}")
             
             # Mark that FFmpeg has started outputting progress
             worker.ffmpeg_started = True
