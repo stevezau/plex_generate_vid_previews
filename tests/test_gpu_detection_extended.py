@@ -172,23 +172,25 @@ class TestHwaccelFunctionality:
 class TestGetGPUDevices:
     """Test GPU device enumeration."""
     
-    @patch('os.path.islink')
-    @patch('os.readlink')
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_get_gpu_devices(self, mock_exists, mock_listdir, mock_readlink, mock_islink):
+    @patch('plex_generate_previews.gpu_detection.os.path.islink')
+    @patch('plex_generate_previews.gpu_detection.os.readlink')
+    @patch('plex_generate_previews.gpu_detection.os.listdir')
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
+    def test_get_gpu_devices(self, mock_realpath, mock_exists, mock_listdir, mock_readlink, mock_islink):
         """Test enumerating GPU devices from /sys/class/drm."""
         mock_exists.return_value = True
         mock_listdir.return_value = ['card0', 'card0-HDMI-A-1', 'renderD128', 'card1', 'renderD129']
         mock_islink.return_value = True
-        mock_readlink.return_value = '/path/to/amdgpu'
+        mock_readlink.return_value = 'amdgpu'
+        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:01.0'
         
         devices = _get_gpu_devices()
         
         # Should find GPU devices
         assert len(devices) > 0
     
-    @patch('os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
     def test_get_gpu_devices_no_drm(self, mock_exists):
         """Test when /sys/class/drm doesn't exist."""
         mock_exists.return_value = False
@@ -202,52 +204,58 @@ class TestGetGPUDevices:
 class TestDetermineVAAPIGPUType:
     """Test VAAPI GPU type determination."""
     
-    @patch('os.readlink')
-    @patch('os.path.islink')
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_determine_vaapi_gpu_type_intel(self, mock_exists, mock_listdir, mock_islink, mock_readlink):
+    @patch('plex_generate_previews.gpu_detection.os.readlink')
+    @patch('plex_generate_previews.gpu_detection.os.path.islink')
+    @patch('plex_generate_previews.gpu_detection.os.listdir')
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
+    def test_determine_vaapi_gpu_type_intel(self, mock_realpath, mock_exists, mock_listdir, mock_islink, mock_readlink):
         """Test detecting Intel GPU via i915 driver."""
         mock_exists.return_value = True
         mock_listdir.return_value = ['card0']
         mock_islink.return_value = True
-        mock_readlink.return_value = '/path/to/i915'
+        mock_readlink.return_value = 'i915'
+        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:02.0'
         
         gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
         
         assert gpu_type == 'INTEL'
     
-    @patch('os.readlink')
-    @patch('os.path.islink')
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_determine_vaapi_gpu_type_amd(self, mock_exists, mock_listdir, mock_islink, mock_readlink):
+    @patch('plex_generate_previews.gpu_detection.os.readlink')
+    @patch('plex_generate_previews.gpu_detection.os.path.islink')
+    @patch('plex_generate_previews.gpu_detection.os.listdir')
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
+    def test_determine_vaapi_gpu_type_amd(self, mock_realpath, mock_exists, mock_listdir, mock_islink, mock_readlink):
         """Test detecting AMD GPU via amdgpu driver."""
         mock_exists.return_value = True
         mock_listdir.return_value = ['card0']
         mock_islink.return_value = True
-        mock_readlink.return_value = '/path/to/amdgpu'
+        mock_readlink.return_value = 'amdgpu'
+        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:01.0'
         
         gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
         
         assert gpu_type == 'AMD'
     
-    @patch('os.readlink')
-    @patch('os.path.islink')
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_determine_vaapi_gpu_type_radeon(self, mock_exists, mock_listdir, mock_islink, mock_readlink):
+    @patch('plex_generate_previews.gpu_detection.os.readlink')
+    @patch('plex_generate_previews.gpu_detection.os.path.islink')
+    @patch('plex_generate_previews.gpu_detection.os.listdir')
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
+    def test_determine_vaapi_gpu_type_radeon(self, mock_realpath, mock_exists, mock_listdir, mock_islink, mock_readlink):
         """Test detecting AMD GPU via radeon driver."""
         mock_exists.return_value = True
         mock_listdir.return_value = ['card0']
         mock_islink.return_value = True
-        mock_readlink.return_value = '/path/to/radeon'
+        mock_readlink.return_value = 'radeon'
+        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:01.0'
         
         gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
         
         assert gpu_type == 'AMD'
     
-    @patch('os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
     def test_determine_vaapi_gpu_type_unknown(self, mock_exists):
         """Test unknown GPU type."""
         mock_exists.return_value = False
