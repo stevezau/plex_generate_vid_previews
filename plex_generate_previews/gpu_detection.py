@@ -59,6 +59,12 @@ GPU_ACCELERATION_MAP = {
         'fallback': None,
         'requires_runtime': False,
         'test_encoder': None  # Use hwaccel test instead
+    },
+    'WINDOWS_GPU': {
+        'primary': 'D3D11VA',
+        'fallback': None,
+        'requires_runtime': False,
+        'test_encoder': None  # Use hwaccel test instead
     }
 }
 
@@ -387,6 +393,46 @@ def _is_macos() -> bool:
         bool: True if running on macOS
     """
     return platform.system() == 'Darwin'
+
+
+def _is_windows() -> bool:
+    """
+    Detect if running on native Windows (not WSL2).
+    
+    Returns:
+        bool: True if running on Windows
+    """
+    return platform.system() == 'Windows'
+
+
+def _detect_windows_d3d11va() -> Optional[Tuple[str, str, Dict[str, Any]]]:
+    """
+    Detect Windows GPU via D3D11VA testing.
+    
+    D3D11VA is Microsoft's universal hardware acceleration API that works
+    with all GPU vendors (NVIDIA, AMD, Intel) on Windows.
+    
+    Returns:
+        Optional[Tuple[str, str, Dict]]: ('WINDOWS_GPU', 'd3d11va', gpu_info) or None
+    """
+    if not _is_windows():
+        return None
+    
+    logger.debug("Testing Windows D3D11VA hardware acceleration...")
+    
+    # Test if D3D11VA works with actual video
+    if _test_hwaccel_functionality('d3d11va'):
+        gpu_info = {
+            'name': 'Windows GPU',
+            'acceleration': 'D3D11VA',
+            'device_path': 'd3d11va',
+            'wsl2': False
+        }
+        logger.debug("✓ Windows D3D11VA hardware acceleration is working")
+        return ('WINDOWS_GPU', 'd3d11va', gpu_info)
+    else:
+        logger.debug("✗ Windows D3D11VA test failed")
+        return None
 
 
 def _get_apple_gpu_name() -> str:
@@ -784,6 +830,8 @@ def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str, acceleration:
         return f"{gpu_name} (CUDA)"
     elif gpu_type == 'WSL2':
         return f"{gpu_name} (D3D11VA)"
+    elif gpu_type == 'WINDOWS_GPU':
+        return f"{gpu_name} (D3D11VA - Universal Windows GPU)"
     elif gpu_type == 'APPLE':
         return f"{gpu_name} (VideoToolbox)"
     elif gpu_type in ('AMD', 'INTEL', 'ARM', 'VIDEOCORE') and gpu_device.startswith('/dev/dri/'):
@@ -1014,6 +1062,20 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
             logger.info("  ✅ Apple VideoToolbox working")
         else:
             logger.warning("  ❌ Apple VideoToolbox test failed")
+    
+    # Step 5: Check for Windows D3D11VA (universal Windows GPU acceleration)
+    if _is_windows():
+        logger.debug("Detected Windows platform, testing D3D11VA acceleration...")
+        logger.info("  Checking Windows GPU...")
+        logger.info("    Testing D3D11VA acceleration...")
+        windows_gpu = _detect_windows_d3d11va()
+        if windows_gpu:
+            detected_gpus.append(windows_gpu)
+            logger.info("  ✅ Windows D3D11VA working (universal GPU acceleration)")
+            logger.info("  💡 D3D11VA works with NVIDIA, AMD, and Intel GPUs")
+        else:
+            logger.warning("  ❌ Windows D3D11VA test failed")
+            logger.warning("  💡 Ensure GPU drivers are installed and up to date")
     
     logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} working GPU(s) ===")
     return detected_gpus

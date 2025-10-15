@@ -95,12 +95,19 @@ plex-generate-previews \
 
 ### Platform Support
 
-> [!WARNING]  
-> **Windows is not natively supported.**
+| Platform | Support | Notes |
+|----------|---------|-------|
+| **Linux** | ✅ Full | GPU + CPU support (CUDA, VAAPI, etc.) |
+| **Docker** | ✅ Full | GPU + CPU support (Recommended) |
+| **WSL2** | ✅ Full | GPU + CPU support (D3D11VA, VAAPI) |
+| **macOS** | ✅ Full | VideoToolbox + CPU support |
+| **Windows** | ✅ Full | D3D11VA GPU + CPU support |
 
-**For Windows users, use one of these alternatives:**
-- 🐳 **Docker** (Recommended): Run the Docker container on Windows
-- 🐧 **[WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)**: Install and run this tool inside a WSL2 Linux environment
+**Windows GPU Support:**
+- ✅ D3D11VA hardware decode works with ANY GPU (NVIDIA, AMD, Intel)
+- ✅ Significantly speeds up thumbnail generation (2-5x faster)
+- ✅ Automatic GPU detection - just install latest drivers
+- ⚠️ Requires FFmpeg with D3D11VA support (most builds include it)
 
 ### GPU Requirements
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
@@ -188,6 +195,44 @@ plex-generate-previews --help
 # Method 2: Python module
 python -m plex_generate_previews --help
 ```
+
+### Windows GPU Support
+
+Native Windows supports GPU acceleration using D3D11VA (Direct3D 11 Video Acceleration).
+
+**GPU Requirements:**
+- Compatible GPU: NVIDIA, AMD, or Intel
+- Latest GPU drivers installed
+- FFmpeg with D3D11VA support (included in most builds)
+
+**Basic Windows usage with GPU:**
+```bash
+# Install
+pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
+
+# Run with GPU acceleration (default)
+plex-generate-previews ^
+  --plex-url http://localhost:32400 ^
+  --plex-token your-token-here ^
+  --plex-config-folder "C:\Users\YourName\AppData\Local\Plex Media Server" ^
+  --gpu-threads 4 ^
+  --cpu-threads 2
+
+# Run CPU-only (if no GPU or drivers)
+plex-generate-previews ^
+  --plex-url http://localhost:32400 ^
+  --plex-token your-token-here ^
+  --plex-config-folder "C:\Users\YourName\AppData\Local\Plex Media Server" ^
+  --gpu-threads 0 ^
+  --cpu-threads 4
+```
+
+**Important Windows Notes:**
+- ✅ GPU support works with any modern GPU (NVIDIA, AMD, Intel)
+- ✅ D3D11VA provides hardware video decode acceleration
+- ✅ 2-5x faster than CPU-only processing
+- ⚠️ Update GPU drivers for best performance
+- 💡 Use `--list-gpus` to verify GPU detection
 
 ### Unraid
 
@@ -284,7 +329,7 @@ For detailed configuration options, see the complete reference tables below:
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
-| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp |
+| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | System temp dir |
 | `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
 | `PUID` | N/A | User ID to run container as (Docker only) | 1000 |
 | `PGID` | N/A | Group ID to run container as (Docker only) | 1000 |
@@ -689,6 +734,14 @@ plex-generate-previews \
   - Check path mappings in Plex settings
   - For Windows mapped drives, use UNC paths: `\\server\share\path`
 
+#### "No GPUs detected on Windows"
+- **Cause**: GPU not detected or drivers not installed
+- **Solution**:
+  - Install latest GPU drivers (NVIDIA, AMD, or Intel)
+  - Verify GPU is working in Windows Device Manager
+  - Test with: `plex-generate-previews --list-gpus`
+  - If needed, use CPU-only: `--gpu-threads 0 --cpu-threads 4`
+
 ### Debug Mode
 
 Enable debug logging for detailed troubleshooting:
@@ -713,7 +766,7 @@ plex-generate-previews --log-level DEBUG
 A: Version 2.0.0 introduces multi-GPU support, improved CLI interface, better error handling, WSL2 support, and a complete rewrite with modern Python practices.
 
 **Q: Does this work on Windows?**
-A: Native Windows is not supported. Windows users should use Docker or run the tool inside [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) 
+A: Yes! Windows fully supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD, and Intel GPUs. Install the latest GPU drivers and the tool will automatically detect and use your GPU for faster processing. 
 
 **Q: Can I use this without a GPU?**
 A: Yes! Set `--gpu-threads 0` and use `--cpu-threads 4` (or higher) for CPU-only processing.

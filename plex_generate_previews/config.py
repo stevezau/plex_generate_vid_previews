@@ -9,6 +9,7 @@ import os
 import sys
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -206,7 +207,8 @@ def load_config(cli_args=None) -> Config:
     cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
     gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
     
-    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', '/tmp')
+    # Use system temp directory (respects TMPDIR, TEMP, TMP env vars)
+    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', tempfile.gettempdir())
     
     # Handle log_level (case insensitive)
     log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()

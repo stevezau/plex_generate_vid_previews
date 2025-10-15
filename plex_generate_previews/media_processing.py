@@ -16,6 +16,7 @@ import shutil
 import sys
 import http.client
 import xml.etree.ElementTree
+import tempfile
 from typing import Optional
 from loguru import logger
 
@@ -179,8 +180,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         if gpu == 'NVIDIA':
             # NVIDIA CUDA hardware decoding
             args += ["-hwaccel", "cuda"]
-        elif gpu == 'WSL2':
-            # WSL2 D3D11VA hardware decoding
+        elif gpu == 'WSL2' or gpu == 'WINDOWS_GPU':
+            # WSL2 and Windows D3D11VA hardware decoding
             args += ["-hwaccel", "d3d11va"]
         elif gpu == 'APPLE':
             # Apple VideoToolbox hardware decoding
@@ -211,7 +212,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     # Use high-resolution timestamp and thread ID to ensure unique file per worker
     import threading
     thread_id = threading.get_ident()
-    output_file = f'/tmp/ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log'
+    output_file = os.path.join(tempfile.gettempdir(), f'ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log')
     proc = subprocess.Popen(args, stderr=open(output_file, 'w'), stdout=subprocess.DEVNULL)
     
     # Signal that FFmpeg process has started

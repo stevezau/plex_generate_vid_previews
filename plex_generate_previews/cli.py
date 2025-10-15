@@ -171,7 +171,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--list-gpus', action='store_true', help='List detected GPUs and exit')
     
     # System paths
-    parser.add_argument('--tmp-folder', help='Temporary folder for processing (default: /tmp)')
+    parser.add_argument('--tmp-folder', help='Temporary folder for processing')
     
     # Logging
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
@@ -220,25 +220,19 @@ def setup_application() -> tuple:
     # Set up logging with default level first
     setup_logging(console=console)
     
-    # Check for Windows and show warning
+    # Check for Windows and show info message
     if is_windows():
-        logger.error('=' * 80)
-        logger.error('❌ Windows is not supported')
-        logger.error('=' * 80)
-        logger.error('')
-        logger.error('Please use one of the following alternatives:')
-        logger.error('')
-        logger.error('1. 🐳 Docker (Recommended):')
-        logger.error('   Run this tool in a Docker container on Windows using WSL2')
-        logger.error('   https://github.com/stevezau/plex_generate_vid_previews#docker')
-        logger.error('')
-        logger.error('2. 🐧 WSL2 (Windows Subsystem for Linux):')
-        logger.error('   Install and run this tool inside a WSL2 Linux environment')
-        logger.error('   https://learn.microsoft.com/en-us/windows/wsl/install')
-        logger.error('')
-        logger.error('For more help, see: https://github.com/stevezau/plex_generate_vid_previews/issues/104')
-        logger.error('')
-        sys.exit(1)
+        logger.info('=' * 80)
+        logger.info('🪟 Windows Platform Detected')
+        logger.info('=' * 80)
+        logger.info('')
+        logger.info('GPU Support: D3D11VA hardware decode acceleration')
+        logger.info('  • Works with NVIDIA, AMD, and Intel GPUs')
+        logger.info('  • Requires compatible GPU and latest drivers')
+        logger.info('  • Significantly speeds up thumbnail generation')
+        logger.info('')
+        logger.info('Detecting available GPUs...')
+        logger.info('')
     
     # Parse command-line arguments
     args = parse_arguments()
@@ -260,7 +254,9 @@ def setup_application() -> tuple:
 
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # SIGTERM doesn't exist on Windows
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
 
     # Load and validate configuration (CLI args take precedence over env vars)
     # Note: Basic logging is already set up, so config validation errors will be logged properly
@@ -292,6 +288,7 @@ def setup_working_directory(config) -> None:
 def detect_and_select_gpus(config) -> list:
     """Detect available GPUs and select based on configuration."""
     selected_gpus = []
+    
     if config.gpu_threads > 0:
         # Detect all available GPUs
         detected_gpus = detect_all_gpus()
