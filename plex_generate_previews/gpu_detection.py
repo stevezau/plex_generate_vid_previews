@@ -98,6 +98,13 @@ def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
         version_line = result.stdout.split('\n')[0] if result.stdout else ""
         logger.debug(f"FFmpeg version string: '{version_line}'")
         
+        # Special-case date-based git builds (e.g., "ffmpeg version 2025-10-12-git-...")
+        # These are not semantic versions; treat as "unknown version" so we don't
+        # incorrectly parse the year as the major version.
+        if re.search(r"ffmpeg version \d{4}-\d{2}-\d{2}-", version_line):
+            logger.debug("Detected date-based FFmpeg git build; skipping semantic version parsing")
+            return None
+        
         # Try multiple patterns to handle different FFmpeg version formats
         # Patterns ordered from most specific to least specific
         patterns = [
@@ -293,8 +300,7 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
             logger.debug("Test video fixture not found, cannot test GPU acceleration")
             return False
         
-        # Build FFmpeg command - all GPU types use the SAME real-world JPEG extraction command
-        # This tests the actual production pipeline: hardware decode -> scale -> JPEG encode
+        # Build FFmpeg command - test hardware decode -> scale -> JPEG encode
         cmd = ['ffmpeg']
         
         # Add hardware acceleration flags (before -i)
@@ -309,16 +315,29 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
         else:
             cmd += ['-hwaccel', hwaccel]
         
-        # Add input file and JPEG extraction (same for all GPU types)
+        # Choose OS-appropriate null sink
+        null_sink = 'NUL' if platform.system() == 'Windows' else '/dev/null'
+        
+        # Filters: D3D11VA requires downloading frames from GPU memory
+        if hwaccel == 'd3d11va':
+            # Ensure frames are brought back to system memory before software filters
+            # Also set explicit output format for d3d11
+            if '-hwaccel_output_format' not in cmd:
+                cmd += ['-hwaccel_output_format', 'd3d11']
+            video_filter = 'hwdownload,format=nv12,select=eq(n\\,0),scale=320:240'
+        else:
+            video_filter = 'select=eq(n\\,0),scale=320:240'
+        
+        # Add input file and JPEG extraction
         cmd += [
             '-i', test_video,
-            '-vf', 'select=eq(n\\,0),scale=320:240',  # Extract first frame and scale
-            '-frames:v', '1',                          # Only 1 frame
-            '-f', 'image2',                            # Output as image
-            '-c:v', 'mjpeg',                           # JPEG codec
-            '-q:v', '2',                               # Quality
-            '-y',                                      # Overwrite without asking
-            '/dev/null'                                # Discard output
+            '-vf', video_filter,
+            '-frames:v', '1',
+            '-f', 'image2',
+            '-c:v', 'mjpeg',
+            '-q:v', '2',
+            '-y',
+            null_sink
         ]
         
         logger.debug(f"Testing {hwaccel} functionality: {' '.join(cmd)}")
@@ -477,6 +496,10 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
     """
     devices = []
     drm_dir = "/sys/class/drm"
+    
+    # Skip Linux DRM scan entirely on non-Linux platforms to avoid misleading logs
+    if platform.system() != 'Linux':
+        return devices
     
     if not os.path.exists(drm_dir):
         logger.debug(f"DRM directory {drm_dir} does not exist")
@@ -921,25 +944,26 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
     if is_wsl2:
         logger.debug("Detected WSL2 environment (/dev/dxg present) - GPU functionality tests may be skipped")
     
-    # Step 1: Enumerate physical GPUs from /dev/dri
+    # Step 1: Enumerate physical GPUs from /dev/dri (Linux only)
     logger.debug("=== Enumerating Physical GPUs ===")
     physical_gpus = _get_gpu_devices()  # Returns: [(card_name, render_device, driver)]
     
-    if not physical_gpus:
-        logger.debug("No physical GPUs found in /dev/dri")
-        
-        # In WSL2, try fallback detection for render devices
-        if is_wsl2:
-            logger.debug("WSL2 detected - trying fallback render device detection")
-            physical_gpus = _get_wsl2_render_devices()
-            if physical_gpus:
-                logger.debug(f"Found {len(physical_gpus)} GPU(s) via WSL2 fallback detection")
-                for card_name, render_device, driver in physical_gpus:
-                    logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
-    else:
-        logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
-        for card_name, render_device, driver in physical_gpus:
-            logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
+    # Only log /dev/dri enumeration details on Linux
+    if platform.system() == 'Linux':
+        if not physical_gpus:
+            logger.debug("No physical GPUs found in /dev/dri")
+            # In WSL2, try fallback detection for render devices
+            if is_wsl2:
+                logger.debug("WSL2 detected - trying fallback render device detection")
+                physical_gpus = _get_wsl2_render_devices()
+                if physical_gpus:
+                    logger.debug(f"Found {len(physical_gpus)} GPU(s) via WSL2 fallback detection")
+                    for card_name, render_device, driver in physical_gpus:
+                        logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
+        else:
+            logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
+            for card_name, render_device, driver in physical_gpus:
+                logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
     
     # Step 2: For each physical GPU, test appropriate acceleration methods
     logger.debug("=== Testing GPU Acceleration Methods ===")
@@ -1018,11 +1042,10 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         else:
             logger.warning(f"  ❌ {card_name}: No fallback available, GPU unusable")
     
-    # Step 3: Check for WSL2 D3D11VA (universal DirectX acceleration for all GPU vendors)
-    # D3D11VA via /dev/dxg should work for NVIDIA, AMD, and Intel GPUs in WSL2
-    if is_wsl2 and not detected_gpus:
-        logger.debug("No GPUs detected via vendor-specific methods, trying WSL2 D3D11VA...")
-        logger.info("  Checking WSL2 DirectX GPU acceleration...")
+    # Step 3: Check for WSL2 D3D11VA (doesn't show up as physical GPU)
+    if is_wsl2:
+        logger.debug("Testing WSL2 D3D11VA acceleration...")
+        logger.info("  Checking WSL2 GPU...")
         logger.info("    Testing D3D11VA acceleration...")
         if _test_acceleration_method('WSL2', 'D3D11VA', 'd3d11va', is_wsl2):
             # Try to identify actual GPU for better naming
@@ -1045,6 +1068,25 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
                 logger.info("  💡 Note: AMD GPUs in WSL2 may have better performance with native Linux drivers")
                 logger.info("      if properly configured, but DirectX acceleration is working.")
     
+    # Native Windows: try D3D11VA if ffmpeg reports it, even without /dev/dxg
+    if platform.system() == 'Windows':
+        hwaccels = _get_ffmpeg_hwaccels()
+        logger.debug(f"Windows platform detected; FFmpeg hwaccels: {hwaccels}")
+        if 'd3d11va' in hwaccels:
+            logger.info("  Checking Windows D3D11VA GPU...")
+            logger.info("    Testing D3D11VA acceleration...")
+            if _test_acceleration_method('WSL2', 'D3D11VA', 'd3d11va', False):
+                gpu_name = "Windows GPU"
+                gpu_info = {
+                    'name': gpu_name,
+                    'acceleration': 'D3D11VA',
+                    'device_path': 'd3d11va',
+                }
+                detected_gpus.append(('WSL2', 'd3d11va', gpu_info))
+                logger.info("  ✅ Windows D3D11VA working")
+        else:
+            logger.debug("d3d11va not reported by FFmpeg; skipping Windows D3D11VA probe")
+    
     # Step 4: Check for macOS VideoToolbox (doesn't use /dev/dri)
     if _is_macos():
         logger.debug("Detected macOS platform, testing VideoToolbox acceleration...")
@@ -1063,19 +1105,7 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         else:
             logger.warning("  ❌ Apple VideoToolbox test failed")
     
-    # Step 5: Check for Windows D3D11VA (universal Windows GPU acceleration)
-    if _is_windows():
-        logger.debug("Detected Windows platform, testing D3D11VA acceleration...")
-        logger.info("  Checking Windows GPU...")
-        logger.info("    Testing D3D11VA acceleration...")
-        windows_gpu = _detect_windows_d3d11va()
-        if windows_gpu:
-            detected_gpus.append(windows_gpu)
-            logger.info("  ✅ Windows D3D11VA working (universal GPU acceleration)")
-            logger.info("  💡 D3D11VA works with NVIDIA, AMD, and Intel GPUs")
-        else:
-            logger.warning("  ❌ Windows D3D11VA test failed")
-            logger.warning("  💡 Ensure GPU drivers are installed and up to date")
+    # Note: Windows D3D11VA detection handled above via hwaccels list and probe
     
     logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} working GPU(s) ===")
     return detected_gpus
