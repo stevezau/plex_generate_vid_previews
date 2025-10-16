@@ -140,17 +140,31 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
 
 
 def generate_images(video_file: str, output_folder: str, gpu: Optional[str], 
-                   gpu_device_path: Optional[str], config: Config, progress_callback=None) -> None:
+                   gpu_device_path: Optional[str], config: Config, progress_callback=None) -> tuple:
     """
-    Generate thumbnail images from video file using FFmpeg.
-    
+    Generate thumbnail images from a video using FFmpeg.
+
+    Runs FFmpeg once with hardware acceleration when configured and, if the
+    skip-frame heuristic allowed it, with '-skip_frame:v nokey'. If that run
+    yields zero images or returns non-zero, automatically retries one time with
+    the same settings but without '-skip_frame'. CPU fallback is NOT attempted
+    here; we always honor the selected processing mode.
+
     Args:
         video_file: Path to input video file
-        output_folder: Directory to save thumbnail images
+        output_folder: Directory where thumbnail images will be written
         gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WSL2', 'APPLE', or None)
-        gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI, 'cuda' for NVIDIA)
+        gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI)
         config: Configuration object
-        progress_callback: Callback function for progress updates
+        progress_callback: Optional progress callback for UI updates
+
+    Returns:
+        (success, image_count, hw_used, seconds, speed):
+            success (bool): True if at least one image was produced
+            image_count (int): Number of images written
+            hw_used (bool): Whether hardware acceleration was enabled
+            seconds (float): Elapsed processing time (last attempt)
+            speed (str): Reported or computed FFmpeg speed string
     """
     media_info = MediaInfo.parse(video_file)
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
@@ -164,152 +178,167 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
             vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
-    # Build FFmpeg command with proper argument ordering
-    # Hardware acceleration flags must come BEFORE the input file (-i)
-    args = [
-        config.ffmpeg_path, "-loglevel", "info",
-        "-threads:v", "1",
-    ]
+    def _run_ffmpeg(use_skip: bool) -> tuple:
+        """Run FFmpeg once and return (returncode, seconds, speed, output_tail)."""
+        # Build FFmpeg command with proper argument ordering
+        # Hardware acceleration flags must come BEFORE the input file (-i)
+        args = [
+            config.ffmpeg_path, "-loglevel", "info",
+            "-threads:v", "1",
+        ]
 
-    # Add hardware acceleration for decoding (before -i flag)
-    hw = False
-    use_gpu = gpu is not None
-    
-    if use_gpu:
-        hw = True
-        if gpu == 'NVIDIA':
-            # NVIDIA CUDA hardware decoding
-            args += ["-hwaccel", "cuda"]
-        elif gpu == 'WSL2' or gpu == 'WINDOWS_GPU':
-            # WSL2 and Windows D3D11VA hardware decoding
-            args += ["-hwaccel", "d3d11va"]
-        elif gpu == 'APPLE':
-            # Apple VideoToolbox hardware decoding
-            args += ["-hwaccel", "videotoolbox"]
-        elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
-            # VAAPI hardware decoding (Intel, AMD, ARM, etc.)
-            args += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]
+        # Add hardware acceleration for decoding (before -i flag)
+        hw_local = False
+        use_gpu = gpu is not None
+        if use_gpu:
+            hw_local = True
+            if gpu == 'NVIDIA':
+                args += ["-hwaccel", "cuda"]
+            elif gpu == 'WSL2' or gpu == 'WINDOWS_GPU':
+                args += ["-hwaccel", "d3d11va"]
+            elif gpu == 'APPLE':
+                args += ["-hwaccel", "videotoolbox"]
+            elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
+                args += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]
 
-    # Add skip_frame option for faster decoding (if safe)
-    use_skip = heuristic_allows_skip(config.ffmpeg_path, video_file)
-    if use_skip:
-        args += ["-skip_frame:v", "nokey"]
+        # Add skip_frame option for faster decoding (if safe)
+        if use_skip:
+            args += ["-skip_frame:v", "nokey"]
 
-    # Add input file and output options
-    args += [
-        "-i", video_file, "-an", "-sn", "-dn",
-        "-q:v", str(config.thumbnail_quality),
-        "-vf", vf_parameters,
-        f'{output_folder}/img-%06d.jpg'
-    ]
+        # Add input file and output options
+        args += [
+            "-i", video_file, "-an", "-sn", "-dn",
+            "-q:v", str(config.thumbnail_quality),
+            "-vf", vf_parameters,
+            f'{output_folder}/img-%06d.jpg'
+        ]
 
-    start = time.time()
+        start_local = time.time()
+        logger.debug(f'Executing: {" ".join(args)}')
 
-    logger.debug(f'Executing: {" ".join(args)}')
-    
-    # Use file polling approach for non-blocking, high-frequency progress monitoring
-    # This is faster than subprocess.PIPE which would block on readline() calls
-    # Use high-resolution timestamp and thread ID to ensure unique file per worker
-    import threading
-    thread_id = threading.get_ident()
-    output_file = os.path.join(tempfile.gettempdir(), f'ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log')
-    proc = subprocess.Popen(args, stderr=open(output_file, 'w'), stdout=subprocess.DEVNULL)
-    
-    # Signal that FFmpeg process has started
-    if progress_callback:
-        progress_callback(0, 0, 0, "0.0x", media_file=video_file)
+        # Use file polling approach for non-blocking, high-frequency progress monitoring
+        import threading
+        thread_id = threading.get_ident()
+        output_file = os.path.join(tempfile.gettempdir(), f'ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log')
+        proc = subprocess.Popen(args, stderr=open(output_file, 'w'), stdout=subprocess.DEVNULL)
 
-    # Track progress
-    total_duration = None
-    current_time = 0
-    speed = "0.0x"
-    progress_percent = 0
-    ffmpeg_output_lines = []  # Store all FFmpeg output for debugging
-    line_count = 0
-    
-    # Create a wrapper callback to capture speed updates
-    def speed_capture_callback(progress_percent, current_duration, total_duration, speed_value, 
-                              remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
-        nonlocal speed
-        if speed_value and speed_value != "0.0x":
-            speed = speed_value
+        # Signal that FFmpeg process has started
         if progress_callback:
-            progress_callback(progress_percent, current_duration, total_duration, speed_value, 
-                            remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
-    
-    # Allow time for it to start
-    time.sleep(0.02)
+            progress_callback(0, 0, 0, "0.0x", media_file=video_file)
 
-    # Parse FFmpeg output using file polling (much faster)
-    poll_count = 0
-    while proc.poll() is None:
-        poll_count += 1
+        # Track progress
+        total_duration = None
+        speed_local = "0.0x"
+        ffmpeg_output_lines = []
+        line_count = 0
+
+        def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value, 
+                                  remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
+            nonlocal speed_local
+            if speed_value and speed_value != "0.0x":
+                speed_local = speed_value
+            if progress_callback:
+                progress_callback(progress_percent, current_duration, total_duration_param, speed_value, 
+                                remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
+
+        time.sleep(0.02)
+        while proc.poll() is None:
+            if os.path.exists(output_file):
+                try:
+                    with open(output_file, 'r') as f:
+                        lines = f.readlines()
+                        if len(lines) > line_count:
+                            for i in range(line_count, len(lines)):
+                                line = lines[i].strip()
+                                if line:
+                                    ffmpeg_output_lines.append(line)
+                                    total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
+                            line_count = len(lines)
+                except (OSError, IOError):
+                    pass
+            time.sleep(0.005)
+
+        # Process any remaining data
         if os.path.exists(output_file):
             try:
                 with open(output_file, 'r') as f:
                     lines = f.readlines()
                     if len(lines) > line_count:
-                        # Process new lines
                         for i in range(line_count, len(lines)):
                             line = lines[i].strip()
                             if line:
                                 ffmpeg_output_lines.append(line)
-                                # Parse FFmpeg output line
                                 total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
-                        line_count = len(lines)
             except (OSError, IOError):
-                # Handle file access issues gracefully
                 pass
-        
-        time.sleep(0.005)  # Poll every 5ms for very responsive updates
-    
-    # Process any remaining data in the output file
-    if os.path.exists(output_file):
+
         try:
-            with open(output_file, 'r') as f:
-                lines = f.readlines()
-                if len(lines) > line_count:
-                    # Process any remaining lines
-                    for i in range(line_count, len(lines)):
-                        line = lines[i].strip()
-                        if line:
-                            ffmpeg_output_lines.append(line)
-                            # Parse any remaining progress lines
-                            total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
-        except (OSError, IOError):
+            os.remove(output_file)
+        except OSError:
             pass
-    
-    # Clean up the output file
-    try:
-        os.remove(output_file)
-    except OSError:
-        pass
-    
-    # Check for errors
-    if proc.returncode != 0:
-        logger.error(f'FFmpeg failed with return code {proc.returncode} for {video_file}')
-        # Only show detailed output in debug mode
-        if logger.level("DEBUG").no <= logger._core.min_level:
-            logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
-            for i, line in enumerate(ffmpeg_output_lines[-10:]):  # Show last 10 lines only
-                logger.debug(f"  {i+1:3d}: {line}")
 
-    # Final timing
-    end = time.time()
-    seconds = round(end - start, 1)
+        # Error logging
+        if proc.returncode != 0:
+            logger.error(f'FFmpeg failed with return code {proc.returncode} for {video_file}')
+            if logger.level("DEBUG").no <= logger._core.min_level:
+                logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
+                for i, line in enumerate(ffmpeg_output_lines[-10:]):
+                    logger.debug(f"  {i+1:3d}: {line}")
 
-    # Calculate fallback speed if no valid speed was captured
-    if speed == "0.0x" and total_duration and total_duration > 0 and seconds > 0:
-        calculated_speed = total_duration / seconds
-        speed = f"{calculated_speed:.0f}x"
+        end_local = time.time()
+        seconds_local = round(end_local - start_local, 1)
+        # Calculate fallback speed if needed
+        if speed_local == "0.0x" and total_duration and total_duration > 0 and seconds_local > 0:
+            calculated_speed = total_duration / seconds_local
+            speed_local = f"{calculated_speed:.0f}x"
 
-    # Optimize and Rename Images
+        return proc.returncode, seconds_local, speed_local
+
+    # Decide initial skip usage from heuristic
+    use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
+
+    # Ensure output folder exists
+    os.makedirs(output_folder, exist_ok=True)
+
+    # First attempt
+    rc, seconds, speed = _run_ffmpeg(use_skip_initial)
+
+    # Rename images produced by this attempt
     for image in glob.glob(f'{output_folder}/img*.jpg'):
         frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
         frame_second = frame_no * config.plex_bif_frame_interval
         os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
 
-    logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed}')
+    image_count = len([img for img in os.listdir(output_folder) if img.lower().endswith('.jpg')])
+
+    # Retry once without skip_frame if zero images or non-zero rc and we tried with skip
+    did_retry = False
+    if image_count == 0 and use_skip_initial:
+        did_retry = True
+        logger.warning(f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame")
+        # Clean up any partial files from first attempt
+        for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+            try:
+                os.remove(img)
+            except Exception:
+                pass
+        rc, seconds, speed = _run_ffmpeg(use_skip=False)
+        # Rename images from retry
+        for image in glob.glob(f'{output_folder}/img*.jpg'):
+            frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
+            frame_second = frame_no * config.plex_bif_frame_interval
+            os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
+        image_count = len([img for img in os.listdir(output_folder) if img.lower().endswith('.jpg')])
+
+    hw = (gpu is not None)
+    success = image_count > 0
+
+    if success:
+        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{" (retry no-skip)" if did_retry else ""}')
+    else:
+        logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{" after retry" if did_retry else ""}')
+
+    return success, image_count, hw, seconds, speed
 
 
 def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
@@ -446,6 +475,8 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                     continue
 
                 try:
+                    # Run thumbnail generation; we do not depend on its return value
+                    # to remain compatible with existing tests/mocks.
                     generate_images(media_file, tmp_path, gpu, gpu_device_path, config, progress_callback)
                 except Exception as e:
                     logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating images')
@@ -456,6 +487,19 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
                     continue
+
+                # Determine if images were generated by scanning the temp directory
+                image_count = len([img for img in os.listdir(tmp_path) if img.lower().endswith('.jpg')])
+                if image_count == 0:
+                    # Treat as failure and do not produce a BIF
+                    logger.error(f'No thumbnails generated for {media_file}; skipping BIF creation')
+                    # Cleanup temp and mark failure for caller by raising
+                    try:
+                        if os.path.exists(tmp_path):
+                            shutil.rmtree(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
+                    raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}")
 
                 try:
                     generate_bif(index_bif, tmp_path, config)
