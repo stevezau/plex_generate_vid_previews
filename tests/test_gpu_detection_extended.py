@@ -80,8 +80,11 @@ class TestDetectAllGPUs:
     def test_detect_all_gpus_none(self, mock_devices):
         """Test when no GPUs are detected."""
         mock_devices.return_value = []
-        
-        gpus = detect_all_gpus()
+        # Ensure platform-specific paths (macOS/WSL2) are not taken in this test
+        with patch('plex_generate_previews.gpu_detection._is_macos', return_value=False), \
+             patch('plex_generate_previews.gpu_detection._is_wsl2', return_value=False), \
+             patch('plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels', return_value=[]):
+            gpus = detect_all_gpus()
         
         # Should return empty list
         assert gpus == []
@@ -284,8 +287,9 @@ class TestGetGPUDevices:
         mock_islink.return_value = True
         mock_readlink.return_value = 'amdgpu'
         mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:01.0'
-        
-        devices = _get_gpu_devices()
+        # Force Linux code path for this test
+        with patch('plex_generate_previews.gpu_detection.platform.system', return_value='Linux'):
+            devices = _get_gpu_devices()
         
         # Should find GPU devices
         assert len(devices) > 0
@@ -548,8 +552,9 @@ class TestWSL2AMDGPUDetection:
         mock_wsl2_devices.return_value = [('wsl2-renderD128', '/dev/dri/renderD128', 'amdgpu')]
         mock_test.return_value = True
         mock_name.return_value = 'AMD Radeon RX 7900 XT'
-        
-        gpus = detect_all_gpus()
+        # Force Linux path so fallback WSL2 detection is exercised
+        with patch('plex_generate_previews.gpu_detection.platform.system', return_value='Linux'):
+            gpus = detect_all_gpus()
         
         # Should detect AMD GPU via WSL2 fallback
         amd_gpus = [g for g in gpus if g[0] == 'AMD']

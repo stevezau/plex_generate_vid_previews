@@ -503,6 +503,8 @@ class TestProcessItem:
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
         
+        # Simulate successful image generation: (success, image_count, hw, seconds, speed)
+        mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         
         # Verify images and BIF were generated
@@ -539,6 +541,7 @@ class TestProcessItem:
         mock_isfile.side_effect = isfile_side_effect
         mock_isdir.return_value = False  # Directories don't exist yet
         
+        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         
         # Verify generate_images was called with mapped path
