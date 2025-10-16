@@ -44,6 +44,8 @@ class TestFullPipeline:
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
         
+        # Simulate successful image generation
+        mock_gen_images.return_value = (True, 3, False, 1.3, "1.0x")
         # Process single item
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         
@@ -181,6 +183,8 @@ class TestWorkerPoolIntegration:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
         
+        # Each item simulates successful image generation
+        mock_gen_images.return_value = (True, 1, False, 0.8, "1.0x")
         # Process
         pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
         

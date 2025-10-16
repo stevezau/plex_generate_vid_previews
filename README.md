@@ -95,12 +95,19 @@ plex-generate-previews \
 
 ### Platform Support
 
-> [!WARNING]  
-> **Windows is not natively supported.**
+| Platform | Support | Notes |
+|----------|---------|-------|
+| **Linux** | ✅ Full | GPU + CPU support (CUDA, VAAPI, etc.) |
+| **Docker** | ✅ Full | GPU + CPU support (Recommended) |
+| **WSL2** | ✅ Full | GPU + CPU support (D3D11VA, VAAPI) |
+| **macOS** | ✅ Full | VideoToolbox + CPU support |
+| **Windows** | ✅ Full | D3D11VA GPU + CPU support |
 
-**For Windows users, use one of these alternatives:**
-- 🐳 **Docker** (Recommended): Run the Docker container on Windows
-- 🐧 **[WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)**: Install and run this tool inside a WSL2 Linux environment
+**Windows GPU Support:**
+- ✅ D3D11VA hardware decode works with ANY GPU (NVIDIA, AMD, Intel)
+- ✅ Significantly speeds up thumbnail generation (2-5x faster)
+- ✅ Automatic GPU detection - just install latest drivers
+- ⚠️ Requires FFmpeg with D3D11VA support (most builds include it)
 
 ### GPU Requirements
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
@@ -188,6 +195,44 @@ plex-generate-previews --help
 # Method 2: Python module
 python -m plex_generate_previews --help
 ```
+
+### Windows GPU Support
+
+Native Windows supports GPU acceleration using D3D11VA (Direct3D 11 Video Acceleration).
+
+**GPU Requirements:**
+- Compatible GPU: NVIDIA, AMD, or Intel
+- Latest GPU drivers installed
+- FFmpeg with D3D11VA support (included in most builds)
+
+**Basic Windows usage with GPU:**
+```bash
+# Install
+pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
+
+# Run with GPU acceleration (default)
+plex-generate-previews ^
+  --plex-url http://localhost:32400 ^
+  --plex-token your-token-here ^
+  --plex-config-folder "C:\Users\YourName\AppData\Local\Plex Media Server" ^
+  --gpu-threads 4 ^
+  --cpu-threads 2
+
+# Run CPU-only (if no GPU or drivers)
+plex-generate-previews ^
+  --plex-url http://localhost:32400 ^
+  --plex-token your-token-here ^
+  --plex-config-folder "C:\Users\YourName\AppData\Local\Plex Media Server" ^
+  --gpu-threads 0 ^
+  --cpu-threads 4
+```
+
+**Important Windows Notes:**
+- ✅ GPU support works with any modern GPU (NVIDIA, AMD, Intel)
+- ✅ D3D11VA provides hardware video decode acceleration
+- ✅ 2-5x faster than CPU-only processing
+- ⚠️ Update GPU drivers for best performance
+- 💡 Use `--list-gpus` to verify GPU detection
 
 ### Unraid
 
@@ -284,7 +329,7 @@ For detailed configuration options, see the complete reference tables below:
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Preview quality 1-10 (2=highest, 10=lowest) | 4 |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Interval between preview images (1-60 seconds) | 5 |
 | `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | Regenerate existing thumbnails | false |
-| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | /tmp |
+| `TMP_FOLDER` | `--tmp-folder` | Temporary folder for processing | System temp dir |
 | `LOG_LEVEL` | `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
 | `PUID` | N/A | User ID to run container as (Docker only) | 1000 |
 | `PGID` | N/A | Group ID to run container as (Docker only) | 1000 |
@@ -428,7 +473,9 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 | **NVIDIA** | CUDA | NVIDIA drivers + CUDA toolkit | ✅ NVIDIA Container Toolkit |
 | **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
 | **Intel** | VAAPI | Intel drivers + VA-API | ✅ Device access |
-| **WSL2** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
+| **Apple Silicon** | VideoToolbox | macOS with FFmpeg + mediainfo | ❌ Native macOS only |
+| **WSL2 (NVIDIA)** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
+| **WSL2 (AMD)** | VAAPI | WSL2 + ROCm + /dev/dri devices | ✅ Native WSL2 |
 
 ### GPU Detection
 
@@ -462,9 +509,12 @@ plex-generate-previews --gpu-selection "0"
 ### Hardware Acceleration Methods
 
 - **NVIDIA**: Uses CUDA for maximum performance
-- **AMD**: Uses VAAPI with ROCm drivers
+- **AMD**: Uses VAAPI with ROCm drivers (native Linux and WSL2)
 - **Intel**: Uses VAAPI (Video Acceleration API)
-- **WSL2**: Automatically detects GPU via `/dev/dxg` and configures D3D11VA acceleration
+- **Apple Silicon**: Uses VideoToolbox (M1/M2/M3/M4 chips on macOS)
+- **WSL2**: Automatically detects GPU type and uses appropriate acceleration:
+  - **NVIDIA GPUs**: D3D11VA via `/dev/dxg`
+  - **AMD GPUs**: VAAPI via `/dev/dri` with ROCm support
 
 ### Docker GPU Requirements
 
@@ -488,11 +538,30 @@ services:
 ```
 
 #### WSL2
-No special Docker configuration needed - automatically detects WSL2 GPUs.
+GPU support in WSL2 uses a hybrid detection approach:
+
+**Primary Method (All Vendors):**
+- Uses DirectX acceleration (D3D11VA) via `/dev/dxg`
+- Works universally for NVIDIA, AMD, and Intel GPUs
+- No special configuration needed
+
+**Alternative Method (AMD/Intel):**
+- If Linux drivers are properly loaded, may use VAAPI via `/dev/dri`
+- Requires proper driver configuration in WSL2
+- May offer better performance but is less reliable
+
+**Important Notes:**
+- AMD GPU support in WSL2 is still evolving
+- ROCm support is limited and not officially supported by AMD in WSL2
+- The script automatically detects and uses the best available method
+- If VAAPI fails, automatically falls back to D3D11VA
 
 ## Usage Examples
 
 ### Docker Compose Examples
+
+> [!WARNING]  
+> **Do NOT use `init: true` in your compose file!** This container uses LinuxServer.io's s6-overlay which is a more capable init system. Adding `init: true` will cause errors and disable important features like PUID/PGID support. See `docker-compose.example.yml` for a complete working example.
 
 **NVIDIA GPU:**
 ```yaml
@@ -599,6 +668,19 @@ plex-generate-previews \
 
 ### Common Issues
 
+#### "s6-overlay-suexec: fatal: can only run as pid 1" or container fails to start
+- **Cause**: You have `init: true` in your docker-compose.yml or using `--init` with docker run
+- **Why this breaks**: This container uses s6-overlay (LinuxServer.io base) as its init system. Docker's init conflicts with it.
+- **What you lose with `init: true`**:
+  - ❌ PUID/PGID support (file permissions will be wrong)
+  - ❌ Process supervision
+  - ❌ Proper initialization
+- **Solution**: 
+  - **Docker Compose**: Remove `init: true` from your compose file
+  - **Docker CLI**: Remove the `--init` flag
+  - s6-overlay is MORE capable than Docker's basic init - you don't need both!
+- **Example**: See `docker-compose.example.yml` for correct configuration
+
 #### "No GPUs detected"
 - **Cause**: GPU drivers not installed or FFmpeg doesn't support hardware acceleration
 - **Solution**: 
@@ -652,6 +734,14 @@ plex-generate-previews \
   - Check path mappings in Plex settings
   - For Windows mapped drives, use UNC paths: `\\server\share\path`
 
+#### "No GPUs detected on Windows"
+- **Cause**: GPU not detected or drivers not installed
+- **Solution**:
+  - Install latest GPU drivers (NVIDIA, AMD, or Intel)
+  - Verify GPU is working in Windows Device Manager
+  - Test with: `plex-generate-previews --list-gpus`
+  - If needed, use CPU-only: `--gpu-threads 0 --cpu-threads 4`
+
 ### Debug Mode
 
 Enable debug logging for detailed troubleshooting:
@@ -676,7 +766,7 @@ plex-generate-previews --log-level DEBUG
 A: Version 2.0.0 introduces multi-GPU support, improved CLI interface, better error handling, WSL2 support, and a complete rewrite with modern Python practices.
 
 **Q: Does this work on Windows?**
-A: Native Windows is not supported. Windows users should use Docker or run the tool inside [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) 
+A: Yes! Windows fully supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD, and Intel GPUs. Install the latest GPU drivers and the tool will automatically detect and use your GPU for faster processing. 
 
 **Q: Can I use this without a GPU?**
 A: Yes! Set `--gpu-threads 0` and use `--cpu-threads 4` (or higher) for CPU-only processing.

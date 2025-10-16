@@ -101,8 +101,13 @@ def sanitize_path(path: str) -> str:
     """
     Sanitize file path for cross-platform compatibility.
     
-    Converts forward slashes to backslashes on Windows systems to ensure
-    proper path handling across different operating systems.
+    On Windows:
+    - Converts forward slashes to backslashes
+    - Handles UNC paths (\\\\server\\share)
+    - Normalizes path separators
+    
+    On Linux/macOS:
+    - Returns path as-is with normalization
     
     Args:
         path: The file path to sanitize
@@ -111,8 +116,14 @@ def sanitize_path(path: str) -> str:
         str: Sanitized file path
     """
     if os.name == 'nt':
-        path = path.replace('/', '\\')
-    return path
+        # Handle UNC paths: //server/share -> \\server\share
+        if path.startswith('//'):
+            path = '\\\\' + path[2:].replace('/', '\\')
+        else:
+            path = path.replace('/', '\\')
+    
+    # Normalize path (removes redundant separators and up-level references)
+    return os.path.normpath(path)
 
 
 def setup_working_directory(tmp_folder: str) -> str:

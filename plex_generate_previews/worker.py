@@ -56,6 +56,7 @@ class Worker:
         self.display_title = ""
         self.media_title = ""
         self.media_type = ""
+        self.media_file = ""  # Actual file path being processed
         self.title_max_width = 20
         self.progress_task_id = None
         self.ffmpeg_started = False  # Track if FFmpeg has started outputting progress
@@ -73,6 +74,9 @@ class Worker:
         self.last_progress_percent = -1
         self.last_speed = ""
         self.last_update_time = 0
+        
+        # Track verbose logging
+        self.last_verbose_log_time = 0
         
         # Statistics
         self.completed = 0
@@ -148,6 +152,7 @@ class Worker:
         self.current_task = item_key
         self.media_title = media_title
         self.media_type = media_type
+        self.media_file = ""  # Will be populated by progress callback
         self.title_max_width = title_max_width
         self.display_title = format_display_title(media_title, media_type, title_max_width)
         # Show GPU name in display for GPU workers, show CPU identifier for CPU workers
@@ -176,6 +181,7 @@ class Worker:
         self.last_progress_percent = -1
         self.last_speed = ""
         self.last_update_time = 0
+        self.last_verbose_log_time = 0
         
         # Start processing in background thread
         self.current_thread = threading.Thread(
@@ -308,7 +314,7 @@ class WorkerPool:
         """Check if any workers are available for new tasks."""
         return any(worker.is_available() for worker in self.workers)
     
-    def process_items(self, media_items: List[tuple], config: Config, plex, worker_progress, main_progress, main_task_id=None, title_max_width: int = 20) -> None:
+    def process_items(self, media_items: List[tuple], config: Config, plex, worker_progress, main_progress, main_task_id=None, title_max_width: int = 20, library_name: str = "") -> None:
         """
         Process all media items using available workers.
         
@@ -320,13 +326,18 @@ class WorkerPool:
             plex: Plex server instance
             progress: Rich Progress object for displaying worker progress
             main_task_id: ID of the main progress task to update
+            title_max_width: Maximum width for title display
+            library_name: Name of the library section being processed
         """
         media_queue = list(media_items)  # Copy the list
         completed_tasks = 0
+        total_items = len(media_items)
+        last_overall_progress_log = time.time()
         
         # Use provided title width for display formatting
+        library_prefix = f"[{library_name}] " if library_name else ""
         
-        logger.info(f'Processing {len(media_items)} items with {len(self.workers)} workers')
+        logger.info(f'Processing {total_items} items with {len(self.workers)} workers')
         
         # Create progress tasks for each worker in the worker progress instance
         for worker in self.workers:
@@ -411,6 +422,13 @@ class WorkerPool:
                         worker.last_progress_percent = -1
                         worker.last_speed = ""
             
+            # Log overall progress every 5 seconds
+            current_time = time.time()
+            if current_time - last_overall_progress_log >= 5.0:
+                progress_percent = int((completed_tasks / total_items) * 100) if total_items > 0 else 0
+                logger.info(f"Processing progress {library_prefix}{completed_tasks}/{total_items} ({progress_percent}%) completed")
+                last_overall_progress_log = current_time
+            
             # Assign new tasks to available workers
             while media_queue and self.has_available_workers():
                 available_worker = Worker.find_available(self.workers)
@@ -447,7 +465,7 @@ class WorkerPool:
         logger.info(f'Processing complete: {total_completed} successful, {total_failed} failed')
     
     def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None, 
-                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
+                               remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0, media_file=None):
         """Update worker progress data from callback."""
         # Use thread-safe updates to prevent race conditions
         with self._progress_lock:
@@ -459,6 +477,10 @@ class WorkerPool:
             if remaining_time is not None:
                 worker.remaining_time = remaining_time
             
+            # Store media file path if provided
+            if media_file:
+                worker.media_file = media_file
+            
             # Store FFmpeg data for display
             worker.frame = frame
             worker.fps = fps
@@ -467,8 +489,26 @@ class WorkerPool:
             worker.time_str = time_str
             worker.bitrate = bitrate
             
+            # Log when FFmpeg actually starts processing (only once)
+            if not worker.ffmpeg_started:
+                display_path = worker.media_file if worker.media_file else worker.media_title
+                if worker.worker_type == 'GPU':
+                    logger.info(f"[GPU {worker.gpu_index}]: Started processing {display_path}")
+                else:
+                    logger.info(f"[CPU]: Started processing {display_path}")
+            
             # Mark that FFmpeg has started outputting progress
             worker.ffmpeg_started = True
+            
+            # Emit periodic progress logs every 5 seconds
+            current_time = time.time()
+            if current_time - worker.last_verbose_log_time >= 5.0:
+                worker.last_verbose_log_time = current_time
+                speed_display = speed if speed else "0.0x"
+                if worker.worker_type == 'GPU':
+                    logger.info(f"[GPU {worker.gpu_index}]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
+                else:
+                    logger.info(f"[CPU]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
     
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""
