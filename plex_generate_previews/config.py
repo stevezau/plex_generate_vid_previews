@@ -483,7 +483,7 @@ def load_config(cli_args=None) -> Config:
     )
     
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi
-    os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(config.plex_timeout)
+    os.environ["PLEXAPI_TIMEOUT"] = str(config.plex_timeout)
     
     # Output debug information
     logger.debug(f'PLEX_URL = {config.plex_url}')
