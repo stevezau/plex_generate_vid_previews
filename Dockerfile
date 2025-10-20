@@ -34,6 +34,8 @@ ENV GIT_BRANCH=${GIT_BRANCH} \
 COPY pyproject.toml ./
 COPY plex_generate_previews/ ./plex_generate_previews/
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
+# Ensure setuptools-scm can resolve a version without VCS metadata
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=0.0.0.dev+${GIT_SHA}
 RUN pip3 install . --no-cache-dir
 
 # Copy wrapper script
