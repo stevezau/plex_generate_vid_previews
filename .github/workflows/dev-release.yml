@@ -86,6 +86,9 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: stevezzau/plex_generate_vid_previews:dev
+          build-args: |
+            GIT_BRANCH=${{ github.ref_name }}
+            GIT_SHA=${{ github.sha }}
           labels: |
             org.opencontainers.image.title=plex_generate_vid_previews
             org.opencontainers.image.description=Dev build for testing
