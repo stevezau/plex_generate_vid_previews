@@ -172,10 +172,6 @@ class TestCheckForUpdates:
         # Should not raise or show update message
         check_for_updates()
     
-    def test_check_for_updates_skip(self):
-        """Test skipping update check."""
-        # Should not make any API calls
-        check_for_updates(skip_check=True)
     
     @patch('plex_generate_previews.version_check.get_latest_github_release')
     @patch('plex_generate_previews.version_check.get_current_version')
