@@ -16,10 +16,11 @@ class TestBasicFunctionality:
         import plex_generate_previews
         import re
         assert hasattr(plex_generate_previews, '__version__')
-        # Version should be in semver format (e.g., "2.0.0", "2.1.2.post0")
-        version_pattern = r'^\d+\.\d+\.\d+(?:\.post\d+)?(?:-[a-zA-Z0-9.-]+)?$'
+        # Version should be in PEP 440 format (e.g., "2.0.0", "2.1.2.post0", "0.0.0+unknown", "2.3.1.dev5+g1234abc")
+        # Pattern matches setuptools-scm generated versions
+        version_pattern = r'^\d+\.\d+\.\d+(?:\.(?:post|dev)\d+)?(?:\+[a-zA-Z0-9.-]+)?$'
         assert re.match(version_pattern, plex_generate_previews.__version__), \
-            f"Version '{plex_generate_previews.__version__}' doesn't match semver format"
+            f"Version '{plex_generate_previews.__version__}' doesn't match PEP 440 format"
     
     def test_cli_help(self):
         """Test that CLI help works."""
