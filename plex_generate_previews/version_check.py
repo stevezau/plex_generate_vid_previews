@@ -248,6 +248,7 @@ def check_for_updates() -> None:
         git_sha = (os.environ.get("GIT_SHA") or "").strip()
 
         if git_branch and git_sha:
+            logger.debug(f"Dev Docker detected: branch={git_branch}, commit={git_sha[:7]}")
             head_sha = get_branch_head_sha(git_branch)
             if head_sha:
                 # Compare allowing short SHAs inside full SHA
@@ -258,8 +259,10 @@ def check_for_updates() -> None:
                     logger.warning("🐳 Update dev image: docker pull stevezzau/plex_generate_vid_previews:dev")
                     return
                 else:
-                    logger.debug(f"Dev build up to date with {git_branch} ({head_short})")
+                    logger.info(f"✅ Dev build up to date with {git_branch} branch ({head_short})")
                     return
+            else:
+                logger.debug(f"Could not check remote {git_branch} branch (API call failed)")
 
         # Path 2: Git checkout - running from source repository
         local_commit = get_git_commit_sha()
