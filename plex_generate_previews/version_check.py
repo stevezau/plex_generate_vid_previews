@@ -301,14 +301,21 @@ def check_for_updates() -> None:
         
         # Compare versions
         if latest_tuple > current_tuple:
-            # Newer version available - show warning
-            logger.warning(f"⚠️  A newer version is available: {latest_version} (you have: {current_version})")
-            
-            # Provide appropriate update instructions based on environment
-            if is_docker_environment():
-                logger.warning("🐳 Update: docker pull stevezzau/plex_generate_vid_previews:latest")
+            # Check if running from dev snapshot (zip download without git)
+            if current_version.startswith("0.0.0"):
+                logger.warning("ℹ️  Running from development snapshot (not an official release)")
+                logger.warning(f"ℹ️  Latest stable release: {latest_version}")
+                logger.warning("📦 Install stable version: pip install plex-generate-previews")
+                logger.warning("🔗 Or use Docker: docker pull stevezzau/plex_generate_vid_previews:latest")
             else:
-                logger.warning("📦 Update: pip install --upgrade plex-generate-previews")
+                # Normal version update available
+                logger.warning(f"⚠️  A newer version is available: {latest_version} (you have: {current_version})")
+                
+                # Provide appropriate update instructions based on environment
+                if is_docker_environment():
+                    logger.warning("🐳 Update: docker pull stevezzau/plex_generate_vid_previews:latest")
+                else:
+                    logger.warning("📦 Update: pip install --upgrade plex-generate-previews")
             
             logger.warning("🔗 Release notes: https://github.com/stevezau/plex_generate_vid_previews/releases/latest")
         else:
