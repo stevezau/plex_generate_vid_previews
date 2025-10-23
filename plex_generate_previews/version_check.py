@@ -132,29 +132,31 @@ def get_git_commit_sha() -> Optional[str]:
     """
     Get current Git commit SHA if running from a git checkout.
     
+    Checks in this order:
+    1. Current working directory (if user ran from git checkout)
+    2. Module directory (if running from source, not installed)
+    
     Returns:
         str: Full 40-char SHA of current commit, or None if not in git repo
     """
-    try:
-        result = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            cwd=os.path.dirname(__file__)
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except FileNotFoundError:
-        # git command not available
-        logger.debug("Git command not found")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.debug("Git command timed out")
-        return None
-    except Exception as e:
-        logger.debug(f"Error getting git commit SHA: {e}")
-        return None
+    # Try current working directory first (user might have cd'd into git repo)
+    for check_dir in [os.getcwd(), os.path.dirname(__file__)]:
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                cwd=check_dir
+            )
+            if result.returncode == 0:
+                sha = result.stdout.strip()
+                logger.debug(f"Found git repo in: {check_dir}")
+                return sha
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            continue
+    
+    logger.debug("Not running from a git repository")
     return None
 
 
@@ -162,32 +164,31 @@ def get_git_branch() -> Optional[str]:
     """
     Get current Git branch if running from a git checkout.
     
+    Checks in this order:
+    1. Current working directory (if user ran from git checkout)
+    2. Module directory (if running from source, not installed)
+    
     Returns:
         str: Branch name (e.g., "main", "dev"), or None if not in git repo
     """
-    try:
-        result = subprocess.run(
-            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            cwd=os.path.dirname(__file__)
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip()
-            # Ignore detached HEAD state
-            if branch and branch != "HEAD":
-                return branch
-    except FileNotFoundError:
-        # git command not available
-        logger.debug("Git command not found")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.debug("Git command timed out")
-        return None
-    except Exception as e:
-        logger.debug(f"Error getting git branch: {e}")
-        return None
+    # Try current working directory first (user might have cd'd into git repo)
+    for check_dir in [os.getcwd(), os.path.dirname(__file__)]:
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                cwd=check_dir
+            )
+            if result.returncode == 0:
+                branch = result.stdout.strip()
+                # Ignore detached HEAD state
+                if branch and branch != "HEAD":
+                    return branch
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            continue
+    
     return None
 
 
@@ -268,6 +269,8 @@ def check_for_updates() -> None:
         local_commit = get_git_commit_sha()
         local_branch = get_git_branch()
         
+        logger.debug(f"Git detection: commit={local_commit[:7] if local_commit else 'None'}, branch={local_branch or 'None'}")
+        
         if local_commit and local_branch:
             logger.debug(f"Detected git checkout on branch '{local_branch}' at commit {local_commit[:7]}")
             head_sha = get_branch_head_sha(local_branch)
@@ -279,8 +282,12 @@ def check_for_updates() -> None:
                     logger.warning(f"🔄 Update: git pull origin {local_branch}")
                     return
                 else:
-                    logger.debug(f"Git checkout up to date with {local_branch} ({head_short})")
+                    logger.info(f"✅ Git checkout up to date with {local_branch} branch ({head_short})")
                     return
+            else:
+                logger.debug(f"Could not fetch remote {local_branch} branch head (API call failed)")
+        else:
+            logger.debug("Git checkout detection skipped - commit or branch not found")
 
         # Path 3: Release/Pip/Zip install - version-based check
         current_version = get_current_version()
