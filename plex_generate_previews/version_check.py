@@ -21,20 +21,27 @@ def get_current_version() -> str:
     """
     Get the current version from package metadata.
     
+    Priority order:
+    1. Local _version.py (when running from source)
+    2. Installed package metadata (when installed via pip)
+    3. Fallback to "0.0.0"
+    
     Returns:
         str: Current version string (e.g., "2.1.2")
     """
     try:
-        # Try to get version from installed package metadata first (pip install)
+        # First, try to get version from local _version.py (running from source)
+        from . import __version__
+        return __version__
+    except Exception:
+        pass
+    
+    try:
+        # Fall back to installed package metadata (pip install)
         import importlib.metadata
         return importlib.metadata.version("plex-generate-previews")
     except Exception:
-        # Fallback to reading directly from _version.py (running from source)
-        try:
-            from . import __version__
-            return __version__
-        except Exception:
-            pass
+        pass
             
     # Final fallback - return a default version
     logger.debug("Could not determine current version, using fallback")
@@ -58,13 +65,13 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
     clean_version = version_str.lstrip('v')
     
     # Match semantic version pattern (major.minor.patch) with optional suffixes
-    # Supports: 2.0.0, v2.1.2, 2.1.1.post14, 2.0.0-beta, etc.
-    match = re.match(r'^(\d+)\.(\d+)\.(\d+)(?:\.post\d+)?(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$', clean_version)
+    # Supports: 2.0.0, v2.1.2, 2.1.1.post14, 2.3.1.dev5, 0.0.0+unknown, 2.3.1.dev5+g1234abc
+    match = re.match(r'^(\d+)\.(\d+)\.(\d+)(?:\.(?:post|dev)\d+)?(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$', clean_version)
     
     if not match:
         raise ValueError(f"Invalid version format: {version_str}")
     
-    major, minor, patch = match.groups()
+    major, minor, patch = match.groups()[:3]
     return (int(major), int(minor), int(patch))
 
 
