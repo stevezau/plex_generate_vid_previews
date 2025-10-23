@@ -4,11 +4,13 @@ Version check module.
 Behavior:
 - Dev Docker image (GIT_BRANCH and GIT_SHA set): compare baked commit to GitHub
   branch head and warn if behind.
+- Git checkout (running from source): compare current commit to GitHub branch head.
 - Otherwise (pip, zip, release Docker): compare package SemVer to GitHub latest release.
 """
 
 import os
 import re
+import subprocess
 import requests
 from typing import Optional, Tuple
 from loguru import logger
@@ -119,6 +121,69 @@ def get_latest_github_release() -> Optional[str]:
         return None
 
 
+def get_git_commit_sha() -> Optional[str]:
+    """
+    Get current Git commit SHA if running from a git checkout.
+    
+    Returns:
+        str: Full 40-char SHA of current commit, or None if not in git repo
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=os.path.dirname(__file__)
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except FileNotFoundError:
+        # git command not available
+        logger.debug("Git command not found")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.debug("Git command timed out")
+        return None
+    except Exception as e:
+        logger.debug(f"Error getting git commit SHA: {e}")
+        return None
+    return None
+
+
+def get_git_branch() -> Optional[str]:
+    """
+    Get current Git branch if running from a git checkout.
+    
+    Returns:
+        str: Branch name (e.g., "main", "dev"), or None if not in git repo
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=os.path.dirname(__file__)
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+            # Ignore detached HEAD state
+            if branch and branch != "HEAD":
+                return branch
+    except FileNotFoundError:
+        # git command not available
+        logger.debug("Git command not found")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.debug("Git command timed out")
+        return None
+    except Exception as e:
+        logger.debug(f"Error getting git branch: {e}")
+        return None
+    return None
+
+
 def get_branch_head_sha(branch: str) -> Optional[str]:
     """
     Query GitHub API for the latest commit SHA on a branch.
@@ -164,12 +229,14 @@ def check_for_updates() -> None:
     """
     Check for available updates and log appropriate messages.
     
-    Args:
-        None
+    Detection logic:
+    1. Dev Docker: Check GIT_BRANCH + GIT_SHA env vars, compare commits
+    2. Git checkout: Check for .git directory, compare commits on current branch
+    3. Release/Pip/Zip: Compare package version with latest GitHub release
     """
     
     try:
-        # Dev Docker image path: commit-aware check when metadata present
+        # Path 1: Dev Docker image - commit-aware check when metadata present
         git_branch = (os.environ.get("GIT_BRANCH") or "").strip()
         git_sha = (os.environ.get("GIT_SHA") or "").strip()
 
@@ -187,7 +254,25 @@ def check_for_updates() -> None:
                     logger.debug(f"Dev build up to date with {git_branch} ({head_short})")
                     return
 
-        # Get current version
+        # Path 2: Git checkout - running from source repository
+        local_commit = get_git_commit_sha()
+        local_branch = get_git_branch()
+        
+        if local_commit and local_branch:
+            logger.debug(f"Detected git checkout on branch '{local_branch}' at commit {local_commit[:7]}")
+            head_sha = get_branch_head_sha(local_branch)
+            if head_sha:
+                current_short = local_commit[:7]
+                head_short = head_sha[:7]
+                if not head_sha.startswith(local_commit):
+                    logger.warning(f"⚠️  Newer commit on {local_branch}: {head_short} (you have: {current_short})")
+                    logger.warning(f"🔄 Update: git pull origin {local_branch}")
+                    return
+                else:
+                    logger.debug(f"Git checkout up to date with {local_branch} ({head_short})")
+                    return
+
+        # Path 3: Release/Pip/Zip install - version-based check
         current_version = get_current_version()
         logger.debug(f"Current version: {current_version}")
         
@@ -216,7 +301,7 @@ def check_for_updates() -> None:
             if is_docker_environment():
                 logger.warning("🐳 Update: docker pull stevezzau/plex_generate_vid_previews:latest")
             else:
-                logger.warning("📦 Update: pip install --upgrade git+https://github.com/stevezau/plex_generate_vid_previews.git")
+                logger.warning("📦 Update: pip install --upgrade plex-generate-previews")
             
             logger.warning("🔗 Release notes: https://github.com/stevezau/plex_generate_vid_previews/releases/latest")
         else:

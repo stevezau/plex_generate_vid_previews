@@ -1,10 +1,11 @@
 FROM linuxserver/ffmpeg:8.0-cli-ls43
 
-# Build metadata (optional; set via --build-arg in CI for dev images)
+# Build metadata (optional; set via --build-arg in CI)
 ARG GIT_BRANCH=unknown
 ARG GIT_SHA=unknown
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 
-# Install Python, pip, gosu, and dependencies
+# Install Python, pip, gosu, git, and dependencies
 # Install GPU drivers for hardware acceleration:
 # - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9)
 # - AMD: mesa-va-drivers (AMD GPUs via VAAPI)
@@ -13,8 +14,9 @@ ARG GIT_SHA=unknown
 # - libva2, libva-drm2: VA-API libraries
 # - vainfo: Tool to test/verify VA-API functionality
 # - pciutils: Provides lspci for better GPU naming
+# - git: For version detection when running from mounted git repository
 RUN apt-get update && \
-    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu pciutils \
+    apt-get install -y mediainfo software-properties-common gcc musl-dev python3 python3-pip gosu pciutils git \
     intel-media-va-driver-non-free i965-va-driver mesa-va-drivers libva2 libva-drm2 vainfo && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -34,9 +36,14 @@ ENV GIT_BRANCH=${GIT_BRANCH} \
 COPY pyproject.toml ./
 COPY plex_generate_previews/ ./plex_generate_previews/
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
-# Ensure setuptools-scm can resolve a version without VCS metadata
-ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=0.0.0-dev-${GIT_SHA}
-RUN pip3 install . --no-cache-dir
+
+# For release builds, SETUPTOOLS_SCM_PRETEND_VERSION is set via build-arg (defined above)
+# For local/dev builds, setuptools-scm reads from the _version.py placeholder
+RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=$SETUPTOOLS_SCM_PRETEND_VERSION pip3 install . --no-cache-dir; \
+    else \
+      pip3 install . --no-cache-dir; \
+    fi
 
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh

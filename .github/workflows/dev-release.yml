@@ -46,8 +46,6 @@ jobs:
         python -m pip install --upgrade pip
     
     - name: Install dependencies
-      env:
-        SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS: 0.0.0-dev-${{ github.sha }}
       run: |
         . /opt/venv/bin/activate
         pip install -e ".[test]"

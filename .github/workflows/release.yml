@@ -15,6 +15,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.target_commitish }}
+          fetch-depth: 0  # Needed for setuptools-scm to access git history
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -39,94 +40,18 @@ jobs:
             htmlcov/
             coverage.xml
 
-  # Step 1: Bump version in repository files
-  bump-version:
-    name: Bump Version
-    runs-on: ubuntu-latest
-    needs: run-tests
-    permissions:
-      contents: write
-      
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.release.target_commitish }}
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
-      
-      - name: Extract version from tag
-        id: get_version
-        run: |
-          # Remove 'v' prefix if present (e.g., v2.1.3 -> 2.1.3)
-          VERSION="${GITHUB_REF#refs/tags/}"
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
-      
-      - name: Parse version components
-        id: parse_version
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          # Split version into major.minor.patch
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-          echo "major=$MAJOR" >> $GITHUB_OUTPUT
-          echo "minor=$MINOR" >> $GITHUB_OUTPUT
-          echo "patch=$PATCH" >> $GITHUB_OUTPUT
-          echo "Parsed: $MAJOR.$MINOR.$PATCH"
-      
-      - name: Update _version.py
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          MAJOR="${{ steps.parse_version.outputs.major }}"
-          MINOR="${{ steps.parse_version.outputs.minor }}"
-          PATCH="${{ steps.parse_version.outputs.patch }}"
-          
-          cat > plex_generate_previews/_version.py << EOF
-          """Version information for plex-generate-previews."""
-
-          __version__ = "$VERSION"
-          __version_tuple__ = ($MAJOR, $MINOR, $PATCH)
-          EOF
-          
-          echo "Updated _version.py to $VERSION"
-          cat plex_generate_previews/_version.py
-      
-      - name: Update pyproject.toml
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
-          echo "Updated pyproject.toml to $VERSION"
-          grep "^version = " pyproject.toml
-      
-      - name: Update README.md version badge
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          sed -i "s/badge\/version-[0-9.]*-blue/badge\/version-$VERSION-blue/" README.md
-          echo "Updated README.md badge to $VERSION"
-          grep "badge/version-" README.md
-      
-      - name: Commit and push changes
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add plex_generate_previews/_version.py pyproject.toml README.md
-          git commit -m "chore: bump version to ${{ steps.get_version.outputs.version }} [skip ci]"
-          git push origin HEAD:${{ github.event.release.target_commitish }}
-
-  # Step 2: Publish Docker image (only if bump-version succeeds)
+  # Step 1: Publish Docker image (only if tests pass)
   publish-docker:
     name: Publish Docker Image
     runs-on: ubuntu-latest
-    needs: bump-version
+    needs: run-tests
     
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.target_commitish }}
-      
-      - name: Pull latest changes (including version bump)
-        run: git pull origin ${{ github.event.release.target_commitish }}
+          fetch-depth: 0  # Needed for setuptools-scm to access git history
 
       - name: Log in to Docker Hub
         uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
@@ -140,6 +65,13 @@ jobs:
         with:
           images: stevezzau/plex_generate_vid_previews
 
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Build and push Docker image
         uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
         with:
@@ -148,8 +80,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.get_version.outputs.version }}
 
-  # Step 3: Publish to PyPI (only if publish-docker succeeds)
+  # Step 2: Publish to PyPI (only if Docker publish succeeds)
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
@@ -160,26 +94,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.target_commitish }}
-      
-      - name: Pull latest changes (including version bump)
-        run: git pull origin ${{ github.event.release.target_commitish }}
+          fetch-depth: 0  # Needed for setuptools-scm to derive version from git tags
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Extract version from Git tag
-        id: version
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          VERSION="${VERSION#v}"
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Update pyproject.toml with Git tag version
-        run: |
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.VERSION }}\"/" pyproject.toml
-          echo "Updated version to: ${{ steps.version.outputs.VERSION }}"
 
       - name: Install build dependencies
         run: |
