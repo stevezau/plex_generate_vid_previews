@@ -175,10 +175,7 @@ def parse_arguments() -> argparse.Namespace:
     
     # Logging
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
-    
-    # Version check
-    parser.add_argument('--skip-version-check', action='store_true', help='Skip checking for newer versions on startup')
-    
+        
     return parser.parse_args()
 
 
@@ -250,7 +247,7 @@ def setup_application() -> tuple:
     logger.info('Please report any issues at https://github.com/stevezau/plex_generate_vid_previews/issues')
 
     # Check for updates (non-blocking, fails gracefully)
-    check_for_updates(skip_check=args.skip_version_check)
+    check_for_updates()
 
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)

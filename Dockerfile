@@ -1,5 +1,9 @@
 FROM linuxserver/ffmpeg:8.0-cli-ls43
 
+# Build metadata (optional; set via --build-arg in CI for dev images)
+ARG GIT_BRANCH=unknown
+ARG GIT_SHA=unknown
+
 # Install Python, pip, gosu, and dependencies
 # Install GPU drivers for hardware acceleration:
 # - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9)
@@ -22,10 +26,16 @@ RUN chmod +x /etc/s6-overlay/s6-rc.d/init-adduser/run
 # Set working directory
 WORKDIR /app
 
+# Expose build metadata to the app (non-secret)
+ENV GIT_BRANCH=${GIT_BRANCH} \
+    GIT_SHA=${GIT_SHA}
+
 # Copy and install application
 COPY pyproject.toml ./
 COPY plex_generate_previews/ ./plex_generate_previews/
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
+# Ensure setuptools-scm can resolve a version without VCS metadata
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=0.0.0-dev-${GIT_SHA}
 RUN pip3 install . --no-cache-dir
 
 # Copy wrapper script

@@ -1,10 +1,13 @@
 """
-Version check module for checking if a newer version is available.
+Version check module.
 
-Queries GitHub Releases API to compare current version with latest release.
-Handles network failures gracefully without interrupting application startup.
+Behavior:
+- Dev Docker image (GIT_BRANCH and GIT_SHA set): compare baked commit to GitHub
+  branch head and warn if behind.
+- Otherwise (pip, zip, release Docker): compare package SemVer to GitHub latest release.
 """
 
+import os
 import re
 import requests
 from typing import Optional, Tuple
@@ -116,18 +119,74 @@ def get_latest_github_release() -> Optional[str]:
         return None
 
 
-def check_for_updates(skip_check: bool = False) -> None:
+def get_branch_head_sha(branch: str) -> Optional[str]:
+    """
+    Query GitHub API for the latest commit SHA on a branch.
+    
+    Args:
+        branch: Branch name (e.g., "dev")
+        
+    Returns:
+        str: Full 40-char SHA of branch head, or None if failed
+    """
+    try:
+        url = f"https://api.github.com/repos/stevezau/plex_generate_vid_previews/branches/{branch}"
+        headers = {
+            'User-Agent': 'plex-generate-previews-version-check'
+        }
+        response = requests.get(url, headers=headers, timeout=3)
+        response.raise_for_status()
+        data = response.json()
+        commit = data.get('commit', {})
+        sha = commit.get('sha', '')
+        if not sha:
+            logger.debug("GitHub API returned empty branch sha")
+            return None
+        return sha
+    except requests.exceptions.Timeout:
+        logger.debug("Branch head check timed out - no internet connection or slow response")
+        return None
+    except requests.exceptions.ConnectionError:
+        logger.debug("Branch head check failed - no internet connection")
+        return None
+    except requests.exceptions.HTTPError as e:
+        logger.debug(f"GitHub branch API error: {getattr(e.response, 'status_code', 'unknown')}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Branch head request failed: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"Unexpected error during branch head check: {e}")
+        return None
+
+
+def check_for_updates() -> None:
     """
     Check for available updates and log appropriate messages.
     
     Args:
-        skip_check: If True, skip the version check entirely
+        None
     """
-    if skip_check:
-        logger.debug("Version check skipped by user request")
-        return
     
     try:
+        # Dev Docker image path: commit-aware check when metadata present
+        git_branch = (os.environ.get("GIT_BRANCH") or "").strip()
+        git_sha = (os.environ.get("GIT_SHA") or "").strip()
+
+        if git_branch and git_sha:
+            head_sha = get_branch_head_sha(git_branch)
+            if head_sha:
+                # Compare allowing short SHAs inside full SHA
+                current_short = git_sha[:7]
+                head_short = head_sha[:7]
+                if not head_sha.startswith(git_sha):
+                    logger.warning(f"⚠️  Newer dev commit on {git_branch}: {head_short} (you have: {current_short})")
+                    logger.warning("🐳 Update dev image: docker pull stevezzau/plex_generate_vid_previews:dev")
+                    return
+                else:
+                    logger.debug(f"Dev build up to date with {git_branch} ({head_short})")
+                    return
+
         # Get current version
         current_version = get_current_version()
         logger.debug(f"Current version: {current_version}")
