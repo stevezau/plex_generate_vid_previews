@@ -15,9 +15,7 @@ from plex_generate_previews.gpu_detection import (
     _get_gpu_devices,
     _determine_vaapi_gpu_type,
     get_gpu_name,
-    _get_ffmpeg_hwaccels,
-    _get_wsl2_render_devices,
-    _detect_rocm_gpu
+    _get_ffmpeg_hwaccels
 )
 
 
@@ -80,9 +78,8 @@ class TestDetectAllGPUs:
     def test_detect_all_gpus_none(self, mock_devices):
         """Test when no GPUs are detected."""
         mock_devices.return_value = []
-        # Ensure platform-specific paths (macOS/WSL2) are not taken in this test
+        # Ensure platform-specific paths (macOS) are not taken in this test
         with patch('plex_generate_previews.gpu_detection._is_macos', return_value=False), \
-             patch('plex_generate_previews.gpu_detection._is_wsl2', return_value=False), \
              patch('plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels', return_value=[]):
             gpus = detect_all_gpus()
         
@@ -394,11 +391,11 @@ class TestGetGPUName:
         assert 'NVIDIA' in name
         assert 'GPU' in name
     
-    def test_get_gpu_name_wsl2(self):
-        """Test WSL2 GPU name."""
-        name = get_gpu_name('WSL2', 'd3d11va')
+    def test_get_gpu_name_windows(self):
+        """Test Windows GPU name."""
+        name = get_gpu_name('WINDOWS_GPU', 'd3d11va')
         
-        assert 'WSL2' in name
+        assert 'Windows' in name
         assert 'GPU' in name
     
     @patch('subprocess.run')
@@ -455,113 +452,6 @@ d3d11va
         hwaccels = _get_ffmpeg_hwaccels()
         
         assert hwaccels == []
-
-
-class TestWSL2AMDGPUDetection:
-    """Test WSL2 AMD GPU detection functionality."""
-    
-    @patch('os.path.exists')
-    def test_detect_rocm_gpu_available(self, mock_exists):
-        """Test ROCm GPU detection when /dev/kfd exists."""
-        mock_exists.return_value = True
-        
-        result = _detect_rocm_gpu()
-        
-        assert result is True
-        mock_exists.assert_called_with('/dev/kfd')
-    
-    @patch('os.path.exists')
-    def test_detect_rocm_gpu_not_available(self, mock_exists):
-        """Test ROCm GPU detection when /dev/kfd doesn't exist."""
-        mock_exists.return_value = False
-        
-        result = _detect_rocm_gpu()
-        
-        assert result is False
-        mock_exists.assert_called_with('/dev/kfd')
-    
-    @patch('plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci')
-    @patch('plex_generate_previews.gpu_detection._detect_rocm_gpu')
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_get_wsl2_render_devices_amd_with_rocm(self, mock_exists, mock_listdir, 
-                                                     mock_rocm, mock_lspci):
-        """Test WSL2 render device detection with AMD GPU and ROCm."""
-        mock_exists.return_value = True
-        mock_listdir.return_value = ['renderD128', 'card0']
-        mock_lspci.return_value = 'UNKNOWN'
-        mock_rocm.return_value = True
-        
-        devices = _get_wsl2_render_devices()
-        
-        assert len(devices) == 1
-        assert devices[0][0] == 'wsl2-renderD128'
-        assert devices[0][1] == '/dev/dri/renderD128'
-        assert devices[0][2] == 'amd'
-    
-    @patch('plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci')
-    @patch('plex_generate_previews.gpu_detection._detect_rocm_gpu')
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_get_wsl2_render_devices_amd_via_lspci(self, mock_exists, mock_listdir, 
-                                                     mock_rocm, mock_lspci):
-        """Test WSL2 render device detection with AMD GPU detected via lspci."""
-        mock_exists.return_value = True
-        mock_listdir.return_value = ['renderD128']
-        mock_lspci.return_value = 'AMD'
-        mock_rocm.return_value = False
-        
-        devices = _get_wsl2_render_devices()
-        
-        assert len(devices) == 1
-        assert devices[0][0] == 'wsl2-renderD128'
-        assert devices[0][1] == '/dev/dri/renderD128'
-        assert devices[0][2] == 'amd'
-    
-    @patch('os.path.exists')
-    def test_get_wsl2_render_devices_no_dri(self, mock_exists):
-        """Test WSL2 render device detection when /dev/dri doesn't exist."""
-        mock_exists.return_value = False
-        
-        devices = _get_wsl2_render_devices()
-        
-        assert devices == []
-    
-    @patch('os.listdir')
-    @patch('os.path.exists')
-    def test_get_wsl2_render_devices_no_render_devices(self, mock_exists, mock_listdir):
-        """Test WSL2 render device detection when no render devices exist."""
-        mock_exists.return_value = True
-        mock_listdir.return_value = ['card0', 'card1']
-        
-        devices = _get_wsl2_render_devices()
-        
-        assert devices == []
-    
-    @patch('plex_generate_previews.gpu_detection._get_wsl2_render_devices')
-    @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
-    @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
-    @patch('plex_generate_previews.gpu_detection._is_wsl2')
-    @patch('plex_generate_previews.gpu_detection.get_gpu_name')
-    def test_detect_all_gpus_wsl2_amd_fallback(self, mock_name, mock_wsl2, 
-                                                 mock_devices, mock_test, mock_wsl2_devices):
-        """Test full GPU detection in WSL2 with AMD GPU using fallback detection."""
-        # Simulate WSL2 environment with no /sys/class/drm enumeration
-        mock_wsl2.return_value = True
-        mock_devices.return_value = []  # No devices from standard enumeration
-        mock_wsl2_devices.return_value = [('wsl2-renderD128', '/dev/dri/renderD128', 'amdgpu')]
-        mock_test.return_value = True
-        mock_name.return_value = 'AMD Radeon RX 7900 XT'
-        # Force Linux path so fallback WSL2 detection is exercised
-        with patch('plex_generate_previews.gpu_detection.platform.system', return_value='Linux'):
-            gpus = detect_all_gpus()
-        
-        # Should detect AMD GPU via WSL2 fallback
-        amd_gpus = [g for g in gpus if g[0] == 'AMD']
-        assert len(amd_gpus) > 0
-        assert 'RX 7900 XT' in amd_gpus[0][2]['name']
-        assert amd_gpus[0][2]['acceleration'] == 'VAAPI'
-        assert amd_gpus[0][1] == '/dev/dri/renderD128'
 
 
 class TestFFmpegVersion:
@@ -811,7 +701,7 @@ class TestAccelerationMethodTesting:
         
         mock_test.return_value = False
         
-        result = _test_acceleration_method('nvidia', 'CUDA', None, False)
+        result = _test_acceleration_method('nvidia', 'CUDA', None)
         assert result is False
     
     @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
@@ -821,7 +711,7 @@ class TestAccelerationMethodTesting:
         
         mock_test.return_value = False
         
-        result = _test_acceleration_method('amd', 'VAAPI', '/dev/dri/renderD128', False)
+        result = _test_acceleration_method('amd', 'VAAPI', '/dev/dri/renderD128')
         assert result is False
 
 
@@ -854,7 +744,7 @@ class TestDetectAllGPUsEdgeCases:
         mock_is_macos.return_value = False
         mock_devices.return_value = [('card0', '/dev/dri/renderD128', 'nvidia')]
         
-        def test_side_effect(vendor, accel, device, is_wsl2):
+        def test_side_effect(vendor, accel, device):
             if accel == 'CUDA':
                 return True
             elif accel == 'NVENC':

@@ -78,7 +78,7 @@ plex-generate-previews \
 
 ## Features
 
-- **Multi-GPU Support**: NVIDIA, AMD, Intel, and WSL2 GPUs
+- **Multi-GPU Support**: NVIDIA, AMD, Intel, and Windows GPUs
 - **Parallel Processing**: Configurable GPU and CPU worker threads
 - **Hardware Acceleration**: CUDA, VAAPI, and D3D11VA
 - **Library Filtering**: Process specific Plex libraries
@@ -99,7 +99,6 @@ plex-generate-previews \
 |----------|---------|-------|
 | **Linux** | ✅ Full | GPU + CPU support (CUDA, VAAPI, etc.) |
 | **Docker** | ✅ Full | GPU + CPU support (Recommended) |
-| **WSL2** | ✅ Full | GPU + CPU support (D3D11VA, VAAPI) |
 | **macOS** | ✅ Full | VideoToolbox + CPU support |
 | **Windows** | ✅ Full | D3D11VA GPU + CPU support |
 
@@ -113,7 +112,6 @@ plex-generate-previews \
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
 - **AMD**: ROCm-compatible GPU + amdgpu drivers  
 - **Intel**: VAAPI-compatible iGPU/dGPU
-- **WSL2**: D3D11VA-compatible GPU (Intel Arc, etc.)
 
 ## Installation Options
 
@@ -152,7 +150,6 @@ docker run --rm --gpus all \
 **GPU Requirements:**
 - **NVIDIA**: Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - **AMD/Intel**: Mount `/dev/dri` with `--device /dev/dri:/dev/dri` (see [Troubleshooting](#troubleshooting) if you get permission errors)
-- **WSL2**: No special configuration needed - automatically detects WSL2 GPUs
 
 ### Pip Installation
 
@@ -474,8 +471,7 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 | **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
 | **Intel** | VAAPI | Intel drivers + VA-API | ✅ Device access |
 | **Apple Silicon** | VideoToolbox | macOS with FFmpeg + mediainfo | ❌ Native macOS only |
-| **WSL2 (NVIDIA)** | D3D11VA | WSL2 + /dev/dxg + mesa-utils | ✅ Native WSL2 |
-| **WSL2 (AMD)** | VAAPI | WSL2 + ROCm + /dev/dri devices | ✅ Native WSL2 |
+| **Windows** | D3D11VA | Windows with FFmpeg + latest GPU drivers | ❌ Native Windows only |
 
 ### GPU Detection
 
@@ -509,12 +505,10 @@ plex-generate-previews --gpu-selection "0"
 ### Hardware Acceleration Methods
 
 - **NVIDIA**: Uses CUDA for maximum performance
-- **AMD**: Uses VAAPI with ROCm drivers (native Linux and WSL2)
+- **AMD**: Uses VAAPI with ROCm drivers (native Linux)
 - **Intel**: Uses VAAPI (Video Acceleration API)
 - **Apple Silicon**: Uses VideoToolbox (M1/M2/M3/M4 chips on macOS)
-- **WSL2**: Automatically detects GPU type and uses appropriate acceleration:
-  - **NVIDIA GPUs**: D3D11VA via `/dev/dxg`
-  - **AMD GPUs**: VAAPI via `/dev/dri` with ROCm support
+- **Windows**: Uses D3D11VA (DirectX 11 Video Acceleration) for universal GPU support
 
 ### Docker GPU Requirements
 
@@ -536,25 +530,6 @@ services:
     devices:
       - /dev/dri:/dev/dri
 ```
-
-#### WSL2
-GPU support in WSL2 uses a hybrid detection approach:
-
-**Primary Method (All Vendors):**
-- Uses DirectX acceleration (D3D11VA) via `/dev/dxg`
-- Works universally for NVIDIA, AMD, and Intel GPUs
-- No special configuration needed
-
-**Alternative Method (AMD/Intel):**
-- If Linux drivers are properly loaded, may use VAAPI via `/dev/dri`
-- Requires proper driver configuration in WSL2
-- May offer better performance but is less reliable
-
-**Important Notes:**
-- AMD GPU support in WSL2 is still evolving
-- ROCm support is limited and not officially supported by AMD in WSL2
-- The script automatically detects and uses the best available method
-- If VAAPI fails, automatically falls back to D3D11VA
 
 ## Usage Examples
 
@@ -763,7 +738,7 @@ plex-generate-previews --log-level DEBUG
 ### General Questions
 
 **Q: What's new in version 2.0.0?**
-A: Version 2.0.0 introduces multi-GPU support, improved CLI interface, better error handling, WSL2 support, and a complete rewrite with modern Python practices.
+A: Version 2.0.0 introduces multi-GPU support, improved CLI interface, better error handling, and a complete rewrite with modern Python practices.
 
 **Q: Does this work on Windows?**
 A: Yes! Windows fully supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD, and Intel GPUs. Install the latest GPU drivers and the tool will automatically detect and use your GPU for faster processing. 

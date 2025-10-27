@@ -2,7 +2,7 @@
 Plex Video Preview Generator
 
 A tool for generating video preview thumbnails for Plex Media Server.
-Supports GPU acceleration (NVIDIA, AMD, Intel, WSL2) and CPU processing.
+Supports GPU acceleration (NVIDIA, AMD, Intel, Windows) and CPU processing.
 """
 
 import os
