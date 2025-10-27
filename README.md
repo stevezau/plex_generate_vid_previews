@@ -108,10 +108,21 @@ plex-generate-previews \
 - ✅ Automatic GPU detection - just install latest drivers
 - ⚠️ Requires FFmpeg with D3D11VA support (most builds include it)
 
-### GPU Requirements
+### GPU Requirements by Platform
+
+**Linux/Docker:**
 - **NVIDIA**: CUDA-compatible GPU + NVIDIA drivers
 - **AMD**: ROCm-compatible GPU + amdgpu drivers  
 - **Intel**: VAAPI-compatible iGPU/dGPU
+
+**Windows:**
+- **All GPUs**: Works with NVIDIA, AMD, or Intel GPUs
+- No additional drivers needed beyond standard Windows GPU drivers
+- Uses native D3D11VA acceleration (no ROCm/CUDA runtime required)
+
+**macOS:**
+- **Apple Silicon**: Works with built-in VideoToolbox acceleration
+- **Intel Macs**: Works with Intel iGPU via VideoToolbox
 
 ## Installation Options
 
@@ -465,13 +476,13 @@ The tool automatically detects and supports multiple GPU types with hardware acc
 
 ### Supported GPU Types
 
-| GPU Type | Acceleration | Requirements | Docker Support |
-|----------|--------------|--------------|----------------|
-| **NVIDIA** | CUDA | NVIDIA drivers + CUDA toolkit | ✅ NVIDIA Container Toolkit |
-| **AMD** | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
-| **Intel** | VAAPI | Intel drivers + VA-API | ✅ Device access |
-| **Apple Silicon** | VideoToolbox | macOS with FFmpeg + mediainfo | ❌ Native macOS only |
-| **Windows** | D3D11VA | Windows with FFmpeg + latest GPU drivers | ❌ Native Windows only |
+| GPU Type | Platform | Acceleration | Requirements | Docker Support |
+|----------|----------|--------------|--------------|----------------|
+| **NVIDIA** | Linux | CUDA | NVIDIA drivers + CUDA toolkit | ✅ NVIDIA Container Toolkit |
+| **AMD** | Linux | VAAPI | amdgpu drivers + ROCm | ✅ ROCm Docker support |
+| **Intel** | Linux | VAAPI | Intel drivers + VA-API | ✅ Device access |
+| **All GPUs** | Windows | D3D11VA | Latest GPU drivers (no ROCm/CUDA runtime) | ❌ Native Windows only |
+| **Apple Silicon** | macOS | VideoToolbox | macOS with FFmpeg + mediainfo | ❌ Native macOS only |
 
 ### GPU Detection
 
@@ -504,11 +515,16 @@ plex-generate-previews --gpu-selection "0"
 
 ### Hardware Acceleration Methods
 
+**Linux:**
 - **NVIDIA**: Uses CUDA for maximum performance
-- **AMD**: Uses VAAPI with ROCm drivers (native Linux)
+- **AMD**: Uses VAAPI with ROCm drivers
 - **Intel**: Uses VAAPI (Video Acceleration API)
-- **Apple Silicon**: Uses VideoToolbox (M1/M2/M3/M4 chips on macOS)
-- **Windows**: Uses D3D11VA (DirectX 11 Video Acceleration) for universal GPU support
+
+**Windows:**
+- **All GPUs (NVIDIA/AMD/Intel)**: Uses D3D11VA (DirectX 11 Video Acceleration) - no ROCm or CUDA runtime required
+
+**macOS:**
+- **Apple Silicon**: Uses VideoToolbox (M1/M2/M3/M4 chips)
 
 ### Docker GPU Requirements
 
