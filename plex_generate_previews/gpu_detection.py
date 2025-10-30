@@ -83,7 +83,7 @@ def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
         Optional[Tuple[int, int, int]]: Version tuple (major, minor, patch) or None if failed
     """
     try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
         if result.returncode != 0:
             logger.debug(f"Failed to get FFmpeg version: {result.stderr}")
             return None
@@ -160,7 +160,7 @@ def _get_ffmpeg_hwaccels() -> List[str]:
         List[str]: Available hardware accelerators
     """
     try:
-        result = subprocess.run(['ffmpeg', '-hwaccels'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(['ffmpeg', '-hwaccels'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
         if result.returncode != 0:
             logger.debug(f"Failed to get FFmpeg hardware accelerators: {result.stderr}")
             return []

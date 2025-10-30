@@ -129,7 +129,7 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
         "-frames:v", "10",         # stop as soon as one frame decodes
         "-f", "null", null_sink
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
     ok = (proc.returncode == 0)
     if not ok:
         last = (proc.stderr or "").strip().splitlines()[-1:]  # tail(1)
@@ -220,7 +220,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         import threading
         thread_id = threading.get_ident()
         output_file = os.path.join(tempfile.gettempdir(), f'ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log')
-        proc = subprocess.Popen(args, stderr=open(output_file, 'w'), stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen(args, stderr=open(output_file, 'w', encoding='utf-8'), stdout=subprocess.DEVNULL)
 
         # Signal that FFmpeg process has started
         if progress_callback:
@@ -245,7 +245,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         while proc.poll() is None:
             if os.path.exists(output_file):
                 try:
-                    with open(output_file, 'r') as f:
+                    with open(output_file, 'r', encoding='utf-8') as f:
                         lines = f.readlines()
                         if len(lines) > line_count:
                             for i in range(line_count, len(lines)):
@@ -261,7 +261,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         # Process any remaining data
         if os.path.exists(output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(output_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                     if len(lines) > line_count:
                         for i in range(line_count, len(lines)):

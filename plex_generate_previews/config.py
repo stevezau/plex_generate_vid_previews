@@ -235,7 +235,7 @@ def load_config(cli_args=None) -> Config:
     
     # Test FFmpeg actually works
     try:
-        result = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
         if result.returncode != 0:
             validation_errors.append('FFmpeg found but not working properly')
     except (subprocess.TimeoutExpired, FileNotFoundError):

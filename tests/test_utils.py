@@ -262,9 +262,9 @@ class TestClearDirectory:
             # Create some files
             file1 = os.path.join(tmpdir, "file1.txt")
             file2 = os.path.join(tmpdir, "file2.txt")
-            with open(file1, 'w') as f:
+            with open(file1, 'w', encoding='utf-8') as f:
                 f.write("test1")
-            with open(file2, 'w') as f:
+            with open(file2, 'w', encoding='utf-8') as f:
                 f.write("test2")
             
             # Clear directory
@@ -285,7 +285,7 @@ class TestClearDirectory:
             os.makedirs(subdir2)
             
             file_in_subdir = os.path.join(subdir1, "file.txt")
-            with open(file_in_subdir, 'w') as f:
+            with open(file_in_subdir, 'w', encoding='utf-8') as f:
                 f.write("test")
             
             # Clear directory
@@ -305,7 +305,7 @@ class TestClearDirectory:
         """Test that clear_directory raises error when path is a file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             file_path = os.path.join(tmpdir, "file.txt")
-            with open(file_path, 'w') as f:
+            with open(file_path, 'w', encoding='utf-8') as f:
                 f.write("test")
             
             # Should raise ValueError
@@ -317,7 +317,7 @@ class TestClearDirectory:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create files
             file1 = os.path.join(tmpdir, "file1.txt")
-            with open(file1, 'w') as f:
+            with open(file1, 'w', encoding='utf-8') as f:
                 f.write("test1")
             
             # Create subdirectory
@@ -326,7 +326,7 @@ class TestClearDirectory:
             
             # Create file in subdirectory
             file_in_subdir = os.path.join(subdir, "file2.txt")
-            with open(file_in_subdir, 'w') as f:
+            with open(file_in_subdir, 'w', encoding='utf-8') as f:
                 f.write("test2")
             
             # Create symlink (if not on Windows)

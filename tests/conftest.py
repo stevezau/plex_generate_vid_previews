@@ -117,7 +117,7 @@ def reference_bif(fixtures_dir):
 def plex_xml_library_sections(fixtures_dir):
     """Load library sections XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "library_sections.xml"
-    with open(xml_path, 'r') as f:
+    with open(xml_path, 'r', encoding='utf-8') as f:
         return f.read()
 
 
@@ -125,7 +125,7 @@ def plex_xml_library_sections(fixtures_dir):
 def plex_xml_episode_tree(fixtures_dir):
     """Load episode tree XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "episode_tree.xml"
-    with open(xml_path, 'r') as f:
+    with open(xml_path, 'r', encoding='utf-8') as f:
         return f.read()
 
 
@@ -133,7 +133,7 @@ def plex_xml_episode_tree(fixtures_dir):
 def plex_xml_movie_tree(fixtures_dir):
     """Load movie tree XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "movie_tree.xml"
-    with open(xml_path, 'r') as f:
+    with open(xml_path, 'r', encoding='utf-8') as f:
         return f.read()
 
 
