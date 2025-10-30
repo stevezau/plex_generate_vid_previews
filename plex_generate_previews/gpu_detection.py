@@ -393,6 +393,36 @@ def _is_windows() -> bool:
     return platform.system() == 'Windows'
 
 
+def _is_wsl2() -> bool:
+    """
+    Detect if running on Windows Subsystem for Linux 2 (WSL2).
+    
+    WSL2 has limited hardware access due to virtualization, which can affect
+    GPU detection via lspci. This function helps identify WSL2 environments
+    for special handling.
+    
+    Returns:
+        bool: True if running on WSL2, False otherwise
+    """
+    if platform.system() != 'Linux':
+        return False
+    
+    try:
+        # Check /proc/version for WSL2 indicators
+        # WSL2 typically contains "microsoft" and "WSL" in /proc/version
+        version_file = '/proc/version'
+        if os.path.exists(version_file):
+            with open(version_file, 'r', encoding='utf-8', errors='replace') as f:
+                version_text = f.read().lower()
+                if 'microsoft' in version_text and 'wsl' in version_text:
+                    logger.debug("Detected WSL2 environment")
+                    return True
+    except Exception as e:
+        logger.debug(f"Error checking for WSL2: {e}")
+    
+    return False
+
+
 def _detect_windows_d3d11va() -> Optional[Tuple[str, str, Dict[str, Any]]]:
     """
     Detect Windows GPU via D3D11VA testing.
@@ -539,6 +569,19 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
     if vendor == 'UNKNOWN':
         logger.debug(f"Unknown driver '{driver_name}', attempting lspci detection")
         vendor = _detect_gpu_type_from_lspci()
+        
+        # If lspci failed and we're in WSL2, try nvidia-smi as fallback
+        # This helps detect NVIDIA GPUs in WSL2 where lspci doesn't work
+        if vendor == 'UNKNOWN' and _is_wsl2():
+            logger.debug("WSL2 detected and lspci failed, attempting nvidia-smi detection")
+            logger.warning("⚠️  WSL2 environment detected - GPU vendor detection via lspci is unreliable")
+            logger.warning("⚠️  NVIDIA GPUs are unofficially supported in WSL2 (via CUDA passthrough)")
+            logger.warning("⚠️  Other GPU vendors (AMD, Intel) are NOT supported in WSL2")
+            logger.warning("⚠️  For non-NVIDIA GPUs in WSL2, please use CPU-only processing (set GPU_THREADS=0)")
+            nvidia_vendor = _detect_nvidia_via_nvidia_smi()
+            if nvidia_vendor == 'NVIDIA':
+                vendor = 'NVIDIA'
+                logger.debug("Successfully detected NVIDIA GPU via nvidia-smi in WSL2")
     
     return vendor
 
@@ -601,6 +644,54 @@ def _determine_vaapi_gpu_type(device_path: str) -> str:
         return 'UNKNOWN'
 
 
+def _detect_nvidia_via_nvidia_smi() -> str:
+    """
+    Detect NVIDIA GPU using nvidia-smi as fallback when driver detection fails.
+    
+    This is useful in WSL2 environments where lspci cannot detect GPU vendors
+    due to hardware virtualization, but nvidia-smi works correctly via the
+    Windows NVIDIA driver passthrough.
+    
+    Returns:
+        str: 'NVIDIA' if NVIDIA GPU is detected, 'UNKNOWN' otherwise
+    """
+    try:
+        # Check if nvidia-smi is available and can query GPU information
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            # nvidia-smi successfully returned GPU names
+            gpu_names = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+            if gpu_names:
+                logger.debug(f"nvidia-smi detected {len(gpu_names)} NVIDIA GPU(s): {gpu_names}")
+                return 'NVIDIA'
+        
+        # nvidia-smi failed or returned no GPUs
+        if result.returncode != 0:
+            logger.debug(f"nvidia-smi failed with return code: {result.returncode}")
+            if result.stderr:
+                logger.debug(f"nvidia-smi stderr: {result.stderr.strip()}")
+        else:
+            logger.debug("nvidia-smi returned no GPU information")
+        
+        return 'UNKNOWN'
+    except FileNotFoundError:
+        # nvidia-smi not installed
+        logger.debug("nvidia-smi command not found (NVIDIA driver may not be installed)")
+        return 'UNKNOWN'
+    except subprocess.TimeoutExpired:
+        logger.debug("nvidia-smi command timed out after 5 seconds")
+        return 'UNKNOWN'
+    except Exception as e:
+        logger.debug(f"Error running nvidia-smi: {e}")
+        return 'UNKNOWN'
+
+
 def _detect_gpu_type_from_lspci() -> str:
     """
     Detect GPU type using lspci as fallback when driver detection fails.
@@ -614,29 +705,51 @@ def _detect_gpu_type_from_lspci() -> str:
     try:
         result = subprocess.run(['lspci'], capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
-            logger.debug("lspci command failed")
+            logger.debug(f"lspci command failed with return code: {result.returncode}")
+            if result.stderr:
+                logger.debug(f"lspci stderr: {result.stderr.strip()}")
+            if result.stdout:
+                logger.debug(f"lspci stdout (partial): {result.stdout[:200]}")
             return 'UNKNOWN'
         
-        for line in result.stdout.split('\n'):
-            if 'VGA' in line or 'Display' in line:
-                line_lower = line.lower()
-                if 'amd' in line_lower or 'radeon' in line_lower:
-                    logger.debug("lspci detected AMD GPU")
-                    return 'AMD'
-                elif 'intel' in line_lower:
-                    logger.debug("lspci detected Intel GPU")
-                    return 'INTEL'
-                elif 'nvidia' in line_lower or 'geforce' in line_lower:
-                    logger.debug("lspci detected NVIDIA GPU")
-                    return 'NVIDIA'
-                elif 'mali' in line_lower or 'arm' in line_lower:
-                    logger.debug("lspci detected ARM GPU")
-                    return 'ARM'
+        # Check if we have any output
+        if not result.stdout.strip():
+            logger.debug("lspci returned empty output")
+            return 'UNKNOWN'
         
-        logger.debug("lspci did not identify GPU type")
+        # Count VGA/Display lines for debugging
+        vga_lines = [line for line in result.stdout.split('\n') if 'VGA' in line or 'Display' in line]
+        if not vga_lines:
+            logger.debug("lspci did not find any VGA or Display devices in output")
+            logger.debug(f"lspci output (first 500 chars): {result.stdout[:500]}")
+            return 'UNKNOWN'
+        
+        logger.debug(f"lspci found {len(vga_lines)} VGA/Display device(s)")
+        for line in vga_lines:
+            logger.debug(f"lspci VGA/Display line: {line.strip()}")
+            line_lower = line.lower()
+            if 'amd' in line_lower or 'radeon' in line_lower:
+                logger.debug("lspci detected AMD GPU")
+                return 'AMD'
+            elif 'intel' in line_lower:
+                logger.debug("lspci detected Intel GPU")
+                return 'INTEL'
+            elif 'nvidia' in line_lower or 'geforce' in line_lower:
+                logger.debug("lspci detected NVIDIA GPU")
+                return 'NVIDIA'
+            elif 'mali' in line_lower or 'arm' in line_lower:
+                logger.debug("lspci detected ARM GPU")
+                return 'ARM'
+        
+        logger.debug("lspci found VGA/Display devices but did not identify known GPU vendor")
+        logger.debug(f"VGA/Display lines: {[line.strip() for line in vga_lines]}")
         return 'UNKNOWN'
     except FileNotFoundError:
         # lspci not installed - this is expected in many environments
+        logger.debug("lspci command not found (not installed)")
+        return 'UNKNOWN'
+    except subprocess.TimeoutExpired:
+        logger.debug("lspci command timed out after 5 seconds")
         return 'UNKNOWN'
     except Exception as e:
         logger.debug(f"Error running lspci: {e}")
@@ -862,8 +975,46 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
     for card_name, render_device, driver in physical_gpus:
         vendor = _get_gpu_vendor_from_driver(driver)
         
-        if vendor == 'UNKNOWN' or vendor not in GPU_ACCELERATION_MAP:
-            logger.debug(f"Skipping {card_name} - unknown vendor '{vendor}'")
+        # Handle UNKNOWN vendor with special fallback logic for CUDA
+        if vendor == 'UNKNOWN':
+            # Check if CUDA acceleration is available (useful for WSL2 NVIDIA GPUs)
+            if _is_hwaccel_available('cuda'):
+                logger.debug(f"Unknown vendor for {card_name}, but CUDA is available - attempting NVIDIA detection")
+                nvidia_vendor = _detect_nvidia_via_nvidia_smi()
+                if nvidia_vendor == 'NVIDIA':
+                    logger.info(f"  Detected NVIDIA GPU via nvidia-smi for {card_name} (vendor was unknown)")
+                    vendor = 'NVIDIA'
+                    if _is_wsl2():
+                        logger.warning(f"  ⚠️  WSL2 environment detected - NVIDIA GPU support is unofficial and may have limitations")
+                else:
+                    # Even if nvidia-smi didn't confirm, try CUDA anyway if available
+                    # This allows unofficial WSL2 support where detection may be unreliable
+                    logger.debug(f"nvidia-smi did not confirm NVIDIA, but will attempt CUDA acceleration anyway")
+                    if _is_wsl2():
+                        logger.debug("WSL2 detected - allowing CUDA acceleration attempt with unknown vendor (unofficial support)")
+                        # Test CUDA directly - if it works, treat as NVIDIA
+                        logger.info(f"  Checking {card_name} (UNKNOWN vendor, attempting CUDA)...")
+                        logger.info(f"    Testing CUDA acceleration...")
+                        if _test_hwaccel_functionality('cuda'):
+                            # CUDA works! Treat as NVIDIA even though we couldn't confirm
+                            vendor = 'NVIDIA'
+                            logger.warning(f"  ⚠️  CUDA acceleration works but vendor detection failed - treating as NVIDIA")
+                            logger.warning(f"  ⚠️  WSL2 environment detected - NVIDIA GPU support is unofficial and may have limitations")
+                            # Fall through to normal NVIDIA processing
+                        else:
+                            logger.debug(f"Skipping {card_name} - CUDA acceleration test failed")
+                            continue
+                    else:
+                        # Not WSL2, skip unknown vendor
+                        logger.debug(f"Skipping {card_name} - unknown vendor and nvidia-smi did not confirm NVIDIA")
+                        continue
+            else:
+                # No CUDA available and vendor is unknown, skip
+                logger.debug(f"Skipping {card_name} - unknown vendor '{vendor}' and CUDA not available")
+                continue
+        
+        if vendor not in GPU_ACCELERATION_MAP:
+            logger.debug(f"Skipping {card_name} - vendor '{vendor}' not in GPU acceleration map")
             continue
         
         logger.debug(f"Testing {card_name} ({vendor} - {driver})...")
