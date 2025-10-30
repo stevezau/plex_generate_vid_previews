@@ -17,7 +17,7 @@ import sys
 import http.client
 import xml.etree.ElementTree
 import tempfile
-from typing import Optional
+from typing import Optional, List
 from loguru import logger
 
 from .utils import sanitize_path
@@ -109,6 +109,49 @@ def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callba
     return total_duration
 
 
+def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
+    """
+    Detect if FFmpeg failure is due to unsupported codec/hardware decoder error.
+    
+    Checks exit codes and stderr patterns to identify codec-related errors.
+    Based on FFmpeg documentation: exit code -22 (EINVAL) and 69 (max error rate)
+    are common for unsupported codecs, but stderr parsing is more reliable.
+    
+    Args:
+        returncode: FFmpeg exit code
+        stderr_lines: List of stderr output lines (case-insensitive matching)
+        
+    Returns:
+        bool: True if codec/decoder error detected, False otherwise
+    """
+    # Combine all stderr lines into a single lowercase string for pattern matching
+    stderr_text = ' '.join(stderr_lines).lower()
+    
+    # Pattern list for codec/decoder errors (based on FFmpeg documentation)
+    codec_error_patterns = [
+        'codec not supported',
+        'unsupported codec',
+        'unsupported codec id',
+        'unknown encoder',
+        'unknown decoder',
+        'decoder not found',
+        'no decoder for',
+        'could not find codec',
+        'no codec',
+    ]
+    
+    # Check for codec error patterns in stderr (primary detection method)
+    for pattern in codec_error_patterns:
+        if pattern in stderr_text:
+            return True
+    
+    # Also check exit codes: -22 (EINVAL, may be wrapped to 234 on Unix) or 69 (max error rate)
+    if returncode in [-22, 234, 69] and returncode != 0:
+        return True
+    
+    return False
+
+
 def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
     """
     Using the first 10 frames of file to decide if -skip_frame:v nokey is safe.
@@ -144,11 +187,15 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     """
     Generate thumbnail images from a video using FFmpeg.
 
-    Runs FFmpeg once with hardware acceleration when configured and, if the
-    skip-frame heuristic allowed it, with '-skip_frame:v nokey'. If that run
-    yields zero images or returns non-zero, automatically retries one time with
-    the same settings but without '-skip_frame'. CPU fallback is NOT attempted
-    here; we always honor the selected processing mode.
+    Runs FFmpeg with hardware acceleration when configured. If the skip-frame
+    heuristic allowed it, attempts with '-skip_frame:v nokey' first. If that
+    yields zero images or returns non-zero, automatically retries without '-skip_frame'.
+    
+    If GPU processing fails with a codec error (detected via stderr parsing for
+    patterns like "Codec not supported", "Unsupported codec", etc., or exit codes
+    -22/EINVAL or 69/max error rate) and CPU threads are available, automatically
+    falls back to CPU processing. This ensures files are processed even when the
+    GPU doesn't support the codec (e.g., AV1 on RTX 2060 SUPER).
 
     Args:
         video_file: Path to input video file
@@ -162,7 +209,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         (success, image_count, hw_used, seconds, speed):
             success (bool): True if at least one image was produced
             image_count (int): Number of images written
-            hw_used (bool): Whether hardware acceleration was enabled
+            hw_used (bool): Whether hardware acceleration was actually used
+                           (False if CPU fallback occurred)
             seconds (float): Elapsed processing time (last attempt)
             speed (str): Reported or computed FFmpeg speed string
     """
@@ -178,8 +226,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
             vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
-    def _run_ffmpeg(use_skip: bool) -> tuple:
-        """Run FFmpeg once and return (returncode, seconds, speed, output_tail)."""
+    def _run_ffmpeg(use_skip: bool, gpu_override: Optional[str] = None, gpu_device_path_override: Optional[str] = None) -> tuple:
+        """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
         args = [
@@ -188,18 +236,22 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         ]
 
         # Add hardware acceleration for decoding (before -i flag)
+        # Allow overriding GPU settings for CPU fallback
+        effective_gpu = gpu_override if gpu_override is not None else gpu
+        effective_gpu_device_path = gpu_device_path_override if gpu_device_path_override is not None else gpu_device_path
+        
         hw_local = False
-        use_gpu = gpu is not None
+        use_gpu = effective_gpu is not None
         if use_gpu:
             hw_local = True
-            if gpu == 'NVIDIA':
+            if effective_gpu == 'NVIDIA':
                 args += ["-hwaccel", "cuda"]
-            elif gpu == 'WINDOWS_GPU':
+            elif effective_gpu == 'WINDOWS_GPU':
                 args += ["-hwaccel", "d3d11va"]
-            elif gpu == 'APPLE':
+            elif effective_gpu == 'APPLE':
                 args += ["-hwaccel", "videotoolbox"]
-            elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
-                args += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]
+            elif effective_gpu_device_path and effective_gpu_device_path.startswith('/dev/dri/'):
+                args += ["-hwaccel", "vaapi", "-vaapi_device", effective_gpu_device_path]
 
         # Add skip_frame option for faster decoding (if safe)
         if use_skip:
@@ -292,7 +344,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             calculated_speed = total_duration / seconds_local
             speed_local = f"{calculated_speed:.0f}x"
 
-        return proc.returncode, seconds_local, speed_local
+        return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines
 
     # Decide initial skip usage from heuristic
     use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
@@ -301,7 +353,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     os.makedirs(output_folder, exist_ok=True)
 
     # First attempt
-    rc, seconds, speed = _run_ffmpeg(use_skip_initial)
+    rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial)
 
     # Rename images produced by this attempt
     for image in glob.glob(f'{output_folder}/img*.jpg'):
@@ -322,7 +374,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                 os.remove(img)
             except Exception:
                 pass
-        rc, seconds, speed = _run_ffmpeg(use_skip=False)
+        rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=False)
         # Rename images from retry
         for image in glob.glob(f'{output_folder}/img*.jpg'):
             frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
@@ -330,13 +382,48 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
         image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
 
-    hw = (gpu is not None)
+    # CPU fallback: if GPU processing failed with codec error and CPU threads are available
+    did_cpu_fallback = False
+    if rc != 0 and image_count == 0 and gpu is not None:
+        # Detect if failure is due to unsupported codec
+        if _detect_codec_error(rc, stderr_lines):
+            if config.cpu_threads > 0:
+                did_cpu_fallback = True
+                logger.warning(f"GPU processing failed with codec error (exit code {rc}) for {video_file}; falling back to CPU processing")
+                
+                # Log relevant stderr excerpt for debugging
+                stderr_excerpt = '\n'.join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
+                logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+                
+                # Clean up any partial files from GPU attempt
+                for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                    try:
+                        os.remove(img)
+                    except Exception:
+                        pass
+                
+                # Retry with CPU (no GPU acceleration)
+                rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=use_skip_initial, gpu_override=None, gpu_device_path_override=None)
+                
+                # Rename images from CPU fallback attempt
+                for image in glob.glob(f'{output_folder}/img*.jpg'):
+                    frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
+                    frame_second = frame_no * config.plex_bif_frame_interval
+                    os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
+                image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
+            else:
+                # CPU threads disabled, cannot fallback
+                logger.warning(f"GPU processing failed with codec error (exit code {rc}) for {video_file}, but CPU fallback is disabled (CPU_THREADS=0); file will be skipped")
+
+    hw = (gpu is not None and not did_cpu_fallback)
     success = image_count > 0
 
     if success:
-        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{" (retry no-skip)" if did_retry else ""}')
+        fallback_suffix = " (CPU fallback)" if did_cpu_fallback else (" (retry no-skip)" if did_retry else "")
+        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}')
     else:
-        logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{" after retry" if did_retry else ""}')
+        fallback_suffix = " (after CPU fallback)" if did_cpu_fallback else (" after retry" if did_retry else "")
+        logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}')
 
     return success, image_count, hw, seconds, speed
 
