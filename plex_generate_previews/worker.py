@@ -8,12 +8,13 @@ multiprocessing for better simplicity and performance with FFmpeg tasks.
 import threading
 import time
 import shutil
+import queue
 from functools import partial
 from typing import List, Optional, Any, Tuple
 from loguru import logger
 
 from .config import Config
-from .media_processing import process_item
+from .media_processing import process_item, CodecNotSupportedError
 from .utils import format_display_title
 
 
@@ -131,7 +132,8 @@ class Worker:
         return gpu_name.ljust(10)[:10]
     
     def assign_task(self, item_key: str, config: Config, plex, progress_callback=None, 
-                   media_title: str = "", media_type: str = "", title_max_width: int = 20) -> None:
+                   media_title: str = "", media_type: str = "", title_max_width: int = 20, 
+                   fallback_queue=None) -> None:
         """
         Assign a new task to this worker.
         
@@ -143,6 +145,7 @@ class Worker:
             media_title: Media title for display
             media_type: Media type ('episode' or 'movie')
             title_max_width: Maximum width for title display
+            fallback_queue: Optional queue for codec error fallback (GPU workers only)
         """
         if self.is_busy:
             raise RuntimeError(f"Worker {self.worker_id} is already busy")
@@ -186,12 +189,12 @@ class Worker:
         # Start processing in background thread
         self.current_thread = threading.Thread(
             target=self._process_item, 
-            args=(item_key, config, plex, progress_callback),
+            args=(item_key, config, plex, progress_callback, fallback_queue),
             daemon=True
         )
         self.current_thread.start()
     
-    def _process_item(self, item_key: str, config: Config, plex, progress_callback=None) -> None:
+    def _process_item(self, item_key: str, config: Config, plex, progress_callback=None, fallback_queue=None) -> None:
         """
         Process a media item in the background thread.
         
@@ -200,10 +203,37 @@ class Worker:
             config: Configuration object
             plex: Plex server instance
             progress_callback: Callback function for progress updates
+            fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
         """
         try:
             process_item(item_key, self.gpu, self.gpu_device, config, plex, progress_callback)
             self.completed += 1
+        except CodecNotSupportedError as e:
+            # Codec not supported by GPU - re-queue for CPU worker
+            if self.worker_type == 'GPU':
+                logger.warning(f"GPU Worker {self.worker_id} detected unsupported codec for {item_key}; handing off to CPU worker")
+                # Add to fallback queue for CPU worker processing
+                if fallback_queue is not None and config.cpu_threads > 0:
+                    # Preserve media info if available (set during assign_task)
+                    media_title = self.media_title if hasattr(self, 'media_title') else None
+                    media_type = self.media_type if hasattr(self, 'media_type') else None
+                    try:
+                        fallback_queue.put((item_key, media_title, media_type))  # (item_key, media_title, media_type)
+                        logger.debug(f"Added {item_key} to CPU fallback queue")
+                    except Exception as queue_error:
+                        logger.error(f"Failed to add {item_key} to fallback queue: {queue_error}")
+                        self.failed += 1
+                else:
+                    if config.cpu_threads == 0:
+                        logger.warning(f"Codec not supported by GPU, but CPU threads are disabled (CPU_THREADS=0); skipping {item_key}")
+                    self.failed += 1
+                # Mark as completed from GPU worker perspective (task will be handled by CPU)
+                self.completed += 1
+            else:
+                # CPU worker received codec error - this is unexpected, treat as failure
+                logger.error(f"CPU Worker {self.worker_id} encountered codec error for {item_key}: {e}")
+                logger.error("Codec errors should not occur on CPU workers - file may be corrupted")
+                self.failed += 1
         except Exception as e:
             logger.error(f"Worker {self.worker_id} failed to process {item_key}: {e}")
             self.failed += 1
@@ -286,6 +316,7 @@ class WorkerPool:
         """
         self.workers = []
         self._progress_lock = threading.Lock()  # Thread-safe progress updates
+        self.fallback_queue = queue.Queue()  # Thread-safe queue for CPU-only tasks (codec fallback)
         
         # Add GPU workers first (prioritized) with round-robin GPU assignment
         for i in range(gpu_workers):
@@ -357,7 +388,8 @@ class WorkerPool:
             )
         
         # Process all items
-        while media_queue or self.has_busy_workers():
+        # Continue while we have items in main queue, fallback queue, or busy workers
+        while media_queue or not self.fallback_queue.empty() or self.has_busy_workers():
             # Check for completed tasks and update progress
             for worker in self.workers:
                 if worker.check_completion():
@@ -430,13 +462,69 @@ class WorkerPool:
                 last_overall_progress_log = current_time
             
             # Assign new tasks to available workers
-            while media_queue and self.has_available_workers():
+            # Prioritize fallback queue for CPU workers, then assign from main queue
+            while self.has_available_workers():
                 available_worker = Worker.find_available(self.workers)
-                if available_worker:
+                if not available_worker:
+                    break
+                
+                # For CPU workers, check fallback queue first (codec error fallback)
+                if available_worker.worker_type == 'CPU':
+                    try:
+                        # Get task from fallback queue (non-blocking)
+                        fallback_item = self.fallback_queue.get_nowait()
+                        item_key, media_title, media_type = fallback_item
+                        
+                        # Re-query Plex for media info if not available (fallback queue may have None)
+                        if media_title is None or media_type is None:
+                            try:
+                                from .plex_client import retry_plex_call
+                                # Query item directly for metadata (not /tree which is for MediaParts)
+                                data = retry_plex_call(plex.query, item_key)
+                                if data is not None:
+                                    # Try to get title from Video or Directory element
+                                    video_element = data.find('Video') or data.find('Directory')
+                                    if video_element is not None:
+                                        media_title = video_element.get('title', 'Unknown (fallback)')
+                                        media_type = video_element.tag.lower()
+                                    else:
+                                        media_title = 'Unknown (fallback)'
+                                        media_type = 'unknown'
+                                else:
+                                    media_title = 'Unknown (fallback)'
+                                    media_type = 'unknown'
+                            except Exception as e:
+                                logger.debug(f"Could not re-query Plex for {item_key}: {e}")
+                                media_title = 'Unknown (fallback)'
+                                media_type = 'unknown'
+                        
+                        # Create progress callback using functools.partial
+                        progress_callback = partial(self._update_worker_progress, available_worker)
+                        
+                        available_worker.assign_task(
+                            item_key, 
+                            config, 
+                            plex, 
+                            progress_callback=progress_callback,
+                            media_title=media_title,
+                            media_type=media_type,
+                            title_max_width=title_max_width,
+                            fallback_queue=None  # CPU workers don't need fallback queue
+                        )
+                        continue
+                    except queue.Empty:
+                        # No fallback tasks, continue to main queue
+                        pass
+                
+                # Assign from main queue (or fallback queue is empty for CPU)
+                if media_queue:
                     item_key, media_title, media_type = media_queue.pop(0)
                     
                     # Create progress callback using functools.partial
                     progress_callback = partial(self._update_worker_progress, available_worker)
+                    
+                    # Pass fallback_queue to GPU workers only
+                    fallback_queue = self.fallback_queue if available_worker.worker_type == 'GPU' else None
                     
                     available_worker.assign_task(
                         item_key, 
@@ -445,8 +533,53 @@ class WorkerPool:
                         progress_callback=progress_callback,
                         media_title=media_title,
                         media_type=media_type,
-                        title_max_width=title_max_width
+                        title_max_width=title_max_width,
+                        fallback_queue=fallback_queue
                     )
+                else:
+                    # No more tasks in main queue, but may have fallback tasks
+                    # Only CPU workers can process fallback tasks
+                    if available_worker.worker_type == 'CPU':
+                        try:
+                            fallback_item = self.fallback_queue.get_nowait()
+                            item_key, media_title, media_type = fallback_item
+                            
+                            # Re-query Plex for media info if not available
+                            if media_title is None or media_type is None:
+                                try:
+                                    from .plex_client import retry_plex_call
+                                    data = retry_plex_call(plex.query, f'{item_key}/tree')
+                                    media_element = data.find('.//Video')
+                                    if media_element is not None:
+                                        media_title = media_element.get('title', 'Unknown')
+                                        media_type = media_element.tag.lower()
+                                    else:
+                                        media_title = 'Unknown'
+                                        media_type = 'unknown'
+                                except Exception as e:
+                                    logger.debug(f"Could not re-query Plex for {item_key}: {e}")
+                                    media_title = 'Unknown (fallback)'
+                                    media_type = 'unknown'
+                            
+                            # Create progress callback using functools.partial
+                            progress_callback = partial(self._update_worker_progress, available_worker)
+                            
+                            available_worker.assign_task(
+                                item_key, 
+                                config, 
+                                plex, 
+                                progress_callback=progress_callback,
+                                media_title=media_title,
+                                media_type=media_type,
+                                title_max_width=title_max_width,
+                                fallback_queue=None
+                            )
+                        except queue.Empty:
+                            # No fallback tasks either, break
+                            break
+                    else:
+                        # No more tasks, break
+                        break
             
             # Adaptive sleep to balance responsiveness and CPU usage
             if self.has_busy_workers():

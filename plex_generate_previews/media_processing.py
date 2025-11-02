@@ -50,6 +50,16 @@ from .config import Config
 from .plex_client import retry_plex_call
 
 
+class CodecNotSupportedError(Exception):
+    """
+    Exception raised when a video codec is not supported by GPU hardware.
+    
+    This exception signals that the file should be processed by a CPU worker
+    instead of attempting CPU fallback within the GPU worker thread.
+    """
+    pass
+
+
 def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callback=None):
     """
     Parse a single FFmpeg progress line and call progress callback if provided.
@@ -127,17 +137,24 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
     # Combine all stderr lines into a single lowercase string for pattern matching
     stderr_text = ' '.join(stderr_lines).lower()
     
-    # Pattern list for codec/decoder errors (based on FFmpeg documentation)
+    # Pattern list for codec/decoder errors (based on FFmpeg documentation and common error messages)
+    # Focus ONLY on errors that indicate the codec is not supported by the hardware decoder
+    # Avoid patterns that could indicate other issues (corruption, memory, permissions, etc.)
     codec_error_patterns = [
-        'codec not supported',
-        'unsupported codec',
-        'unsupported codec id',
-        'unknown encoder',
+        # Specific decoder errors (indicate codec not available for hardware decoder)
+        'no decoder for',
         'unknown decoder',
         'decoder not found',
-        'no decoder for',
         'could not find codec',
-        'no codec',
+        'unsupported codec id',
+        # Hardware decoder specific errors (clearly indicate hardware decoder limitations)
+        'hardware decoder not found',
+        'hardware decoder unavailable',
+        'hwaccel decoder not found',
+        'hwaccel decoder unavailable',
+        # Generic codec errors (check these carefully - only in GPU context after failure)
+        'unsupported codec',
+        'codec not supported',
     ]
     
     # Check for codec error patterns in stderr (primary detection method)
@@ -145,9 +162,17 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
         if pattern in stderr_text:
             return True
     
-    # Also check exit codes: -22 (EINVAL, may be wrapped to 234 on Unix) or 69 (max error rate)
-    if returncode in [-22, 234, 69] and returncode != 0:
-        return True
+    # Check exit codes that may indicate codec issues
+    # -22 (EINVAL) - invalid argument, often codec-related
+    # 234 (wrapped -22 on Unix systems)
+    # 69 (max error rate) - FFmpeg hits error rate limit, often due to decode failures
+    # 1 (generic error) when combined with codec error patterns in stderr
+    # Note: We check returncode != 0 to avoid false positives on success
+    if returncode != 0:
+        # Primary codes for codec errors
+        if returncode in [-22, 234, 69]:
+            return True
+        # For other non-zero codes, rely on stderr patterns (already checked above)
     
     return False
 
@@ -365,6 +390,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
     did_retry = False
+    retry_rc = rc
+    retry_stderr_lines = stderr_lines
     if rc != 0 and use_skip_initial:
         did_retry = True
         logger.warning(f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame")
@@ -374,46 +401,43 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                 os.remove(img)
             except Exception:
                 pass
-        rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=False)
+        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False)
         # Rename images from retry
         for image in glob.glob(f'{output_folder}/img*.jpg'):
             frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
             frame_second = frame_no * config.plex_bif_frame_interval
             os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
         image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
+        # Update rc and stderr_lines to retry results for codec error detection
+        rc = retry_rc
+        stderr_lines = retry_stderr_lines
 
-    # CPU fallback: if GPU processing failed with codec error and CPU threads are available
-    did_cpu_fallback = False
+    # Check for codec errors after both attempts (with and without skip_frame)
+    # If in GPU context and codec error detected, raise exception for worker pool to handle
     if rc != 0 and image_count == 0 and gpu is not None:
-        # Detect if failure is due to unsupported codec
         if _detect_codec_error(rc, stderr_lines):
-            if config.cpu_threads > 0:
-                did_cpu_fallback = True
-                logger.warning(f"GPU processing failed with codec error (exit code {rc}) for {video_file}; falling back to CPU processing")
-                
-                # Log relevant stderr excerpt for debugging
-                stderr_excerpt = '\n'.join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
-                logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
-                
-                # Clean up any partial files from GPU attempt
-                for img in glob.glob(os.path.join(output_folder, '*.jpg')):
-                    try:
-                        os.remove(img)
-                    except Exception:
-                        pass
-                
-                # Retry with CPU (no GPU acceleration)
-                rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=use_skip_initial, gpu_override=None, gpu_device_path_override=None)
-                
-                # Rename images from CPU fallback attempt
-                for image in glob.glob(f'{output_folder}/img*.jpg'):
-                    frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
-                    frame_second = frame_no * config.plex_bif_frame_interval
-                    os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
-                image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
-            else:
-                # CPU threads disabled, cannot fallback
-                logger.warning(f"GPU processing failed with codec error (exit code {rc}) for {video_file}, but CPU fallback is disabled (CPU_THREADS=0); file will be skipped")
+            # Log relevant stderr excerpt for debugging
+            stderr_excerpt = '\n'.join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
+            logger.warning(f"GPU processing failed with codec error (exit code {rc}) for {video_file}; will hand off to CPU worker")
+            logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+            # Clean up any partial files from GPU attempts
+            for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                try:
+                    os.remove(img)
+                except Exception:
+                    pass
+            # Raise exception to signal worker pool to re-queue for CPU worker
+            raise CodecNotSupportedError(f"Codec not supported by GPU for {video_file} (exit code {rc})")
+
+    # CPU fallback: Only perform CPU fallback when not in GPU context (e.g., when gpu is None)
+    # This preserves the existing fallback behavior for non-GPU processing paths
+    did_cpu_fallback = False
+    if rc != 0 and image_count == 0 and gpu is None:
+        # Detect if failure is due to unsupported codec (even on CPU, for edge cases)
+        if _detect_codec_error(rc, stderr_lines):
+            logger.warning(f"Processing failed with codec error (exit code {rc}) for {video_file}; file may be corrupted or unsupported")
+            # For CPU context, we can't fallback further, so just log and continue
+            # The function will return failure status
 
     hw = (gpu is not None and not did_cpu_fallback)
     success = image_count > 0
@@ -563,6 +587,15 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
 
                 try:
                     gen_result = generate_images(media_file, tmp_path, gpu, gpu_device_path, config, progress_callback)
+                except CodecNotSupportedError:
+                    # Clean up temp directory before re-raising
+                    try:
+                        if os.path.exists(tmp_path):
+                            shutil.rmtree(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
+                    # Re-raise CodecNotSupportedError so worker can handle it
+                    raise
                 except Exception as e:
                     logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating images')
                     # Clean up temp directory on error

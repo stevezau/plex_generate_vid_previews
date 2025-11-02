@@ -18,7 +18,8 @@ from plex_generate_previews.media_processing import (
     heuristic_allows_skip,
     generate_images,
     process_item,
-    _detect_codec_error
+    _detect_codec_error,
+    CodecNotSupportedError
 )
 
 
@@ -543,11 +544,11 @@ class TestGenerateImages:
     @patch('time.sleep')
     @patch('plex_generate_previews.media_processing.glob.glob')
     @patch('plex_generate_previews.media_processing._detect_codec_error')
-    def test_generate_images_cpu_fallback_on_codec_error(self, mock_detect, mock_glob, 
-                                                         mock_sleep, mock_file, mock_exists, 
-                                                         mock_remove, mock_rename, mock_run, mock_popen, mock_mediainfo, 
-                                                         temp_dir, mock_config):
-        """Test CPU fallback when GPU fails with codec error and CPU threads > 0."""
+    def test_generate_images_raises_codec_error_in_gpu_context(self, mock_detect, mock_glob, 
+                                                                  mock_sleep, mock_file, mock_exists, 
+                                                                  mock_remove, mock_rename, mock_run, mock_popen, mock_mediainfo, 
+                                                                  temp_dir, mock_config):
+        """Test that CodecNotSupportedError is raised when GPU fails with codec error."""
         # Mock heuristic check - returns True to use skip_frame initially
         mock_run.return_value = MagicMock(returncode=0)
         
@@ -566,70 +567,30 @@ class TestGenerateImages:
         mock_proc_gpu_noskip.poll.side_effect = [None, 0]
         mock_proc_gpu_noskip.returncode = 69
         
-        # CPU fallback attempt succeeds
-        mock_proc_cpu = MagicMock()
-        mock_proc_cpu.poll.side_effect = [None, 0]
-        mock_proc_cpu.returncode = 0
-        
-        mock_popen.side_effect = [mock_proc_gpu_skip, mock_proc_gpu_noskip, mock_proc_cpu]
+        mock_popen.side_effect = [mock_proc_gpu_skip, mock_proc_gpu_noskip]
         mock_exists.return_value = False
         
-        # Glob call sequence:
-        # 1. img*.jpg after first attempt - empty (no images)
-        # 2. *.jpg count after first attempt - empty
-        # 3. *.jpg cleanup before retry - empty
-        # 4. img*.jpg after retry - empty (retry failed)
-        # 5. *.jpg count after retry - empty
-        # 6. *.jpg cleanup before CPU fallback - empty
-        # 7. img*.jpg after CPU fallback - has files (CPU succeeded)
-        # 8. *.jpg count after CPU fallback - has renamed files
-        # Track glob calls - must return empty until CPU fallback succeeds
-        glob_results = []
-        for i in range(6):
-            glob_results.append([])  # First 6 calls: empty (GPU attempts fail)
-        glob_results.append([f'{temp_dir}/img-000001.jpg', f'{temp_dir}/img-000002.jpg'])  # Call 7: images after CPU fallback
-        glob_results.append([f'{temp_dir}/0000000000.jpg', f'{temp_dir}/0000000005.jpg'])  # Call 8: renamed files
-        
-        glob_call_count = [0]
-        def glob_side_effect(pattern):
-            count = glob_call_count[0]
-            glob_call_count[0] += 1
-            
-            # Always return empty for first 6 calls (before CPU fallback)
-            if count < 6:
-                return []
-            
-            # Call 7: img*.jpg pattern after CPU fallback
-            if count == 6:
-                if 'img*.jpg' in pattern or pattern.endswith('img*.jpg'):
-                    return glob_results[6]  # Return img files
-                else:
-                    return []
-            
-            # Call 8+: renamed files
-            if count >= 7:
-                return glob_results[7]
-            
-            return []
-        
-        mock_glob.side_effect = glob_side_effect
+        # Glob returns empty (no images produced)
+        mock_glob.return_value = []
         
         # Mock codec error detection
         mock_detect.return_value = True
         
-        # Enable CPU threads
+        # Enable CPU threads (but generate_images should raise exception, not do fallback)
         mock_config.cpu_threads = 1
         
-        success, image_count, hw_used, seconds, speed = generate_images(
-            "/test/video.mp4", temp_dir, 'NVIDIA', None, mock_config
-        )
+        # Should raise CodecNotSupportedError instead of doing CPU fallback
+        with pytest.raises(CodecNotSupportedError) as exc_info:
+            generate_images(
+                "/test/video.mp4", temp_dir, 'NVIDIA', None, mock_config
+            )
         
-        # Should succeed via CPU fallback
-        assert success is True
-        assert image_count == 2
-        assert hw_used is False  # CPU was used, not GPU
+        assert "Codec not supported by GPU" in str(exc_info.value)
         assert mock_detect.called
-        assert mock_popen.call_count == 3  # GPU with skip_frame + GPU without skip_frame + CPU fallback
+        assert mock_popen.call_count == 2  # GPU with skip_frame + GPU without skip_frame (no CPU fallback)
+        
+        # Verify cleanup was attempted
+        assert mock_remove.called
     
     @patch('plex_generate_previews.media_processing.MediaInfo')
     @patch('subprocess.Popen')
@@ -683,15 +644,14 @@ class TestGenerateImages:
         # Disable CPU threads
         mock_config.cpu_threads = 0
         
-        success, image_count, hw_used, seconds, speed = generate_images(
-            "/test/video.mp4", temp_dir, 'NVIDIA', None, mock_config
-        )
+        # Should raise CodecNotSupportedError even when CPU threads disabled
+        with pytest.raises(CodecNotSupportedError):
+            generate_images(
+                "/test/video.mp4", temp_dir, 'NVIDIA', None, mock_config
+            )
         
-        # Should fail (no fallback)
-        assert success is False
-        assert image_count == 0
         assert mock_detect.called
-        assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback
+        assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback (exception raised)
     
     @patch('plex_generate_previews.media_processing.MediaInfo')
     @patch('subprocess.Popen')
