@@ -1,6 +1,6 @@
 # [stevezau/plex_generate_vid_previews](https://github.com/stevezau/plex_generate_vid_previews/)
 
-[![Version](https://img.shields.io/badge/version-2.3.0-blue.svg)](https://github.com/stevezau/plex_generate_vid_previews)
+[![Version](https://img.shields.io/github/v/release/stevezau/plex_generate_vid_previews)](https://github.com/stevezau/plex_generate_vid_previews)
 [![Python](https://img.shields.io/badge/python-3.7+-green.svg)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)
