@@ -12,6 +12,8 @@ import re
 from typing import Tuple, Optional, List, Dict, Any
 from loguru import logger
 
+from .utils import is_windows, is_macos
+
 # Minimum required FFmpeg version
 MIN_FFMPEG_VERSION = (7, 0, 0)  # FFmpeg 7.0.0+ for better hardware acceleration support
 
@@ -310,7 +312,7 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
             cmd += ['-hwaccel', hwaccel]
         
         # Choose OS-appropriate null sink
-        null_sink = 'NUL' if platform.system() == 'Windows' else '/dev/null'
+        null_sink = 'NUL' if is_windows() else '/dev/null'
         
         # Filters: D3D11VA requires downloading frames from GPU memory
         if hwaccel == 'd3d11va':
@@ -373,26 +375,6 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: Optional[str] = None)
 
 
 
-def _is_macos() -> bool:
-    """
-    Detect if running on macOS.
-    
-    Returns:
-        bool: True if running on macOS
-    """
-    return platform.system() == 'Darwin'
-
-
-def _is_windows() -> bool:
-    """
-    Detect if running on native Windows.
-    
-    Returns:
-        bool: True if running on Windows
-    """
-    return platform.system() == 'Windows'
-
-
 def _is_wsl2() -> bool:
     """
     Detect if running on Windows Subsystem for Linux 2 (WSL2).
@@ -421,35 +403,6 @@ def _is_wsl2() -> bool:
         logger.debug(f"Error checking for WSL2: {e}")
     
     return False
-
-
-def _detect_windows_d3d11va() -> Optional[Tuple[str, str, Dict[str, Any]]]:
-    """
-    Detect Windows GPU via D3D11VA testing.
-    
-    D3D11VA is Microsoft's universal hardware acceleration API that works
-    with all GPU vendors (NVIDIA, AMD, Intel) on Windows.
-    
-    Returns:
-        Optional[Tuple[str, str, Dict]]: ('WINDOWS_GPU', 'd3d11va', gpu_info) or None
-    """
-    if not _is_windows():
-        return None
-    
-    logger.debug("Testing Windows D3D11VA hardware acceleration...")
-    
-    # Test if D3D11VA works with actual video
-    if _test_hwaccel_functionality('d3d11va'):
-        gpu_info = {
-            'name': 'Windows GPU',
-            'acceleration': 'D3D11VA',
-            'device_path': 'd3d11va'
-        }
-        logger.debug("✓ Windows D3D11VA hardware acceleration is working")
-        return ('WINDOWS_GPU', 'd3d11va', gpu_info)
-    else:
-        logger.debug("✗ Windows D3D11VA test failed")
-        return None
 
 
 def _get_apple_gpu_name() -> str:
@@ -584,64 +537,6 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
                 logger.debug("Successfully detected NVIDIA GPU via nvidia-smi in WSL2")
     
     return vendor
-
-
-def _determine_vaapi_gpu_type(device_path: str) -> str:
-    """
-    Determine GPU vendor for a VAAPI device by checking its driver.
-    
-    Args:
-        device_path: Path to VAAPI device (e.g., /dev/dri/renderD128)
-        
-    Returns:
-        str: GPU vendor ('AMD', 'INTEL', 'NVIDIA', 'ARM', 'VIDEOCORE', or 'UNKNOWN')
-    """
-    logger.debug(f"Determining GPU vendor for device: {device_path}")
-    
-    try:
-        # Extract render device name from path (e.g., /dev/dri/renderD128 -> renderD128)
-        render_match = re.search(r'(renderD\d+)$', device_path)
-        if not render_match:
-            logger.debug(f"Could not parse render device from {device_path}")
-            return 'UNKNOWN'
-        
-        render_name = render_match.group(1)
-        drm_dir = "/sys/class/drm"
-        
-        if not os.path.exists(drm_dir):
-            logger.debug(f"DRM directory {drm_dir} does not exist")
-            return 'UNKNOWN'
-        
-        # Get the actual device path for this render device
-        render_sys_path = os.path.join(drm_dir, render_name, "device")
-        if not os.path.exists(render_sys_path):
-            logger.debug(f"Render device path {render_sys_path} does not exist")
-            return 'UNKNOWN'
-            
-        render_device_path = os.path.realpath(render_sys_path)
-        
-        # Find matching card by comparing device paths
-        for entry in os.listdir(drm_dir):
-            if not entry.startswith("card") or "-" in entry:
-                continue
-            
-            card_device_path = os.path.realpath(os.path.join(drm_dir, entry, "device"))
-            if card_device_path == render_device_path:
-                # Found matching card, get its driver
-                driver_path = os.path.join(drm_dir, entry, "device", "driver")
-                if os.path.islink(driver_path):
-                    driver_name = os.path.basename(os.readlink(driver_path))
-                    logger.debug(f"Mapped {device_path} to {entry} (driver: {driver_name})")
-                    
-                    vendor = _get_gpu_vendor_from_driver(driver_name)
-                    logger.debug(f"Mapped driver '{driver_name}' to vendor: {vendor}")
-                    return vendor
-        
-        logger.debug(f"No matching card found for {device_path}, defaulting to UNKNOWN")
-        return 'UNKNOWN'
-    except Exception as e:
-        logger.debug(f"Error determining GPU vendor: {e}")
-        return 'UNKNOWN'
 
 
 def _detect_nvidia_via_nvidia_smi() -> str:
@@ -938,39 +833,28 @@ def _test_acceleration_method(vendor: str, acceleration: str, device_path: Optio
     return test_passed
 
 
-def detect_all_gpus() -> List[Tuple[str, str, dict]]:
+def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
     """
-    Detect all available GPU hardware using FFmpeg capability detection.
-    
-    Checks FFmpeg's available hardware acceleration capabilities and returns
-    all working GPUs instead of just the first one.
+    Detect Linux GPUs from /dev/dri devices.
     
     Returns:
         List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
-            - gpu_type: 'NVIDIA', 'AMD', 'INTEL', 'APPLE', 'WINDOWS_GPU'
-            - gpu_device: Device path or info string
-            - gpu_info_dict: Dictionary with GPU details (name, vram, etc.)
     """
-    logger.debug("=== Starting Multi-GPU Detection ===")
-    _log_system_info()
-    
     detected_gpus = []
     detected_vendors = set()  # Track which vendors we've already detected
     
-    # Step 1: Enumerate physical GPUs from /dev/dri (Linux only)
+    # Enumerate physical GPUs from /dev/dri
     logger.debug("=== Enumerating Physical GPUs ===")
     physical_gpus = _get_gpu_devices()  # Returns: [(card_name, render_device, driver)]
     
-    # Only log /dev/dri enumeration details on Linux
-    if platform.system() == 'Linux':
-        if not physical_gpus:
-            logger.debug("No physical GPUs found in /dev/dri")
-        else:
-            logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
-            for card_name, render_device, driver in physical_gpus:
-                logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
+    if not physical_gpus:
+        logger.debug("No physical GPUs found in /dev/dri")
+    else:
+        logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
+        for card_name, render_device, driver in physical_gpus:
+            logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
     
-    # Step 2: For each physical GPU, test appropriate acceleration methods
+    # For each physical GPU, test appropriate acceleration methods
     logger.debug("=== Testing GPU Acceleration Methods ===")
     for card_name, render_device, driver in physical_gpus:
         vendor = _get_gpu_vendor_from_driver(driver)
@@ -1083,66 +967,94 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
         else:
             logger.warning(f"  ❌ {card_name}: No fallback available, GPU unusable")
     
-    # Step 3: Native Windows - try D3D11VA if ffmpeg reports it
-    if platform.system() == 'Windows':
-        hwaccels = _get_ffmpeg_hwaccels()
-        logger.debug(f"Windows platform detected; FFmpeg hwaccels: {hwaccels}")
-        if 'd3d11va' in hwaccels:
-            logger.info("  Checking Windows D3D11VA GPU...")
-            logger.info("    Testing D3D11VA acceleration...")
-            if _test_acceleration_method('WINDOWS_GPU', 'D3D11VA', 'd3d11va'):
-                gpu_name = "Windows GPU"
-                gpu_info = {
-                    'name': gpu_name,
-                    'acceleration': 'D3D11VA',
-                    'device_path': 'd3d11va',
-                }
-                detected_gpus.append(('WINDOWS_GPU', 'd3d11va', gpu_info))
-                logger.info("  ✅ Windows D3D11VA working")
-        else:
-            logger.debug("d3d11va not reported by FFmpeg; skipping Windows D3D11VA probe")
+    return detected_gpus
+
+
+def _detect_windows_gpus() -> List[Tuple[str, str, dict]]:
+    """
+    Detect Windows GPUs using D3D11VA.
     
-    # Step 4: Check for macOS VideoToolbox (doesn't use /dev/dri)
-    if _is_macos():
-        logger.debug("Detected macOS platform, testing VideoToolbox acceleration...")
-        logger.info("  Checking Apple GPU...")
-        logger.info("    Testing VideoToolbox acceleration...")
-        if _test_acceleration_method('APPLE', 'VIDEOTOOLBOX', 'videotoolbox'):
-            gpu_name = get_gpu_name('APPLE', 'videotoolbox')
+    Returns:
+        List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
+    """
+    detected_gpus = []
+    
+    # Try D3D11VA if ffmpeg reports it
+    hwaccels = _get_ffmpeg_hwaccels()
+    logger.debug(f"Windows platform detected; FFmpeg hwaccels: {hwaccels}")
+    if 'd3d11va' in hwaccels:
+        logger.info("  Checking Windows D3D11VA GPU...")
+        logger.info("    Testing D3D11VA acceleration...")
+        if _test_acceleration_method('WINDOWS_GPU', 'D3D11VA', 'd3d11va'):
+            gpu_name = "Windows GPU"
             gpu_info = {
                 'name': gpu_name,
-                'acceleration': 'VIDEOTOOLBOX',
-                'device_path': 'videotoolbox'
+                'acceleration': 'D3D11VA',
+                'device_path': 'd3d11va',
             }
-            detected_gpus.append(('APPLE', 'videotoolbox', gpu_info))
-            logger.info("  ✅ Apple VideoToolbox working")
-        else:
-            logger.warning("  ❌ Apple VideoToolbox test failed")
+            detected_gpus.append(('WINDOWS_GPU', 'd3d11va', gpu_info))
+            logger.info("  ✅ Windows D3D11VA working")
+    else:
+        logger.debug("d3d11va not reported by FFmpeg; skipping Windows D3D11VA probe")
     
-    # Note: Windows D3D11VA detection handled above via hwaccels list and probe
+    return detected_gpus
+
+
+def _detect_macos_gpus() -> List[Tuple[str, str, dict]]:
+    """
+    Detect macOS GPUs using VideoToolbox.
+    
+    Returns:
+        List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
+    """
+    detected_gpus = []
+    
+    # Check for macOS VideoToolbox (doesn't use /dev/dri)
+    logger.debug("Detected macOS platform, testing VideoToolbox acceleration...")
+    logger.info("  Checking Apple GPU...")
+    logger.info("    Testing VideoToolbox acceleration...")
+    if _test_acceleration_method('APPLE', 'VIDEOTOOLBOX', 'videotoolbox'):
+        gpu_name = get_gpu_name('APPLE', 'videotoolbox')
+        gpu_info = {
+            'name': gpu_name,
+            'acceleration': 'VIDEOTOOLBOX',
+            'device_path': 'videotoolbox'
+        }
+        detected_gpus.append(('APPLE', 'videotoolbox', gpu_info))
+        logger.info("  ✅ Apple VideoToolbox working")
+    else:
+        logger.warning("  ❌ Apple VideoToolbox test failed")
+    
+    return detected_gpus
+
+
+def detect_all_gpus() -> List[Tuple[str, str, dict]]:
+    """
+    Detect all available GPU hardware using FFmpeg capability detection.
+    
+    Checks FFmpeg's available hardware acceleration capabilities and returns
+    all working GPUs instead of just the first one.
+    
+    Returns:
+        List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
+            - gpu_type: 'NVIDIA', 'AMD', 'INTEL', 'APPLE', 'WINDOWS_GPU'
+            - gpu_device: Device path or info string
+            - gpu_info_dict: Dictionary with GPU details (name, vram, etc.)
+    """
+    logger.debug("=== Starting Multi-GPU Detection ===")
+    _log_system_info()
+    
+    detected_gpus = []
+    
+    # Detect GPUs based on platform
+    if platform.system() == 'Linux':
+        detected_gpus.extend(_detect_linux_gpus())
+    elif is_windows():
+        detected_gpus.extend(_detect_windows_gpus())
+    elif is_macos():
+        detected_gpus.extend(_detect_macos_gpus())
     
     logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} working GPU(s) ===")
     return detected_gpus
 
-
-def _find_all_vaapi_devices() -> List[str]:
-    """
-    Find all available VAAPI devices.
-    
-    Returns:
-        List[str]: List of VAAPI device paths
-    """
-    devices = []
-    gpu_devices = _get_gpu_devices()
-    
-    if not gpu_devices:
-        logger.debug("No GPU devices found for VAAPI")
-        return devices
-    
-    # Add all GPU devices as potential VAAPI devices
-    for card_name, render_device, driver in gpu_devices:
-        devices.append(render_device)
-        logger.debug(f"Found potential VAAPI device: {render_device} (card: {card_name}, driver: {driver})")
-    
-    return devices
 

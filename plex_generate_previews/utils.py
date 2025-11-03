@@ -97,6 +97,12 @@ def is_windows() -> bool:
     return os.name == 'nt'
 
 
+def is_macos() -> bool:
+    """Check if running on macOS operating system."""
+    import platform
+    return platform.system() == 'Darwin'
+
+
 def sanitize_path(path: str) -> str:
     """
     Sanitize file path for cross-platform compatibility.
@@ -147,34 +153,5 @@ def setup_working_directory(tmp_folder: str) -> str:
     os.makedirs(working_tmp_folder, exist_ok=True)
     
     return working_tmp_folder
-
-
-def clear_directory(path: str) -> None:
-    """
-    Remove all contents of a directory but keep the directory itself.
-    
-    Args:
-        path: Directory path to clear
-        
-    Raises:
-        OSError: If directory clearing fails
-    """
-    if not os.path.exists(path):
-        return
-    
-    if not os.path.isdir(path):
-        raise ValueError(f"Path is not a directory: {path}")
-    
-    # Remove all contents
-    for item in os.listdir(path):
-        item_path = os.path.join(path, item)
-        try:
-            if os.path.isfile(item_path) or os.path.islink(item_path):
-                os.unlink(item_path)
-            elif os.path.isdir(item_path):
-                shutil.rmtree(item_path)
-        except Exception as e:
-            # Log but continue with other items
-            raise OSError(f"Failed to remove {item_path}: {e}")
 
 

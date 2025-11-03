@@ -210,7 +210,7 @@ class TestWorker:
             plex,
             media_title='AV1 Video',
             media_type='episode',
-            fallback_queue=fallback_queue
+            cpu_fallback_queue=fallback_queue
         )
         
         # Wait for thread to complete
@@ -248,7 +248,7 @@ class TestWorker:
             plex,
             media_title='AV1 Video',
             media_type='episode',
-            fallback_queue=fallback_queue
+            cpu_fallback_queue=fallback_queue
         )
         
         # Wait for thread to complete
@@ -307,8 +307,8 @@ class TestWorkerPool:
         assert pool.workers[5].worker_type == 'CPU'
         
         # Should have fallback queue
-        assert hasattr(pool, 'fallback_queue')
-        assert isinstance(pool.fallback_queue, queue.Queue)
+        assert hasattr(pool, 'cpu_fallback_queue')
+        assert isinstance(pool.cpu_fallback_queue, queue.Queue)
     
     def test_worker_pool_gpu_assignment(self):
         """Test round-robin GPU assignment."""
@@ -327,9 +327,10 @@ class TestWorkerPool:
         assert pool.workers[1].gpu_index == 1
         assert pool.workers[3].gpu_index == 1
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_pool_process_items(self, mock_process):
         """Test processing items with worker pool."""
+        # Track if mock was called
         mock_process.return_value = None
         
         selected_gpus = []
@@ -515,8 +516,11 @@ class TestWorkerPool:
         
         pool.process_items(items, config, plex, worker_progress, main_progress)
         
+        # Wait a bit longer for threads to complete and fallback queue to process
+        time.sleep(0.2)
+        
         # Should have been called twice: once from GPU, once from CPU
-        assert len(call_order) == 2
+        assert len(call_order) == 2, f"Expected 2 calls, got {len(call_order)}: {call_order}"
         assert call_order[0] == ('key1', 'NVIDIA')  # GPU worker tried first
         assert call_order[1] == ('key1', None)  # CPU worker succeeded
         
@@ -563,6 +567,9 @@ class TestWorkerPool:
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
         
         pool.process_items(items, config, plex, worker_progress, main_progress)
+        
+        # Wait a bit longer for all threads and fallback queue to process
+        time.sleep(0.2)
         
         # Verify all items were processed
         total_completed = sum(w.completed for w in pool.workers)

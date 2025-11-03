@@ -149,25 +149,6 @@ class TestWindowsGPUValidation:
     """Test that GPU detection works on Windows with D3D11VA."""
     
     @patch('os.name', 'nt')
-    @patch('platform.system', return_value='Windows')
-    @patch('plex_generate_previews.gpu_detection._test_hwaccel_functionality')
-    def test_windows_d3d11va_detection(self, mock_test_hwaccel, mock_platform):
-        """Test that Windows can detect D3D11VA GPU."""
-        from plex_generate_previews.gpu_detection import _detect_windows_d3d11va
-        
-        # Simulate D3D11VA working
-        mock_test_hwaccel.return_value = True
-        
-        result = _detect_windows_d3d11va()
-        
-        assert result is not None
-        gpu_type, device, gpu_info = result
-        assert gpu_type == 'WINDOWS_GPU'
-        assert device == 'd3d11va'
-        assert gpu_info['acceleration'] == 'D3D11VA'
-        assert gpu_info['name'] == 'Windows GPU'
-    
-    @patch('os.name', 'nt')
     @patch('plex_generate_previews.cli.is_windows', return_value=True)
     @patch('plex_generate_previews.cli.detect_all_gpus')
     @patch('plex_generate_previews.cli.logger')

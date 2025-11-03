@@ -54,13 +54,6 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
                 retry_delay *= 1.5  # Exponential backoff
             else:
                 logger.error(f"XML parsing failed after {max_retries + 1} attempts: {e}")
-                logger.debug(f"Raw XML content (first 2000 chars):")
-                # Try to get the raw XML for debugging
-                try:
-                    # This is a bit of a hack - we'll log what we can
-                    logger.debug("XML content not available for debugging in retry wrapper")
-                except:
-                    pass
         except Exception as e:
             # For non-XML errors, don't retry
             raise e

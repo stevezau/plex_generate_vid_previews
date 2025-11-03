@@ -168,79 +168,18 @@ def show_docker_help():
     logger.info('🔧 For more options, use: plex-generate-previews --help')
 
 
-def load_config(cli_args=None) -> Config:
+def _validate_plex_config(plex_url: str, plex_token: str, plex_config_folder: str, 
+                          missing_params: list, validation_errors: list) -> None:
     """
-    Load and validate configuration from CLI arguments and environment variables.
-    CLI arguments take precedence over environment variables.
+    Validate Plex server configuration parameters.
     
     Args:
-        cli_args: Parsed CLI arguments or None
-        
-    Returns:
-        Config: Validated configuration object
-        
-    Raises:
-        SystemExit: If required configuration is missing or invalid
+        plex_url: Plex server URL
+        plex_token: Plex authentication token
+        plex_config_folder: Path to Plex config folder
+        missing_params: List to append missing parameter errors
+        validation_errors: List to append validation errors
     """
-    # Extract CLI values (None if not provided)
-    if cli_args is None:
-        cli_args = None  # Empty namespace
-    
-    # Load configuration with precedence: CLI args > env vars > defaults
-    plex_url = get_config_value_str(cli_args, 'plex_url', 'PLEX_URL', '')
-    plex_token = get_config_value_str(cli_args, 'plex_token', 'PLEX_TOKEN', '')
-    plex_timeout = get_config_value_int(cli_args, 'plex_timeout', 'PLEX_TIMEOUT', 60)
-    
-    # Handle plex_libraries (special case for comma-separated values)
-    plex_libraries = get_config_value_str(cli_args, 'plex_libraries', 'PLEX_LIBRARIES', '')
-    plex_libraries = [library.strip().lower() for library in plex_libraries.split(',') if library.strip()]
-    
-    plex_config_folder = get_config_value_str(cli_args, 'plex_config_folder', 'PLEX_CONFIG_FOLDER', '/path_to/plex/Library/Application Support/Plex Media Server')
-    plex_local_videos_path_mapping = get_config_value_str(cli_args, 'plex_local_videos_path_mapping', 'PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')
-    plex_videos_path_mapping = get_config_value_str(cli_args, 'plex_videos_path_mapping', 'PLEX_VIDEOS_PATH_MAPPING', '')
-    
-    plex_bif_frame_interval = get_config_value_int(cli_args, 'plex_bif_frame_interval', 'PLEX_BIF_FRAME_INTERVAL', 5)
-    thumbnail_quality = get_config_value_int(cli_args, 'thumbnail_quality', 'THUMBNAIL_QUALITY', 4)
-    regenerate_thumbnails = get_config_value_bool(cli_args, 'regenerate_thumbnails', 'REGENERATE_THUMBNAILS', False)
-    
-    gpu_threads = get_config_value_int(cli_args, 'gpu_threads', 'GPU_THREADS', 1)
-    cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
-    gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
-    
-    # Use system temp directory (respects TMPDIR, TEMP, TMP env vars)
-    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', tempfile.gettempdir())
-    
-    # Handle log_level (case insensitive)
-    log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
-    
-    # Initialize validation lists
-    missing_params = []
-    validation_errors = []
-    
-    # Validate log level
-    valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    if log_level not in valid_log_levels:
-        validation_errors.append(f'LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})')
-    
-    # Update logging level early so debug statements work
-    if log_level in valid_log_levels:
-        from .logging_config import setup_logging
-        setup_logging(log_level)
-    
-    # Find FFmpeg path
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
-        logger.error('FFmpeg not found. FFmpeg must be installed and available in PATH.')
-        sys.exit(1)
-    
-    # Test FFmpeg actually works
-    try:
-        result = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
-        if result.returncode != 0:
-            validation_errors.append('FFmpeg found but not working properly')
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        validation_errors.append('FFmpeg found but cannot execute properly')
-    
     # Check basic required parameters first
     if not plex_url:
         if is_docker_environment():
@@ -255,7 +194,7 @@ def load_config(cli_args=None) -> Config:
             missing_params.append('PLEX_TOKEN is required (set PLEX_TOKEN environment variable)')
         else:
             missing_params.append('PLEX_TOKEN is required (use --plex-token or set PLEX_TOKEN environment variable)')
-        
+    
     # Check PLEX_CONFIG_FOLDER
     if not plex_config_folder or plex_config_folder == '/path_to/plex/Library/Application Support/Plex Media Server':
         if is_docker_environment():
@@ -365,7 +304,19 @@ def load_config(cli_args=None) -> Config:
                             validation_errors.append(f'Permission denied reading localhost folder: {localhost_path}')
             except PermissionError:
                 validation_errors.append(f'Permission denied reading PLEX_CONFIG_FOLDER: {plex_config_folder}')
+
+
+def _validate_processing_config(plex_bif_frame_interval: int, thumbnail_quality: int, 
+                                plex_timeout: int, validation_errors: list) -> None:
+    """
+    Validate processing configuration parameters.
     
+    Args:
+        plex_bif_frame_interval: Frame interval in seconds
+        thumbnail_quality: Thumbnail quality (1-10)
+        plex_timeout: Plex API timeout in seconds
+        validation_errors: List to append validation errors
+    """
     # Validate numeric ranges
     if plex_bif_frame_interval < 1 or plex_bif_frame_interval > 60:
         validation_errors.append(f'PLEX_BIF_FRAME_INTERVAL must be between 1-60 seconds (got: {plex_bif_frame_interval})')
@@ -375,7 +326,22 @@ def load_config(cli_args=None) -> Config:
     
     if plex_timeout < 10 or plex_timeout > 3600:
         validation_errors.append(f'PLEX_TIMEOUT must be between 10-3600 seconds (got: {plex_timeout})')
+
+
+def _validate_thread_config(gpu_threads: int, cpu_threads: int, gpu_selection: str, 
+                            validation_errors: list) -> tuple[bool, str]:
+    """
+    Validate thread configuration parameters.
     
+    Args:
+        gpu_threads: Number of GPU worker threads
+        cpu_threads: Number of CPU worker threads
+        gpu_selection: GPU selection string
+        validation_errors: List to append validation errors
+        
+    Returns:
+        tuple: (should_exit, error_message) - (True, message) if both threads are 0, (False, "") otherwise
+    """
     # Validate thread counts
     if gpu_threads < 0 or gpu_threads > 32:
         validation_errors.append(f'GPU_THREADS must be between 0-32 (got: {gpu_threads})')
@@ -395,8 +361,27 @@ def load_config(cli_args=None) -> Config:
         except ValueError:
             validation_errors.append(f'GPU_SELECTION must be "all" or comma-separated integers (got: {gpu_selection})')
     
-    # Handle tmp_folder: create if missing
+    # Check if both threads are 0 (this requires immediate exit, not just a validation error)
+    if cpu_threads == 0 and gpu_threads == 0:
+        return True, 'Both CPU_THREADS and GPU_THREADS are set to 0. At least one processing method must be enabled.'
+    
+    return False, ""
+
+
+def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, bool]:
+    """
+    Validate path configuration and create tmp folder if needed.
+    
+    Args:
+        tmp_folder: Temporary folder path
+        validation_errors: List to append validation errors
+        
+    Returns:
+        tuple: (tmp_folder_created_by_us, success) - whether we created the folder and if validation passed
+    """
     tmp_folder_created_by_us = False
+    
+    # Handle tmp_folder: create if missing
     if not os.path.exists(tmp_folder):
         # Create the directory
         try:
@@ -405,6 +390,7 @@ def load_config(cli_args=None) -> Config:
             logger.debug(f'Created TMP_FOLDER: {tmp_folder}')
         except OSError as e:
             validation_errors.append(f'Failed to create TMP_FOLDER ({tmp_folder}): {e}')
+            return tmp_folder_created_by_us, False
     
     # Validate tmp_folder is writable
     if os.path.exists(tmp_folder) and not os.access(tmp_folder, os.W_OK):
@@ -422,6 +408,88 @@ def load_config(cli_args=None) -> Config:
             # AttributeError: os.statvfs doesn't exist on Windows
             # OSError: Cannot access the folder for other reasons
             logger.debug(f'Cannot check disk space for TMP_FOLDER ({tmp_folder}) - skipping disk space check')
+    
+    return tmp_folder_created_by_us, True
+
+
+def load_config(cli_args=None) -> Config:
+    """
+    Load and validate configuration from CLI arguments and environment variables.
+    CLI arguments take precedence over environment variables.
+    
+    Args:
+        cli_args: Parsed CLI arguments or None
+        
+    Returns:
+        Config: Validated configuration object
+        
+    Raises:
+        SystemExit: If required configuration is missing or invalid
+    """
+    # Extract CLI values (None if not provided)
+    if cli_args is None:
+        cli_args = None  # Empty namespace
+    
+    # Load configuration with precedence: CLI args > env vars > defaults
+    plex_url = get_config_value_str(cli_args, 'plex_url', 'PLEX_URL', '')
+    plex_token = get_config_value_str(cli_args, 'plex_token', 'PLEX_TOKEN', '')
+    plex_timeout = get_config_value_int(cli_args, 'plex_timeout', 'PLEX_TIMEOUT', 60)
+    
+    # Handle plex_libraries (special case for comma-separated values)
+    plex_libraries = get_config_value_str(cli_args, 'plex_libraries', 'PLEX_LIBRARIES', '')
+    plex_libraries = [library.strip().lower() for library in plex_libraries.split(',') if library.strip()]
+    
+    plex_config_folder = get_config_value_str(cli_args, 'plex_config_folder', 'PLEX_CONFIG_FOLDER', '/path_to/plex/Library/Application Support/Plex Media Server')
+    plex_local_videos_path_mapping = get_config_value_str(cli_args, 'plex_local_videos_path_mapping', 'PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')
+    plex_videos_path_mapping = get_config_value_str(cli_args, 'plex_videos_path_mapping', 'PLEX_VIDEOS_PATH_MAPPING', '')
+    
+    plex_bif_frame_interval = get_config_value_int(cli_args, 'plex_bif_frame_interval', 'PLEX_BIF_FRAME_INTERVAL', 5)
+    thumbnail_quality = get_config_value_int(cli_args, 'thumbnail_quality', 'THUMBNAIL_QUALITY', 4)
+    regenerate_thumbnails = get_config_value_bool(cli_args, 'regenerate_thumbnails', 'REGENERATE_THUMBNAILS', False)
+    
+    gpu_threads = get_config_value_int(cli_args, 'gpu_threads', 'GPU_THREADS', 1)
+    cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
+    gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
+    
+    # Use system temp directory (respects TMPDIR, TEMP, TMP env vars)
+    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', tempfile.gettempdir())
+    
+    # Handle log_level (case insensitive)
+    log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
+    
+    # Initialize validation lists
+    missing_params = []
+    validation_errors = []
+    
+    # Validate log level
+    valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    if log_level not in valid_log_levels:
+        validation_errors.append(f'LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})')
+    
+    # Update logging level early so debug statements work
+    if log_level in valid_log_levels:
+        from .logging_config import setup_logging
+        setup_logging(log_level)
+    
+    # Find FFmpeg path
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        logger.error('FFmpeg not found. FFmpeg must be installed and available in PATH.')
+        sys.exit(1)
+    
+    # Test FFmpeg actually works
+    try:
+        result = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
+        if result.returncode != 0:
+            validation_errors.append('FFmpeg found but not working properly')
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        validation_errors.append('FFmpeg found but cannot execute properly')
+    
+    # Validate configuration using helper functions
+    _validate_plex_config(plex_url, plex_token, plex_config_folder, missing_params, validation_errors)
+    _validate_processing_config(plex_bif_frame_interval, thumbnail_quality, plex_timeout, validation_errors)
+    should_exit, thread_error = _validate_thread_config(gpu_threads, cpu_threads, gpu_selection, validation_errors)
+    tmp_folder_created_by_us, _ = _validate_paths(tmp_folder, validation_errors)
     
     # Handle missing parameters (show help)
     if missing_params:
@@ -454,8 +522,8 @@ def load_config(cli_args=None) -> Config:
             logger.error(f'   {i}. {error_msg}')
         return None  # Return None to indicate validation failure
     
-    # Validate thread configuration
-    if cpu_threads == 0 and gpu_threads == 0:
+    # Check if both threads are 0 (requires immediate exit)
+    if should_exit:
         logger.error('❌ Configuration Error: Both CPU_THREADS and GPU_THREADS are set to 0.')
         logger.error('📋 At least one processing method must be enabled.')
         logger.info('💡 Use --help to see all available options.')

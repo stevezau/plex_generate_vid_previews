@@ -13,7 +13,6 @@ from plex_generate_previews.gpu_detection import (
     _test_hwaccel_functionality,
     _test_acceleration_method,
     _get_gpu_devices,
-    _determine_vaapi_gpu_type,
     get_gpu_name,
     _get_ffmpeg_hwaccels
 )
@@ -79,7 +78,8 @@ class TestDetectAllGPUs:
         """Test when no GPUs are detected."""
         mock_devices.return_value = []
         # Ensure platform-specific paths (macOS) are not taken in this test
-        with patch('plex_generate_previews.gpu_detection._is_macos', return_value=False), \
+        with patch('plex_generate_previews.gpu_detection.is_macos', return_value=False), \
+             patch('plex_generate_previews.gpu_detection.is_windows', return_value=False), \
              patch('plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels', return_value=[]):
             gpus = detect_all_gpus()
         
@@ -300,70 +300,6 @@ class TestGetGPUDevices:
         
         # Should return empty list
         assert devices == []
-
-
-class TestDetermineVAAPIGPUType:
-    """Test VAAPI GPU type determination."""
-    
-    @patch('plex_generate_previews.gpu_detection.os.readlink')
-    @patch('plex_generate_previews.gpu_detection.os.path.islink')
-    @patch('plex_generate_previews.gpu_detection.os.listdir')
-    @patch('plex_generate_previews.gpu_detection.os.path.exists')
-    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
-    def test_determine_vaapi_gpu_type_intel(self, mock_realpath, mock_exists, mock_listdir, mock_islink, mock_readlink):
-        """Test detecting Intel GPU via i915 driver."""
-        mock_exists.return_value = True
-        mock_listdir.return_value = ['card0']
-        mock_islink.return_value = True
-        mock_readlink.return_value = 'i915'
-        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:02.0'
-        
-        gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
-        
-        assert gpu_type == 'INTEL'
-    
-    @patch('plex_generate_previews.gpu_detection.os.readlink')
-    @patch('plex_generate_previews.gpu_detection.os.path.islink')
-    @patch('plex_generate_previews.gpu_detection.os.listdir')
-    @patch('plex_generate_previews.gpu_detection.os.path.exists')
-    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
-    def test_determine_vaapi_gpu_type_amd(self, mock_realpath, mock_exists, mock_listdir, mock_islink, mock_readlink):
-        """Test detecting AMD GPU via amdgpu driver."""
-        mock_exists.return_value = True
-        mock_listdir.return_value = ['card0']
-        mock_islink.return_value = True
-        mock_readlink.return_value = 'amdgpu'
-        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:01.0'
-        
-        gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
-        
-        assert gpu_type == 'AMD'
-    
-    @patch('plex_generate_previews.gpu_detection.os.readlink')
-    @patch('plex_generate_previews.gpu_detection.os.path.islink')
-    @patch('plex_generate_previews.gpu_detection.os.listdir')
-    @patch('plex_generate_previews.gpu_detection.os.path.exists')
-    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
-    def test_determine_vaapi_gpu_type_radeon(self, mock_realpath, mock_exists, mock_listdir, mock_islink, mock_readlink):
-        """Test detecting AMD GPU via radeon driver."""
-        mock_exists.return_value = True
-        mock_listdir.return_value = ['card0']
-        mock_islink.return_value = True
-        mock_readlink.return_value = 'radeon'
-        mock_realpath.side_effect = lambda x: '/sys/devices/pci0000:00/0000:00:01.0'
-        
-        gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
-        
-        assert gpu_type == 'AMD'
-    
-    @patch('plex_generate_previews.gpu_detection.os.path.exists')
-    def test_determine_vaapi_gpu_type_unknown(self, mock_exists):
-        """Test unknown GPU type."""
-        mock_exists.return_value = False
-        
-        gpu_type = _determine_vaapi_gpu_type('/dev/dri/renderD128')
-        
-        assert gpu_type == 'UNKNOWN'
 
 
 class TestGetGPUName:
@@ -720,14 +656,18 @@ class TestAccelerationMethodTesting:
 class TestDetectAllGPUsEdgeCases:
     """Test edge cases in detect_all_gpus."""
     
-    @patch('plex_generate_previews.gpu_detection._is_macos')
+    @patch('plex_generate_previews.gpu_detection.is_macos')
+    @patch('plex_generate_previews.gpu_detection.is_windows')
+    @patch('plex_generate_previews.gpu_detection.platform.system')
     @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
-    @patch('plex_generate_previews.gpu_detection._get_apple_gpu_name')
-    def test_detect_all_gpus_macos_videotoolbox(self, mock_apple_name, mock_test, mock_is_macos):
+    @patch('plex_generate_previews.gpu_detection.get_gpu_name')
+    def test_detect_all_gpus_macos_videotoolbox(self, mock_gpu_name, mock_test, mock_platform_system, mock_is_windows, mock_is_macos):
         """Test macOS VideoToolbox detection."""
         mock_is_macos.return_value = True
+        mock_is_windows.return_value = False
+        mock_platform_system.return_value = 'Darwin'
         mock_test.return_value = True
-        mock_apple_name.return_value = 'Apple M1 Max'
+        mock_gpu_name.return_value = 'Apple M1 Max'
         
         gpus = detect_all_gpus()
         
@@ -736,12 +676,16 @@ class TestDetectAllGPUsEdgeCases:
         assert len(apple_gpus) > 0
         assert 'M1 Max' in apple_gpus[0][2]['name']
     
-    @patch('plex_generate_previews.gpu_detection._is_macos')
+    @patch('plex_generate_previews.gpu_detection.is_macos')
+    @patch('plex_generate_previews.gpu_detection.is_windows')
+    @patch('plex_generate_previews.gpu_detection.platform.system')
     @patch('plex_generate_previews.gpu_detection._get_gpu_devices')
     @patch('plex_generate_previews.gpu_detection._test_acceleration_method')
-    def test_detect_all_gpus_nvidia_nvenc(self, mock_test, mock_devices, mock_is_macos):
+    def test_detect_all_gpus_nvidia_nvenc(self, mock_test, mock_devices, mock_platform_system, mock_is_windows, mock_is_macos):
         """Test NVIDIA NVENC detection."""
         mock_is_macos.return_value = False
+        mock_is_windows.return_value = False
+        mock_platform_system.return_value = 'Linux'
         mock_devices.return_value = [('card0', '/dev/dri/renderD128', 'nvidia')]
         
         def test_side_effect(vendor, accel, device):
