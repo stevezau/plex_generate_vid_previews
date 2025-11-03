@@ -6,11 +6,13 @@ progress tracking, and error handling.
 """
 
 import time
+import queue
 import pytest
 from unittest.mock import MagicMock, patch
 import threading
 
 from plex_generate_previews.worker import Worker, WorkerPool
+from plex_generate_previews.media_processing import CodecNotSupportedError
 
 
 class TestWorker:
@@ -186,6 +188,100 @@ class TestWorker:
         
         assert call_count[0] == 1
         assert worker.completed == 1
+    
+    @patch('plex_generate_previews.worker.process_item')
+    def test_worker_gpu_handles_codec_error(self, mock_process):
+        """Test that GPU worker handles CodecNotSupportedError and adds to fallback queue."""
+        worker = Worker(0, 'GPU', 'NVIDIA', 'cuda', 0, 'RTX 2060 SUPER')
+        config = MagicMock()
+        config.cpu_threads = 2
+        plex = MagicMock()
+        fallback_queue = queue.Queue()
+        
+        # Mock process_item to raise CodecNotSupportedError
+        def mock_process_fn(*args, **kwargs):
+            raise CodecNotSupportedError("Codec not supported by GPU")
+        
+        mock_process.side_effect = mock_process_fn
+        
+        worker.assign_task(
+            'test_key',
+            config,
+            plex,
+            media_title='AV1 Video',
+            media_type='episode',
+            cpu_fallback_queue=fallback_queue
+        )
+        
+        # Wait for thread to complete
+        time.sleep(0.2)
+        
+        # Worker should be marked as completed (task handed off to CPU)
+        assert worker.completed == 1
+        assert worker.failed == 0
+        
+        # Task should be in fallback queue
+        assert not fallback_queue.empty()
+        item_key, media_title, media_type = fallback_queue.get()
+        assert item_key == 'test_key'
+        assert media_title == 'AV1 Video'
+        assert media_type == 'episode'
+    
+    @patch('plex_generate_previews.worker.process_item')
+    def test_worker_gpu_codec_error_no_cpu_threads(self, mock_process):
+        """Test GPU worker when codec error occurs but CPU threads disabled."""
+        worker = Worker(0, 'GPU', 'NVIDIA', 'cuda', 0, 'RTX 2060 SUPER')
+        config = MagicMock()
+        config.cpu_threads = 0  # CPU threads disabled
+        plex = MagicMock()
+        fallback_queue = queue.Queue()
+        
+        # Mock process_item to raise CodecNotSupportedError
+        def mock_process_fn(*args, **kwargs):
+            raise CodecNotSupportedError("Codec not supported by GPU")
+        
+        mock_process.side_effect = mock_process_fn
+        
+        worker.assign_task(
+            'test_key',
+            config,
+            plex,
+            media_title='AV1 Video',
+            media_type='episode',
+            cpu_fallback_queue=fallback_queue
+        )
+        
+        # Wait for thread to complete
+        time.sleep(0.2)
+        
+        # Worker should be marked as completed but task failed
+        assert worker.completed == 1
+        assert worker.failed == 1  # Failed because no CPU threads available
+        
+        # Fallback queue should be empty
+        assert fallback_queue.empty()
+    
+    @patch('plex_generate_previews.worker.process_item')
+    def test_worker_cpu_handles_codec_error_as_failure(self, mock_process):
+        """Test that CPU worker treats CodecNotSupportedError as unexpected failure."""
+        worker = Worker(0, 'CPU')
+        config = MagicMock()
+        plex = MagicMock()
+        
+        # Mock process_item to raise CodecNotSupportedError
+        def mock_process_fn(*args, **kwargs):
+            raise CodecNotSupportedError("Codec not supported")
+        
+        mock_process.side_effect = mock_process_fn
+        
+        worker.assign_task('test_key', config, plex, media_title='Test', media_type='movie')
+        
+        # Wait for thread to complete
+        time.sleep(0.2)
+        
+        # CPU worker should treat this as failure (unexpected on CPU)
+        assert worker.failed == 1
+        assert worker.completed == 0
 
 
 class TestWorkerPool:
@@ -209,6 +305,10 @@ class TestWorkerPool:
         # Last 2 should be CPU workers
         assert pool.workers[4].worker_type == 'CPU'
         assert pool.workers[5].worker_type == 'CPU'
+        
+        # Should have fallback queue
+        assert hasattr(pool, 'cpu_fallback_queue')
+        assert isinstance(pool.cpu_fallback_queue, queue.Queue)
     
     def test_worker_pool_gpu_assignment(self):
         """Test round-robin GPU assignment."""
@@ -227,9 +327,10 @@ class TestWorkerPool:
         assert pool.workers[1].gpu_index == 1
         assert pool.workers[3].gpu_index == 1
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_pool_process_items(self, mock_process):
         """Test processing items with worker pool."""
+        # Track if mock was called
         mock_process.return_value = None
         
         selected_gpus = []
@@ -381,4 +482,132 @@ class TestWorkerPool:
         
         assert total_completed == 8
         assert total_failed == 3
-
+    
+    @patch('plex_generate_previews.worker.process_item')
+    def test_worker_pool_cpu_fallback_on_codec_error(self, mock_process):
+        """Test that GPU worker codec errors are re-queued to CPU workers."""
+        call_order = []
+        
+        def mock_process_fn(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+            call_order.append((item_key, gpu))
+            time.sleep(0.01)
+            # First call from GPU worker - raise codec error
+            if gpu is not None:
+                raise CodecNotSupportedError("Codec not supported by GPU")
+            # Second call from CPU worker - succeed
+            return None
+        
+        mock_process.side_effect = mock_process_fn
+        
+        selected_gpus = [('NVIDIA', 'cuda', {'name': 'RTX 2060 SUPER'})]
+        pool = WorkerPool(gpu_workers=1, cpu_workers=1, selected_gpus=selected_gpus)
+        
+        config = MagicMock()
+        config.cpu_threads = 1
+        plex = MagicMock()
+        
+        items = [
+            ('key1', 'AV1 Video', 'episode'),
+        ]
+        
+        main_progress = MagicMock()
+        worker_progress = MagicMock()
+        worker_progress.add_task = MagicMock(side_effect=[0, 1])
+        
+        pool.process_items(items, config, plex, worker_progress, main_progress)
+        
+        # Wait a bit longer for threads to complete and fallback queue to process
+        time.sleep(0.2)
+        
+        # Should have been called twice: once from GPU, once from CPU
+        assert len(call_order) == 2, f"Expected 2 calls, got {len(call_order)}: {call_order}"
+        assert call_order[0] == ('key1', 'NVIDIA')  # GPU worker tried first
+        assert call_order[1] == ('key1', None)  # CPU worker succeeded
+        
+        # GPU worker should be marked as completed (task handed off)
+        assert pool.workers[0].completed == 1
+        assert pool.workers[0].failed == 0
+        
+        # CPU worker should have processed it successfully
+        assert pool.workers[1].completed == 1
+        assert pool.workers[1].failed == 0
+    
+    @patch('plex_generate_previews.worker.process_item')
+    def test_worker_pool_fallback_queue_priority(self, mock_process):
+        """Test that fallback queue items are prioritized for CPU workers."""
+        call_order = []
+        
+        def mock_process_fn(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+            call_order.append((item_key, gpu))
+            time.sleep(0.01)
+            # GPU workers raise codec error
+            if gpu is not None:
+                raise CodecNotSupportedError("Codec not supported")
+            # CPU workers succeed
+            return None
+        
+        mock_process.side_effect = mock_process_fn
+        
+        selected_gpus = [('NVIDIA', 'cuda', {'name': 'RTX 2060'})]
+        pool = WorkerPool(gpu_workers=1, cpu_workers=2, selected_gpus=selected_gpus)
+        
+        config = MagicMock()
+        config.cpu_threads = 2
+        plex = MagicMock()
+        
+        # Mix of regular items and items that will fail on GPU
+        items = [
+            ('key1', 'Normal Video', 'movie'),
+            ('key2', 'AV1 Video', 'episode'),
+            ('key3', 'Normal Video 2', 'movie'),
+        ]
+        
+        main_progress = MagicMock()
+        worker_progress = MagicMock()
+        worker_progress.add_task = MagicMock(side_effect=list(range(10)))
+        
+        pool.process_items(items, config, plex, worker_progress, main_progress)
+        
+        # Wait a bit longer for all threads and fallback queue to process
+        time.sleep(0.2)
+        
+        # Verify all items were processed
+        total_completed = sum(w.completed for w in pool.workers)
+        assert total_completed >= 3  # At least 3 items processed
+        
+        # CPU workers should have processed fallback items
+        cpu_completed = sum(w.completed for w in pool.workers if w.worker_type == 'CPU')
+        assert cpu_completed > 0
+    
+    @patch('plex_generate_previews.worker.process_item')
+    def test_worker_pool_fallback_queue_no_cpu_workers(self, mock_process):
+        """Test that codec errors fail when no CPU workers available."""
+        def mock_process_fn(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+            time.sleep(0.01)
+            # GPU worker raises codec error
+            if gpu is not None:
+                raise CodecNotSupportedError("Codec not supported")
+            return None
+        
+        mock_process.side_effect = mock_process_fn
+        
+        selected_gpus = [('NVIDIA', 'cuda', {'name': 'RTX 2060'})]
+        pool = WorkerPool(gpu_workers=1, cpu_workers=0, selected_gpus=selected_gpus)
+        
+        config = MagicMock()
+        config.cpu_threads = 0  # No CPU threads
+        plex = MagicMock()
+        
+        items = [
+            ('key1', 'AV1 Video', 'episode'),
+        ]
+        
+        main_progress = MagicMock()
+        worker_progress = MagicMock()
+        worker_progress.add_task = MagicMock(return_value=0)
+        
+        pool.process_items(items, config, plex, worker_progress, main_progress)
+        
+        # GPU worker should fail (no CPU workers to hand off to)
+        assert pool.workers[0].failed == 1
+        assert pool.workers[0].completed == 1  # Completed from GPU perspective

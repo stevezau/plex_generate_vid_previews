@@ -17,7 +17,7 @@ import sys
 import http.client
 import xml.etree.ElementTree
 import tempfile
-from typing import Optional
+from typing import Optional, List, Tuple
 from loguru import logger
 
 from .utils import sanitize_path
@@ -48,6 +48,16 @@ except Exception as e:
 
 from .config import Config
 from .plex_client import retry_plex_call
+
+
+class CodecNotSupportedError(Exception):
+    """
+    Exception raised when a video codec is not supported by GPU hardware.
+    
+    This exception signals that the file should be processed by a CPU worker
+    instead of attempting CPU fallback within the GPU worker thread.
+    """
+    pass
 
 
 def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callback=None):
@@ -109,6 +119,64 @@ def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callba
     return total_duration
 
 
+def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
+    """
+    Detect if FFmpeg failure is due to unsupported codec/hardware decoder error.
+    
+    Checks exit codes and stderr patterns to identify codec-related errors.
+    Based on FFmpeg documentation: exit code -22 (EINVAL) and 69 (max error rate)
+    are common for unsupported codecs, but stderr parsing is more reliable.
+    
+    Args:
+        returncode: FFmpeg exit code
+        stderr_lines: List of stderr output lines (case-insensitive matching)
+        
+    Returns:
+        bool: True if codec/decoder error detected, False otherwise
+    """
+    # Combine all stderr lines into a single lowercase string for pattern matching
+    stderr_text = ' '.join(stderr_lines).lower()
+    
+    # Pattern list for codec/decoder errors (based on FFmpeg documentation and common error messages)
+    # Focus ONLY on errors that indicate the codec is not supported by the hardware decoder
+    # Avoid patterns that could indicate other issues (corruption, memory, permissions, etc.)
+    codec_error_patterns = [
+        # Specific decoder errors (indicate codec not available for hardware decoder)
+        'no decoder for',
+        'unknown decoder',
+        'decoder not found',
+        'could not find codec',
+        'unsupported codec id',
+        # Hardware decoder specific errors (clearly indicate hardware decoder limitations)
+        'hardware decoder not found',
+        'hardware decoder unavailable',
+        'hwaccel decoder not found',
+        'hwaccel decoder unavailable',
+        # Generic codec errors (check these carefully - only in GPU context after failure)
+        'unsupported codec',
+        'codec not supported',
+    ]
+    
+    # Check for codec error patterns in stderr (primary detection method)
+    for pattern in codec_error_patterns:
+        if pattern in stderr_text:
+            return True
+    
+    # Check exit codes that may indicate codec issues
+    # -22 (EINVAL) - invalid argument, often codec-related
+    # 234 (wrapped -22 on Unix systems)
+    # 69 (max error rate) - FFmpeg hits error rate limit, often due to decode failures
+    # 1 (generic error) when combined with codec error patterns in stderr
+    # Note: We check returncode != 0 to avoid false positives on success
+    if returncode != 0:
+        # Primary codes for codec errors
+        if returncode in [-22, 234, 69]:
+            return True
+        # For other non-zero codes, rely on stderr patterns (already checked above)
+    
+    return False
+
+
 def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
     """
     Using the first 10 frames of file to decide if -skip_frame:v nokey is safe.
@@ -129,7 +197,7 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
         "-frames:v", "10",         # stop as soon as one frame decodes
         "-f", "null", null_sink
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
     ok = (proc.returncode == 0)
     if not ok:
         last = (proc.stderr or "").strip().splitlines()[-1:]  # tail(1)
@@ -144,11 +212,15 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     """
     Generate thumbnail images from a video using FFmpeg.
 
-    Runs FFmpeg once with hardware acceleration when configured and, if the
-    skip-frame heuristic allowed it, with '-skip_frame:v nokey'. If that run
-    yields zero images or returns non-zero, automatically retries one time with
-    the same settings but without '-skip_frame'. CPU fallback is NOT attempted
-    here; we always honor the selected processing mode.
+    Runs FFmpeg with hardware acceleration when configured. If the skip-frame
+    heuristic allowed it, attempts with '-skip_frame:v nokey' first. If that
+    yields zero images or returns non-zero, automatically retries without '-skip_frame'.
+    
+    If GPU processing fails with a codec error (detected via stderr parsing for
+    patterns like "Codec not supported", "Unsupported codec", etc., or exit codes
+    -22/EINVAL or 69/max error rate) and CPU threads are available, automatically
+    falls back to CPU processing. This ensures files are processed even when the
+    GPU doesn't support the codec (e.g., AV1 on RTX 2060 SUPER).
 
     Args:
         video_file: Path to input video file
@@ -162,7 +234,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         (success, image_count, hw_used, seconds, speed):
             success (bool): True if at least one image was produced
             image_count (int): Number of images written
-            hw_used (bool): Whether hardware acceleration was enabled
+            hw_used (bool): Whether hardware acceleration was actually used
+                           (False if CPU fallback occurred)
             seconds (float): Elapsed processing time (last attempt)
             speed (str): Reported or computed FFmpeg speed string
     """
@@ -178,8 +251,8 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
             vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
-    def _run_ffmpeg(use_skip: bool) -> tuple:
-        """Run FFmpeg once and return (returncode, seconds, speed, output_tail)."""
+    def _run_ffmpeg(use_skip: bool, gpu_override: Optional[str] = None, gpu_device_path_override: Optional[str] = None) -> tuple:
+        """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
         args = [
@@ -188,18 +261,20 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         ]
 
         # Add hardware acceleration for decoding (before -i flag)
-        hw_local = False
-        use_gpu = gpu is not None
+        # Allow overriding GPU settings for CPU fallback
+        effective_gpu = gpu_override if gpu_override is not None else gpu
+        effective_gpu_device_path = gpu_device_path_override if gpu_device_path_override is not None else gpu_device_path
+        
+        use_gpu = effective_gpu is not None
         if use_gpu:
-            hw_local = True
-            if gpu == 'NVIDIA':
+            if effective_gpu == 'NVIDIA':
                 args += ["-hwaccel", "cuda"]
-            elif gpu == 'WINDOWS_GPU':
+            elif effective_gpu == 'WINDOWS_GPU':
                 args += ["-hwaccel", "d3d11va"]
-            elif gpu == 'APPLE':
+            elif effective_gpu == 'APPLE':
                 args += ["-hwaccel", "videotoolbox"]
-            elif gpu_device_path and gpu_device_path.startswith('/dev/dri/'):
-                args += ["-hwaccel", "vaapi", "-vaapi_device", gpu_device_path]
+            elif effective_gpu_device_path and effective_gpu_device_path.startswith('/dev/dri/'):
+                args += ["-hwaccel", "vaapi", "-vaapi_device", effective_gpu_device_path]
 
         # Add skip_frame option for faster decoding (if safe)
         if use_skip:
@@ -220,7 +295,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         import threading
         thread_id = threading.get_ident()
         output_file = os.path.join(tempfile.gettempdir(), f'ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log')
-        proc = subprocess.Popen(args, stderr=open(output_file, 'w'), stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen(args, stderr=open(output_file, 'w', encoding='utf-8'), stdout=subprocess.DEVNULL)
 
         # Signal that FFmpeg process has started
         if progress_callback:
@@ -245,7 +320,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         while proc.poll() is None:
             if os.path.exists(output_file):
                 try:
-                    with open(output_file, 'r') as f:
+                    with open(output_file, 'r', encoding='utf-8') as f:
                         lines = f.readlines()
                         if len(lines) > line_count:
                             for i in range(line_count, len(lines)):
@@ -261,7 +336,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         # Process any remaining data
         if os.path.exists(output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(output_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                     if len(lines) > line_count:
                         for i in range(line_count, len(lines)):
@@ -292,7 +367,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
             calculated_speed = total_duration / seconds_local
             speed_local = f"{calculated_speed:.0f}x"
 
-        return proc.returncode, seconds_local, speed_local
+        return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines
 
     # Decide initial skip usage from heuristic
     use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
@@ -301,44 +376,199 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     os.makedirs(output_folder, exist_ok=True)
 
     # First attempt
-    rc, seconds, speed = _run_ffmpeg(use_skip_initial)
-
-    # Rename images produced by this attempt
-    for image in glob.glob(f'{output_folder}/img*.jpg'):
-        frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
-        frame_second = frame_no * config.plex_bif_frame_interval
-        os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
-
-    image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
+    rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial)
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
+    # (If we didn't use skip initially, retrying without skip would just repeat the same command)
     did_retry = False
+    retry_rc = rc
+    retry_stderr_lines = stderr_lines
+    
     if rc != 0 and use_skip_initial:
         did_retry = True
         logger.warning(f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame")
-        # Clean up any partial files from first attempt
+        # Clean up any partial files from first attempt (no need to rename if we're retrying)
         for img in glob.glob(os.path.join(output_folder, '*.jpg')):
             try:
                 os.remove(img)
             except Exception:
                 pass
-        rc, seconds, speed = _run_ffmpeg(use_skip=False)
-        # Rename images from retry
+        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False)
+        # Update rc and stderr_lines to retry results for codec error detection
+        rc = retry_rc
+        stderr_lines = retry_stderr_lines
+    
+    # Count images first to see if we have any (even if rc != 0, we might have partial success)
+    image_count = len(glob.glob(os.path.join(output_folder, 'img*.jpg')))
+
+    # Check for codec errors after both attempts (with and without skip_frame)
+    # If in GPU context and codec error detected, raise exception for worker pool to handle
+    if rc != 0 and image_count == 0 and gpu is not None:
+        if _detect_codec_error(rc, stderr_lines):
+            # Log relevant stderr excerpt for debugging
+            stderr_excerpt = '\n'.join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
+            logger.warning(f"GPU processing failed with codec error (exit code {rc}) for {video_file}; will hand off to CPU worker")
+            logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+            # Clean up any partial files from GPU attempts
+            for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                try:
+                    os.remove(img)
+                except Exception:
+                    pass
+            # Raise exception to signal worker pool to re-queue for CPU worker
+            raise CodecNotSupportedError(f"Codec not supported by GPU for {video_file} (exit code {rc})")
+
+    # CPU fallback: Only perform CPU fallback when not in GPU context (e.g., when gpu is None)
+    # This preserves the existing fallback behavior for non-GPU processing paths
+    did_cpu_fallback = False
+    if rc != 0 and image_count == 0 and gpu is None:
+        # Detect if failure is due to unsupported codec (even on CPU, for edge cases)
+        if _detect_codec_error(rc, stderr_lines):
+            logger.warning(f"Processing failed with codec error (exit code {rc}) for {video_file}; file may be corrupted or unsupported")
+            # For CPU context, we can't fallback further, so just log and continue
+            # The function will return failure status
+
+    # Rename images only after all retries and error checks are complete
+    # This ensures we don't rename images that will be cleaned up due to errors
+    if image_count > 0:
+        # Rename images from img-*.jpg format to timestamp-based names
         for image in glob.glob(f'{output_folder}/img*.jpg'):
             frame_no = int(os.path.basename(image).strip('-img').strip('.jpg')) - 1
             frame_second = frame_no * config.plex_bif_frame_interval
             os.rename(image, os.path.join(output_folder, f'{frame_second:010d}.jpg'))
+        # Re-count after renaming to get final count (includes both renamed and any existing timestamped images)
         image_count = len(glob.glob(os.path.join(output_folder, '*.jpg')))
 
-    hw = (gpu is not None)
+    hw = (gpu is not None and not did_cpu_fallback)
     success = image_count > 0
 
     if success:
-        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{" (retry no-skip)" if did_retry else ""}')
+        fallback_suffix = " (CPU fallback)" if did_cpu_fallback else (" (retry no-skip)" if did_retry else "")
+        logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}')
     else:
-        logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{" after retry" if did_retry else ""}')
+        fallback_suffix = " (after CPU fallback)" if did_cpu_fallback else (" after retry" if did_retry else "")
+        logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}')
 
     return success, image_count, hw, seconds, speed
+
+
+def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str]:
+    """
+    Set up all bundle-related paths.
+    
+    Args:
+        bundle_hash: Bundle hash from Plex
+        config: Configuration object
+        
+    Returns:
+        Tuple of (indexes_path, index_bif, tmp_path)
+    """
+    bundle_file = sanitize_path(f'{bundle_hash[0]}/{bundle_hash[1::1]}.bundle')
+    bundle_path = sanitize_path(os.path.join(config.plex_config_folder, 'Media', 'localhost', bundle_file))
+    indexes_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes'))
+    index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
+    tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
+    return indexes_path, index_bif, tmp_path
+
+
+def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bool:
+    """
+    Ensure required directories exist.
+    
+    Args:
+        indexes_path: Path to indexes directory
+        tmp_path: Path to temporary directory
+        media_file: Media file path for error messages
+        
+    Returns:
+        True if directories are ready, False if creation failed
+    """
+    if not os.path.isdir(indexes_path):
+        try:
+            os.makedirs(indexes_path)
+        except OSError as e:
+            logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating index path {indexes_path}')
+            return False
+    
+    if not os.path.isdir(tmp_path):
+        try:
+            os.makedirs(tmp_path)
+        except OSError as e:
+            logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating tmp path {tmp_path}')
+            return False
+    
+    return True
+
+
+def _cleanup_temp_directory(tmp_path: str) -> None:
+    """
+    Clean up temporary directory, logging warnings on failure.
+    
+    Args:
+        tmp_path: Path to temporary directory
+    """
+    try:
+        if os.path.exists(tmp_path):
+            shutil.rmtree(tmp_path)
+    except Exception as cleanup_error:
+        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
+
+
+def _generate_and_save_bif(media_file: str, tmp_path: str, index_bif: str, 
+                           gpu: Optional[str], gpu_device_path: Optional[str], 
+                           config: Config, progress_callback=None) -> None:
+    """
+    Generate images and create BIF file.
+    
+    Args:
+        media_file: Path to media file
+        tmp_path: Temporary directory for images
+        index_bif: Path to output BIF file
+        gpu: GPU type for acceleration
+        gpu_device_path: GPU device path
+        config: Configuration object
+        progress_callback: Callback function for progress updates
+        
+    Raises:
+        CodecNotSupportedError: If codec is not supported by GPU
+        RuntimeError: If thumbnail generation produced 0 images
+    """
+    try:
+        gen_result = generate_images(media_file, tmp_path, gpu, gpu_device_path, config, progress_callback)
+    except CodecNotSupportedError:
+        # Clean up temp directory before re-raising
+        _cleanup_temp_directory(tmp_path)
+        raise
+    except Exception as e:
+        logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating images')
+        _cleanup_temp_directory(tmp_path)
+        raise RuntimeError(f"Failed to generate images: {e}")
+    
+    # Determine image count from result or by scanning
+    image_count = 0
+    if isinstance(gen_result, tuple) and len(gen_result) >= 2:
+        success, image_count = bool(gen_result[0]), int(gen_result[1])
+    else:
+        if os.path.isdir(tmp_path):
+            image_count = len(glob.glob(os.path.join(tmp_path, '*.jpg')))
+    
+    if image_count == 0:
+        logger.error(f'No thumbnails generated for {media_file}; skipping BIF creation')
+        _cleanup_temp_directory(tmp_path)
+        raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}")
+    
+    # Generate BIF file
+    try:
+        generate_bif(index_bif, tmp_path, config)
+    except Exception as e:
+        # Remove BIF if generation failed
+        try:
+            if os.path.exists(index_bif):
+                os.remove(index_bif)
+        except Exception as remove_error:
+            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
+        logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating bif')
+        raise
 
 
 def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
@@ -438,90 +668,41 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                 continue
 
             try:
-                bundle_file = sanitize_path(f'{bundle_hash[0]}/{bundle_hash[1::1]}.bundle')
+                indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
             except Exception as e:
                 logger.error(f'Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}')
                 continue
 
-            bundle_path = sanitize_path(os.path.join(config.plex_config_folder, 'Media', 'localhost', bundle_file))
-            indexes_path = sanitize_path(os.path.join(bundle_path, 'Contents', 'Indexes'))
-            index_bif = sanitize_path(os.path.join(indexes_path, 'index-sd.bif'))
-            tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
-
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
-                logger.debug(f'Found existing thumbnails for {media_file}, deleting the thumbnail index at {index_bif} so we can regenerate')
+                logger.debug(f'Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}')
                 try:
                     os.remove(index_bif)
-                    logger.debug(f'Successfully deleted existing BIF file: {index_bif}')
                 except Exception as e:
                     logger.error(f'Error {type(e).__name__} deleting index file {media_file}: {str(e)}')
                     continue
 
             if not os.path.isfile(index_bif):
-                logger.debug(f'Generating bundle_file for {media_file} at {index_bif}')
+                logger.debug(f'Generating thumbnails for {media_file} -> {index_bif}')
 
-                if not os.path.isdir(indexes_path):
-                    try:
-                        os.makedirs(indexes_path)
-                    except OSError as e:
-                        logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating index path {indexes_path}')
-                        continue
-
-                try:
-                    if not os.path.isdir(tmp_path):
-                        os.makedirs(tmp_path)
-                except OSError as e:
-                    logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating tmp path {tmp_path}')
+                # Ensure directories exist
+                if not _ensure_directories(indexes_path, tmp_path, media_file):
                     continue
 
+                # Generate images and create BIF file
                 try:
-                    gen_result = generate_images(media_file, tmp_path, gpu, gpu_device_path, config, progress_callback)
-                except Exception as e:
-                    logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating images')
-                    # Clean up temp directory on error
-                    try:
-                        if os.path.exists(tmp_path):
-                            shutil.rmtree(tmp_path)
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
+                    _generate_and_save_bif(media_file, tmp_path, index_bif, gpu, gpu_device_path, 
+                                          config, progress_callback)
+                except CodecNotSupportedError:
+                    # Re-raise so worker can handle codec errors
+                    raise
+                except RuntimeError as e:
+                    # RuntimeError from _generate_and_save_bif means generation failed
+                    # Log and continue to next media part
+                    logger.error(f'Error processing {media_file}: {str(e)}')
                     continue
-
-                # Prefer explicit return contract; fallback to scanning if absent
-                success = None
-                image_count = None
-                if isinstance(gen_result, tuple) and len(gen_result) >= 2:
-                    success, image_count = bool(gen_result[0]), int(gen_result[1])
-                else:
-                    image_count = 0
-                    if os.path.isdir(tmp_path):
-                        image_count = len(glob.glob(os.path.join(tmp_path, '*.jpg')))
-                    success = image_count > 0
-                if not success or image_count == 0:
-                    # Treat as failure and do not produce a BIF
-                    logger.error(f'No thumbnails generated for {media_file}; skipping BIF creation')
-                    # Cleanup temp and mark failure for caller by raising
-                    try:
-                        if os.path.exists(tmp_path):
-                            shutil.rmtree(tmp_path)
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
-                    raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}")
-
-                try:
-                    generate_bif(index_bif, tmp_path, config)
                 except Exception as e:
-                    # Remove bif, as it prob failed to generate
-                    try:
-                        if os.path.exists(index_bif):
-                            os.remove(index_bif)
-                    except Exception as remove_error:
-                        logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
-                    logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating bif')
+                    logger.error(f'Error processing {media_file}: {type(e).__name__}: {str(e)}')
                     continue
                 finally:
-                    # Always clean up temp directory
-                    try:
-                        if os.path.exists(tmp_path):
-                            shutil.rmtree(tmp_path)
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
+                    # Always clean up temp directory (may already be cleaned up by _generate_and_save_bif)
+                    _cleanup_temp_directory(tmp_path)

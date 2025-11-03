@@ -226,7 +226,6 @@ def setup_application() -> tuple:
         logger.info('GPU Support: D3D11VA hardware decode acceleration')
         logger.info('  • Works with NVIDIA, AMD, and Intel GPUs')
         logger.info('  • Requires compatible GPU and latest drivers')
-        logger.info('  • Significantly speeds up thumbnail generation')
         logger.info('')
         logger.info('Detecting available GPUs...')
         logger.info('')

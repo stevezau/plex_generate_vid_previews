@@ -196,7 +196,7 @@ class TestWorkerPoolIntegration:
         assert mock_gen_images.call_count == 3
         assert mock_gen_bif.call_count == 3
     
-    @patch('plex_generate_previews.media_processing.process_item')
+    @patch('plex_generate_previews.worker.process_item')
     def test_worker_pool_load_balancing(self, mock_process, mock_config):
         """Test that work is distributed across workers."""
         from plex_generate_previews.worker import WorkerPool

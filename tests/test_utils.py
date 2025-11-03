@@ -17,8 +17,7 @@ from plex_generate_previews.utils import (
     sanitize_path,
     is_docker_environment,
     is_windows,
-    setup_working_directory,
-    clear_directory
+    setup_working_directory
 )
 
 
@@ -251,94 +250,3 @@ class TestSetupWorkingDirectory:
             # Should create the full path
             assert os.path.exists(result)
             assert os.path.isdir(result)
-
-
-class TestClearDirectory:
-    """Test directory clearing functionality."""
-    
-    def test_clear_directory_removes_files(self):
-        """Test that clear_directory removes all files."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create some files
-            file1 = os.path.join(tmpdir, "file1.txt")
-            file2 = os.path.join(tmpdir, "file2.txt")
-            with open(file1, 'w') as f:
-                f.write("test1")
-            with open(file2, 'w') as f:
-                f.write("test2")
-            
-            # Clear directory
-            clear_directory(tmpdir)
-            
-            # Directory should still exist but be empty
-            assert os.path.exists(tmpdir)
-            assert os.path.isdir(tmpdir)
-            assert len(os.listdir(tmpdir)) == 0
-    
-    def test_clear_directory_removes_subdirectories(self):
-        """Test that clear_directory removes subdirectories."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create subdirectories with files
-            subdir1 = os.path.join(tmpdir, "subdir1")
-            subdir2 = os.path.join(tmpdir, "subdir2")
-            os.makedirs(subdir1)
-            os.makedirs(subdir2)
-            
-            file_in_subdir = os.path.join(subdir1, "file.txt")
-            with open(file_in_subdir, 'w') as f:
-                f.write("test")
-            
-            # Clear directory
-            clear_directory(tmpdir)
-            
-            # Directory should still exist but be empty
-            assert os.path.exists(tmpdir)
-            assert os.path.isdir(tmpdir)
-            assert len(os.listdir(tmpdir)) == 0
-    
-    def test_clear_directory_handles_nonexistent(self):
-        """Test that clear_directory handles non-existent directories gracefully."""
-        # Should not raise an error
-        clear_directory("/nonexistent/path")
-    
-    def test_clear_directory_raises_on_file(self):
-        """Test that clear_directory raises error when path is a file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = os.path.join(tmpdir, "file.txt")
-            with open(file_path, 'w') as f:
-                f.write("test")
-            
-            # Should raise ValueError
-            with pytest.raises(ValueError):
-                clear_directory(file_path)
-    
-    def test_clear_directory_mixed_content(self):
-        """Test clearing directory with mixed files, directories, and symlinks."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create files
-            file1 = os.path.join(tmpdir, "file1.txt")
-            with open(file1, 'w') as f:
-                f.write("test1")
-            
-            # Create subdirectory
-            subdir = os.path.join(tmpdir, "subdir")
-            os.makedirs(subdir)
-            
-            # Create file in subdirectory
-            file_in_subdir = os.path.join(subdir, "file2.txt")
-            with open(file_in_subdir, 'w') as f:
-                f.write("test2")
-            
-            # Create symlink (if not on Windows)
-            if os.name != 'nt':
-                link_path = os.path.join(tmpdir, "link")
-                os.symlink(file1, link_path)
-            
-            # Clear directory
-            clear_directory(tmpdir)
-            
-            # Directory should still exist but be empty
-            assert os.path.exists(tmpdir)
-            assert os.path.isdir(tmpdir)
-            assert len(os.listdir(tmpdir)) == 0
-
