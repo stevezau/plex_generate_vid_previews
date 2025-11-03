@@ -133,7 +133,7 @@ class Worker:
     
     def assign_task(self, item_key: str, config: Config, plex, progress_callback=None, 
                    media_title: str = "", media_type: str = "", title_max_width: int = 20, 
-                   fallback_queue=None) -> None:
+                   cpu_fallback_queue=None) -> None:
         """
         Assign a new task to this worker.
         
@@ -145,7 +145,7 @@ class Worker:
             media_title: Media title for display
             media_type: Media type ('episode' or 'movie')
             title_max_width: Maximum width for title display
-            fallback_queue: Optional queue for codec error fallback (GPU workers only)
+            cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
         """
         if self.is_busy:
             raise RuntimeError(f"Worker {self.worker_id} is already busy")
@@ -189,12 +189,12 @@ class Worker:
         # Start processing in background thread
         self.current_thread = threading.Thread(
             target=self._process_item, 
-            args=(item_key, config, plex, progress_callback, fallback_queue),
+            args=(item_key, config, plex, progress_callback, cpu_fallback_queue),
             daemon=True
         )
         self.current_thread.start()
     
-    def _process_item(self, item_key: str, config: Config, plex, progress_callback=None, fallback_queue=None) -> None:
+    def _process_item(self, item_key: str, config: Config, plex, progress_callback=None, cpu_fallback_queue=None) -> None:
         """
         Process a media item in the background thread.
         
@@ -203,22 +203,23 @@ class Worker:
             config: Configuration object
             plex: Plex server instance
             progress_callback: Callback function for progress updates
-            fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
+            cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
         """
         try:
             process_item(item_key, self.gpu, self.gpu_device, config, plex, progress_callback)
+            # Mark as completed immediately (thread will finish after this)
             self.completed += 1
         except CodecNotSupportedError as e:
             # Codec not supported by GPU - re-queue for CPU worker
             if self.worker_type == 'GPU':
                 logger.warning(f"GPU Worker {self.worker_id} detected unsupported codec for {item_key}; handing off to CPU worker")
-                # Add to fallback queue for CPU worker processing
-                if fallback_queue is not None and config.cpu_threads > 0:
+                # Add to fallback queue for CPU worker processing (multiple CPU workers can compete for items)
+                if cpu_fallback_queue is not None and config.cpu_threads > 0:
                     # Preserve media info if available (set during assign_task)
                     media_title = self.media_title if hasattr(self, 'media_title') else None
                     media_type = self.media_type if hasattr(self, 'media_type') else None
                     try:
-                        fallback_queue.put((item_key, media_title, media_type))  # (item_key, media_title, media_type)
+                        cpu_fallback_queue.put((item_key, media_title, media_type))
                         logger.debug(f"Added {item_key} to CPU fallback queue")
                     except Exception as queue_error:
                         logger.error(f"Failed to add {item_key} to fallback queue: {queue_error}")
@@ -316,7 +317,7 @@ class WorkerPool:
         """
         self.workers = []
         self._progress_lock = threading.Lock()  # Thread-safe progress updates
-        self.fallback_queue = queue.Queue()  # Thread-safe queue for CPU-only tasks (codec fallback)
+        self.cpu_fallback_queue = queue.Queue()  # Thread-safe queue for CPU-only tasks (codec fallback)
         
         # Add GPU workers first (prioritized) with round-robin GPU assignment
         for i in range(gpu_workers):
@@ -389,7 +390,14 @@ class WorkerPool:
         
         # Process all items
         # Continue while we have items in main queue, fallback queue, or busy workers
-        while media_queue or not self.fallback_queue.empty() or self.has_busy_workers():
+        # Add iteration counter to prevent infinite loops (safety measure)
+        iteration_count = 0
+        max_iterations = 100000  # Safety limit (should never be reached in normal operation)
+        while True:
+            iteration_count += 1
+            if iteration_count > max_iterations:
+                logger.error(f"Max iterations ({max_iterations}) reached in process_items, forcing exit")
+                break
             # Check for completed tasks and update progress
             for worker in self.workers:
                 if worker.check_completion():
@@ -463,26 +471,38 @@ class WorkerPool:
             
             # Assign new tasks to available workers
             # Prioritize fallback queue for CPU workers, then assign from main queue
-            while self.has_available_workers():
-                available_worker = Worker.find_available(self.workers)
-                if not available_worker:
-                    break
+            while True:
+                # If main queue is empty, only look for CPU workers (to process fallback queue)
+                if not media_queue:
+                    # Find available CPU worker only
+                    available_worker = None
+                    for worker in self.workers:
+                        if worker.worker_type == 'CPU' and worker.is_available():
+                            available_worker = worker
+                            break
+                    
+                    if not available_worker:
+                        # No available CPU workers, break
+                        break
+                else:
+                    # Main queue has items, find any available worker (GPU prioritized)
+                    available_worker = Worker.find_available(self.workers)
+                    if not available_worker:
+                        break
                 
                 # For CPU workers, check fallback queue first (codec error fallback)
+                # Multiple CPU workers can compete for items naturally with queue
                 if available_worker.worker_type == 'CPU':
                     try:
-                        # Get task from fallback queue (non-blocking)
-                        fallback_item = self.fallback_queue.get_nowait()
+                        fallback_item = self.cpu_fallback_queue.get_nowait()
                         item_key, media_title, media_type = fallback_item
                         
-                        # Re-query Plex for media info if not available (fallback queue may have None)
+                        # Re-query Plex for media info if not available
                         if media_title is None or media_type is None:
                             try:
                                 from .plex_client import retry_plex_call
-                                # Query item directly for metadata (not /tree which is for MediaParts)
                                 data = retry_plex_call(plex.query, item_key)
                                 if data is not None:
-                                    # Try to get title from Video or Directory element
                                     video_element = data.find('Video') or data.find('Directory')
                                     if video_element is not None:
                                         media_title = video_element.get('title', 'Unknown (fallback)')
@@ -509,22 +529,24 @@ class WorkerPool:
                             media_title=media_title,
                             media_type=media_type,
                             title_max_width=title_max_width,
-                            fallback_queue=None  # CPU workers don't need fallback queue
+                            cpu_fallback_queue=None  # CPU workers don't need fallback queue
                         )
                         continue
                     except queue.Empty:
-                        # No fallback tasks, continue to main queue
-                        pass
+                        # No fallback items - if main queue is also empty, break
+                        # Otherwise, continue to assign from main queue below
+                        if not media_queue:
+                            break
                 
-                # Assign from main queue (or fallback queue is empty for CPU)
+                # Assign from main queue (for GPU workers or when main queue has items)
                 if media_queue:
                     item_key, media_title, media_type = media_queue.pop(0)
                     
                     # Create progress callback using functools.partial
                     progress_callback = partial(self._update_worker_progress, available_worker)
                     
-                    # Pass fallback_queue to GPU workers only
-                    fallback_queue = self.fallback_queue if available_worker.worker_type == 'GPU' else None
+                    # Pass cpu_fallback_queue to GPU workers only
+                    cpu_fallback_queue = self.cpu_fallback_queue if available_worker.worker_type == 'GPU' else None
                     
                     available_worker.assign_task(
                         item_key, 
@@ -534,56 +556,69 @@ class WorkerPool:
                         media_title=media_title,
                         media_type=media_type,
                         title_max_width=title_max_width,
-                        fallback_queue=fallback_queue
+                        cpu_fallback_queue=cpu_fallback_queue
                     )
                 else:
-                    # No more tasks in main queue, but may have fallback tasks
-                    # Only CPU workers can process fallback tasks
-                    if available_worker.worker_type == 'CPU':
+                    # Main queue empty and not a CPU worker - break
+                    break
+            
+            # Check exit condition after trying to assign all tasks
+            # Exit only if: main queue empty, all items processed, and fallback queue empty
+            if not media_queue:
+                # Re-check completion one more time (workers might have just finished)
+                for worker in self.workers:
+                    if worker.check_completion():
+                        completed_tasks += 1
+                
+                # Calculate actual completed count from worker stats (most reliable)
+                # This uses worker.completed which is set directly in _process_item
+                # This is set when the task actually completes, before the thread finishes
+                actual_completed = sum(worker.completed for worker in self.workers)
+                
+                # Exit if all items processed
+                # Note: actual_completed can be >= total_items if GPU hands off to CPU
+                # (GPU marks as completed + CPU marks as completed = 2 for 1 item)
+                # So we check that we've processed at least total_items
+                if actual_completed >= total_items:
+                    # Give threads time to finish and update is_busy flags
+                    # Retry multiple times to catch threads that finish between checks
+                    busy_retries = 0
+                    max_busy_retries = 20  # Wait up to 20ms for threads to finish
+                    while self.has_busy_workers() and busy_retries < max_busy_retries:
+                        time.sleep(0.001)  # 1ms delay
+                        for worker in self.workers:
+                            worker.check_completion()
+                        busy_retries += 1
+                    
+                    # After retries, check if we should exit
+                    # Exit if: no busy workers OR we've waited long enough and all items are completed
+                    if not self.has_busy_workers():
+                        # No busy workers, check fallback queue and exit
                         try:
-                            fallback_item = self.fallback_queue.get_nowait()
-                            item_key, media_title, media_type = fallback_item
-                            
-                            # Re-query Plex for media info if not available
-                            if media_title is None or media_type is None:
-                                try:
-                                    from .plex_client import retry_plex_call
-                                    data = retry_plex_call(plex.query, f'{item_key}/tree')
-                                    media_element = data.find('.//Video')
-                                    if media_element is not None:
-                                        media_title = media_element.get('title', 'Unknown')
-                                        media_type = media_element.tag.lower()
-                                    else:
-                                        media_title = 'Unknown'
-                                        media_type = 'unknown'
-                                except Exception as e:
-                                    logger.debug(f"Could not re-query Plex for {item_key}: {e}")
-                                    media_title = 'Unknown (fallback)'
-                                    media_type = 'unknown'
-                            
-                            # Create progress callback using functools.partial
-                            progress_callback = partial(self._update_worker_progress, available_worker)
-                            
-                            available_worker.assign_task(
-                                item_key, 
-                                config, 
-                                plex, 
-                                progress_callback=progress_callback,
-                                media_title=media_title,
-                                media_type=media_type,
-                                title_max_width=title_max_width,
-                                fallback_queue=None
-                            )
+                            test_item = self.cpu_fallback_queue.get_nowait()
+                            self.cpu_fallback_queue.put(test_item)
+                            # Found item, continue processing
                         except queue.Empty:
-                            # No fallback tasks either, break
+                            # Fallback queue empty, all done
                             break
-                    else:
-                        # No more tasks, break
-                        break
+                    elif busy_retries >= max_busy_retries and actual_completed >= total_items:
+                        # Waited long enough and all items completed - exit even if workers appear busy
+                        # (This can happen if check_completion() hasn't detected threads finished yet)
+                        logger.debug(f"All items completed ({actual_completed}/{total_items}), exiting after {busy_retries} retries")
+                        try:
+                            test_item = self.cpu_fallback_queue.get_nowait()
+                            self.cpu_fallback_queue.put(test_item)
+                            # Found item, continue processing
+                        except queue.Empty:
+                            # Fallback queue empty, all done
+                            break
             
             # Adaptive sleep to balance responsiveness and CPU usage
             if self.has_busy_workers():
                 time.sleep(0.005)  # 5ms sleep for better responsiveness with multiple workers
+            elif not media_queue:
+                # No busy workers and no main queue items - give a tiny delay to ensure workers finished
+                time.sleep(0.001)  # 1ms sleep when idle to let threads finish
         
         # Final statistics
         total_completed = sum(worker.completed for worker in self.workers)
