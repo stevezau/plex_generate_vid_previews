@@ -482,14 +482,8 @@ class WorkerPool:
         
         # Process all items
         # Continue while we have items in main queue, fallback queue, or busy workers
-        # Add iteration counter to prevent infinite loops (safety measure)
-        iteration_count = 0
-        max_iterations = 200000  # Safety limit (should never be reached in normal operation)
-        while True:
-            iteration_count += 1
-            if iteration_count > max_iterations:
-                logger.error(f"Max iterations ({max_iterations}) reached in process_items, forcing exit")
-                break
+        # Exit conditions: main queue empty, all items processed, no busy workers, fallback queue empty
+        while True: 
             # Check for completed tasks and update progress
             for worker in self.workers:
                 if worker.check_completion():
