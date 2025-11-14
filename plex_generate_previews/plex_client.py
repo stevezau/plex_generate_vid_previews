@@ -174,10 +174,21 @@ def get_library_sections(plex, config: Config):
         logger.info('Getting media files from library \'{}\'...'.format(section.title))
         library_start_time = time.time()
 
+        # Determine sort parameter if sort_by is configured
+        sort_param = None
+        if config.sort_by:
+            if config.sort_by == 'newest':
+                sort_param = 'addedAt:desc'
+            elif config.sort_by == 'oldest':
+                sort_param = 'addedAt:asc'
+
         try:
             if section.METADATA_TYPE == 'episode':
                 # Get episodes with locations for duplicate filtering
-                search_results = retry_plex_call(section.search, libtype='episode')
+                search_kwargs = {'libtype': 'episode'}
+                if sort_param:
+                    search_kwargs['sort'] = sort_param
+                search_results = retry_plex_call(section.search, **search_kwargs)
                 media_with_locations = []
                 for m in search_results:
                     # Format episode title as "Show Title S01E01"
@@ -188,7 +199,10 @@ def get_library_sections(plex, config: Config):
                 # Filter out multi episode files based on file locations
                 media = filter_duplicate_locations(media_with_locations)
             elif section.METADATA_TYPE == 'movie':
-                search_results = retry_plex_call(section.search)
+                search_kwargs = {}
+                if sort_param:
+                    search_kwargs['sort'] = sort_param
+                search_results = retry_plex_call(section.search, **search_kwargs)
                 media = [(m.key, m.title, 'movie') for m in search_results]
             else:
                 logger.info('Skipping library {} as \'{}\' is unsupported'.format(section.title, section.METADATA_TYPE))
