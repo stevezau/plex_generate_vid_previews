@@ -355,6 +355,28 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         # Error logging
         if proc.returncode != 0:
             logger.error(f'FFmpeg failed with return code {proc.returncode} for {video_file}')
+            
+            # Check for permission-related errors in FFmpeg output
+            # FFmpeg outputs "Permission denied" in messages like "av_interleaved_write_frame(): Permission denied"
+            # We use lowercase for case-insensitive matching
+            permission_keywords = ['permission denied', 'access denied']
+            permission_errors = []
+            for line in ffmpeg_output_lines:
+                line_lower = line.lower()
+                for keyword in permission_keywords:
+                    if keyword.lower() in line_lower:
+                        permission_errors.append(line.strip())
+                        break
+            
+            # Log permission errors at INFO level so users can see them without DEBUG
+            if permission_errors:
+                logger.info(f'Permission error detected while processing {video_file}:')
+                for error_line in permission_errors[:3]:  # Show up to 3 permission error lines
+                    logger.info(f'  {error_line}')
+                if len(permission_errors) > 3:
+                    logger.info(f'  ... and {len(permission_errors) - 3} more permission-related error(s)')
+            
+            # Always log full FFmpeg output at DEBUG level for detailed troubleshooting
             if logger.level("DEBUG").no <= logger._core.min_level:
                 logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
                 for i, line in enumerate(ffmpeg_output_lines[-10:]):
@@ -486,6 +508,10 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
     if not os.path.isdir(indexes_path):
         try:
             os.makedirs(indexes_path)
+        except PermissionError as e:
+            logger.error(f'Permission denied creating index path {indexes_path} for {media_file}: {e}')
+            logger.info(f'Please check directory permissions for: {os.path.dirname(indexes_path)}')
+            return False
         except OSError as e:
             logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating index path {indexes_path}')
             return False
@@ -493,6 +519,10 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
     if not os.path.isdir(tmp_path):
         try:
             os.makedirs(tmp_path)
+        except PermissionError as e:
+            logger.error(f'Permission denied creating tmp path {tmp_path} for {media_file}: {e}')
+            logger.info(f'Please check directory permissions for: {os.path.dirname(tmp_path)}')
+            return False
         except OSError as e:
             logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating tmp path {tmp_path}')
             return False
@@ -560,14 +590,25 @@ def _generate_and_save_bif(media_file: str, tmp_path: str, index_bif: str,
     # Generate BIF file
     try:
         generate_bif(index_bif, tmp_path, config)
-    except Exception as e:
+    except PermissionError as e:
         # Remove BIF if generation failed
         try:
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
             logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
+        logger.error(f'Permission denied generating BIF file {index_bif} for {media_file}: {e}')
+        logger.info(f'Please check write permissions for: {os.path.dirname(index_bif)}')
+        raise
+    except Exception as e:
+        # PermissionError is already handled above, so this catches other exceptions
         logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating bif')
+        # Remove BIF if generation failed
+        try:
+            if os.path.exists(index_bif):
+                os.remove(index_bif)
+        except Exception as remove_error:
+            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
         raise
 
 
@@ -579,40 +620,69 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
         bif_filename: Path to output .bif file
         images_path: Directory containing .jpg thumbnail images
         config: Configuration object
+        
+    Raises:
+        PermissionError: If permission denied accessing files or directories
     """
     magic = [0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]
     version = 0
 
-    images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == '.jpg']
+    try:
+        images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == '.jpg']
+    except PermissionError as e:
+        logger.error(f'Permission denied reading images directory {images_path}: {e}')
+        logger.info(f'Please check read permissions for: {images_path}')
+        raise
     images.sort()
 
-    with open(bif_filename, "wb") as f:
-        array.array('B', magic).tofile(f)
-        f.write(struct.pack("<I", version))
-        f.write(struct.pack("<I", len(images)))
-        f.write(struct.pack("<I", 1000 * config.plex_bif_frame_interval))
-        array.array('B', [0x00 for x in range(20, 64)]).tofile(f)
+    try:
+        f = open(bif_filename, "wb")
+    except PermissionError as e:
+        logger.error(f'Permission denied writing BIF file {bif_filename}: {e}')
+        logger.info(f'Please check write permissions for: {os.path.dirname(bif_filename)}')
+        raise
+    
+    try:
+        with f:
+            array.array('B', magic).tofile(f)
+            f.write(struct.pack("<I", version))
+            f.write(struct.pack("<I", len(images)))
+            f.write(struct.pack("<I", 1000 * config.plex_bif_frame_interval))
+            array.array('B', [0x00 for x in range(20, 64)]).tofile(f)
 
-        bif_table_size = 8 + (8 * len(images))
-        image_index = 64 + bif_table_size
-        timestamp = 0
+            bif_table_size = 8 + (8 * len(images))
+            image_index = 64 + bif_table_size
+            timestamp = 0
 
-        # Get the length of each image
-        for image in images:
-            statinfo = os.stat(os.path.join(images_path, image))
-            f.write(struct.pack("<I", timestamp))
+            # Get the length of each image
+            for image in images:
+                try:
+                    statinfo = os.stat(os.path.join(images_path, image))
+                except PermissionError as e:
+                    logger.error(f'Permission denied reading image file {os.path.join(images_path, image)}: {e}')
+                    logger.info(f'Please check read permissions for: {images_path}')
+                    raise
+                f.write(struct.pack("<I", timestamp))
+                f.write(struct.pack("<I", image_index))
+                timestamp += 1
+                image_index += statinfo.st_size
+
+            f.write(struct.pack("<I", 0xffffffff))
             f.write(struct.pack("<I", image_index))
-            timestamp += 1
-            image_index += statinfo.st_size
 
-        f.write(struct.pack("<I", 0xffffffff))
-        f.write(struct.pack("<I", image_index))
-
-        # Now copy the images
-        for image in images:
-            with open(os.path.join(images_path, image), "rb") as img_file:
-                data = img_file.read()
-            f.write(data)
+            # Now copy the images
+            for image in images:
+                try:
+                    with open(os.path.join(images_path, image), "rb") as img_file:
+                        data = img_file.read()
+                except PermissionError as e:
+                    logger.error(f'Permission denied reading image file {os.path.join(images_path, image)}: {e}')
+                    logger.info(f'Please check read permissions for: {images_path}')
+                    raise
+                f.write(data)
+    except PermissionError:
+        # Re-raise PermissionError (already logged above)
+        raise
     logger.debug(f'Generated BIF file: {bif_filename}')
 
 
