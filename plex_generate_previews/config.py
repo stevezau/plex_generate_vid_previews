@@ -97,6 +97,7 @@ class Config:
     plex_bif_frame_interval: int
     thumbnail_quality: int
     regenerate_thumbnails: bool
+    sort_by: Optional[str]
     
     # Threading configuration
     gpu_threads: int
@@ -135,6 +136,7 @@ def show_docker_help():
     logger.info('  PLEX_BIF_FRAME_INTERVAL     Interval between preview images in seconds (default: 5)')
     logger.info('  THUMBNAIL_QUALITY           Preview image quality 1-10 (default: 4)')
     logger.info('  REGENERATE_THUMBNAILS       Regenerate existing thumbnails (true/false, default: false)')
+    logger.info('  SORT_BY                     Sort media by date added: "newest" or "oldest" (default: newest)')
     logger.info('  GPU_THREADS                 Number of GPU worker threads (default: 1)')
     logger.info('  CPU_THREADS                 Number of CPU worker threads (default: 1)')
     logger.info('  GPU_SELECTION               GPU selection: "all" or comma-separated indices (default: all)')
@@ -447,6 +449,10 @@ def load_config(cli_args=None) -> Config:
     thumbnail_quality = get_config_value_int(cli_args, 'thumbnail_quality', 'THUMBNAIL_QUALITY', 4)
     regenerate_thumbnails = get_config_value_bool(cli_args, 'regenerate_thumbnails', 'REGENERATE_THUMBNAILS', False)
     
+    # Handle sort_by (default: 'newest', can be 'newest' or 'oldest')
+    sort_by_raw = get_config_value_str(cli_args, 'sort_by', 'SORT_BY', 'newest')
+    sort_by = sort_by_raw.strip().lower() if sort_by_raw else 'newest'
+    
     gpu_threads = get_config_value_int(cli_args, 'gpu_threads', 'GPU_THREADS', 1)
     cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
     gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
@@ -465,6 +471,11 @@ def load_config(cli_args=None) -> Config:
     valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
     if log_level not in valid_log_levels:
         validation_errors.append(f'LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})')
+    
+    # Validate sort_by
+    valid_sort_by = ['newest', 'oldest']
+    if sort_by is not None and sort_by not in valid_sort_by:
+        validation_errors.append(f'SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})')
     
     # Update logging level early so debug statements work
     if log_level in valid_log_levels:
@@ -541,6 +552,7 @@ def load_config(cli_args=None) -> Config:
         plex_bif_frame_interval=plex_bif_frame_interval,
         thumbnail_quality=thumbnail_quality,
         regenerate_thumbnails=regenerate_thumbnails,
+        sort_by=sort_by,
         gpu_threads=gpu_threads,
         cpu_threads=cpu_threads,
         gpu_selection=gpu_selection,
@@ -567,5 +579,6 @@ def load_config(cli_args=None) -> Config:
     logger.debug(f'CPU_THREADS = {config.cpu_threads}')
     logger.debug(f'GPU_SELECTION = {config.gpu_selection}')
     logger.debug(f'REGENERATE_THUMBNAILS = {config.regenerate_thumbnails}')
+    logger.debug(f'SORT_BY = {config.sort_by}')
     
     return config

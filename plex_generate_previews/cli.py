@@ -163,6 +163,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--plex-bif-frame-interval', type=int, help='Interval between preview images in seconds (default: 5)')
     parser.add_argument('--thumbnail-quality', type=int, help='Preview image quality 1-10 (default: 4, 2=highest quality, 10=lowest quality)')
     parser.add_argument('--regenerate-thumbnails', action='store_true', help='Regenerate existing thumbnails (default: false)')
+    parser.add_argument('--sort-by', choices=['newest', 'oldest'], default='newest', help='Sort media by date added: "newest" (newest first) or "oldest" (oldest first) (default: newest)')
     
     # Threading configuration
     parser.add_argument('--gpu-threads', type=int, help='Number of GPU worker threads (default: 4)')
