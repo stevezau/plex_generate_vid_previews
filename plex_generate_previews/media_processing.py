@@ -733,6 +733,12 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
                 # Use file path directly (for local generation)
                 media_file = sanitize_path(media_part.attrib['file'])
 
+            # Validate bundle_hash has sufficient length (at least 2 characters)
+            if not bundle_hash or len(bundle_hash) < 2:
+                hash_value = f'"{bundle_hash}"' if bundle_hash else '(empty)'
+                logger.warning(f'Skipping {media_file} due to invalid bundle hash from Plex: {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)')
+                continue
+
             if not os.path.isfile(media_file):
                 logger.warning(f'Skipping as file not found {media_file}')
                 continue
