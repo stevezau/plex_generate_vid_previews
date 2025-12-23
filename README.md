@@ -40,7 +40,7 @@ Preview thumbnails are the small images you see when scrubbing through videos in
 **Docker (easiest):**
 ```bash
 # 1. Check your GPUs
-docker run --rm stevezzau/plex_generate_vid_previews:latest --list-gpus
+docker run --rm --gpus all stevezzau/plex_generate_vid_previews:latest --list-gpus
 
 # 2. Run with your details (using environment variables)
 docker run --rm --gpus all \
