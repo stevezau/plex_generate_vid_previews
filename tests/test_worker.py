@@ -216,8 +216,8 @@ class TestWorker:
         # Wait for thread to complete
         time.sleep(0.2)
         
-        # Worker should be marked as completed (task handed off to CPU)
-        assert worker.completed == 1
+        # Worker should NOT be marked as completed (task handed off to CPU, CPU will mark it)
+        assert worker.completed == 0
         assert worker.failed == 0
         
         # Task should be in fallback queue
@@ -254,9 +254,9 @@ class TestWorker:
         # Wait for thread to complete
         time.sleep(0.2)
         
-        # Worker should be marked as completed but task failed
-        assert worker.completed == 1
-        assert worker.failed == 1  # Failed because no CPU threads available
+        # Worker should be marked as failed (no CPU threads to hand off to)
+        assert worker.completed == 0
+        assert worker.failed == 1
         
         # Fallback queue should be empty
         assert fallback_queue.empty()
@@ -524,8 +524,8 @@ class TestWorkerPool:
         assert call_order[0] == ('key1', 'NVIDIA')  # GPU worker tried first
         assert call_order[1] == ('key1', None)  # CPU worker succeeded
         
-        # GPU worker should be marked as completed (task handed off)
-        assert pool.workers[0].completed == 1
+        # GPU worker should NOT be marked as completed (task handed off, CPU will mark it)
+        assert pool.workers[0].completed == 0
         assert pool.workers[0].failed == 0
         
         # CPU worker should have processed it successfully
@@ -610,4 +610,4 @@ class TestWorkerPool:
         
         # GPU worker should fail (no CPU workers to hand off to)
         assert pool.workers[0].failed == 1
-        assert pool.workers[0].completed == 1  # Completed from GPU perspective
+        assert pool.workers[0].completed == 0
