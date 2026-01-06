@@ -223,8 +223,7 @@ class Worker:
                     if config.cpu_threads == 0:
                         logger.warning(f"Codec not supported by GPU, but CPU threads are disabled (CPU_THREADS=0); skipping {display_name}")
                     self.failed += 1
-                # Mark as completed from GPU worker perspective (task will be handled by CPU)
-                self.completed += 1
+                # Do NOT mark as completed here - CPU worker will mark it when actually processed
             else:
                 # CPU worker received codec error - this is unexpected, treat as failure
                 logger.error(f"CPU Worker {self.worker_id} encountered codec error for {display_name}: {e}")
@@ -586,33 +585,27 @@ class WorkerPool:
                 actual_processed = actual_completed + actual_failed
                 
                 # Exit if all items processed (completed or failed)
-                # Note: actual_completed can be >= total_items if GPU hands off to CPU
-                # (GPU marks as completed + CPU marks as completed = 2 for 1 item)
-                # So we check that we've processed at least total_items
                 if actual_processed >= total_items:
                     # Give threads time to finish and update is_busy flags
-                    # Retry multiple times to catch threads that finish between checks
                     busy_retries = 0
-                    max_busy_retries = 20  # Wait up to 20ms for threads to finish
+                    max_busy_retries = 20
                     while self.has_busy_workers() and busy_retries < max_busy_retries:
-                        time.sleep(0.001)  # 1ms delay
+                        time.sleep(0.001)
                         for worker in self.workers:
                             worker.check_completion()
                         busy_retries += 1
                     
-                    # After retries, check if we should exit
-                    # Exit if: no busy workers OR we've waited long enough and all items are completed
-                    should_exit = (not self.has_busy_workers() or 
-                                  (busy_retries >= max_busy_retries and actual_processed >= total_items))
+                    # Recalculate after waiting for threads
+                    actual_completed = sum(worker.completed for worker in self.workers)
+                    actual_failed = sum(worker.failed for worker in self.workers)
+                    actual_processed = actual_completed + actual_failed
                     
-                    if should_exit:
-                        if busy_retries >= max_busy_retries and actual_processed >= total_items:
-                            # Log that we're exiting after waiting
-                            logger.debug(f"All items processed ({actual_processed}/{total_items}), exiting after {busy_retries} retries")
-                        
-                        # Check fallback queue - if empty, we're done
-                        if self._check_fallback_queue_empty():
-                            break
+                    # Exit only if all conditions are met
+                    if (not self.has_busy_workers() and 
+                        self._check_fallback_queue_empty() and 
+                        actual_processed >= total_items):
+                        logger.debug(f"All items processed ({actual_processed}/{total_items}), exiting")
+                        break
             
             # Adaptive sleep to balance responsiveness and CPU usage
             if self.has_busy_workers():
