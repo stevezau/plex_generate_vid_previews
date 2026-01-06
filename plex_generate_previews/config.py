@@ -112,6 +112,11 @@ class Config:
     # Logging
     log_level: str
     
+    # Daemon mode configuration
+    daemon_mode: Optional[str] = None  # watch | scheduled | None (disabled)
+    scan_interval: int = 60  # Minutes between scheduled scans
+    full_scan: bool = False  # Process entire library instead of just new items
+    
     # Internal constants
     worker_pool_timeout: int = 30
 
@@ -463,9 +468,29 @@ def load_config(cli_args=None) -> Config:
     # Handle log_level (case insensitive)
     log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
     
+    # Daemon mode configuration
+    daemon_mode = get_config_value_str(cli_args, 'daemon_mode', 'DAEMON_MODE', None)
+    scan_interval = get_config_value_int(cli_args, 'scan_interval', 'SCAN_INTERVAL', 60)
+    full_scan = get_config_value_bool(cli_args, 'full_scan', 'FULL_SCAN', False)
+    
     # Initialize validation lists
     missing_params = []
     validation_errors = []
+    
+    # Validate daemon mode if provided
+    if daemon_mode:
+        daemon_mode_lower = daemon_mode.lower()
+        
+        valid_modes = ['watch', 'scheduled']
+        if daemon_mode_lower not in valid_modes:
+            validation_errors.append(f'DAEMON_MODE must be one of {valid_modes} (got: {daemon_mode})')
+        else:
+            # Use the normalized value directly
+            daemon_mode = daemon_mode_lower
+    
+    # Validate scan interval if daemon mode is enabled
+    if daemon_mode and scan_interval < 1:
+        validation_errors.append(f'SCAN_INTERVAL must be at least 1 minute (got: {scan_interval})')
     
     # Validate log level
     valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
@@ -559,7 +584,10 @@ def load_config(cli_args=None) -> Config:
         tmp_folder=tmp_folder,
         tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
-        log_level=log_level
+        log_level=log_level,
+        daemon_mode=daemon_mode,  # Already normalized in validation
+        scan_interval=scan_interval,
+        full_scan=full_scan
     )
     
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi

@@ -37,6 +37,7 @@ dependencies = [
     "rich==13.8.1",
     "pymediainfo==7.0.1",
     "psutil>=5.9.0,<6.0.0",
+    "websocket-client==1.9.0",
 ]
 
 [project.optional-dependencies]

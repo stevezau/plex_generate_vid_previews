@@ -174,6 +174,13 @@ def parse_arguments() -> argparse.Namespace:
     # System paths
     parser.add_argument('--tmp-folder', help='Temporary folder for processing')
     
+    # Daemon mode
+    parser.add_argument('--daemon', '-d', dest='daemon_mode', nargs='?', const='watch', 
+                       choices=['watch', 'scheduled'],
+                       help='Enable daemon mode: "watch" (monitors for new items in real-time) or "scheduled" (checks every --scan-interval minutes). Defaults to "watch" if no value provided.')
+    parser.add_argument('--scan-interval', type=int, help='Minutes between scans when using scheduled mode (default: 60)')
+    parser.add_argument('--full-scan', action='store_true', help='Process entire library instead of just new items (default: false, only new items)')
+    
     # Logging
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'debug', 'info', 'warning', 'error'], help='Logging level (default: INFO)')
         
@@ -497,12 +504,21 @@ def main() -> None:
     if config is None:  # Handled --list-gpus flag
         return
     
-    # Set up working directory
+    # Set up working directory (common for both modes)
     setup_working_directory(config)
     
-    # Detect and select GPUs
+    # Detect and select GPUs (common for both modes)
     selected_gpus = detect_and_select_gpus(config)
     
+    # Check if daemon mode is enabled
+    if config.daemon_mode:
+        # Daemon mode - run as service (watch or scheduled)
+        from .service import run_daemon_service
+        
+        # Run daemon service
+        run_daemon_service(config, selected_gpus)
+    else:
+        # Batch mode - process all libraries (one-time run, no --daemon flag)
     # Run the main processing workflow
     run_processing(config, selected_gpus)
 
