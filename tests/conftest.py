@@ -40,9 +40,6 @@ def mock_config():
     config.ffmpeg_path = "/usr/bin/ffmpeg"
     config.log_level = "INFO"
     config.worker_pool_timeout = 30
-    config.daemon_mode = None
-    config.scan_interval = 60
-    config.full_scan = False
     return config
 
 
