@@ -358,6 +358,41 @@ class TestGetGPUName:
         
         assert 'AMD' in name or 'Radeon' in name
 
+    @patch('plex_generate_previews.gpu_detection.os.path.exists')
+    @patch('plex_generate_previews.gpu_detection.os.path.realpath')
+    @patch('subprocess.run')
+    def test_get_gpu_name_multi_gpu_distinct_per_render_node(self, mock_run, mock_realpath, mock_exists):
+        """Test that multiple /dev/dri/renderD* nodes can resolve to distinct GPU names."""
+        # Pretend sysfs paths exist for both devices
+        mock_exists.return_value = True
+
+        def realpath_side_effect(path: str) -> str:
+            # Return distinct PCI device paths based on the queried render node
+            if 'renderD128' in path:
+                return '/sys/devices/pci0000:00/0000:00:02.0'
+            if 'renderD129' in path:
+                return '/sys/devices/pci0000:00/0000:06:00.0'
+            return '/sys/devices/pci0000:00/0000:00:00.0'
+
+        mock_realpath.side_effect = realpath_side_effect
+
+        def run_side_effect(cmd, capture_output=True, text=True, timeout=5, **kwargs):
+            # Our implementation queries lspci -s <pci_address>
+            if cmd[:3] == ['lspci', '-s', '0000:00:02.0']:
+                return MagicMock(returncode=0, stdout='00:02.0 Display controller: Intel Corporation TigerLake-LP GT2 [Iris Xe Graphics] (rev 01)\n')
+            if cmd[:3] == ['lspci', '-s', '0000:06:00.0']:
+                return MagicMock(returncode=0, stdout='06:00.0 VGA compatible controller: Intel Corporation DG2 [Arc A380] (rev 05)\n')
+            return MagicMock(returncode=1, stdout='')
+
+        mock_run.side_effect = run_side_effect
+
+        name_0 = get_gpu_name('INTEL', '/dev/dri/renderD128')
+        name_1 = get_gpu_name('INTEL', '/dev/dri/renderD129')
+
+        assert name_0 != name_1
+        assert 'Iris Xe' in name_0 or 'TigerLake' in name_0
+        assert 'Arc' in name_1 or 'A380' in name_1
+
 
 class TestGetFFmpegHwaccels:
     """Test FFmpeg hwaccel enumeration."""
