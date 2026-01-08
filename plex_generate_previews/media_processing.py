@@ -60,6 +60,34 @@ class CodecNotSupportedError(Exception):
     pass
 
 
+def _detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
+    """
+    Detect FFmpeg Dolby Vision RPU parsing failures that can abort processing.
+    
+    This is intentionally narrow to avoid false positives. It matches a small
+    allow-list of known fatal signatures from upstream FFmpeg/libdovi output.
+    
+    Args:
+        stderr_lines: List of FFmpeg stderr lines
+        
+    Returns:
+        bool: True if the Dolby Vision RPU error is detected
+    """
+    if not stderr_lines:
+        return False
+
+    # Known fatal Dolby Vision parsing signatures (extend as new cases are reported).
+    # Keep these specific to avoid triggering on benign informational/warning messages.
+    fatal_signatures = [
+        "multiple dolby vision rpus found in one au",
+        # Some FFmpeg builds append additional context after the core message.
+        "multiple dolby vision rpus found in one au. skipping previous.",
+    ]
+
+    stderr_text = " ".join(stderr_lines).lower()
+    return any(sig in stderr_text for sig in fatal_signatures)
+
+
 def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callback=None):
     """
     Parse a single FFmpeg progress line and call progress callback if provided.
@@ -425,6 +453,33 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
 
     # Check for codec errors after both attempts (with and without skip_frame)
     # If in GPU context and codec error detected, raise exception for worker pool to handle
+    if rc != 0 and image_count == 0:
+        # Dolby Vision parsing errors can be specific to the decode path/build and can abort FFmpeg.
+        # If this happens on a GPU worker, we hand off to CPU worker for a best-effort retry.
+        if _detect_dolby_vision_rpu_error(stderr_lines):
+            if gpu is not None:
+                stderr_excerpt = '\n'.join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
+                logger.warning(
+                    f"Dolby Vision RPU parsing error detected for {video_file}; handing off to CPU worker"
+                )
+                logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+                # Clean up any partial files from GPU attempts
+                for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                    try:
+                        os.remove(img)
+                    except Exception:
+                        pass
+                raise CodecNotSupportedError(
+                    f"Dolby Vision RPU parsing error in GPU context for {video_file}"
+                )
+            else:
+                # Already on CPU: no further fallback available without remuxing/bitstream filtering.
+                # Provide an actionable message and let the caller treat it as failure.
+                logger.error(
+                    f"Dolby Vision RPU parsing error detected for {video_file}; unable to generate thumbnails on CPU"
+                )
+                logger.info("If this persists, try upgrading FFmpeg or re-encoding/remuxing the file to remove Dolby Vision metadata.")
+
     if rc != 0 and image_count == 0 and gpu is not None:
         if _detect_codec_error(rc, stderr_lines):
             # Log relevant stderr excerpt for debugging

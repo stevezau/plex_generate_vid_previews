@@ -715,6 +715,111 @@ class TestGenerateImages:
         assert mock_detect.called
         assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback
 
+    @patch('plex_generate_previews.media_processing.MediaInfo')
+    @patch('subprocess.Popen')
+    @patch('subprocess.run')
+    @patch('plex_generate_previews.media_processing.os.rename')
+    @patch('plex_generate_previews.media_processing.os.remove')
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('time.sleep')
+    @patch('plex_generate_previews.media_processing.glob.glob')
+    @patch('plex_generate_previews.media_processing._detect_codec_error')
+    def test_generate_images_dolby_vision_rpu_error_hands_off_gpu_to_cpu(self, mock_detect, mock_glob,
+                                                                         mock_sleep, mock_file, mock_exists,
+                                                                         mock_remove, mock_rename, mock_run,
+                                                                         mock_popen, mock_mediainfo, temp_dir, mock_config):
+        """DV RPU parsing errors should trigger GPU->CPU handoff even if codec detection doesn't match."""
+        # Heuristic check - returns 0 to allow skip_frame initially
+        mock_run.return_value = MagicMock(returncode=0)
+        
+        # MediaInfo
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+        
+        # FFmpeg processes: fail both attempts (skip + no-skip)
+        mock_proc_skip = MagicMock()
+        mock_proc_skip.poll.side_effect = [None, 0]
+        mock_proc_skip.returncode = 187
+        
+        mock_proc_noskip = MagicMock()
+        mock_proc_noskip.poll.side_effect = [None, 0]
+        mock_proc_noskip.returncode = 187
+        
+        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip]
+        
+        # Force output file reads to contain DV error
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = [
+            "Multiple Dolby Vision RPUs found in one AU. Skipping previous.\n"
+        ]
+        
+        # No images produced
+        mock_glob.return_value = []
+        
+        # Codec detection doesn't match; DV detector should still cause handoff
+        mock_detect.return_value = False
+        mock_config.cpu_threads = 1
+        
+        with pytest.raises(CodecNotSupportedError) as exc_info:
+            generate_images(
+                "/test/video_dv.mp4", temp_dir, 'NVIDIA', None, mock_config
+            )
+        
+        assert "Dolby Vision RPU parsing error" in str(exc_info.value)
+        assert mock_popen.call_count == 2  # skip + no-skip retries
+        # Note: Dolby Vision RPU errors are handled via a dedicated detector and may short-circuit
+        # before generic codec error detection runs.
+
+    @patch('plex_generate_previews.media_processing.MediaInfo')
+    @patch('subprocess.Popen')
+    @patch('subprocess.run')
+    @patch('plex_generate_previews.media_processing.os.rename')
+    @patch('plex_generate_previews.media_processing.os.remove')
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('time.sleep')
+    @patch('plex_generate_previews.media_processing.glob.glob')
+    @patch('plex_generate_previews.media_processing._detect_codec_error')
+    def test_generate_images_dolby_vision_rpu_error_cpu_returns_failure(self, mock_detect, mock_glob,
+                                                                        mock_sleep, mock_file, mock_exists,
+                                                                        mock_remove, mock_rename, mock_run,
+                                                                        mock_popen, mock_mediainfo, temp_dir, mock_config):
+        """DV RPU parsing errors on CPU should fail cleanly without raising CodecNotSupportedError."""
+        mock_run.return_value = MagicMock(returncode=0)
+        
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+        
+        mock_proc_skip = MagicMock()
+        mock_proc_skip.poll.side_effect = [None, 0]
+        mock_proc_skip.returncode = 187
+        
+        mock_proc_noskip = MagicMock()
+        mock_proc_noskip.poll.side_effect = [None, 0]
+        mock_proc_noskip.returncode = 187
+        
+        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip]
+        
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = [
+            "Multiple Dolby Vision RPUs found in one AU. Skipping previous.\n"
+        ]
+        
+        mock_glob.return_value = []
+        mock_detect.return_value = False
+        
+        success, image_count, hw_used, seconds, speed = generate_images(
+            "/test/video_dv.mp4", temp_dir, None, None, mock_config
+        )
+        
+        assert success is False
+        assert image_count == 0
+        assert hw_used is False
+        assert mock_popen.call_count == 2
+
 
 class TestProcessItem:
     """Test the complete item processing pipeline."""

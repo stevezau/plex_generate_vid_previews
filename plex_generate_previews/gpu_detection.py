@@ -708,6 +708,74 @@ def _parse_lspci_gpu_name(gpu_type: str) -> str:
     return f"{gpu_type} GPU"
 
 
+def _get_pci_address_from_drm_device(gpu_device: str) -> Optional[str]:
+    """
+    Resolve a Linux DRM device (e.g., /dev/dri/renderD128) to its PCI address.
+
+    This uses sysfs and works even when multiple GPUs share the same driver/API.
+
+    Args:
+        gpu_device: Path to a DRM node under /dev/dri (e.g., '/dev/dri/renderD128')
+
+    Returns:
+        Optional[str]: PCI address like '0000:06:00.0' if resolvable; otherwise None.
+    """
+    if not gpu_device or not gpu_device.startswith("/dev/dri/"):
+        return None
+
+    node = os.path.basename(gpu_device)
+    sysfs_device_path = os.path.join("/sys/class/drm", node, "device")
+    if not os.path.exists(sysfs_device_path):
+        return None
+
+    try:
+        real_path = os.path.realpath(sysfs_device_path)
+    except OSError:
+        return None
+
+    # The realpath commonly ends with the PCI address for PCI devices, e.g.:
+    # /sys/devices/pci0000:00/0000:00:02.0
+    pci_addr_re = re.compile(r"^\d{4}:\d{2}:\d{2}\.\d$")
+    for part in reversed(real_path.split(os.sep)):
+        if pci_addr_re.match(part):
+            return part
+
+    return None
+
+
+def _get_lspci_device_name_for_pci_address(pci_address: str) -> Optional[str]:
+    """
+    Get a user-friendly GPU device name for a specific PCI address via lspci.
+
+    Args:
+        pci_address: PCI address like '0000:06:00.0'
+
+    Returns:
+        Optional[str]: Parsed device name, or None if lspci is unavailable or parsing fails.
+    """
+    if not pci_address:
+        return None
+
+    try:
+        # Use -s to query exactly one device. This prevents incorrect names when multiple GPUs exist.
+        result = subprocess.run(['lspci', '-s', pci_address], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        # Typical line: "06:00.0 VGA compatible controller: Intel Corporation DG2 [Arc A380] (rev 05)"
+        line = result.stdout.splitlines()[0].strip()
+        parts = line.split(':', 2)
+        if len(parts) == 3:
+            return parts[2].strip()
+        return None
+    except FileNotFoundError:
+        # lspci not installed - fine, caller will fall back.
+        return None
+    except Exception as e:
+        logger.debug(f"Error running lspci for PCI address {pci_address}: {e}")
+        return None
+
+
 def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
     """
     Extract GPU model name from system.
@@ -737,9 +805,16 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
             return "Windows GPU"
             
         elif gpu_type in ('AMD', 'INTEL') and gpu_device.startswith('/dev/dri/'):
-            # Try to get GPU info from lspci
+            # Prefer per-device PCI lookup to avoid duplicate names when multiple GPUs exist.
+            pci_address = _get_pci_address_from_drm_device(gpu_device)
+            if pci_address:
+                per_device_name = _get_lspci_device_name_for_pci_address(pci_address)
+                if per_device_name:
+                    return per_device_name  # Don't add (VAAPI) here; format_gpu_info will add it
+
+            # Fallback to generic lspci scan (may be ambiguous on multi-GPU systems).
             gpu_name = _parse_lspci_gpu_name(gpu_type)
-            return gpu_name  # Don't add (VAAPI) here, format_gpu_info will add it
+            return gpu_name  # Don't add (VAAPI) here; format_gpu_info will add it
             
     except Exception as e:
         logger.debug(f"Error getting GPU name for {gpu_type}: {e}")
