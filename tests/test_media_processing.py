@@ -725,20 +725,21 @@ class TestGenerateImages:
     @patch('time.sleep')
     @patch('plex_generate_previews.media_processing.glob.glob')
     @patch('plex_generate_previews.media_processing._detect_codec_error')
-    def test_generate_images_dolby_vision_rpu_error_hands_off_gpu_to_cpu(self, mock_detect, mock_glob,
-                                                                         mock_sleep, mock_file, mock_exists,
-                                                                         mock_remove, mock_rename, mock_run,
-                                                                         mock_popen, mock_mediainfo, temp_dir, mock_config):
-        """DV RPU parsing errors should trigger GPU->CPU handoff even if codec detection doesn't match."""
+    def test_generate_images_dolby_vision_rpu_error_retries_with_dv_safe_filter_on_gpu(self, mock_detect, mock_glob,
+                                                                                      mock_sleep, mock_file, mock_exists,
+                                                                                      mock_remove, mock_rename, mock_run,
+                                                                                      mock_popen, mock_mediainfo, temp_dir, mock_config):
+        """DV RPU parsing errors should trigger a third DV-safe (fps+scale) FFmpeg run on GPU before CPU handoff."""
         # Heuristic check - returns 0 to allow skip_frame initially
         mock_run.return_value = MagicMock(returncode=0)
         
         # MediaInfo
         mock_info = MagicMock()
-        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        # Force HDR filter chain initially (zscale/tonemap) so we can prove DV-safe retry removed it
+        mock_info.video_tracks = [MagicMock(hdr_format="HDR10")]
         mock_mediainfo.parse.return_value = mock_info
         
-        # FFmpeg processes: fail both attempts (skip + no-skip)
+        # FFmpeg processes: fail both attempts (skip + no-skip), then succeed with DV-safe filter
         mock_proc_skip = MagicMock()
         mock_proc_skip.poll.side_effect = [None, 0]
         mock_proc_skip.returncode = 187
@@ -746,8 +747,12 @@ class TestGenerateImages:
         mock_proc_noskip = MagicMock()
         mock_proc_noskip.poll.side_effect = [None, 0]
         mock_proc_noskip.returncode = 187
+
+        mock_proc_dv_safe = MagicMock()
+        mock_proc_dv_safe.poll.side_effect = [None, 0]
+        mock_proc_dv_safe.returncode = 0
         
-        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip]
+        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip, mock_proc_dv_safe]
         
         # Force output file reads to contain DV error
         mock_exists.return_value = True
@@ -755,22 +760,48 @@ class TestGenerateImages:
             "Multiple Dolby Vision RPUs found in one AU. Skipping previous.\n"
         ]
         
-        # No images produced
-        mock_glob.return_value = []
+        # No images produced until DV-safe retry, then one image exists (and then one renamed JPG exists)
+        img1 = f'{temp_dir}/img-000001.jpg'
+        ts1 = f'{temp_dir}/0000000000.jpg'
+        img_call_count = {'count': 0}
+
+        def glob_side_effect(pattern):
+            # Track only the img*.jpg pattern calls
+            if 'img*.jpg' in pattern:
+                img_call_count['count'] += 1
+                if img_call_count['count'] == 1:
+                    return []  # after initial attempts
+                if img_call_count['count'] == 2:
+                    return [img1]  # after DV-safe attempt
+                # rename stage: provide actual image filename
+                return [img1]
+            # Final recount after renaming
+            if pattern.endswith('*.jpg'):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
         
         # Codec detection doesn't match; DV detector should still cause handoff
         mock_detect.return_value = False
         mock_config.cpu_threads = 1
-        
-        with pytest.raises(CodecNotSupportedError) as exc_info:
-            generate_images(
-                "/test/video_dv.mp4", temp_dir, 'NVIDIA', None, mock_config
-            )
-        
-        assert "Dolby Vision RPU parsing error" in str(exc_info.value)
-        assert mock_popen.call_count == 2  # skip + no-skip retries
-        # Note: Dolby Vision RPU errors are handled via a dedicated detector and may short-circuit
-        # before generic codec error detection runs.
+
+        success, image_count, hw_used, seconds, speed = generate_images(
+            "/test/video_dv.mp4", temp_dir, 'NVIDIA', None, mock_config
+        )
+
+        assert success is True
+        assert image_count >= 1
+        assert hw_used is True
+        assert mock_popen.call_count == 3  # skip + no-skip + DV-safe retry
+
+        # Assert the third invocation used the DV-safe vf: fps+scale only, no zscale/tonemap
+        third_args = mock_popen.call_args_list[2][0][0]
+        vf_index = third_args.index('-vf')
+        vf_value = third_args[vf_index + 1]
+        assert 'scale=w=320:h=240:force_original_aspect_ratio=decrease' in vf_value
+        assert 'zscale' not in vf_value
+        assert 'tonemap' not in vf_value
 
     @patch('plex_generate_previews.media_processing.MediaInfo')
     @patch('subprocess.Popen')
@@ -801,7 +832,12 @@ class TestGenerateImages:
         mock_proc_noskip.poll.side_effect = [None, 0]
         mock_proc_noskip.returncode = 187
         
-        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip]
+        # With DV-safe retry implemented, we expect a third attempt (DV-safe) even on CPU.
+        mock_proc_dv_safe = MagicMock()
+        mock_proc_dv_safe.poll.side_effect = [None, 0]
+        mock_proc_dv_safe.returncode = 187
+
+        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip, mock_proc_dv_safe]
         
         mock_exists.return_value = True
         mock_file.return_value.readlines.return_value = [
@@ -818,7 +854,86 @@ class TestGenerateImages:
         assert success is False
         assert image_count == 0
         assert hw_used is False
-        assert mock_popen.call_count == 2
+        assert mock_popen.call_count == 3
+
+    @patch('plex_generate_previews.media_processing.MediaInfo')
+    @patch('subprocess.Popen')
+    @patch('subprocess.run')
+    @patch('plex_generate_previews.media_processing.os.rename')
+    @patch('plex_generate_previews.media_processing.os.remove')
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('time.sleep')
+    @patch('plex_generate_previews.media_processing.glob.glob')
+    @patch('plex_generate_previews.media_processing._detect_codec_error')
+    def test_generate_images_dolby_vision_rpu_error_retries_with_dv_safe_filter_on_cpu(self, mock_detect, mock_glob,
+                                                                                      mock_sleep, mock_file, mock_exists,
+                                                                                      mock_remove, mock_rename, mock_run,
+                                                                                      mock_popen, mock_mediainfo, temp_dir, mock_config):
+        """DV RPU parsing errors should trigger a third DV-safe (fps+scale) FFmpeg run on CPU."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        # Force HDR filter chain initially (zscale/tonemap) so we can prove DV-safe retry removed it
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format="HDR10")]
+        mock_mediainfo.parse.return_value = mock_info
+
+        # FFmpeg processes: fail both attempts (skip + no-skip), then succeed with DV-safe filter
+        mock_proc_skip = MagicMock()
+        mock_proc_skip.poll.side_effect = [None, 0]
+        mock_proc_skip.returncode = 187
+
+        mock_proc_noskip = MagicMock()
+        mock_proc_noskip.poll.side_effect = [None, 0]
+        mock_proc_noskip.returncode = 187
+
+        mock_proc_dv_safe = MagicMock()
+        mock_proc_dv_safe.poll.side_effect = [None, 0]
+        mock_proc_dv_safe.returncode = 0
+
+        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip, mock_proc_dv_safe]
+
+        # Force output file reads to contain DV error
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = [
+            "Multiple Dolby Vision RPUs found in one AU. Skipping previous.\n"
+        ]
+
+        img1 = f'{temp_dir}/img-000001.jpg'
+        ts1 = f'{temp_dir}/0000000000.jpg'
+        img_call_count = {'count': 0}
+
+        def glob_side_effect(pattern):
+            if 'img*.jpg' in pattern:
+                img_call_count['count'] += 1
+                if img_call_count['count'] == 1:
+                    return []
+                if img_call_count['count'] == 2:
+                    return [img1]
+                return [img1]
+            if pattern.endswith('*.jpg'):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
+
+        mock_detect.return_value = False
+
+        success, image_count, hw_used, seconds, speed = generate_images(
+            "/test/video_dv.mp4", temp_dir, None, None, mock_config
+        )
+
+        assert success is True
+        assert image_count >= 1
+        assert hw_used is False
+        assert mock_popen.call_count == 3
+
+        third_args = mock_popen.call_args_list[2][0][0]
+        vf_index = third_args.index('-vf')
+        vf_value = third_args[vf_index + 1]
+        assert 'scale=w=320:h=240:force_original_aspect_ratio=decrease' in vf_value
+        assert 'zscale' not in vf_value
+        assert 'tonemap' not in vf_value
 
 
 class TestProcessItem:
