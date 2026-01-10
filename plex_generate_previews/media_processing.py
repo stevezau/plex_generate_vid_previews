@@ -279,10 +279,16 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         if media_info.video_tracks[0].hdr_format != "None" and media_info.video_tracks[0].hdr_format is not None:
             vf_parameters = f"fps=fps={fps_value}:round=up,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
     
-    def _run_ffmpeg(use_skip: bool, gpu_override: Optional[str] = None, gpu_device_path_override: Optional[str] = None) -> tuple:
+    def _run_ffmpeg(
+        use_skip: bool,
+        gpu_override: Optional[str] = None,
+        gpu_device_path_override: Optional[str] = None,
+        vf_override: Optional[str] = None,
+    ) -> tuple:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
+        effective_vf = vf_override if vf_override is not None else vf_parameters
         args = [
             config.ffmpeg_path, "-loglevel", "info",
             "-threads:v", "1",
@@ -312,7 +318,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         args += [
             "-i", video_file, "-an", "-sn", "-dn",
             "-q:v", str(config.thumbnail_quality),
-            "-vf", vf_parameters,
+            "-vf", effective_vf,
             f'{output_folder}/img-%06d.jpg'
         ]
 
@@ -427,6 +433,7 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
 
     # First attempt
     rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial)
+    stderr_lines_all: List[str] = list(stderr_lines) if stderr_lines else []
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
     # (If we didn't use skip initially, retrying without skip would just repeat the same command)
@@ -447,38 +454,62 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         # Update rc and stderr_lines to retry results for codec error detection
         rc = retry_rc
         stderr_lines = retry_stderr_lines
+        if retry_stderr_lines:
+            stderr_lines_all.extend(retry_stderr_lines)
     
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, 'img*.jpg')))
 
-    # Check for codec errors after both attempts (with and without skip_frame)
-    # If in GPU context and codec error detected, raise exception for worker pool to handle
+    did_dv_safe_retry = False
+
+    # Dolby Vision parsing errors can be specific to the decode path/build and can abort FFmpeg.
+    # On both CPU and GPU, retry once with a DV-safe filter chain that avoids zscale/tonemap.
     if rc != 0 and image_count == 0:
-        # Dolby Vision parsing errors can be specific to the decode path/build and can abort FFmpeg.
-        # If this happens on a GPU worker, we hand off to CPU worker for a best-effort retry.
-        if _detect_dolby_vision_rpu_error(stderr_lines):
-            if gpu is not None:
-                stderr_excerpt = '\n'.join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
-                logger.warning(
-                    f"Dolby Vision RPU parsing error detected for {video_file}; handing off to CPU worker"
-                )
-                logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
-                # Clean up any partial files from GPU attempts
-                for img in glob.glob(os.path.join(output_folder, '*.jpg')):
-                    try:
-                        os.remove(img)
-                    except Exception:
-                        pass
-                raise CodecNotSupportedError(
-                    f"Dolby Vision RPU parsing error in GPU context for {video_file}"
-                )
-            else:
-                # Already on CPU: no further fallback available without remuxing/bitstream filtering.
-                # Provide an actionable message and let the caller treat it as failure.
-                logger.error(
-                    f"Dolby Vision RPU parsing error detected for {video_file}; unable to generate thumbnails on CPU"
-                )
-                logger.info("If this persists, try upgrading FFmpeg or re-encoding/remuxing the file to remove Dolby Vision metadata.")
+        if _detect_dolby_vision_rpu_error(stderr_lines_all):
+            did_dv_safe_retry = True
+            stderr_excerpt_source = stderr_lines_all if stderr_lines_all else stderr_lines
+            stderr_excerpt = '\n'.join(stderr_excerpt_source[-5:]) if len(stderr_excerpt_source) > 0 else "No stderr output"
+            logger.warning(
+                f"Dolby Vision RPU parsing error detected for {video_file}; retrying with DV-safe filter chain (fps+scale)"
+            )
+            logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+
+            # Clean up any partial files before retrying
+            for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                try:
+                    os.remove(img)
+                except Exception:
+                    pass
+
+            # DV-safe filter: avoid zscale/tonemap; mirror the known-working workaround in issue #130.
+            dv_safe_vf = f"fps=fps={fps_value}:round=up,{base_scale}"
+
+            rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=False, vf_override=dv_safe_vf)
+            if stderr_lines:
+                stderr_lines_all.extend(stderr_lines)
+            image_count = len(glob.glob(os.path.join(output_folder, 'img*.jpg')))
+
+            if rc != 0 and image_count == 0:
+                if gpu is not None:
+                    # Still failing on GPU even with DV-safe filter -> hand off to CPU worker.
+                    for img in glob.glob(os.path.join(output_folder, '*.jpg')):
+                        try:
+                            os.remove(img)
+                        except Exception:
+                            pass
+                    raise CodecNotSupportedError(
+                        f"Dolby Vision RPU parsing error in GPU context for {video_file}"
+                    )
+                else:
+                    # Already on CPU: no further fallback available without remuxing/bitstream filtering.
+                    logger.error(
+                        f"Dolby Vision RPU parsing error detected for {video_file}; unable to generate thumbnails on CPU even with DV-safe filter"
+                    )
+                    logger.info("If this persists, try upgrading FFmpeg or re-encoding/remuxing the file to remove Dolby Vision metadata.")
+
+    # Check for codec errors after DV-safe retry (if any) and skip-frame retries.
+    # If in GPU context and codec error detected, raise exception for worker pool to handle
+
 
     if rc != 0 and image_count == 0 and gpu is not None:
         if _detect_codec_error(rc, stderr_lines):
@@ -520,10 +551,10 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
     success = image_count > 0
 
     if success:
-        fallback_suffix = " (CPU fallback)" if did_cpu_fallback else (" (retry no-skip)" if did_retry else "")
+        fallback_suffix = " (CPU fallback)" if did_cpu_fallback else (" (DV-safe retry)" if did_dv_safe_retry else (" (retry no-skip)" if did_retry else ""))
         logger.info(f'Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}')
     else:
-        fallback_suffix = " (after CPU fallback)" if did_cpu_fallback else (" after retry" if did_retry else "")
+        fallback_suffix = " (after CPU fallback)" if did_cpu_fallback else (" after DV-safe retry" if did_dv_safe_retry else (" after retry" if did_retry else ""))
         logger.error(f'Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}')
 
     return success, image_count, hw, seconds, speed
