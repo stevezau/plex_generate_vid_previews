@@ -96,6 +96,13 @@ jobs:
           ref: ${{ github.event.release.target_commitish }}
           fetch-depth: 0  # Needed for setuptools-scm to derive version from git tags
 
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -107,6 +114,8 @@ jobs:
           pip install build twine
 
       - name: Build package
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.get_version.outputs.version }}
         run: python -m build
 
       - name: Check package
