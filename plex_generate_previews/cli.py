@@ -378,8 +378,16 @@ def create_progress_displays():
     return main_progress, worker_progress, query_progress
 
 
-def run_processing(config, selected_gpus):
-    """Run the main processing workflow."""
+def run_processing(config, selected_gpus, headless=False, progress_callback=None, worker_callback=None):
+    """Run the main processing workflow.
+    
+    Args:
+        config: Configuration object
+        selected_gpus: List of selected GPUs
+        headless: If True, skip Rich console display (for web/background execution)
+        progress_callback: Optional callback function(current, total, message) for progress updates
+        worker_callback: Optional callback function(workers_list) for worker status updates
+    """
     try:
         # Get Plex server
         plex = plex_server(config)
@@ -397,30 +405,9 @@ def run_processing(config, selected_gpus):
         # Process all library sections
         total_processed = 0
         
-        # Create progress displays
-        main_progress, worker_progress, query_progress = create_progress_displays()
-        
-        # Create a dynamic group that can switch between query and processing displays
-        class DynamicGroup:
-            def __init__(self):
-                self.current_group = None
-            
-            def set_query_mode(self):
-                self.current_group = Group(query_progress)
-            
-            def set_processing_mode(self):
-                self.current_group = Group(main_progress, worker_progress)
-            
-            def __rich_console__(self, console, options):
-                if self.current_group:
-                    yield from self.current_group.__rich_console__(console, options)
-        
-        dynamic_group = DynamicGroup()
-        
-        with Live(dynamic_group, console=console, refresh_per_second=20):
-            # Start in query mode
-            dynamic_group.set_query_mode()
-            query_task = query_progress.add_task("Querying library...", total=1, completed=0)
+        if headless:
+            # Headless mode - no Rich console display
+            logger.info("Running in headless mode (no console display)")
             
             # Get the generator for library sections
             library_sections = get_library_sections(plex, config)
@@ -431,25 +418,76 @@ def run_processing(config, selected_gpus):
                     logger.info(f"No media items found in library '{section.title}', skipping")
                     continue
                 
-                # Switch to processing mode
-                dynamic_group.set_processing_mode()
-                query_progress.remove_task(query_task)
+                logger.info(f"Processing library '{section.title}' with {len(media_items)} items")
                 
-                main_task = main_progress.add_task(f"Processing {section.title}", total=len(media_items))
+                if progress_callback:
+                    progress_callback(0, len(media_items), f"Processing {section.title}")
                 
-                # Process items in this section with worker progress
-                worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task, title_max_width, library_name=section.title)
+                # Process items without Rich progress displays
+                worker_pool.process_items_headless(
+                    media_items, config, plex, title_max_width, 
+                    library_name=section.title,
+                    progress_callback=progress_callback,
+                    worker_callback=worker_callback
+                )
                 total_processed += len(media_items)
                 
-                # Remove completed task
-                main_progress.remove_task(main_task)
+                logger.info(f"Completed processing library '{section.title}'")
+        else:
+            # Interactive mode with Rich console display
+            # Create progress displays
+            main_progress, worker_progress, query_progress = create_progress_displays()
+            
+            # Create a dynamic group that can switch between query and processing displays
+            class DynamicGroup:
+                def __init__(self):
+                    self.current_group = None
                 
-                # Switch back to query mode for next library
+                def set_query_mode(self):
+                    self.current_group = Group(query_progress)
+                
+                def set_processing_mode(self):
+                    self.current_group = Group(main_progress, worker_progress)
+                
+                def __rich_console__(self, console, options):
+                    if self.current_group:
+                        yield from self.current_group.__rich_console__(console, options)
+            
+            dynamic_group = DynamicGroup()
+            
+            with Live(dynamic_group, console=console, refresh_per_second=20):
+                # Start in query mode
                 dynamic_group.set_query_mode()
                 query_task = query_progress.add_task("Querying library...", total=1, completed=0)
-            
-            # Remove final query task
-            query_progress.remove_task(query_task)
+                
+                # Get the generator for library sections
+                library_sections = get_library_sections(plex, config)
+                
+                # Process all library sections
+                for section, media_items in library_sections:
+                    if not media_items:
+                        logger.info(f"No media items found in library '{section.title}', skipping")
+                        continue
+                    
+                    # Switch to processing mode
+                    dynamic_group.set_processing_mode()
+                    query_progress.remove_task(query_task)
+                    
+                    main_task = main_progress.add_task(f"Processing {section.title}", total=len(media_items))
+                    
+                    # Process items in this section with worker progress
+                    worker_pool.process_items(media_items, config, plex, worker_progress, main_progress, main_task, title_max_width, library_name=section.title)
+                    total_processed += len(media_items)
+                    
+                    # Remove completed task
+                    main_progress.remove_task(main_task)
+                    
+                    # Switch back to query mode for next library
+                    dynamic_group.set_query_mode()
+                    query_task = query_progress.add_task("Querying library...", total=1, completed=0)
+                
+                # Remove final query task
+                query_progress.remove_task(query_task)
         
         logger.info(f'Successfully processed {total_processed} media items across all libraries')
         

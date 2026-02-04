@@ -1,0 +1,297 @@
+# Docker Compose Examples for Plex Generate Previews
+# Copy this file to docker-compose.yml and modify as needed
+#
+# Choose ONE of the configurations below based on your setup:
+# 1. Intel GPU (VAAPI/QuickSync)
+# 2. NVIDIA GPU
+# 3. CPU-only
+# 4. Unraid setup
+
+# =============================================================================
+# CONFIGURATION 1: Intel GPU (VAAPI/QuickSync)
+# =============================================================================
+# For Intel iGPU or Intel Arc dGPU
+# Requires: /dev/dri device passthrough
+# =============================================================================
+
+services:
+  plex-previews-intel:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    devices:
+      # Intel GPU passthrough for VAAPI acceleration
+      - /dev/dri:/dev/dri
+    environment:
+      # Required: Plex connection settings
+      - PLEX_URL=http://192.168.1.100:32400
+      - PLEX_TOKEN=your-plex-token-here
+      
+      # Path mapping (container paths)
+      - MEDIA_PATH=/media
+      - PLEX_PATH=  # Set if Plex sees media at different path
+      
+      # Processing options
+      - THUMBNAIL_INTERVAL=2
+      - THUMBNAIL_WIDTH=320
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+      
+      # Web interface
+      - WEB_PORT=8080
+      # - WEB_AUTH_TOKEN=your-fixed-token  # Optional: set fixed token
+      # - WEB_HIDE_TOKEN=true  # Optional: hide token from logs
+      
+      # User/group (match your host user)
+      - PUID=1000
+      - PGID=1000
+      
+      # Security (optional)
+      # - CORS_ORIGINS=http://localhost:8080,https://mydomain.com
+      # - FLASK_SECRET_KEY=your-secret-key  # Auto-generated if not set
+      
+      # Debug
+      - DEBUG=false
+    volumes:
+      # Your media files (read-only)
+      - /path/to/your/media:/media:ro
+      # Plex application data (read-write for saving previews)
+      - /path/to/plex/config:/plex:rw
+      # Persistent config for schedules, jobs, and auth
+      - /path/to/app/config:/config:rw
+
+# =============================================================================
+# CONFIGURATION 2: NVIDIA GPU
+# =============================================================================
+# Requires: NVIDIA Container Toolkit
+# Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# NOTE: You may need to add the following to enable GPU:
+#   runtime: nvidia  (older Docker)
+#   OR use docker-compose version 2.x with NVIDIA runtime configured
+# =============================================================================
+
+  plex-previews-nvidia:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    # For NVIDIA GPU support, use ONE of these methods:
+    # Method 1: deploy section (requires docker-compose >= 1.28)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Method 2: runtime (alternative for older setups)
+    # runtime: nvidia
+    ports:
+      - "8080:8080"
+    environment:
+      # For NVIDIA, also set these:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      
+      # Required
+      - PLEX_URL=http://192.168.1.100:32400
+      - PLEX_TOKEN=your-plex-token-here
+      - MEDIA_PATH=/media
+      
+      # Processing
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+      
+      # User/group
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - /path/to/your/media:/media:ro
+      - /path/to/plex/config:/plex:rw
+      - /path/to/app/config:/config:rw
+
+# =============================================================================
+# CONFIGURATION 3: CPU-Only
+# =============================================================================
+# For systems without GPU or when GPU acceleration isn't needed
+# =============================================================================
+
+  plex-previews-cpu:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PLEX_URL=http://192.168.1.100:32400
+      - PLEX_TOKEN=your-plex-token-here
+      - MEDIA_PATH=/media
+      
+      # CPU-only: disable GPU, increase CPU threads
+      - GPU_THREADS=0
+      - CPU_THREADS=8
+      
+      # User/group
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - /path/to/your/media:/media:ro
+      - /path/to/plex/config:/plex:rw
+      - /path/to/app/config:/config:rw
+
+# =============================================================================
+# CONFIGURATION 4: Unraid Setup with Intel iGPU (QuickSync)
+# =============================================================================
+# Most common Unraid setup using Intel integrated graphics
+# Adjust paths based on your Unraid share structure
+# =============================================================================
+
+  plex-previews-unraid-intel:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    devices:
+      # Intel iGPU passthrough - required for QuickSync acceleration
+      # Verify exists with: ls -la /dev/dri
+      - /dev/dri:/dev/dri
+    environment:
+      # Use IP address, not localhost (container can't reach host localhost)
+      - PLEX_URL=http://192.168.1.100:32400
+      - PLEX_TOKEN=your-plex-token-here
+      
+      # Path mapping for Unraid
+      - MEDIA_PATH=/media
+      # If Plex container sees media at different path, set it here:
+      # - PLEX_VIDEOS_PATH_MAPPING=/data/media
+      # - PLEX_LOCAL_VIDEOS_PATH_MAPPING=/media
+      
+      # Processing
+      - THUMBNAIL_INTERVAL=2
+      - THUMBNAIL_WIDTH=320
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+      - NICE_LEVEL=15
+      
+      # Unraid typical user (nobody:users)
+      - PUID=99
+      - PGID=100
+    volumes:
+      # Media share (read-only)
+      - /mnt/user/media:/media:ro
+      # Plex appdata - adjust path to your Plex container's config
+      - /mnt/user/appdata/plex/Library/Application Support/Plex Media Server:/plex:rw
+      # App config storage
+      - /mnt/user/appdata/plex-generate-previews:/config:rw
+
+# =============================================================================
+# CONFIGURATION 5: Unraid Setup with NVIDIA GPU
+# =============================================================================
+# For Unraid with NVIDIA GPU
+# Requires: Nvidia-Driver plugin from Community Applications
+# =============================================================================
+
+  plex-previews-unraid-nvidia:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    runtime: nvidia  # Requires nvidia-container-toolkit
+    ports:
+      - "8080:8080"
+    environment:
+      # NVIDIA GPU settings
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      
+      # Required
+      - PLEX_URL=http://192.168.1.100:32400
+      - PLEX_TOKEN=your-plex-token-here
+      
+      # Path mapping
+      - MEDIA_PATH=/media
+      
+      # Processing
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+      - NICE_LEVEL=15
+      
+      # Unraid typical user (nobody:users)
+      - PUID=99
+      - PGID=100
+    volumes:
+      - /mnt/user/media:/media:ro
+      - /mnt/user/appdata/plex/Library/Application Support/Plex Media Server:/plex:rw
+      - /mnt/user/appdata/plex-generate-previews:/config:rw
+
+# =============================================================================
+# CONFIGURATION 6: AMD GPU (VAAPI)
+# =============================================================================
+# For AMD GPUs using VAAPI acceleration
+# Requires: /dev/dri device passthrough + video group access
+# =============================================================================
+
+  plex-previews-amd:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    devices:
+      # AMD GPU passthrough for VAAPI acceleration
+      - /dev/dri:/dev/dri
+    # May need to add video group for GPU access
+    # group_add:
+    #   - "109"  # video group ID - check with: getent group video
+    environment:
+      - PLEX_URL=http://192.168.1.100:32400
+      - PLEX_TOKEN=your-plex-token-here
+      - MEDIA_PATH=/media
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - /path/to/your/media:/media:ro
+      - /path/to/plex/config:/plex:rw
+      - /path/to/app/config:/config:rw
+
+# =============================================================================
+# Environment Variable Reference
+# =============================================================================
+# 
+# Required:
+#   PLEX_URL             - Plex server URL (use IP, not localhost)
+#   PLEX_TOKEN           - Plex authentication token
+#
+# Paths:
+#   MEDIA_PATH           - Container path to media (default: /media)
+#   PLEX_PATH            - How Plex sees media (if different from container)
+#
+# Processing:
+#   THUMBNAIL_INTERVAL   - Seconds between thumbnails (default: 2)
+#   THUMBNAIL_WIDTH      - Thumbnail width in pixels (default: 320)
+#   GPU_THREADS          - GPU worker count (default: 4, 0 = CPU only)
+#   CPU_THREADS          - CPU worker count (default: 4)
+#   NICE_LEVEL           - Process priority 0-19 (default: 15)
+#
+# Web Interface:
+#   WEB_PORT             - Web server port (default: 8080)
+#   WEB_AUTH_TOKEN       - Fixed auth token (auto-generated if not set)
+#   WEB_HIDE_TOKEN       - Set 'true' to hide token from startup logs
+#   CORS_ORIGINS         - Allowed CORS origins (default: * for all)
+#   FLASK_SECRET_KEY     - Flask session secret (auto-generated if not set)
+#
+# Rate Limiting (for multi-worker deployments):
+#   RATELIMIT_STORAGE_URL - Redis URL (e.g., redis://localhost:6379)
+#
+# User/Permissions:
+#   PUID                 - User ID (default: 1000, Unraid: 99)
+#   PGID                 - Group ID (default: 1000, Unraid: 100)
+#
+# Debug:
+#   DEBUG                - Enable debug logging (default: false)
+#
+# =============================================================================

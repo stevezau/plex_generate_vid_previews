@@ -1,0 +1,85 @@
+<?xml version="1.0"?>
+<Container version="2">
+    <Name>plex-generate-previews</Name>
+    <Repository>stevezzau/plex_generate_vid_previews:latest</Repository>
+    <Registry>https://hub.docker.com/r/stevezzau/plex_generate_vid_previews</Registry>
+    <Network>bridge</Network>
+    <MyIP/>
+    <Shell>bash</Shell>
+    <Privileged>false</Privileged>
+    <Support>https://github.com/stevezau/plex_generate_vid_previews/issues</Support>
+    <Project>https://github.com/stevezau/plex_generate_vid_previews</Project>
+    <Overview>
+Generate video preview thumbnails (BIF files) for Plex Media Server with GPU acceleration support.
+
+Features:
+- Web UI with setup wizard for easy configuration
+- Plex OAuth authentication (no manual token needed)
+- GPU acceleration (NVIDIA, Intel QuickSync, AMD)
+- Background processing with job queue
+- Real-time progress display
+- Scheduled generation via cron expressions
+- Browser notifications when jobs complete
+
+The web interface is available at http://[IP]:8080 after starting the container.
+A setup wizard will guide you through connecting to your Plex server.
+
+IMPORTANT - NETWORKING:
+If your Plex container uses a custom network (like br1 or macvlan), this container 
+must use the SAME network to communicate with Plex. Change the Network Type setting 
+to match your Plex container's network.
+
+For Intel QuickSync, /dev/dri is passed through automatically (see GPU Device below).
+
+For NVIDIA GPU support, you must:
+1. Install NVIDIA driver and nvidia-container-toolkit on Unraid
+2. Add --runtime=nvidia to Extra Parameters
+3. Or use the Nvidia-Driver and nvidia-container-toolkit plugins from Community Applications
+    </Overview>
+    <Category>MediaApp:Video MediaServer:Video</Category>
+    <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+    <TemplateURL>https://raw.githubusercontent.com/stevezau/plex_generate_vid_previews/main/unraid-templates/plex-generate-previews.xml</TemplateURL>
+    <Icon>https://raw.githubusercontent.com/stevezau/plex_generate_vid_previews/main/docs/images/icon.png</Icon>
+    <ExtraParams/>
+    <PostArgs/>
+    <CPUset/>
+    <DateInstalled/>
+    <DonateText/>
+    <DonateLink/>
+    <Requires/>
+    
+    <!-- Web UI Port -->
+    <Config Name="Web UI Port" Target="8080" Default="8080" Mode="tcp" Description="Port for the web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+    
+    <!-- Plex Configuration -->
+    <Config Name="Plex URL" Target="PLEX_URL" Default="http://192.168.1.100:32400" Mode="" Description="URL to your Plex Media Server (use IP address, not localhost)" Type="Variable" Display="always" Required="true" Mask="false"/>
+    <Config Name="Plex Token" Target="PLEX_TOKEN" Default="" Mode="" Description="Plex authentication token. Find it at: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" Type="Variable" Display="always" Required="true" Mask="true"/>
+    
+    <!-- Path Mappings -->
+    <Config Name="Media Path" Target="/media" Default="/mnt/user/media" Mode="ro" Description="Path to your media files on Unraid (read-only)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media</Config>
+    <Config Name="Plex Data Path" Target="/plex" Default="/mnt/user/appdata/plex/Library/Application Support/Plex Media Server" Mode="rw" Description="Path to Plex application data where previews will be stored" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex/Library/Application Support/Plex Media Server</Config>
+    <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/plex-generate-previews" Mode="rw" Description="Path to store configuration, schedules, and job history" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-generate-previews</Config>
+    
+    <!-- Path Translation (for Docker-to-Host path mapping) -->
+    <Config Name="Media Path (Container)" Target="MEDIA_PATH" Default="/media" Mode="" Description="How the container sees the media path (usually /media)" Type="Variable" Display="advanced" Required="false" Mask="false">/media</Config>
+    <Config Name="Plex Path Prefix" Target="PLEX_PATH" Default="" Mode="" Description="If Plex sees media at a different path than this container, enter the Plex path here" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+    
+    <!-- Processing Options -->
+    <Config Name="Thumbnail Interval" Target="THUMBNAIL_INTERVAL" Default="2" Mode="" Description="Seconds between each thumbnail (default: 2)" Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+    <Config Name="Thumbnail Width" Target="THUMBNAIL_WIDTH" Default="320" Mode="" Description="Width of thumbnails in pixels (default: 320)" Type="Variable" Display="advanced" Required="false" Mask="false">320</Config>
+    
+    <!-- Web Authentication -->
+    <Config Name="Auth Token Override" Target="WEB_AUTH_TOKEN" Default="" Mode="" Description="Optional: Set a fixed authentication token. If empty, a random token is generated (check logs)" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+    <Config Name="Web Port" Target="WEB_PORT" Default="8080" Mode="" Description="Internal port for web server (usually matches Web UI Port)" Type="Variable" Display="advanced" Required="false" Mask="false">8080</Config>
+    
+    <!-- User/Group -->
+    <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for file permissions (99 = nobody on Unraid)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+    <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for file permissions (100 = users on Unraid)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+    
+    <!-- GPU Support (Intel) -->
+    <Config Name="Intel GPU Device" Target="/dev/dri" Default="/dev/dri" Mode="" Description="Pass through Intel GPU for QuickSync acceleration" Type="Device" Display="advanced" Required="false" Mask="false">/dev/dri</Config>
+    
+    <!-- Advanced -->
+    <Config Name="Debug Mode" Target="DEBUG" Default="false" Mode="" Description="Enable debug logging" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+    <Config Name="Nice Level" Target="NICE_LEVEL" Default="15" Mode="" Description="Process priority (0-19, higher = lower priority)" Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
+</Container>

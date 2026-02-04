@@ -416,8 +416,8 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
 
 def load_config(cli_args=None) -> Config:
     """
-    Load and validate configuration from CLI arguments and environment variables.
-    CLI arguments take precedence over environment variables.
+    Load and validate configuration from CLI arguments, settings.json, and environment variables.
+    Precedence: CLI args > settings.json > env vars > defaults
     
     Args:
         cli_args: Parsed CLI arguments or None
@@ -428,40 +428,91 @@ def load_config(cli_args=None) -> Config:
     Raises:
         SystemExit: If required configuration is missing or invalid
     """
+    # Try to load settings from settings.json (UI-configured settings)
+    ui_settings = {}
+    try:
+        from .web.settings_manager import get_settings_manager
+        settings_manager = get_settings_manager()
+        ui_settings = settings_manager.get_all()
+        if ui_settings:
+            logger.debug(f"Loaded {len(ui_settings)} settings from settings.json")
+    except Exception as e:
+        logger.debug(f"Could not load settings.json: {e}")
+    
+    # Helper to get value with precedence: CLI > settings.json > env > default
+    def get_value(cli_args, field_name, settings_key, env_key, default, value_type=str):
+        # 1. CLI args (highest precedence)
+        cli_value = getattr(cli_args, field_name, None) if cli_args else None
+        if cli_value is not None:
+            return cli_value
+        
+        # 2. settings.json
+        if settings_key in ui_settings and ui_settings[settings_key] not in (None, ''):
+            val = ui_settings[settings_key]
+            if value_type == bool:
+                return bool(val)
+            elif value_type == int:
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    pass
+            else:
+                return str(val) if val else default
+            return val
+        
+        # 3. Environment variables
+        env_value = os.environ.get(env_key, '')
+        if env_value:
+            if value_type == bool:
+                return env_value.strip().lower() in ('true', '1', 'yes')
+            elif value_type == int:
+                try:
+                    return int(env_value)
+                except (ValueError, TypeError):
+                    return default
+            return env_value
+        
+        # 4. Default
+        return default
+    
     # Extract CLI values (None if not provided)
     if cli_args is None:
         cli_args = None  # Empty namespace
     
-    # Load configuration with precedence: CLI args > env vars > defaults
-    plex_url = get_config_value_str(cli_args, 'plex_url', 'PLEX_URL', '')
-    plex_token = get_config_value_str(cli_args, 'plex_token', 'PLEX_TOKEN', '')
-    plex_timeout = get_config_value_int(cli_args, 'plex_timeout', 'PLEX_TIMEOUT', 60)
+    # Load configuration with precedence: CLI args > settings.json > env vars > defaults
+    plex_url = get_value(cli_args, 'plex_url', 'plex_url', 'PLEX_URL', '', str)
+    plex_token = get_value(cli_args, 'plex_token', 'plex_token', 'PLEX_TOKEN', '', str)
+    plex_timeout = get_value(cli_args, 'plex_timeout', 'plex_timeout', 'PLEX_TIMEOUT', 60, int)
     
-    # Handle plex_libraries (special case for comma-separated values)
-    plex_libraries = get_config_value_str(cli_args, 'plex_libraries', 'PLEX_LIBRARIES', '')
-    plex_libraries = [library.strip().lower() for library in plex_libraries.split(',') if library.strip()]
+    # Handle plex_libraries (special case for comma-separated values OR list from settings.json)
+    plex_libraries_setting = ui_settings.get('selected_libraries', [])
+    if isinstance(plex_libraries_setting, list) and plex_libraries_setting:
+        plex_libraries = [str(lib).strip().lower() for lib in plex_libraries_setting if lib]
+    else:
+        plex_libraries = get_config_value_str(cli_args, 'plex_libraries', 'PLEX_LIBRARIES', '')
+        plex_libraries = [library.strip().lower() for library in plex_libraries.split(',') if library.strip()]
     
-    plex_config_folder = get_config_value_str(cli_args, 'plex_config_folder', 'PLEX_CONFIG_FOLDER', '/path_to/plex/Library/Application Support/Plex Media Server')
-    plex_local_videos_path_mapping = get_config_value_str(cli_args, 'plex_local_videos_path_mapping', 'PLEX_LOCAL_VIDEOS_PATH_MAPPING', '')
-    plex_videos_path_mapping = get_config_value_str(cli_args, 'plex_videos_path_mapping', 'PLEX_VIDEOS_PATH_MAPPING', '')
+    plex_config_folder = get_value(cli_args, 'plex_config_folder', 'plex_config_folder', 'PLEX_CONFIG_FOLDER', '/path_to/plex/Library/Application Support/Plex Media Server', str)
+    plex_local_videos_path_mapping = get_value(cli_args, 'plex_local_videos_path_mapping', 'plex_local_videos_path_mapping', 'PLEX_LOCAL_VIDEOS_PATH_MAPPING', '', str)
+    plex_videos_path_mapping = get_value(cli_args, 'plex_videos_path_mapping', 'plex_videos_path_mapping', 'PLEX_VIDEOS_PATH_MAPPING', '', str)
     
-    plex_bif_frame_interval = get_config_value_int(cli_args, 'plex_bif_frame_interval', 'PLEX_BIF_FRAME_INTERVAL', 5)
-    thumbnail_quality = get_config_value_int(cli_args, 'thumbnail_quality', 'THUMBNAIL_QUALITY', 4)
-    regenerate_thumbnails = get_config_value_bool(cli_args, 'regenerate_thumbnails', 'REGENERATE_THUMBNAILS', False)
+    plex_bif_frame_interval = get_value(cli_args, 'plex_bif_frame_interval', 'thumbnail_interval', 'PLEX_BIF_FRAME_INTERVAL', 5, int)
+    thumbnail_quality = get_value(cli_args, 'thumbnail_quality', 'thumbnail_quality', 'THUMBNAIL_QUALITY', 4, int)
+    regenerate_thumbnails = get_value(cli_args, 'regenerate_thumbnails', 'regenerate_thumbnails', 'REGENERATE_THUMBNAILS', False, bool)
     
     # Handle sort_by (default: 'newest', can be 'newest' or 'oldest')
-    sort_by_raw = get_config_value_str(cli_args, 'sort_by', 'SORT_BY', 'newest')
+    sort_by_raw = get_value(cli_args, 'sort_by', 'sort_by', 'SORT_BY', 'newest', str)
     sort_by = sort_by_raw.strip().lower() if sort_by_raw else 'newest'
     
-    gpu_threads = get_config_value_int(cli_args, 'gpu_threads', 'GPU_THREADS', 1)
-    cpu_threads = get_config_value_int(cli_args, 'cpu_threads', 'CPU_THREADS', 1)
-    gpu_selection = get_config_value_str(cli_args, 'gpu_selection', 'GPU_SELECTION', 'all')
+    gpu_threads = get_value(cli_args, 'gpu_threads', 'gpu_threads', 'GPU_THREADS', 1, int)
+    cpu_threads = get_value(cli_args, 'cpu_threads', 'cpu_threads', 'CPU_THREADS', 1, int)
+    gpu_selection = get_value(cli_args, 'gpu_selection', 'gpu_selection', 'GPU_SELECTION', 'all', str)
     
     # Use system temp directory (respects TMPDIR, TEMP, TMP env vars)
-    tmp_folder = get_config_value_str(cli_args, 'tmp_folder', 'TMP_FOLDER', tempfile.gettempdir())
+    tmp_folder = get_value(cli_args, 'tmp_folder', 'tmp_folder', 'TMP_FOLDER', tempfile.gettempdir(), str)
     
     # Handle log_level (case insensitive)
-    log_level = get_config_value_str(cli_args, 'log_level', 'LOG_LEVEL', 'INFO').upper()
+    log_level = get_value(cli_args, 'log_level', 'log_level', 'LOG_LEVEL', 'INFO', str).upper()
     
     # Initialize validation lists
     missing_params = []

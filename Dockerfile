@@ -40,10 +40,14 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # For release builds, SETUPTOOLS_SCM_PRETEND_VERSION is set via build-arg (defined above)
 # For local/dev builds, setuptools-scm reads from the _version.py placeholder
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
-      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=$SETUPTOOLS_SCM_PRETEND_VERSION pip3 install . --no-cache-dir; \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=$SETUPTOOLS_SCM_PRETEND_VERSION pip3 install . --no-cache-dir --ignore-installed blinker; \
     else \
-      pip3 install . --no-cache-dir; \
-    fi
+      pip3 install . --no-cache-dir --ignore-installed blinker; \
+    fi && \
+    # Clean up build dependencies to reduce image size (~50MB savings)
+    apt-get purge -y gcc musl-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh
@@ -55,6 +59,13 @@ ENV PUID=1000 \
 
 # Tell s6-overlay to preserve environment variables
 ENV S6_KEEP_ENV=1
+
+# Expose web UI port
+EXPOSE 8080
+
+# Health check for web UI
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
 
 # Use LinuxServer's /init for PUID/PGID handling
 ENTRYPOINT ["/init", "/app/wrapper.sh"]

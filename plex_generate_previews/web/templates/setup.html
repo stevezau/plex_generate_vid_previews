@@ -1,0 +1,767 @@
+{% extends "base.html" %}
+
+{% block title %}Setup - Plex Preview Generator{% endblock %}
+
+{% block head %}
+<style>
+    .setup-container {
+        max-width: 700px;
+        margin: 0 auto;
+        padding: 2rem;
+    }
+    
+    .setup-header {
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    
+    .setup-header h1 {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .setup-progress {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 2rem;
+    }
+    
+    .progress-step {
+        display: flex;
+        align-items: center;
+        color: var(--bs-secondary);
+    }
+    
+    .progress-step.active {
+        color: var(--bs-primary);
+    }
+    
+    .progress-step.completed {
+        color: var(--bs-success);
+    }
+    
+    .step-number {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        border: 2px solid currentColor;
+        margin-right: 0.5rem;
+    }
+    
+    .progress-step.active .step-number {
+        background-color: var(--bs-primary);
+        color: white;
+        border-color: var(--bs-primary);
+    }
+    
+    .progress-step.completed .step-number {
+        background-color: var(--bs-success);
+        color: white;
+        border-color: var(--bs-success);
+    }
+    
+    .step-connector {
+        width: 40px;
+        height: 2px;
+        background-color: var(--bs-secondary);
+        margin: 0 0.5rem;
+    }
+    
+    .step-connector.completed {
+        background-color: var(--bs-success);
+    }
+    
+    .setup-step {
+        display: none;
+    }
+    
+    .setup-step.active {
+        display: block;
+    }
+    
+    .plex-sign-in-btn {
+        background-color: #e5a00d;
+        border-color: #e5a00d;
+        color: #1f2326;
+        font-size: 1.1rem;
+        padding: 0.75rem 2rem;
+    }
+    
+    .plex-sign-in-btn:hover {
+        background-color: #cc8f0c;
+        border-color: #cc8f0c;
+        color: #1f2326;
+    }
+    
+    .auth-status {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        border-radius: 0.5rem;
+    }
+    
+    .auth-status.authenticated {
+        background-color: rgba(25, 135, 84, 0.1);
+        border: 1px solid var(--bs-success);
+    }
+    
+    .library-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 1rem;
+    }
+    
+    .library-card {
+        padding: 1rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    
+    .library-card:hover {
+        border-color: var(--bs-primary);
+    }
+    
+    .library-card.selected {
+        border-color: var(--bs-primary);
+        background-color: rgba(13, 110, 253, 0.1);
+    }
+    
+    .library-card input[type="checkbox"] {
+        margin-right: 0.5rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="setup-container">
+    <div class="setup-header">
+        <h1><i class="bi bi-film me-2"></i>Plex Preview Generator</h1>
+        <p class="text-muted">Let's get you set up in a few easy steps</p>
+    </div>
+    
+    <!-- Progress Indicator -->
+    <div class="setup-progress">
+        <div class="progress-step active" data-step="1">
+            <div class="step-number">1</div>
+            <span class="d-none d-md-inline">Sign In</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="2">
+            <div class="step-number">2</div>
+            <span class="d-none d-md-inline">Server</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="3">
+            <div class="step-number">3</div>
+            <span class="d-none d-md-inline">Paths</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="4">
+            <div class="step-number">4</div>
+            <span class="d-none d-md-inline">Options</span>
+        </div>
+    </div>
+    
+    <!-- Step 1: Plex Sign In -->
+    <div class="setup-step active" data-step="1">
+        <div class="card">
+            <div class="card-body text-center">
+                <h4 class="card-title mb-4">Sign in with Plex</h4>
+                <p class="text-muted mb-4">
+                    Connect your Plex account to automatically discover your servers and libraries.
+                </p>
+                
+                <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex
+                </button>
+                
+                <div id="authStatus" class="auth-status d-none">
+                    <i class="bi bi-check-circle-fill text-success me-2"></i>
+                    <span>Signed in successfully!</span>
+                </div>
+                
+                <div id="authError" class="alert alert-danger mt-3 d-none"></div>
+            </div>
+        </div>
+        
+        <div class="d-flex justify-content-end mt-4">
+            <button type="button" class="btn btn-primary" id="step1Next" disabled>
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Step 2: Server & Libraries -->
+    <div class="setup-step" data-step="2">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h4 class="card-title mb-3">Select Your Server</h4>
+                
+                <div id="serverLoading" class="text-center py-3">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="text-muted mt-2">Discovering servers...</p>
+                </div>
+                
+                <select class="form-select d-none" id="serverSelect">
+                    <option value="">Select a server...</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="card" id="librariesCard" style="display: none;">
+            <div class="card-body">
+                <h4 class="card-title mb-3">Select Libraries</h4>
+                <p class="text-muted mb-3">Choose which libraries to generate previews for:</p>
+                
+                <div id="libraryLoading" class="text-center py-3 d-none">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                
+                <div id="libraryGrid" class="library-grid"></div>
+            </div>
+        </div>
+        
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step2Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-primary" id="step2Next" disabled>
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Step 3: Path Configuration -->
+    <div class="setup-step" data-step="3">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title mb-4">Path Configuration</h4>
+                
+                <div class="mb-3">
+                    <label for="plexConfigFolder" class="form-label">
+                        Plex Data Path
+                        <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" 
+                           title="Path to Plex Media Server data folder (where previews will be saved)"></i>
+                    </label>
+                    <input type="text" class="form-control" id="plexConfigFolder" 
+                           value="/plex" placeholder="/plex">
+                    <div class="form-text">Container path to Plex appdata (e.g., /plex)</div>
+                </div>
+                
+                <hr class="my-4">
+                <h5 class="mb-3">Path Mapping (Optional)</h5>
+                <p class="text-muted small mb-3">
+                    Only needed if this container mounts media to a different path than Plex.
+                </p>
+                
+                <div class="mb-3">
+                    <label for="plexVideosPathMapping" class="form-label">Plex Media Path</label>
+                    <input type="text" class="form-control" id="plexVideosPathMapping" 
+                           placeholder="/data/media">
+                    <div class="form-text">Path as Plex sees media files (e.g., /data/media)</div>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="plexLocalVideosPathMapping" class="form-label">Local Media Path</label>
+                    <input type="text" class="form-control" id="plexLocalVideosPathMapping" 
+                           placeholder="/media">
+                    <div class="form-text">Path as this container sees media files (e.g., /media)</div>
+                </div>
+                
+                <!-- Validation Results -->
+                <div id="pathValidation" class="mt-4 d-none">
+                    <hr>
+                    <h5 class="mb-3"><i class="bi bi-check-circle me-2"></i>Validation Results</h5>
+                    <div id="pathValidationResults"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step3Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-outline-info me-2" id="validatePathsBtn">
+                <i class="bi bi-check2-circle me-1"></i> Validate Paths
+            </button>
+            <button type="button" class="btn btn-primary" id="step3Next">
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Step 4: Processing Options -->
+    <div class="setup-step" data-step="4">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title mb-4">Processing Options</h4>
+                
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
+                        <label for="gpuThreads" class="form-label">GPU Workers</label>
+                        <input type="number" class="form-control" id="gpuThreads" 
+                               value="1" min="0" max="16">
+                        <div class="form-text">Parallel GPU jobs (0 to disable)</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="cpuThreads" class="form-label">CPU Workers</label>
+                        <input type="number" class="form-control" id="cpuThreads" 
+                               value="1" min="0" max="32">
+                        <div class="form-text">Parallel CPU jobs (fallback)</div>
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailInterval" class="form-label">Thumbnail Interval</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="thumbnailInterval" 
+                                   value="2" min="1" max="60">
+                            <span class="input-group-text">seconds</span>
+                        </div>
+                        <div class="form-text">Time between thumbnail captures</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailQuality" class="form-label">Thumbnail Quality</label>
+                        <input type="range" class="form-range" id="thumbnailQuality" 
+                               value="4" min="1" max="10">
+                        <div class="form-text">
+                            Quality: <span id="qualityValue">4</span>/10
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="gpuInfo" class="alert alert-info mt-3">
+                    <i class="bi bi-gpu-card me-2"></i>
+                    <span id="gpuInfoText">Detecting GPUs...</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step4Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-success" id="finishSetup">
+                <i class="bi bi-check-lg me-1"></i> Complete Setup
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize managers
+    const plexAuth = new PlexAuth({
+        onSuccess: onAuthSuccess,
+        onError: onAuthError,
+        onCancel: onAuthCancel
+    });
+    const serverManager = new PlexServerManager();
+    const settingsManager = new SettingsManager();
+    const setupManager = new SetupManager();
+    
+    // State
+    let currentStep = 1;
+    let isAuthenticated = false;
+    let selectedServer = null;
+    let selectedLibraries = [];
+    
+    // Elements
+    const steps = document.querySelectorAll('.setup-step');
+    const progressSteps = document.querySelectorAll('.progress-step');
+    const connectors = document.querySelectorAll('.step-connector');
+    
+    // Initialize tooltips
+    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+    tooltipTriggerList.forEach(el => new bootstrap.Tooltip(el));
+    
+    // Load saved state
+    loadSavedState();
+    
+    // =========================================================================
+    // Step Navigation
+    // =========================================================================
+    
+    function goToStep(step) {
+        currentStep = step;
+        
+        // Update step visibility
+        steps.forEach(s => {
+            s.classList.toggle('active', parseInt(s.dataset.step) === step);
+        });
+        
+        // Update progress indicators
+        progressSteps.forEach((p, i) => {
+            const stepNum = parseInt(p.dataset.step);
+            p.classList.toggle('active', stepNum === step);
+            p.classList.toggle('completed', stepNum < step);
+        });
+        
+        // Update connectors
+        connectors.forEach((c, i) => {
+            c.classList.toggle('completed', i < step - 1);
+        });
+        
+        // Save state
+        saveState();
+        
+        // Step-specific actions
+        if (step === 2 && isAuthenticated) {
+            loadServers();
+        } else if (step === 4) {
+            loadGpuInfo();
+        }
+    }
+    
+    // =========================================================================
+    // Step 1: Plex Authentication
+    // =========================================================================
+    
+    document.getElementById('plexSignInBtn').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Connecting...';
+        
+        try {
+            await plexAuth.login();
+        } catch (error) {
+            // Error handled in callbacks
+        }
+        
+        this.disabled = false;
+        this.innerHTML = '<i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex';
+    });
+    
+    function onAuthSuccess(token) {
+        isAuthenticated = true;
+        document.getElementById('authStatus').classList.remove('d-none');
+        document.getElementById('authStatus').classList.add('authenticated');
+        document.getElementById('authError').classList.add('d-none');
+        document.getElementById('step1Next').disabled = false;
+    }
+    
+    function onAuthError(error) {
+        document.getElementById('authError').textContent = error.message;
+        document.getElementById('authError').classList.remove('d-none');
+    }
+    
+    function onAuthCancel() {
+        document.getElementById('authError').textContent = 'Authentication was cancelled.';
+        document.getElementById('authError').classList.remove('d-none');
+    }
+    
+    document.getElementById('step1Next').addEventListener('click', () => goToStep(2));
+    
+    // =========================================================================
+    // Step 2: Server & Libraries
+    // =========================================================================
+    
+    async function loadServers() {
+        const loading = document.getElementById('serverLoading');
+        const select = document.getElementById('serverSelect');
+        
+        loading.classList.remove('d-none');
+        select.classList.add('d-none');
+        
+        try {
+            const servers = await serverManager.getServers();
+            
+            select.innerHTML = '<option value="">Select a server...</option>';
+            servers.forEach(server => {
+                const option = document.createElement('option');
+                option.value = JSON.stringify(server);
+                option.textContent = `${server.name} (${server.host}:${server.port})`;
+                if (server.owned) option.textContent += ' - Owned';
+                select.appendChild(option);
+            });
+            
+            loading.classList.add('d-none');
+            select.classList.remove('d-none');
+            
+        } catch (error) {
+            loading.innerHTML = `<p class="text-danger">Failed to load servers: ${error.message}</p>`;
+        }
+    }
+    
+    document.getElementById('serverSelect').addEventListener('change', async function() {
+        if (!this.value) {
+            document.getElementById('librariesCard').style.display = 'none';
+            document.getElementById('step2Next').disabled = true;
+            return;
+        }
+        
+        selectedServer = JSON.parse(this.value);
+        document.getElementById('librariesCard').style.display = 'block';
+        
+        await loadLibraries();
+    });
+    
+    async function loadLibraries() {
+        const loading = document.getElementById('libraryLoading');
+        const grid = document.getElementById('libraryGrid');
+        
+        loading.classList.remove('d-none');
+        grid.innerHTML = '';
+        
+        try {
+            // Prefer local connection over plex.direct relay
+            let url;
+            if (selectedServer.local) {
+                // Local servers typically use HTTP (not HTTPS) on port 32400
+                url = `http://${selectedServer.host}:${selectedServer.port}`;
+            } else {
+                // Fall back to uri for remote servers
+                url = selectedServer.uri || `http://${selectedServer.host}:${selectedServer.port}`;
+            }
+            const token = selectedServer.access_token;
+            
+            // Save server URL and token to settings
+            await settingsManager.save({
+                plex_url: url,
+                plex_name: selectedServer.name,
+                plex_token: token
+            });
+            
+            const libraries = await serverManager.getLibraries(url, token);
+            
+            loading.classList.add('d-none');
+            
+            libraries.forEach(lib => {
+                const card = document.createElement('div');
+                card.className = 'library-card';
+                card.dataset.id = lib.id;
+                card.innerHTML = `
+                    <input type="checkbox" id="lib-${lib.id}">
+                    <label for="lib-${lib.id}">
+                        <strong>${lib.name}</strong>
+                        <br><small class="text-muted">${lib.type}</small>
+                    </label>
+                `;
+                
+                card.addEventListener('click', function() {
+                    const checkbox = this.querySelector('input[type="checkbox"]');
+                    checkbox.checked = !checkbox.checked;
+                    this.classList.toggle('selected', checkbox.checked);
+                    updateSelectedLibraries();
+                });
+                
+                grid.appendChild(card);
+            });
+            
+        } catch (error) {
+            loading.classList.add('d-none');
+            grid.innerHTML = `<p class="text-danger">Failed to load libraries: ${error.message}</p>`;
+        }
+    }
+    
+    function updateSelectedLibraries() {
+        const cards = document.querySelectorAll('.library-card');
+        selectedLibraries = [];
+        
+        cards.forEach(card => {
+            if (card.classList.contains('selected')) {
+                selectedLibraries.push(card.dataset.id);
+            }
+        });
+        
+        document.getElementById('step2Next').disabled = selectedLibraries.length === 0;
+    }
+    
+    document.getElementById('step2Back').addEventListener('click', () => goToStep(1));
+    document.getElementById('step2Next').addEventListener('click', async () => {
+        // Save selected libraries
+        await settingsManager.save({ selected_libraries: selectedLibraries });
+        goToStep(3);
+    });
+    
+    // =========================================================================
+    // Step 3: Path Configuration
+    // =========================================================================
+    
+    document.getElementById('step3Back').addEventListener('click', () => goToStep(2));
+    
+    // Validate Paths button
+    document.getElementById('validatePathsBtn').addEventListener('click', validatePaths);
+    
+    async function validatePaths() {
+        const btn = document.getElementById('validatePathsBtn');
+        const resultsDiv = document.getElementById('pathValidation');
+        const resultsContent = document.getElementById('pathValidationResults');
+        
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Validating...';
+        
+        try {
+            const response = await fetch('/api/setup/validate-paths', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    plex_config_folder: document.getElementById('plexConfigFolder').value,
+                    plex_videos_path_mapping: document.getElementById('plexVideosPathMapping').value,
+                    plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value
+                })
+            });
+            
+            const data = await response.json();
+            resultsDiv.classList.remove('d-none');
+            
+            let html = '';
+            
+            // Errors
+            if (data.errors && data.errors.length > 0) {
+                html += '<div class="alert alert-danger py-2 mb-2">';
+                html += '<strong><i class="bi bi-x-circle me-1"></i>Errors:</strong><ul class="mb-0 mt-1">';
+                data.errors.forEach(e => html += `<li>${e}</li>`);
+                html += '</ul></div>';
+            }
+            
+            // Warnings
+            if (data.warnings && data.warnings.length > 0) {
+                html += '<div class="alert alert-warning py-2 mb-2">';
+                html += '<strong><i class="bi bi-exclamation-triangle me-1"></i>Warnings:</strong><ul class="mb-0 mt-1">';
+                data.warnings.forEach(w => html += `<li>${w}</li>`);
+                html += '</ul></div>';
+            }
+            
+            // Info/Success
+            if (data.info && data.info.length > 0) {
+                html += '<div class="alert alert-success py-2 mb-2">';
+                html += '<strong><i class="bi bi-check-circle me-1"></i>Verified:</strong><ul class="mb-0 mt-1">';
+                data.info.forEach(i => html += `<li>${i}</li>`);
+                html += '</ul></div>';
+            }
+            
+            // Overall status
+            if (data.valid) {
+                html += '<div class="text-success mt-2"><i class="bi bi-check-circle-fill me-1"></i><strong>Paths look good! You can proceed.</strong></div>';
+            } else {
+                html += '<div class="text-danger mt-2"><i class="bi bi-x-circle-fill me-1"></i><strong>Please fix the errors above before proceeding.</strong></div>';
+            }
+            
+            resultsContent.innerHTML = html;
+            
+        } catch (error) {
+            resultsDiv.classList.remove('d-none');
+            resultsContent.innerHTML = `<div class="alert alert-danger">Failed to validate: ${error.message}</div>`;
+        }
+        
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Validate Paths';
+    }
+    
+    document.getElementById('step3Next').addEventListener('click', async () => {
+        // Save path settings
+        await settingsManager.save({
+            plex_config_folder: document.getElementById('plexConfigFolder').value,
+            plex_videos_path_mapping: document.getElementById('plexVideosPathMapping').value,
+            plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value
+        });
+        goToStep(4);
+    });
+    
+    // =========================================================================
+    // Step 4: Processing Options
+    // =========================================================================
+    
+    async function loadGpuInfo() {
+        try {
+            const response = await fetch('/api/system/status');
+            const data = await response.json();
+            
+            const gpuText = document.getElementById('gpuInfoText');
+            if (data.gpus && data.gpus.length > 0) {
+                const gpuNames = data.gpus.map(g => g.name).join(', ');
+                gpuText.textContent = `Detected: ${gpuNames}`;
+                document.getElementById('gpuInfo').classList.remove('alert-info');
+                document.getElementById('gpuInfo').classList.add('alert-success');
+            } else {
+                gpuText.textContent = 'No GPU detected. CPU processing will be used.';
+                document.getElementById('gpuThreads').value = '0';
+            }
+        } catch (error) {
+            document.getElementById('gpuInfoText').textContent = 'Failed to detect GPUs.';
+        }
+    }
+    
+    // Quality slider value display
+    document.getElementById('thumbnailQuality').addEventListener('input', function() {
+        document.getElementById('qualityValue').textContent = this.value;
+    });
+    
+    document.getElementById('step4Back').addEventListener('click', () => goToStep(3));
+    
+    document.getElementById('finishSetup').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+        
+        try {
+            // Save processing options
+            await settingsManager.save({
+                gpu_threads: parseInt(document.getElementById('gpuThreads').value),
+                cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+                thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
+                thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value)
+            });
+            
+            // Complete setup
+            const result = await setupManager.complete();
+            
+            // Redirect to dashboard
+            window.location.href = result.redirect || '/';
+            
+        } catch (error) {
+            alert('Failed to complete setup: ' + error.message);
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+        }
+    });
+    
+    // =========================================================================
+    // State Management
+    // =========================================================================
+    
+    async function loadSavedState() {
+        try {
+            const status = await setupManager.getStatus();
+            
+            if (status.plex_authenticated) {
+                isAuthenticated = true;
+                document.getElementById('authStatus').classList.remove('d-none');
+                document.getElementById('authStatus').classList.add('authenticated');
+                document.getElementById('step1Next').disabled = false;
+            }
+            
+            if (status.current_step && status.current_step > 1) {
+                goToStep(status.current_step);
+            }
+        } catch (error) {
+            console.log('No saved state found');
+        }
+    }
+    
+    async function saveState() {
+        try {
+            await setupManager.saveState(currentStep, {
+                isAuthenticated,
+                selectedServer,
+                selectedLibraries
+            });
+        } catch (error) {
+            console.warn('Failed to save state:', error);
+        }
+    }
+});
+</script>
+{% endblock %}

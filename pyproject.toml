@@ -37,6 +37,14 @@ dependencies = [
     "rich==13.8.1",
     "pymediainfo==7.0.1",
     "psutil>=5.9.0,<6.0.0",
+    "flask>=3.0.0",
+    "flask-socketio>=5.3.0",
+    "flask-limiter>=3.5.0",
+    "apscheduler>=3.10.0",
+    "python-jose>=3.3.0",
+    "gevent>=23.0.0",
+    "gevent-websocket>=0.10.1",
+    "sqlalchemy>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +55,8 @@ test = [
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
     "pytest-xdist>=3.0.0",
+    "pytest-playwright>=0.4.0",
+    "playwright>=1.40.0",
 ]
 
 [project.urls]
@@ -77,6 +87,14 @@ addopts = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: marks tests as integration tests",
+    "gpu: marks tests that require GPU hardware",
+    "plex: marks tests that require Plex server connection",
+    "slow: marks tests as slow running",
+    "ci: marks tests that work in CI environments",
+    "e2e: marks tests as end-to-end browser tests",
+]
 
 [tool.coverage.run]
 source = ["plex_generate_previews"]
