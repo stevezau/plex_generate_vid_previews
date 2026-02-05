@@ -20,6 +20,48 @@
 | Docker/Compose | [Docker Guide](docker.md) |
 | Unraid | [Unraid Guide](unraid.md) |
 
+## Architecture
+
+```mermaid
+graph TB
+    subgraph CLI["CLI Layer"]
+        A[cli.py] --> B[config.py]
+        A --> C[logging_config.py]
+    end
+    
+    subgraph Workers["Worker Pool"]
+        D[worker.py]
+        D --> E1[GPU Worker 1]
+        D --> E2[GPU Worker 2]
+        D --> E3[CPU Worker]
+    end
+    
+    subgraph Processing["Media Processing"]
+        F[media_processing.py]
+        G[gpu_detection.py]
+        F --> H[FFmpeg]
+        F --> I[BIF Generator]
+    end
+    
+    subgraph External["External Services"]
+        J[Plex API]
+        K[plex_client.py]
+    end
+    
+    subgraph Web["Web Interface"]
+        L[Flask + SocketIO]
+        M[auth.py]
+        N[scheduler.py]
+    end
+    
+    A --> D
+    A --> G
+    D --> F
+    K --> J
+    A --> K
+    L --> A
+```
+
 ## API Reference
 
 | Doc | Description |

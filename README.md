@@ -61,6 +61,29 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 **The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
 
+### How It Works
+
+```mermaid
+flowchart LR
+    subgraph Input
+        A[Plex Server] --> B[Library Query]
+    end
+    
+    subgraph Processing
+        B --> C{GPU Available?}
+        C -->|Yes| D[GPU Workers]
+        C -->|No| E[CPU Workers]
+        D --> F[FFmpeg Extract]
+        E --> F
+    end
+    
+    subgraph Output
+        F --> G[JPEG Frames]
+        G --> H[Pack BIF]
+        H --> I[index-sd.bif]
+    end
+```
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
