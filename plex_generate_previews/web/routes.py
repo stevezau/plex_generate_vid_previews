@@ -36,9 +36,11 @@ api = Blueprint('api', __name__, url_prefix='/api')
 # Initialize rate limiter
 # Uses in-memory storage by default (suitable for single-worker deployments)
 # For multi-worker deployments, set RATELIMIT_STORAGE_URL=redis://localhost:6379
+# Note: Rate limiting is only applied to specific endpoints (login, auth)
+# Dashboard APIs are exempt since they poll frequently
 limiter = Limiter(
     key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"],
+    default_limits=[],  # No default limits - only apply to specific endpoints
     storage_uri=os.environ.get('RATELIMIT_STORAGE_URL', 'memory://'),
 )
 
@@ -136,9 +138,13 @@ def api_regenerate_token():
 @api_token_required
 def get_jobs():
     """Get all jobs."""
-    job_manager = get_job_manager()
-    jobs = [job.to_dict() for job in job_manager.get_all_jobs()]
-    return jsonify({'jobs': jobs})
+    try:
+        job_manager = get_job_manager()
+        jobs = [job.to_dict() for job in job_manager.get_all_jobs()]
+        return jsonify({'jobs': jobs})
+    except Exception as e:
+        logger.error(f"Failed to get jobs: {e}")
+        return jsonify({'error': str(e), 'jobs': []}), 500
 
 
 @api.route('/jobs/<job_id>')
@@ -222,12 +228,16 @@ def get_job_logs(job_id):
 @api_token_required
 def get_worker_statuses():
     """Get status of all workers."""
-    job_manager = get_job_manager()
-    workers = job_manager.get_worker_statuses()
-    
-    return jsonify({
-        'workers': [w.to_dict() if hasattr(w, 'to_dict') else w for w in workers]
-    })
+    try:
+        job_manager = get_job_manager()
+        workers = job_manager.get_worker_statuses()
+        
+        return jsonify({
+            'workers': [w.to_dict() if hasattr(w, 'to_dict') else w for w in workers]
+        })
+    except Exception as e:
+        logger.error(f"Failed to get worker statuses: {e}")
+        return jsonify({'error': str(e), 'workers': []}), 500
 
 
 @api.route('/jobs/<job_id>', methods=['DELETE'])
@@ -253,8 +263,12 @@ def clear_jobs():
 @api_token_required
 def get_job_stats():
     """Get job statistics."""
-    job_manager = get_job_manager()
-    return jsonify(job_manager.get_stats())
+    try:
+        job_manager = get_job_manager()
+        return jsonify(job_manager.get_stats())
+    except Exception as e:
+        logger.error(f"Failed to get job stats: {e}")
+        return jsonify({'error': str(e), 'pending': 0, 'running': 0, 'completed': 0, 'failed': 0, 'cancelled': 0, 'total': 0}), 500
 
 
 # ============================================================================

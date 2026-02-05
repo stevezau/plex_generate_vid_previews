@@ -142,21 +142,28 @@ class JobManager:
                     data = json.load(f)
                     needs_save = False
                     for job_data in data.get('jobs', []):
-                        job = Job(**job_data)
-                        # Mark any "running" jobs as failed on startup
-                        # (they were interrupted by restart/crash)
-                        if job.status == JobStatus.RUNNING:
-                            logger.warning(f"Job {job.id} was running when server stopped - marking as failed")
-                            job.status = JobStatus.FAILED
-                            job.error = "Job was interrupted by server restart"
-                            job.completed_at = datetime.utcnow().isoformat()
-                            needs_save = True
-                        self._jobs[job.id] = job
+                        try:
+                            job = Job(**job_data)
+                            # Mark any "running" jobs as failed on startup
+                            # (they were interrupted by restart/crash)
+                            if job.status == JobStatus.RUNNING:
+                                logger.warning(f"Job {job.id} was running when server stopped - marking as failed")
+                                job.status = JobStatus.FAILED
+                                job.error = "Job was interrupted by server restart"
+                                job.completed_at = datetime.utcnow().isoformat()
+                                needs_save = True
+                            self._jobs[job.id] = job
+                        except (TypeError, KeyError, ValueError) as job_error:
+                            job_id = job_data.get('id', 'unknown')
+                            logger.warning(f"Failed to load job {job_id}: {job_error}")
+                            continue
                 logger.info(f"Loaded {len(self._jobs)} jobs from {self.jobs_file}")
                 if needs_save:
                     self._save_jobs()
             except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Failed to load jobs: {e}")
+                logger.warning(f"Failed to load jobs file: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error loading jobs: {e}")
     
     def _save_jobs(self) -> None:
         """Save jobs to persistent storage."""

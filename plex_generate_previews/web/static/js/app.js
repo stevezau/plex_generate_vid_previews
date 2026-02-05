@@ -252,13 +252,14 @@ async function loadJobs() {
         }
     } catch (error) {
         console.error('Failed to load jobs:', error);
-        // Show error state in job queue instead of leaving "Loading..."
+        // Show empty state instead of error - jobs list may just be unavailable temporarily
         const tbody = document.getElementById('jobQueue');
-        if (tbody) {
+        if (tbody && !error.message.includes('Authentication')) {
+            // Show a less alarming message
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="6" class="text-center text-danger py-4">
-                        <i class="bi bi-exclamation-triangle me-2"></i>Failed to load jobs
+                    <td colspan="6" class="text-center text-muted py-4">
+                        <i class="bi bi-hourglass-split me-2"></i>Loading job queue...
                     </td>
                 </tr>
             `;
@@ -569,14 +570,21 @@ async function loadWorkerStatuses() {
         updateWorkerStatuses(data.workers || []);
     } catch (error) {
         console.error('Failed to load worker statuses:', error);
-        // Show error state in worker container
+        // If not an auth error, show empty state (no workers) rather than error
         const container = document.getElementById('workerStatusContainer');
         if (container && !error.message.includes('Authentication')) {
-            container.innerHTML = `
-                <div class="text-danger text-center py-3">
-                    <i class="bi bi-exclamation-triangle me-2"></i>Failed to load workers
-                </div>
-            `;
+            // Check if there's a running job - if so, show error; if not, show empty state
+            const runningJob = jobs.find(j => j.status === 'running');
+            if (runningJob) {
+                container.innerHTML = `
+                    <div class="text-warning text-center py-3">
+                        <i class="bi bi-exclamation-triangle me-2"></i>Worker status temporarily unavailable
+                    </div>
+                `;
+            } else {
+                // No running job, so no workers expected - show idle state
+                updateWorkerStatuses([]);
+            }
         }
     }
 }
