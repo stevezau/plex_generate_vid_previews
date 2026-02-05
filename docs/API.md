@@ -97,6 +97,72 @@ Mark setup as complete.
 }
 ```
 
+### GET /api/setup/token-info
+
+Get information about the current authentication token. Used by Step 5 of the setup wizard.
+
+**Response:**
+```json
+{
+  "env_controlled": false,
+  "token": "abc123xyz...",
+  "token_length": 43,
+  "source": "config"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `env_controlled` | boolean | Whether token is set via `WEB_AUTH_TOKEN` env var |
+| `token` | string | The current authentication token |
+| `token_length` | number | Length of the token |
+| `source` | string | Either `"environment"` or `"config"` |
+
+### POST /api/setup/set-token
+
+Set a custom authentication token during setup.
+
+**Request:**
+```json
+{
+  "token": "my-custom-password",
+  "confirm_token": "my-custom-password"
+}
+```
+
+**Response (success):**
+```json
+{
+  "success": true
+}
+```
+
+**Response (error - tokens don't match):**
+```json
+{
+  "success": false,
+  "error": "Tokens do not match."
+}
+```
+
+**Response (error - token too short):**
+```json
+{
+  "success": false,
+  "error": "Token must be at least 8 characters long."
+}
+```
+
+**Response (error - env controlled):**
+```json
+{
+  "success": false,
+  "error": "Token is controlled by WEB_AUTH_TOKEN environment variable and cannot be changed."
+}
+```
+
+> **Note:** This endpoint cannot change the token if `WEB_AUTH_TOKEN` environment variable is set.
+
 ### GET /api/settings
 
 Get current settings.

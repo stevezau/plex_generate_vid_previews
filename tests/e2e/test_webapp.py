@@ -118,3 +118,86 @@ class TestAPIEndpoints:
         
         # Should return 200 (even if not authenticated)
         assert response.status == 200
+
+
+@pytest.mark.e2e
+class TestSetupWizardStep5:
+    """Test setup wizard Step 5 (Security) functionality."""
+    
+    def test_setup_wizard_has_5_steps(self, page: Page, app_url: str, auth_token: str):
+        """Verify setup wizard now has 5 progress steps."""
+        # Login first
+        page.goto(f"{app_url}/login")
+        token_input = page.locator('input[name="token"], input[type="password"]')
+        token_input.fill(auth_token)
+        page.locator('button[type="submit"]').click()
+        page.wait_for_timeout(2000)
+        
+        # Navigate to setup
+        page.goto(f"{app_url}/setup")
+        page.wait_for_timeout(1000)
+        
+        # Should have 5 progress steps
+        progress_steps = page.locator('.progress-step')
+        assert progress_steps.count() == 5
+    
+    def test_step5_has_security_label(self, page: Page, app_url: str, auth_token: str):
+        """Verify Step 5 is labeled 'Security'."""
+        # Login and go to setup
+        page.goto(f"{app_url}/login")
+        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
+        page.locator('button[type="submit"]').click()
+        page.wait_for_timeout(2000)
+        
+        page.goto(f"{app_url}/setup")
+        page.wait_for_timeout(1000)
+        
+        # Step 5 should have 'Security' text
+        step5 = page.locator('.progress-step[data-step="5"]')
+        expect(step5).to_contain_text('Security')
+    
+    def test_step5_shows_token_display(self, page: Page, app_url: str, auth_token: str):
+        """Verify Step 5 shows the current token input."""
+        # Login and go to setup
+        page.goto(f"{app_url}/login")
+        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
+        page.locator('button[type="submit"]').click()
+        page.wait_for_timeout(2000)
+        
+        page.goto(f"{app_url}/setup")
+        page.wait_for_timeout(1000)
+        
+        # Go directly to step 5 by clicking through (or check element exists)
+        current_token_input = page.locator('#currentToken')
+        # Element should exist in the DOM (even if not visible yet)
+        assert current_token_input.count() == 1
+    
+    def test_step5_has_custom_token_checkbox(self, page: Page, app_url: str, auth_token: str):
+        """Verify Step 5 has the custom token checkbox."""
+        # Login and go to setup
+        page.goto(f"{app_url}/login")
+        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
+        page.locator('button[type="submit"]').click()
+        page.wait_for_timeout(2000)
+        
+        page.goto(f"{app_url}/setup")
+        page.wait_for_timeout(1000)
+        
+        # Custom token checkbox should exist
+        custom_checkbox = page.locator('#useCustomToken')
+        assert custom_checkbox.count() == 1
+    
+    def test_step5_has_finish_button(self, page: Page, app_url: str, auth_token: str):
+        """Verify Step 5 has the Complete Setup button."""
+        # Login and go to setup
+        page.goto(f"{app_url}/login")
+        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
+        page.locator('button[type="submit"]').click()
+        page.wait_for_timeout(2000)
+        
+        page.goto(f"{app_url}/setup")
+        page.wait_for_timeout(1000)
+        
+        # Finish button should exist
+        finish_btn = page.locator('#finishSetup')
+        assert finish_btn.count() == 1

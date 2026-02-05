@@ -225,3 +225,157 @@ class TestJobLogsAndWorkers:
         """Test that workers endpoint requires authentication."""
         response = client.get('/api/jobs/workers')
         assert response.status_code == 401
+
+
+class TestAuthTokenFunctions:
+    """Tests for authentication token management functions."""
+    
+    def test_is_token_env_controlled_false(self, mock_auth_config, monkeypatch):
+        """Test is_token_env_controlled returns False when env var is not set."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        from plex_generate_previews.web.auth import is_token_env_controlled
+        assert is_token_env_controlled() is False
+    
+    def test_is_token_env_controlled_true(self, mock_auth_config, monkeypatch):
+        """Test is_token_env_controlled returns True when env var is set."""
+        monkeypatch.setenv('WEB_AUTH_TOKEN', 'env-token-value')
+        from plex_generate_previews.web.auth import is_token_env_controlled
+        assert is_token_env_controlled() is True
+    
+    def test_set_auth_token_success(self, mock_auth_config, monkeypatch):
+        """Test setting a valid token succeeds."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        from plex_generate_previews.web.auth import set_auth_token, get_auth_token
+        
+        result = set_auth_token('my-new-secure-token')
+        assert result['success'] is True
+        assert get_auth_token() == 'my-new-secure-token'
+    
+    def test_set_auth_token_too_short(self, mock_auth_config, monkeypatch):
+        """Test setting a token that's too short fails."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        from plex_generate_previews.web.auth import set_auth_token
+        
+        result = set_auth_token('short')
+        assert result['success'] is False
+        assert 'at least 8 characters' in result['error']
+    
+    def test_set_auth_token_env_locked(self, mock_auth_config, monkeypatch):
+        """Test setting token fails when WEB_AUTH_TOKEN env var is set."""
+        monkeypatch.setenv('WEB_AUTH_TOKEN', 'env-controlled-token')
+        from plex_generate_previews.web.auth import set_auth_token
+        
+        result = set_auth_token('my-new-token-123')
+        assert result['success'] is False
+        assert 'environment variable' in result['error']
+    
+    def test_get_token_info_structure(self, mock_auth_config, monkeypatch):
+        """Test get_token_info returns correct structure."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        from plex_generate_previews.web.auth import get_token_info
+        
+        info = get_token_info()
+        assert 'env_controlled' in info
+        assert 'token' in info
+        assert 'token_length' in info
+        assert 'source' in info
+    
+    def test_get_token_info_config_source(self, mock_auth_config, monkeypatch):
+        """Test get_token_info returns config source when not env controlled."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        from plex_generate_previews.web.auth import get_token_info
+        
+        info = get_token_info()
+        assert info['env_controlled'] is False
+        assert info['source'] == 'config'
+    
+    def test_get_token_info_env_source(self, mock_auth_config, monkeypatch):
+        """Test get_token_info returns environment source when env var set."""
+        monkeypatch.setenv('WEB_AUTH_TOKEN', 'env-token-12345')
+        from plex_generate_previews.web.auth import get_token_info
+        
+        info = get_token_info()
+        assert info['env_controlled'] is True
+        assert info['source'] == 'environment'
+        assert info['token'] == 'env-token-12345'
+
+
+class TestTokenAPIEndpoints:
+    """Tests for token management API endpoints."""
+    
+    def test_setup_token_info_endpoint(self, client, auth_headers):
+        """Test GET /api/setup/token-info returns token information."""
+        response = client.get('/api/setup/token-info', headers=auth_headers)
+        
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert 'env_controlled' in data
+        assert 'token' in data
+        assert 'source' in data
+    
+    def test_setup_token_info_requires_auth(self, client):
+        """Test token-info endpoint requires authentication."""
+        response = client.get('/api/setup/token-info')
+        assert response.status_code == 401
+    
+    def test_setup_set_token_success(self, client, auth_headers, monkeypatch):
+        """Test POST /api/setup/set-token with valid data succeeds."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        
+        response = client.post(
+            '/api/setup/set-token',
+            headers={**auth_headers, 'Content-Type': 'application/json'},
+            data=json.dumps({
+                'token': 'my-new-password-123',
+                'confirm_token': 'my-new-password-123'
+            })
+        )
+        
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['success'] is True
+    
+    def test_setup_set_token_mismatch(self, client, auth_headers, monkeypatch):
+        """Test set-token fails when tokens don't match."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        
+        response = client.post(
+            '/api/setup/set-token',
+            headers={**auth_headers, 'Content-Type': 'application/json'},
+            data=json.dumps({
+                'token': 'password-one-123',
+                'confirm_token': 'password-two-456'
+            })
+        )
+        
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert data['success'] is False
+        assert 'match' in data['error'].lower()
+    
+    def test_setup_set_token_too_short(self, client, auth_headers, monkeypatch):
+        """Test set-token fails when token is too short."""
+        monkeypatch.delenv('WEB_AUTH_TOKEN', raising=False)
+        
+        response = client.post(
+            '/api/setup/set-token',
+            headers={**auth_headers, 'Content-Type': 'application/json'},
+            data=json.dumps({
+                'token': 'short',
+                'confirm_token': 'short'
+            })
+        )
+        
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert data['success'] is False
+        assert '8 characters' in data['error']
+    
+    def test_setup_set_token_requires_auth(self, client):
+        """Test set-token endpoint requires authentication."""
+        response = client.post(
+            '/api/setup/set-token',
+            headers={'Content-Type': 'application/json'},
+            data=json.dumps({'token': 'test12345', 'confirm_token': 'test12345'})
+        )
+        assert response.status_code == 401
