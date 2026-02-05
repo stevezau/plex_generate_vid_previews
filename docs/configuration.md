@@ -15,7 +15,7 @@ Settings are applied in this order (highest priority first):
 3. **Environment variables** - Fallback when not set in UI
 4. **Default values** - Used when nothing is configured
 
-> 💡 **New in v1.x**: Most settings can now be configured via the web interface at `http://your-server:8080/settings`. No need to restart the container when changing settings!
+> **Tip:** Most settings can now be configured via the web interface at `http://your-server:8080/settings`. No need to restart the container when changing settings!
 
 ---
 
@@ -29,7 +29,7 @@ These are configured automatically via the **Setup Wizard** using Plex OAuth, bu
 | `PLEX_TOKEN` | `--plex-token` | ✅ | Plex authentication token (auto-set via OAuth) |
 | `PLEX_CONFIG_FOLDER` | `--plex-config-folder` | ✅ | Path to Plex config folder |
 
-> 💡 **Recommended**: Use the Setup Wizard to sign in with Plex OAuth. Your token is obtained securely without manually copying it.
+> **Tip:** Use the Setup Wizard to sign in with Plex OAuth. Your token is obtained securely without manually copying it.
 
 ---
 
@@ -46,17 +46,6 @@ These are configured automatically via the **Setup Wizard** using Plex OAuth, bu
 | `PLEX_LIBRARIES` | `--plex-libraries` | ✅ | All | Comma-separated library names or IDs |
 | `SORT_BY` | `--sort-by` | ❌ | `newest` | Sort order: `newest` or `oldest` |
 | `NICE_LEVEL` | N/A | ❌ | `15` | Process priority (0-19) |
-
----
-
-## Path Mapping
-
-| Variable | CLI Argument | Web UI | Description |
-|----------|--------------|--------|-------------|
-| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | ✅ | Path as Plex sees it |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | ✅ | Path as container sees it |
-
-See [Path Mappings Guide](path-mappings.md) for detailed examples.
 
 ---
 

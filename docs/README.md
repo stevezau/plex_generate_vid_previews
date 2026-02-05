@@ -6,8 +6,7 @@
 
 | Doc | Description |
 |-----|-------------|
-| [Quick Start](quickstart.md) | Get running in 5 minutes |
-| [Docker Guide](docker.md) | Container deployment + networking |
+| [Quick Start & Docker](quickstart.md) | Get running in 5 minutes, Docker Compose, networking |
 | [Configuration](configuration.md) | All options + path mappings |
 | [GPU Support](gpu-support.md) | NVIDIA, AMD, Intel acceleration |
 | [Web Interface](web-interface.md) | Dashboard and scheduling |
@@ -17,7 +16,7 @@
 
 | Platform | Guide |
 |----------|-------|
-| Docker/Compose | [Docker Guide](docker.md) |
+| Docker/Compose | [Quick Start & Docker](quickstart.md) |
 | Unraid | [Unraid Guide](unraid.md) |
 
 ## Architecture

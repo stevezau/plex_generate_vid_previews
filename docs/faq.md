@@ -75,7 +75,7 @@ Most common cause: Using `init: true` in docker-compose. Remove it - this contai
 
 ### Why can't the container find my files?
 
-Path mapping issue. See [Path Mappings Guide](path-mappings.md).
+Path mapping issue. See [Path Mappings Guide](configuration.md#path-mappings).
 
 ### How do I get the auth token?
 
@@ -108,7 +108,7 @@ Possible causes:
 
 ### "Skipping as file not found"
 
-Path mapping issue. See [Path Mappings Guide](path-mappings.md).
+Path mapping issue. See [Path Mappings Guide](configuration.md#path-mappings).
 
 ### "GPU permission denied"
 

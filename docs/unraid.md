@@ -13,7 +13,7 @@ Setup guide for Unraid with Community Applications template and manual Docker op
 3. **Get the auth token** from container logs or set `WEB_AUTH_TOKEN`
 4. **Complete the Setup Wizard** - Sign in with Plex, configure settings
 
-> 💡 **New:** The setup wizard guides you through Plex OAuth authentication. No need to manually find your Plex token!
+> **Tip:** The setup wizard guides you through Plex OAuth authentication. No need to manually find your Plex token!
 
 ---
 
@@ -221,7 +221,7 @@ Add path mapping:
 -e PLEX_LOCAL_VIDEOS_PATH_MAPPING=/media \
 ```
 
-See [Path Mappings Guide](path-mappings.md) for more examples.
+See [Path Mappings Guide](configuration.md#path-mappings) for more examples.
 
 ---
 
@@ -267,7 +267,7 @@ chmod -R 777 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ S
 
 ### "File not found" errors
 
-Check your volume mounts and path mappings. See [Path Mappings Guide](path-mappings.md).
+Check your volume mounts and path mappings. See [Path Mappings Guide](configuration.md#path-mappings).
 
 ### GPU not detected
 

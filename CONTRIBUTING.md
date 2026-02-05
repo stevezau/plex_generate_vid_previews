@@ -1,6 +1,6 @@
-# Contributing
+# Contributing & Development
 
-Thank you for considering contributing to Plex Generate Previews!
+Thank you for contributing to Plex Generate Previews!
 
 ---
 
@@ -28,31 +28,44 @@ Be respectful and inclusive. We're all here to make Plex better.
 2. Create an issue with label `enhancement`
 3. Describe the use case and proposed solution
 
-### Submitting Code
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes
-4. Run tests: `pytest`
-5. Run linting: `ruff check .`
-6. Commit with clear message: `git commit -m "feat: Add my feature"`
-7. Push to your fork: `git push origin feature/my-feature`
-8. Open a Pull Request
-
 ---
 
 ## Development Setup
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed setup instructions.
+### Prerequisites
 
-Quick start:
+- Python 3.10+
+- FFmpeg installed locally (for testing media processing)
+- Docker (for container builds)
+- Git
+
+### Quick Start
+
 ```bash
+# Clone and setup
 git clone https://github.com/stevezau/plex_generate_vid_previews.git
 cd plex_generate_vid_previews
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Linux/macOS (use .\venv\Scripts\activate on Windows)
 pip install -e ".[dev,test]"
+
+# Verify
 pytest
+ruff check .
+plex-generate-previews --help
+```
+
+### Running the Application
+
+```bash
+# Web mode (default)
+python -m plex_generate_previews
+
+# CLI mode
+plex-generate-previews --cli \
+  --plex-url http://localhost:32400 \
+  --plex-token your-token \
+  --plex-config-folder "/path/to/plex/config"
 ```
 
 ---
@@ -61,66 +74,35 @@ pytest
 
 ### Python
 
-- Follow PEP 8
-- Use type hints for function signatures
-- Write docstrings for public functions (Google style)
-- Keep functions focused and small
-- Use `loguru` for logging, not stdlib `logging`
+- **Formatter/Linter**: Use `ruff format` and `ruff check`
+- **Type hints**: Required on function signatures
+- **Docstrings**: Google style with Args, Returns, Raises
+- **Logging**: Use `loguru`, not stdlib `logging`
+
+```bash
+# Check and fix
+ruff check . --fix
+ruff format .
+```
 
 ```python
-def process_item(
-    item_key: str,
-    config: Config,
-    plex: PlexServer
-) -> bool:
+def process_item(item_key: str, config: Config) -> bool:
     """
     Process a single media item.
     
     Args:
         item_key: Plex library item key
         config: Application configuration
-        plex: Plex server connection
         
     Returns:
         True if processing succeeded
     """
-    ...
-```
-
-### JavaScript
-
-- Use ES6+ features
-- Use `const` by default, `let` when needed
-- Add JSDoc comments for classes and functions
-
-```javascript
-/**
- * Manages Plex OAuth authentication flow.
- */
-class PlexAuth {
-    /**
-     * Start the OAuth flow.
-     * @param {string} clientId - Client identifier
-     * @returns {Promise<string>} Auth token
-     */
-    async startFlow(clientId) {
-        ...
-    }
-}
 ```
 
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation
-- `test:` Tests
-- `refactor:` Code refactoring
-- `chore:` Maintenance
-
-Examples:
 ```
 feat: Add AMD GPU support
 fix: Handle missing BIF directory
@@ -132,38 +114,94 @@ test: Add tests for SettingsManager
 
 ## Testing
 
-### Running Tests
-
 ```bash
-# All tests
-pytest
-
-# With coverage
-pytest --cov=plex_generate_previews
-
-# Specific file
-pytest tests/test_config.py -v
-
-# Skip GPU tests
-pytest -m "not gpu"
+pytest                                          # All tests
+pytest --cov=plex_generate_previews             # With coverage
+pytest tests/test_config.py -v                  # Specific file
+pytest -m "not gpu"                             # Skip GPU tests
+pytest tests/ --ignore=tests/e2e -x             # Quick tests only
 ```
 
 ### Writing Tests
 
-- Put tests in `tests/` directory
-- Name test files `test_*.py`
-- Use pytest fixtures from `conftest.py`
+- Use pytest fixtures from `tests/conftest.py`
 - Mock external dependencies (Plex API, FFmpeg)
 
 ```python
-def test_config_loads_from_env(monkeypatch):
-    """Test that config loads from environment variables."""
+def test_config_loads_from_env(monkeypatch, mock_config):
     monkeypatch.setenv('PLEX_URL', 'http://test:32400')
-    monkeypatch.setenv('PLEX_TOKEN', 'test-token')
-    
     config = load_config(...)
-    
     assert config.plex_url == 'http://test:32400'
+```
+
+---
+
+## Project Structure
+
+```
+plex_generate_previews/
+├── cli.py                 # CLI argument parsing, Rich progress
+├── config.py              # Configuration management
+├── worker.py              # Thread pool workers
+├── media_processing.py    # FFmpeg, BIF generation
+├── plex_client.py         # Plex API client
+├── gpu_detection.py       # GPU discovery
+└── web/                   # Flask web app
+    ├── app.py             # App factory
+    ├── routes.py          # HTTP routes + API
+    ├── auth.py            # Authentication
+    ├── settings_manager.py# Settings persistence
+    └── scheduler.py       # Job scheduling
+```
+
+---
+
+## Key Development Tasks
+
+### Adding a New API Endpoint
+
+1. Add route in `web/routes.py`:
+   ```python
+   @api.route('/new-endpoint')
+   @api_token_required
+   def new_endpoint():
+       return jsonify({'data': 'value'})
+   ```
+2. Add test in `tests/`
+3. Update API documentation in `docs/API.md`
+
+### Adding a Configuration Option
+
+1. Add field to `Config` dataclass in `config.py`
+2. Add loading logic in `load_config()`
+3. Add to `SettingsManager` if web-configurable
+4. Update `mock_config` fixture in `tests/conftest.py`
+5. Document in `docs/configuration.md`
+
+---
+
+## Docker Build
+
+```bash
+# Build image
+docker build -t plex-previews:dev .
+
+# Run development image
+docker run --rm -p 8080:8080 -v $(pwd)/config:/config plex-previews:dev
+
+# Multi-architecture build
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t stevezzau/plex_generate_vid_previews:dev --push .
+```
+
+---
+
+## Debugging
+
+```bash
+LOG_LEVEL=DEBUG python -m plex_generate_previews  # Debug logging
+plex-generate-previews --list-gpus                 # Check GPUs
+docker exec -it plex-generate-previews /bin/bash   # Inspect container
 ```
 
 ---
@@ -171,9 +209,9 @@ def test_config_loads_from_env(monkeypatch):
 ## Pull Request Process
 
 1. **Before submitting:**
-   - All tests pass locally
-   - Code is formatted (`ruff format .`)
-   - No linting errors (`ruff check .`)
+   - All tests pass: `pytest`
+   - Code formatted: `ruff format .`
+   - No lint errors: `ruff check .`
    - Documentation updated if needed
 
 2. **PR Description:**
@@ -181,12 +219,7 @@ def test_config_loads_from_env(monkeypatch):
    - Link to related issues
    - Screenshots for UI changes
 
-3. **Review:**
-   - Address reviewer feedback
-   - Keep PR focused on one thing
-   - Squash commits if requested
-
-4. **After merge:**
+3. **After merge:**
    - Delete your feature branch
    - Update your fork
 
@@ -194,22 +227,11 @@ def test_config_loads_from_env(monkeypatch):
 
 ## Release Process
 
-Releases are managed by maintainers:
-
 1. Update version in `plex_generate_previews/_version.py`
 2. Update `CHANGELOG.md`
-3. Create release PR
-4. After merge, tag: `git tag vX.Y.Z`
-5. Push tag: `git push --tags`
-6. GitHub Actions builds Docker image
-
----
-
-## Getting Help
-
-- Open an issue for questions
-- Check existing documentation
-- Look at similar issues/PRs for examples
+3. Create PR and merge to main
+4. Tag release: `git tag vX.Y.Z && git push --tags`
+5. GitHub Actions builds and pushes Docker image
 
 ---
 

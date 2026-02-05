@@ -116,9 +116,9 @@ flowchart LR
 ### Docker (Recommended)
 
 ```bash
-# Run the container
 docker run -d \
   --name plex-generate-previews \
+  --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
   -e PUID=1000 \
@@ -127,19 +127,16 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   stevezzau/plex_generate_vid_previews:latest
-
-# Get auth token and open dashboard
-docker logs plex-generate-previews | grep "Token:"
-# Open http://YOUR_IP:8080
 ```
 
-Then complete the **Setup Wizard** which guides you through:
-1. **Sign in with Plex** - Secure OAuth authentication
-2. **Select Server** - Choose your Plex server
-3. **Configure Paths** - Set up media/config paths
-4. **Processing Options** - GPU threads, thumbnail settings
+```bash
+# Get auth token
+docker logs plex-generate-previews | grep "Token:"
+```
 
-> 💡 **No manual token needed!** The wizard handles Plex authentication via OAuth.
+Open `http://YOUR_IP:8080` and complete the **Setup Wizard**.
+
+> **Note:** See [Quick Start & Docker Guide](docs/quickstart.md) for Docker Compose, networking, and GPU-specific examples.
 
 ### Pip Install (CLI Mode)
 
@@ -164,7 +161,7 @@ plex-generate-previews \
 
 | Method | Best For | Guide |
 |--------|----------|-------|
-| **Docker** | Most users, easy GPU setup | [Docker Guide](docs/docker.md) |
+| **Docker** | Most users, easy GPU setup | [Quick Start](docs/quickstart.md) |
 | **Docker Compose** | Managed deployments | [docker-compose.example.yml](docker-compose.example.yml) |
 | **Unraid** | Unraid servers | [Unraid Guide](docs/unraid.md) |
 | **Pip** | Local development | [Quick Start](docs/quickstart.md#option-2-pip-install) |
@@ -206,11 +203,11 @@ plex-generate-previews --list-gpus
 | [⚡ Quick Start](docs/quickstart.md) | Get running in 5 minutes |
 | [⚙️ Configuration](docs/configuration.md) | All options and env vars |
 | [🎮 GPU Support](docs/gpu-support.md) | Hardware acceleration |
-| [🐳 Docker Guide](docs/docker.md) | Container deployment |
+| [🐳 Docker Guide](docs/quickstart.md) | Container deployment |
 | [📦 Unraid Guide](docs/unraid.md) | Unraid-specific setup |
-| [🗺️ Path Mappings](docs/path-mappings.md) | Volume path translation |
+| [🗺️ Path Mappings](docs/configuration.md#path-mappings) | Volume path translation |
 | [🌐 Web Interface](docs/web-interface.md) | Dashboard and API |
-| [🔧 Troubleshooting](docs/troubleshooting.md) | Common issues |
+| [🔧 Troubleshooting](docs/faq.md) | FAQ & common issues |
 | [❓ FAQ](docs/faq.md) | Frequently asked questions |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
