@@ -16,6 +16,7 @@ When you first access the web interface, you'll be guided through a **Setup Wiza
 2. **Select Server** - Choose which Plex server to connect to
 3. **Configure Paths** - Set up media paths and path mappings
 4. **Processing Options** - Configure GPU threads, thumbnail quality, etc.
+5. **Security** - View or customize your access token (optional)
 
 After setup completes, you'll be taken to the dashboard.
 
@@ -101,8 +102,9 @@ Settings are saved to `/config/settings.json` and persist across restarts.
 The web interface uses token-based authentication:
 
 1. **Auto-generated token** - Created on first run, saved to `/config/auth.json`
-2. **Fixed token** - Set `WEB_AUTH_TOKEN` environment variable
-3. **Hide from logs** - Set `WEB_HIDE_TOKEN=true`
+2. **Custom token via wizard** - Set your own token during the setup wizard (Step 5)
+3. **Fixed token** - Set `WEB_AUTH_TOKEN` environment variable (overrides wizard setting)
+4. **Hide from logs** - Set `WEB_HIDE_TOKEN=true`
 
 ### API Authentication
 

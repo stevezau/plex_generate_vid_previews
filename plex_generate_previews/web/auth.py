@@ -9,7 +9,6 @@ import json
 import os
 import secrets
 from functools import wraps
-from typing import Optional
 
 from flask import request, jsonify, session, redirect, url_for
 from loguru import logger
@@ -97,6 +96,62 @@ def regenerate_token() -> str:
 def validate_token(token: str) -> bool:
     """Validate the provided token against the stored token."""
     return secrets.compare_digest(token, get_auth_token())
+
+
+def is_token_env_controlled() -> bool:
+    """Check if the token is controlled by WEB_AUTH_TOKEN environment variable."""
+    return bool(os.environ.get('WEB_AUTH_TOKEN'))
+
+
+def set_auth_token(new_token: str) -> dict:
+    """
+    Set a custom authentication token.
+    
+    Args:
+        new_token: The new token to set (minimum 8 characters)
+        
+    Returns:
+        dict with 'success' bool and optional 'error' message
+    """
+    # Check if controlled by environment variable
+    if is_token_env_controlled():
+        return {
+            'success': False,
+            'error': 'Token is controlled by WEB_AUTH_TOKEN environment variable and cannot be changed.'
+        }
+    
+    # Validate minimum length
+    if len(new_token) < 8:
+        return {
+            'success': False,
+            'error': 'Token must be at least 8 characters long.'
+        }
+    
+    # Save the new token
+    config = load_auth_config()
+    config['token'] = new_token
+    save_auth_config(config)
+    logger.info("Authentication token updated by user")
+    
+    return {'success': True}
+
+
+def get_token_info() -> dict:
+    """
+    Get information about the current token for display in setup wizard.
+    
+    Returns:
+        dict with token info (masked for security) and control status
+    """
+    env_controlled = is_token_env_controlled()
+    token = get_auth_token()
+    
+    return {
+        'env_controlled': env_controlled,
+        'token': token,
+        'token_length': len(token),
+        'source': 'environment' if env_controlled else 'config'
+    }
 
 
 def is_authenticated() -> bool:

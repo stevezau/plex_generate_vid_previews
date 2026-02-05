@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Setup Wizard**: New first-time setup wizard with 4-step guided configuration
+- **Setup Wizard**: New first-time setup wizard with 5-step guided configuration
+- **Custom Access Token**: Set your own access token during setup (Step 5: Security)
 - **Plex OAuth**: Sign in with Plex account via OAuth (no manual token copying)
 - **Settings Page**: Web-based settings management with live save
 - **Settings Persistence**: Configuration saved to `/config/settings.json`

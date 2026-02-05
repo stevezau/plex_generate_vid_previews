@@ -14,19 +14,18 @@ configure Redis storage via RATELIMIT_STORAGE_URL environment variable.
 
 import os
 import threading
-from typing import Optional
 
-from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for, current_app
-from flask_socketio import emit, join_room, leave_room
+from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
+from flask_socketio import join_room, leave_room
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from loguru import logger
 
 from .auth import (
     login_required, api_token_required, validate_token, 
-    is_authenticated, regenerate_token, get_auth_token
+    is_authenticated, regenerate_token
 )
-from .jobs import get_job_manager, JobStatus
+from .jobs import get_job_manager
 from .scheduler import get_schedule_manager
 
 
@@ -872,6 +871,40 @@ def complete_setup():
     return jsonify({'success': True, 'redirect': '/'})
 
 
+@api.route('/setup/token-info', methods=['GET'])
+@api_token_required
+def get_setup_token_info():
+    """Get information about the current authentication token for setup wizard."""
+    from .auth import get_token_info
+    
+    return jsonify(get_token_info())
+
+
+@api.route('/setup/set-token', methods=['POST'])
+@api_token_required
+def set_setup_token():
+    """Set a custom authentication token during setup."""
+    from .auth import set_auth_token
+    
+    data = request.get_json() or {}
+    new_token = data.get('token', '')
+    confirm_token = data.get('confirm_token', '')
+    
+    # Validate tokens match
+    if new_token != confirm_token:
+        return jsonify({
+            'success': False,
+            'error': 'Tokens do not match.'
+        }), 400
+    
+    result = set_auth_token(new_token)
+    
+    if not result['success']:
+        return jsonify(result), 400
+    
+    return jsonify(result)
+
+
 @api.route('/setup/validate-paths', methods=['POST'])
 @api_token_required
 def validate_paths():
@@ -928,7 +961,7 @@ def validate_paths():
             os.remove(test_file)
             result['info'].append('✓ Write permissions OK')
         except Exception:
-            result['errors'].append(f'Cannot write to Plex Data Path. Check permissions (PUID/PGID).')
+            result['errors'].append('Cannot write to Plex Data Path. Check permissions (PUID/PGID).')
             result['valid'] = False
     
     # Validate Path Mapping (if provided)

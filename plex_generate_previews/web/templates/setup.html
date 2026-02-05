@@ -165,6 +165,11 @@
             <div class="step-number">4</div>
             <span class="d-none d-md-inline">Options</span>
         </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="5">
+            <div class="step-number">5</div>
+            <span class="d-none d-md-inline">Security</span>
+        </div>
     </div>
     
     <!-- Step 1: Plex Sign In -->
@@ -351,6 +356,82 @@
             <button type="button" class="btn btn-outline-secondary" id="step4Back">
                 <i class="bi bi-arrow-left me-1"></i> Back
             </button>
+            <button type="button" class="btn btn-primary" id="step4Next">
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Step 5: Security / Access Token -->
+    <div class="setup-step" data-step="5">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title mb-4"><i class="bi bi-shield-lock me-2"></i>Access Token</h4>
+                <p class="text-muted mb-4">
+                    Your access token is like a password for the web interface. You can keep the 
+                    auto-generated token or set your own.
+                </p>
+                
+                <!-- Environment variable notice -->
+                <div id="tokenEnvNotice" class="alert alert-info d-none">
+                    <i class="bi bi-info-circle me-2"></i>
+                    <strong>Token is controlled by environment variable.</strong>
+                    <br>The <code>WEB_AUTH_TOKEN</code> environment variable is set, so the token cannot be changed here.
+                </div>
+                
+                <!-- Current token display -->
+                <div id="tokenDisplay" class="mb-4">
+                    <label class="form-label">Current Access Token</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control font-monospace" id="currentToken" readonly>
+                        <button class="btn btn-outline-secondary" type="button" id="copyTokenBtn" title="Copy to clipboard">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" type="button" id="toggleTokenBtn" title="Show/Hide">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
+                    <div class="form-text">Save this token - you'll need it to log in.</div>
+                </div>
+                
+                <hr class="my-4">
+                
+                <!-- Custom token option -->
+                <div id="customTokenSection">
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="useCustomToken">
+                        <label class="form-check-label" for="useCustomToken">
+                            Set a custom access token
+                        </label>
+                    </div>
+                    
+                    <div id="customTokenInputs" class="d-none">
+                        <div class="mb-3">
+                            <label for="newToken" class="form-label">New Token</label>
+                            <input type="password" class="form-control" id="newToken" 
+                                   placeholder="Enter your custom token" minlength="8">
+                            <div class="form-text">Minimum 8 characters</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="confirmToken" class="form-label">Confirm Token</label>
+                            <input type="password" class="form-control" id="confirmToken" 
+                                   placeholder="Confirm your custom token">
+                        </div>
+                        
+                        <div id="tokenError" class="alert alert-danger d-none"></div>
+                        <div id="tokenSuccess" class="alert alert-success d-none">
+                            <i class="bi bi-check-circle me-2"></i>Token updated successfully!
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step5Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
             <button type="button" class="btn btn-success" id="finishSetup">
                 <i class="bi bi-check-lg me-1"></i> Complete Setup
             </button>
@@ -423,6 +504,8 @@ document.addEventListener('DOMContentLoaded', function() {
             loadServers();
         } else if (step === 4) {
             loadGpuInfo();
+        } else if (step === 5) {
+            loadTokenInfo();
         }
     }
     
@@ -702,7 +785,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     document.getElementById('step4Back').addEventListener('click', () => goToStep(3));
     
-    document.getElementById('finishSetup').addEventListener('click', async function() {
+    document.getElementById('step4Next').addEventListener('click', async function() {
         this.disabled = true;
         this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
         
@@ -715,6 +798,137 @@ document.addEventListener('DOMContentLoaded', function() {
                 thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value)
             });
             
+            goToStep(5);
+            
+        } catch (error) {
+            alert('Failed to save options: ' + error.message);
+        }
+        
+        this.disabled = false;
+        this.innerHTML = 'Next <i class="bi bi-arrow-right ms-1"></i>';
+    });
+    
+    // =========================================================================
+    // Step 5: Security / Access Token
+    // =========================================================================
+    
+    let tokenVisible = false;
+    let tokenValue = '';
+    
+    async function loadTokenInfo() {
+        try {
+            const response = await fetch('/api/setup/token-info');
+            const data = await response.json();
+            
+            tokenValue = data.token;
+            
+            // Update token display (masked by default)
+            const tokenInput = document.getElementById('currentToken');
+            tokenInput.value = '\u2022'.repeat(Math.min(tokenValue.length, 32));
+            tokenInput.dataset.token = tokenValue;
+            
+            // Handle env-controlled token
+            if (data.env_controlled) {
+                document.getElementById('tokenEnvNotice').classList.remove('d-none');
+                document.getElementById('customTokenSection').classList.add('d-none');
+            } else {
+                document.getElementById('tokenEnvNotice').classList.add('d-none');
+                document.getElementById('customTokenSection').classList.remove('d-none');
+            }
+            
+        } catch (error) {
+            console.error('Failed to load token info:', error);
+        }
+    }
+    
+    // Toggle token visibility
+    document.getElementById('toggleTokenBtn').addEventListener('click', function() {
+        const tokenInput = document.getElementById('currentToken');
+        tokenVisible = !tokenVisible;
+        
+        if (tokenVisible) {
+            tokenInput.value = tokenValue;
+            this.innerHTML = '<i class="bi bi-eye-slash"></i>';
+        } else {
+            tokenInput.value = '\u2022'.repeat(Math.min(tokenValue.length, 32));
+            this.innerHTML = '<i class="bi bi-eye"></i>';
+        }
+    });
+    
+    // Copy token to clipboard
+    document.getElementById('copyTokenBtn').addEventListener('click', async function() {
+        try {
+            await navigator.clipboard.writeText(tokenValue);
+            this.innerHTML = '<i class="bi bi-check"></i>';
+            setTimeout(() => {
+                this.innerHTML = '<i class="bi bi-clipboard"></i>';
+            }, 2000);
+        } catch (error) {
+            alert('Failed to copy token');
+        }
+    });
+    
+    // Toggle custom token inputs
+    document.getElementById('useCustomToken').addEventListener('change', function() {
+        document.getElementById('customTokenInputs').classList.toggle('d-none', !this.checked);
+        // Clear any previous errors
+        document.getElementById('tokenError').classList.add('d-none');
+        document.getElementById('tokenSuccess').classList.add('d-none');
+    });
+    
+    document.getElementById('step5Back').addEventListener('click', () => goToStep(4));
+    
+    document.getElementById('finishSetup').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+        
+        const tokenError = document.getElementById('tokenError');
+        const tokenSuccess = document.getElementById('tokenSuccess');
+        tokenError.classList.add('d-none');
+        tokenSuccess.classList.add('d-none');
+        
+        try {
+            // Handle custom token if enabled
+            const useCustom = document.getElementById('useCustomToken').checked;
+            if (useCustom) {
+                const newToken = document.getElementById('newToken').value;
+                const confirmToken = document.getElementById('confirmToken').value;
+                
+                if (newToken.length < 8) {
+                    tokenError.textContent = 'Token must be at least 8 characters long.';
+                    tokenError.classList.remove('d-none');
+                    this.disabled = false;
+                    this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+                    return;
+                }
+                
+                if (newToken !== confirmToken) {
+                    tokenError.textContent = 'Tokens do not match.';
+                    tokenError.classList.remove('d-none');
+                    this.disabled = false;
+                    this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+                    return;
+                }
+                
+                // Save custom token
+                const tokenResponse = await fetch('/api/setup/set-token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: newToken, confirm_token: confirmToken })
+                });
+                
+                const tokenData = await tokenResponse.json();
+                if (!tokenData.success) {
+                    tokenError.textContent = tokenData.error || 'Failed to set token.';
+                    tokenError.classList.remove('d-none');
+                    this.disabled = false;
+                    this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+                    return;
+                }
+                
+                tokenSuccess.classList.remove('d-none');
+            }
+            
             // Complete setup
             const result = await setupManager.complete();
             
@@ -722,7 +936,8 @@ document.addEventListener('DOMContentLoaded', function() {
             window.location.href = result.redirect || '/';
             
         } catch (error) {
-            alert('Failed to complete setup: ' + error.message);
+            tokenError.textContent = 'Failed to complete setup: ' + error.message;
+            tokenError.classList.remove('d-none');
             this.disabled = false;
             this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
         }

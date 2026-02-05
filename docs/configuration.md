@@ -54,7 +54,7 @@ These are configured automatically via the **Setup Wizard** using Plex OAuth, bu
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WEB_PORT` | `8080` | Web server port |
-| `WEB_AUTH_TOKEN` | Auto-generated | Fixed auth token (check logs if not set) |
+| `WEB_AUTH_TOKEN` | Auto-generated | Fixed auth token (overrides wizard-set token) |
 | `WEB_HIDE_TOKEN` | `false` | Set `true` to hide token from logs |
 | `FLASK_SECRET_KEY` | Auto-generated | Session secret (persisted to `/config/flask_secret.key`) |
 | `CORS_ORIGINS` | `*` | Allowed CORS origins (comma-separated) |

@@ -44,7 +44,7 @@ docker logs plex-generate-previews | grep "Token:"
 
 1. Open `http://YOUR_SERVER_IP:8080`
 2. Enter the authentication token from the logs
-3. Follow the wizard: **Sign in with Plex** → **Select Server** → **Configure Paths** → **Start Processing**
+3. Follow the wizard: **Sign in with Plex** → **Select Server** → **Configure Paths** → **Options** → **Security**
 
 ---
 
