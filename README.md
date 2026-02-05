@@ -16,7 +16,7 @@
 
 <!-- PROJECT LOGO -->
 <div align="center">
-  <img src="icon.svg" alt="Logo" width="120" height="120">
+  <img src="docs/images/icon.svg" alt="Logo" width="120" height="120">
 
   <h1 align="center">Plex Generate Previews</h1>
 
