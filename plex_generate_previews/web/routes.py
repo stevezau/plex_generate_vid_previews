@@ -565,7 +565,6 @@ def get_libraries():
 
 
 @api.route("/system/status")
-@api_token_required
 def get_system_status():
     """Get system status including GPU info."""
     try:
@@ -891,7 +890,6 @@ def test_plex_connection():
 
 
 @api.route("/settings")
-@api_token_required
 def get_settings():
     """Get all settings."""
     from .settings_manager import get_settings_manager
@@ -918,7 +916,6 @@ def get_settings():
 
 
 @api.route("/settings", methods=["POST"])
-@api_token_required
 def save_settings():
     """Save settings."""
     from .settings_manager import get_settings_manager
@@ -974,7 +971,6 @@ def get_setup_status():
 
 
 @api.route("/setup/state")
-@api_token_required
 def get_setup_state():
     """Get current setup wizard state."""
     from .settings_manager import get_settings_manager
@@ -991,7 +987,6 @@ def get_setup_state():
 
 
 @api.route("/setup/state", methods=["POST"])
-@api_token_required
 def save_setup_state():
     """Save setup wizard progress."""
     from .settings_manager import get_settings_manager
@@ -1008,7 +1003,6 @@ def save_setup_state():
 
 
 @api.route("/setup/complete", methods=["POST"])
-@api_token_required
 def complete_setup():
     """Mark setup as complete."""
     from .settings_manager import get_settings_manager
@@ -1020,7 +1014,6 @@ def complete_setup():
 
 
 @api.route("/setup/token-info", methods=["GET"])
-@api_token_required
 def get_setup_token_info():
     """Get information about the current authentication token for setup wizard."""
     from .auth import get_token_info
@@ -1029,7 +1022,6 @@ def get_setup_token_info():
 
 
 @api.route("/setup/set-token", methods=["POST"])
-@api_token_required
 def set_setup_token():
     """Set a custom authentication token during setup."""
     from .auth import set_auth_token
@@ -1051,7 +1043,6 @@ def set_setup_token():
 
 
 @api.route("/setup/validate-paths", methods=["POST"])
-@api_token_required
 def validate_paths():
     """Validate path configuration."""
     import os

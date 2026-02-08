@@ -245,20 +245,29 @@ def create_app(config_dir: str = None) -> Flask:
             "main.login",
             "main.logout",
             "main.setup_wizard",
-            "api.get_setup_status",
+            # Auth endpoints
             "api.auth_status",
             "api.api_login",
             "api.health_check",
-            "api.get_setup_token_info",
+            # Setup wizard endpoints
+            "api.get_setup_status",
+            "api.get_setup_state",
             "api.save_setup_state",
             "api.complete_setup",
+            "api.get_setup_token_info",
             "api.set_setup_token",
             "api.validate_paths",
+            # Plex OAuth + server discovery (needed during setup)
             "api.create_plex_pin",
             "api.check_plex_pin",
             "api.get_plex_servers",
             "api.get_plex_libraries",
             "api.test_plex_connection",
+            # Settings (read/write during setup)
+            "api.get_settings",
+            "api.save_settings",
+            # System status (GPU detection during setup)
+            "api.get_system_status",
         ]
 
         # Only exempt specific setup-related API endpoints, not all api.*
