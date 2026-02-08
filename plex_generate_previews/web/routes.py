@@ -980,7 +980,8 @@ def validate_paths():
                     else:
                         result['warnings'].append(f'Plex database structure looks incomplete. Found {len(hex_dirs)}/16 hash directories.')
                 except Exception as e:
-                    result['warnings'].append(f'Could not verify Plex structure: {str(e)}')
+                    logger.warning(f"Could not verify Plex structure: {e}")
+                    result['warnings'].append('Could not verify Plex structure')
             
             # Check write permissions
             try:
@@ -1021,7 +1022,8 @@ def validate_paths():
                     else:
                         result['info'].append(f'✓ Local Media Path accessible ({len(contents)} items)')
                 except Exception as e:
-                    result['errors'].append(f'Cannot read Local Media Path: {str(e)}')
+                    logger.error(f"Cannot read Local Media Path: {e}")
+                    result['errors'].append('Cannot read Local Media Path')
                     result['valid'] = False
     else:
         result['info'].append('No path mapping configured (media mounted at same path as Plex)')

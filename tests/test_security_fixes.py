@@ -86,8 +86,8 @@ class TestPathTraversalPrevention:
         )
         assert response.status_code == 200
         data = json.loads(response.data)
-        # Should resolve to the real path and validate successfully
-        assert data['valid'] is True or len(data['warnings']) >= 0
+        # Should resolve to the real path without errors about traversal
+        assert not any('Invalid' in e for e in data['errors'])
 
     def test_validate_paths_local_media_null_byte(self, client, auth_headers):
         """Local media path with null bytes is rejected."""
