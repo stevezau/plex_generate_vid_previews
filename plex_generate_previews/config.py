@@ -17,9 +17,6 @@ from loguru import logger
 
 from .utils import is_docker_environment
 
-# Load environment variables from .env file
-load_dotenv()
-
 # Set default ROCM_PATH if not already set to prevent KeyError in AMD SMI
 if 'ROCM_PATH' not in os.environ:
     os.environ['ROCM_PATH'] = '/opt/rocm'
@@ -428,6 +425,8 @@ def load_config(cli_args=None) -> Config:
     Raises:
         SystemExit: If required configuration is missing or invalid
     """
+    # Load .env file so environment variables are available
+    load_dotenv()
     # Try to load settings from settings.json (UI-configured settings)
     ui_settings = {}
     try:

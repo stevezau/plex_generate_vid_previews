@@ -148,7 +148,8 @@ def api_regenerate_token():
     new_token = regenerate_token()
     # Clear session to require re-authentication
     session.clear()
-    return jsonify({'success': True, 'token': new_token})
+    masked = '****' + new_token[-4:] if len(new_token) > 4 else '****'
+    return jsonify({'success': True, 'token': masked})
 
 
 # ============================================================================
@@ -636,13 +637,12 @@ def check_plex_pin(pin_id: int):
         auth_token = pin_data.get('authToken')
         
         if auth_token:
-            # Save the token
+            # Save the token server-side only
             settings.plex_token = auth_token
             logger.info("Plex authentication successful, token saved")
         
         return jsonify({
             'authenticated': bool(auth_token),
-            'auth_token': auth_token,
         })
     except requests.RequestException as e:
         logger.error(f"Failed to check Plex PIN: {e}")
@@ -700,7 +700,6 @@ def get_plex_servers():
                         'uri': best_conn.get('uri'),
                         'owned': resource.get('owned', False),
                         'local': best_conn.get('local', False),
-                        'access_token': resource.get('accessToken'),
                     })
         
         return jsonify({'servers': servers})
@@ -1299,6 +1298,8 @@ def register_socketio_handlers(socketio):
     def handle_connect():
         """Handle client connection."""
         if not is_authenticated():
+            from flask_socketio import disconnect
+            disconnect()
             return False
         logger.debug("Client connected to jobs namespace")
     
@@ -1310,6 +1311,10 @@ def register_socketio_handlers(socketio):
     @socketio.on('subscribe', namespace='/jobs')
     def handle_subscribe(data):
         """Subscribe to job updates."""
+        if not is_authenticated():
+            from flask_socketio import disconnect
+            disconnect()
+            return
         job_id = data.get('job_id')
         if job_id:
             join_room(job_id)
@@ -1318,6 +1323,10 @@ def register_socketio_handlers(socketio):
     @socketio.on('unsubscribe', namespace='/jobs')
     def handle_unsubscribe(data):
         """Unsubscribe from job updates."""
+        if not is_authenticated():
+            from flask_socketio import disconnect
+            disconnect()
+            return
         job_id = data.get('job_id')
         if job_id:
             leave_room(job_id)

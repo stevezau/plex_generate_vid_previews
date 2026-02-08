@@ -3,8 +3,14 @@ Logging configuration for Plex Video Preview Generator.
 
 Centralized logging setup to avoid circular imports and provide
 consistent logging configuration across the application.
+
+Set ``LOG_FORMAT=json`` (environment variable) or pass ``log_format="json"``
+to :func:`setup_logging` to enable structured JSON logging — useful for
+log-aggregation pipelines (ELK, Loki, Datadog, etc.).  The default
+``"pretty"`` format uses Rich console colouring.
 """
 
+import json as _json
 import os
 import sys
 
@@ -12,17 +18,67 @@ from loguru import logger
 from rich.console import Console
 
 
-def setup_logging(log_level: str = 'INFO', console: Console = None) -> None:
+# ---------------------------------------------------------------------------
+# JSON serialiser for structured logging
+# ---------------------------------------------------------------------------
+
+def _json_sink(message) -> None:
+    """Loguru sink that writes one JSON object per log record to *stderr*.
+
+    Fields emitted:
+        timestamp, level, message, logger, function, line, module,
+        exception (string, only when present).
     """
-    Set up logging configuration with shared Rich console.
-    
+    record = message.record
+    payload = {
+        "timestamp": record["time"].isoformat(),
+        "level": record["level"].name,
+        "message": record["message"],
+        "logger": record["name"],
+        "function": record["function"],
+        "line": record["line"],
+        "module": record["module"],
+    }
+    if record["exception"] is not None:
+        payload["exception"] = str(record["exception"])
+    sys.stderr.write(_json.dumps(payload, default=str) + "\n")
+    sys.stderr.flush()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def setup_logging(
+    log_level: str = 'INFO',
+    console: Console = None,
+    log_format: str = None,
+) -> None:
+    """
+    Set up logging configuration.
+
     Args:
-        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        console: Rich Console instance for coordinated output (optional)
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        console: Rich Console instance for coordinated output (optional,
+            ignored when *log_format* is ``"json"``).
+        log_format: ``"json"`` for structured JSON output, ``"pretty"``
+            (default) for human-readable Rich/coloured output.  Falls back
+            to the ``LOG_FORMAT`` environment variable when *None*.
     """
+    if log_format is None:
+        log_format = os.environ.get('LOG_FORMAT', 'pretty').lower()
+
     logger.remove()
-    
-    if console:
+
+    if log_format == 'json':
+        # Structured JSON — one object per line on stderr
+        logger.add(
+            _json_sink,
+            level=log_level,
+            format="{message}",  # _json_sink handles its own formatting
+            enqueue=True,
+        )
+    elif console:
         # Use provided console for coordinated output with progress bars
         logger.add(
             lambda msg: console.print(msg, end=''),
@@ -40,7 +96,7 @@ def setup_logging(log_level: str = 'INFO', console: Console = None) -> None:
             enqueue=True
         )
     
-    # Add persistent error log file
+    # Add persistent error log file (always plain text, regardless of format)
     log_dir = os.path.join(os.environ.get('CONFIG_DIR', '/config'), 'logs')
     try:
         os.makedirs(log_dir, exist_ok=True)
@@ -54,6 +110,6 @@ def setup_logging(log_level: str = 'INFO', console: Console = None) -> None:
             compression='gz',
             enqueue=True,
         )
-    except (PermissionError, OSError):
-        pass  # Skip file logging if config directory is not writable
+    except (PermissionError, OSError) as e:
+        logger.warning(f"Could not create error log file: {e}")
 

@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import queue
+from collections import deque
 from functools import partial
 from typing import List, Optional, Any, Tuple
 from loguru import logger
@@ -416,7 +417,7 @@ class WorkerPool:
         if not media_queue:
             return False
         
-        item_key, media_title, media_type = media_queue.pop(0)
+        item_key, media_title, media_type = media_queue.popleft()
         progress_callback = partial(self._update_worker_progress, worker)
         cpu_fallback_queue = self.cpu_fallback_queue if worker.worker_type == 'GPU' else None
         
@@ -434,19 +435,17 @@ class WorkerPool:
         """
         Check if fallback queue is empty without consuming items.
         
+        Uses qsize() for advisory check — acceptable since this is only
+        used for exit-condition heuristics, not synchronization.
+        
         Returns:
             True if queue is empty, False if it has items
         """
-        try:
-            test_item = self.cpu_fallback_queue.get_nowait()
-            self.cpu_fallback_queue.put(test_item)
-            return False
-        except queue.Empty:
-            return True
+        return self.cpu_fallback_queue.qsize() == 0
     
     def process_items(self, media_items: List[tuple], config: Config, plex, worker_progress, main_progress, main_task_id=None, title_max_width: int = 20, library_name: str = "") -> None:
         """
-        Process all media items using available workers.
+        Process all media items using available workers with Rich progress display.
         
         Uses dynamic task assignment - workers pull tasks as they become available.
         
@@ -454,21 +453,12 @@ class WorkerPool:
             media_items: List of tuples (key, title, media_type) to process
             config: Configuration object
             plex: Plex server instance
-            progress: Rich Progress object for displaying worker progress
+            worker_progress: Rich Progress object for displaying worker progress
+            main_progress: Rich Progress object for main progress bar
             main_task_id: ID of the main progress task to update
             title_max_width: Maximum width for title display
             library_name: Name of the library section being processed
         """
-        media_queue = list(media_items)  # Copy the list
-        completed_tasks = 0
-        total_items = len(media_items)
-        last_overall_progress_log = time.time()
-        
-        # Use provided title width for display formatting
-        library_prefix = f"[{library_name}] " if library_name else ""
-        
-        logger.info(f'Processing {total_items} items with {len(self.workers)} workers')
-        
         # Create progress tasks for each worker in the worker progress instance
         for worker in self.workers:
             worker.progress_task_id = worker_progress.add_task(
@@ -478,46 +468,35 @@ class WorkerPool:
                 speed="0.0x",
                 style="cyan"
             )
-        
-        # Process all items
-        # Continue while we have items in main queue, fallback queue, or busy workers
-        # Exit conditions: main queue empty, all items processed, no busy workers, fallback queue empty
-        while True: 
-            # Check for completed tasks and update progress
+
+        def on_task_complete(completed_tasks: int, total_items: int) -> None:
+            """Update main progress bar on task completion."""
+            if main_task_id is not None:
+                main_progress.update(main_task_id, completed=completed_tasks)
+
+        def on_poll(completed_tasks: int, total_items: int) -> None:
+            """Update Rich worker progress display each poll cycle."""
             for worker in self.workers:
-                if worker.check_completion():
-                    completed_tasks += 1
-                    # Update main progress bar if main_task_id is provided
-                    if main_task_id is not None:
-                        main_progress.update(main_task_id, completed=completed_tasks)
-                
-                # Update worker progress display with thread-safe access
                 current_time = time.time()
-                
-                # Use thread-safe access to worker progress data
                 with self._progress_lock:
                     progress_data = worker.get_progress_data()
                     is_busy = worker.is_busy
                     ffmpeg_started = worker.ffmpeg_started
-                
+
                 if is_busy:
-                    # Update busy worker only if progress or speed changed and enough time has passed
                     should_update = (
-                        (progress_data['progress_percent'] != worker.last_progress_percent or 
+                        (progress_data['progress_percent'] != worker.last_progress_percent or
                          progress_data['speed'] != worker.last_speed or
                          not ffmpeg_started) and
-                        (current_time - worker.last_update_time > 0.05)  # Throttle to 20fps for stability
+                        (current_time - worker.last_update_time > 0.05)
                     )
-                    
                     if should_update:
-                        # Use the formatted display title
                         worker_progress.update(
                             worker.progress_task_id,
                             description=worker.task_title,
                             completed=progress_data['progress_percent'],
                             speed=progress_data['speed'],
                             remaining_time=progress_data['remaining_time'],
-                            # FFmpeg data for display
                             frame=progress_data['frame'],
                             fps=progress_data['fps'],
                             q=progress_data['q'],
@@ -529,7 +508,6 @@ class WorkerPool:
                         worker.last_speed = progress_data['speed']
                         worker.last_update_time = current_time
                 else:
-                    # Update idle worker only if it was previously busy
                     if worker.last_progress_percent != -1:
                         worker_progress.update(
                             worker.progress_task_id,
@@ -539,93 +517,25 @@ class WorkerPool:
                         )
                         worker.last_progress_percent = -1
                         worker.last_speed = ""
-            
-            # Log overall progress every 5 seconds
-            current_time = time.time()
-            if current_time - last_overall_progress_log >= 5.0:
-                progress_percent = int((completed_tasks / total_items) * 100) if total_items > 0 else 0
-                logger.info(f"Processing progress {library_prefix}{completed_tasks}/{total_items} ({progress_percent}%) completed")
-                last_overall_progress_log = current_time
-            
-            # Assign new tasks to available workers
-            # Prioritize fallback queue for CPU workers, then assign from main queue
-            while True:
-                # If main queue is empty, only look for CPU workers (to process fallback queue)
-                cpu_only = not media_queue
-                available_worker = self._find_available_worker(cpu_only=cpu_only)
-                if not available_worker:
-                    break
-                
-                # For CPU workers, try fallback queue first (codec error fallback)
-                if available_worker.worker_type == 'CPU':
-                    if self._assign_fallback_task(available_worker, config, plex, title_max_width):
-                        continue
-                    # No fallback items - if main queue is also empty, break
-                    if not media_queue:
-                        break
-                
-                # Assign from main queue (for GPU workers or when main queue has items)
-                if not self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width):
-                    break
-            
-            # Check exit condition after trying to assign all tasks
-            # Exit only if: main queue empty, all items processed, and fallback queue empty
-            if not media_queue:
-                # Re-check completion one more time (workers might have just finished)
-                for worker in self.workers:
-                    if worker.check_completion():
-                        completed_tasks += 1
-                
-                # Calculate actual completed count from worker stats (most reliable)
-                # This uses worker.completed which is set directly in _process_item
-                # This is set when the task actually completes, before the thread finishes
-                # Also count failed items - they've been processed even if they failed
-                actual_completed = sum(worker.completed for worker in self.workers)
-                actual_failed = sum(worker.failed for worker in self.workers)
-                actual_processed = actual_completed + actual_failed
-                
-                # Exit if all items processed (completed or failed)
-                if actual_processed >= total_items:
-                    # Give threads time to finish and update is_busy flags
-                    busy_retries = 0
-                    max_busy_retries = 20
-                    while self.has_busy_workers() and busy_retries < max_busy_retries:
-                        time.sleep(0.001)
-                        for worker in self.workers:
-                            worker.check_completion()
-                        busy_retries += 1
-                    
-                    # Recalculate after waiting for threads
-                    actual_completed = sum(worker.completed for worker in self.workers)
-                    actual_failed = sum(worker.failed for worker in self.workers)
-                    actual_processed = actual_completed + actual_failed
-                    
-                    # Exit only if all conditions are met
-                    if (not self.has_busy_workers() and 
-                        self._check_fallback_queue_empty() and 
-                        actual_processed >= total_items):
-                        logger.debug(f"All items processed ({actual_processed}/{total_items}), exiting")
-                        break
-            
-            # Adaptive sleep to balance responsiveness and CPU usage
-            if self.has_busy_workers():
-                time.sleep(0.005)  # 5ms sleep for better responsiveness with multiple workers
-            elif not media_queue:
-                # No busy workers and no main queue items - give a tiny delay to ensure workers finished
-                time.sleep(0.001)  # 1ms sleep when idle to let threads finish
-        
-        # Final statistics
-        total_completed = sum(worker.completed for worker in self.workers)
-        total_failed = sum(worker.failed for worker in self.workers)
-        
-        # Clean up worker progress tasks
-        for worker in self.workers:
-            if hasattr(worker, 'progress_task_id') and worker.progress_task_id is not None:
-                worker_progress.remove_task(worker.progress_task_id)
-                worker.progress_task_id = None
-        
-        logger.info(f'Processing complete: {total_completed} successful, {total_failed} failed')
-    
+
+        def on_finish(total_completed: int, total_failed: int, total_items: int) -> None:
+            """Clean up Rich progress tasks."""
+            for worker in self.workers:
+                if hasattr(worker, 'progress_task_id') and worker.progress_task_id is not None:
+                    worker_progress.remove_task(worker.progress_task_id)
+                    worker.progress_task_id = None
+
+        self._process_items_loop(
+            media_items=media_items,
+            config=config,
+            plex=plex,
+            title_max_width=title_max_width,
+            library_name=library_name,
+            on_task_complete=on_task_complete,
+            on_poll=on_poll,
+            on_finish=on_finish,
+        )
+
     def process_items_headless(self, media_items: List[tuple], config: Config, plex, title_max_width: int = 20, 
                                 library_name: str = "", progress_callback=None, worker_callback=None) -> None:
         """
@@ -643,43 +553,25 @@ class WorkerPool:
             progress_callback: Optional callback function(current, total, message) for progress updates
             worker_callback: Optional callback function(workers_list) for worker status updates
         """
-        media_queue = list(media_items)  # Copy the list
-        completed_tasks = 0
-        total_items = len(media_items)
-        last_overall_progress_log = time.time()
         last_worker_update = time.time()
-        
-        # Use provided title width for display formatting
         library_prefix = f"[{library_name}] " if library_name else ""
-        
-        logger.info(f'Processing {total_items} items with {len(self.workers)} workers (headless mode)')
-        
-        # Process all items
-        # Continue while we have items in main queue, fallback queue, or busy workers
-        while True: 
-            # Check for completed tasks and update progress
-            for worker in self.workers:
-                if worker.check_completion():
-                    completed_tasks += 1
-                    # Call progress callback if provided
-                    if progress_callback:
-                        progress_callback(completed_tasks, total_items, f"{library_prefix}{completed_tasks}/{total_items} completed")
-            
-            # Log overall progress every 5 seconds
+
+        def on_task_complete(completed_tasks: int, total_items: int) -> None:
+            """Call progress callback on task completion."""
+            if progress_callback:
+                progress_callback(completed_tasks, total_items, f"{library_prefix}{completed_tasks}/{total_items} completed")
+
+        def on_poll(completed_tasks: int, total_items: int) -> None:
+            """Emit worker status updates periodically."""
+            nonlocal last_worker_update
             current_time = time.time()
-            if current_time - last_overall_progress_log >= 5.0:
-                progress_percent = int((completed_tasks / total_items) * 100) if total_items > 0 else 0
-                logger.info(f"Processing progress {library_prefix}{completed_tasks}/{total_items} ({progress_percent}%) completed")
-                last_overall_progress_log = current_time
-            
-            # Update worker status every 2 seconds
             if worker_callback and current_time - last_worker_update >= 2.0:
                 worker_statuses = []
                 for worker in self.workers:
                     with self._progress_lock:
                         progress_data = worker.get_progress_data()
                         is_busy = worker.is_busy
-                    
+
                     worker_statuses.append({
                         'worker_id': worker.worker_id,
                         'worker_type': worker.worker_type,
@@ -691,42 +583,106 @@ class WorkerPool:
                     })
                 worker_callback(worker_statuses)
                 last_worker_update = current_time
-            
+
+        def on_finish(total_completed: int, total_failed: int, total_items: int) -> None:
+            """Final progress callback."""
+            if progress_callback:
+                progress_callback(total_completed, total_items, f"{library_prefix}Complete: {total_completed} successful, {total_failed} failed")
+
+        self._process_items_loop(
+            media_items=media_items,
+            config=config,
+            plex=plex,
+            title_max_width=title_max_width,
+            library_name=library_name,
+            on_task_complete=on_task_complete,
+            on_poll=on_poll,
+            on_finish=on_finish,
+        )
+
+    def _process_items_loop(
+        self,
+        media_items: List[tuple],
+        config: Config,
+        plex,
+        title_max_width: int,
+        library_name: str,
+        on_task_complete: Optional[Any] = None,
+        on_poll: Optional[Any] = None,
+        on_finish: Optional[Any] = None,
+    ) -> None:
+        """
+        Core processing loop shared by process_items and process_items_headless.
+        
+        Handles queue management, task assignment, exit-condition checking, and
+        adaptive sleeping. Progress reporting is delegated to the caller via callbacks.
+        
+        Args:
+            media_items: List of tuples (key, title, media_type) to process
+            config: Configuration object
+            plex: Plex server instance
+            title_max_width: Maximum width for title display
+            library_name: Name of the library section being processed
+            on_task_complete: Called as on_task_complete(completed_tasks, total_items) after each task finishes
+            on_poll: Called as on_poll(completed_tasks, total_items) every poll cycle for UI updates
+            on_finish: Called as on_finish(total_completed, total_failed, total_items) at the end
+        """
+        media_queue = deque(media_items)  # O(1) popleft
+        completed_tasks = 0
+        total_items = len(media_items)
+        last_overall_progress_log = time.time()
+
+        library_prefix = f"[{library_name}] " if library_name else ""
+
+        logger.info(f'Processing {total_items} items with {len(self.workers)} workers')
+
+        # Main processing loop
+        while True:
+            # Check for completed tasks
+            for worker in self.workers:
+                if worker.check_completion():
+                    completed_tasks += 1
+                    if on_task_complete:
+                        on_task_complete(completed_tasks, total_items)
+
+            # Delegate UI/progress updates to caller
+            if on_poll:
+                on_poll(completed_tasks, total_items)
+
+            # Log overall progress every 5 seconds
+            current_time = time.time()
+            if current_time - last_overall_progress_log >= 5.0:
+                progress_percent = int((completed_tasks / total_items) * 100) if total_items > 0 else 0
+                logger.info(f"Processing progress {library_prefix}{completed_tasks}/{total_items} ({progress_percent}%) completed")
+                last_overall_progress_log = current_time
+
             # Assign new tasks to available workers
             while True:
-                # If main queue is empty, only look for CPU workers (to process fallback queue)
                 cpu_only = not media_queue
                 available_worker = self._find_available_worker(cpu_only=cpu_only)
                 if not available_worker:
                     break
-                
-                # For CPU workers, try fallback queue first (codec error fallback)
+
                 if available_worker.worker_type == 'CPU':
                     if self._assign_fallback_task(available_worker, config, plex, title_max_width):
                         continue
-                    # No fallback items - if main queue is also empty, break
                     if not media_queue:
                         break
-                
-                # Assign from main queue (for GPU workers or when main queue has items)
+
                 if not self._assign_main_queue_task(available_worker, media_queue, config, plex, title_max_width):
                     break
-            
-            # Check exit condition after trying to assign all tasks
+
+            # Check exit condition
             if not media_queue:
-                # Re-check completion one more time
                 for worker in self.workers:
                     if worker.check_completion():
                         completed_tasks += 1
-                
-                # Calculate actual completed count from worker stats
+
                 actual_completed = sum(worker.completed for worker in self.workers)
                 actual_failed = sum(worker.failed for worker in self.workers)
                 actual_processed = actual_completed + actual_failed
-                
-                # Exit if all items processed
+
                 if actual_processed >= total_items:
-                    # Give threads time to finish and update is_busy flags
                     busy_retries = 0
                     max_busy_retries = 20
                     while self.has_busy_workers() and busy_retries < max_busy_retries:
@@ -734,33 +690,30 @@ class WorkerPool:
                         for worker in self.workers:
                             worker.check_completion()
                         busy_retries += 1
-                    
-                    # Recalculate after waiting for threads
+
                     actual_completed = sum(worker.completed for worker in self.workers)
                     actual_failed = sum(worker.failed for worker in self.workers)
                     actual_processed = actual_completed + actual_failed
-                    
-                    # Exit only if all conditions are met
-                    if (not self.has_busy_workers() and 
-                        self._check_fallback_queue_empty() and 
+
+                    if (not self.has_busy_workers() and
+                        self._check_fallback_queue_empty() and
                         actual_processed >= total_items):
                         logger.debug(f"All items processed ({actual_processed}/{total_items}), exiting")
                         break
-            
-            # Adaptive sleep to balance responsiveness and CPU usage
+
+            # Adaptive sleep
             if self.has_busy_workers():
-                time.sleep(0.005)  # 5ms sleep for better responsiveness with multiple workers
+                time.sleep(0.005)
             elif not media_queue:
-                time.sleep(0.001)  # 1ms sleep when idle to let threads finish
-        
+                time.sleep(0.001)
+
         # Final statistics
         total_completed = sum(worker.completed for worker in self.workers)
         total_failed = sum(worker.failed for worker in self.workers)
-        
-        # Final progress callback
-        if progress_callback:
-            progress_callback(total_completed, total_items, f"{library_prefix}Complete: {total_completed} successful, {total_failed} failed")
-        
+
+        if on_finish:
+            on_finish(total_completed, total_failed, total_items)
+
         logger.info(f'Processing complete: {total_completed} successful, {total_failed} failed')
     
     def _update_worker_progress(self, worker, progress_percent, current_duration, total_duration, speed=None, 

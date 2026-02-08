@@ -409,16 +409,18 @@ class JobManager:
 
 # Global job manager instance
 _job_manager: Optional[JobManager] = None
+_job_lock = threading.Lock()
 
 # Default config directory from environment
 DEFAULT_CONFIG_DIR = os.environ.get('CONFIG_DIR', '/config')
 
 
 def get_job_manager(config_dir: Optional[str] = None, socketio=None) -> JobManager:
-    """Get or create the global JobManager instance."""
+    """Get or create the global JobManager instance (thread-safe)."""
     global _job_manager
-    if _job_manager is None:
-        _job_manager = JobManager(config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio)
-    elif socketio and _job_manager.socketio is None:
-        _job_manager.set_socketio(socketio)
-    return _job_manager
+    with _job_lock:
+        if _job_manager is None:
+            _job_manager = JobManager(config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio)
+        elif socketio and _job_manager.socketio is None:
+            _job_manager.set_socketio(socketio)
+        return _job_manager

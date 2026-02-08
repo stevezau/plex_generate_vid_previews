@@ -89,9 +89,8 @@ Settings are saved to `/config/settings.json` and persist across restarts.
 |----------|---------|-------------|
 | `WEB_PORT` | `8080` | Web server port |
 | `WEB_AUTH_TOKEN` | Auto-generated | Fixed auth token |
-| `WEB_HIDE_TOKEN` | `false` | Hide token from logs |
 | `FLASK_SECRET_KEY` | Auto-generated | Session secret |
-| `CORS_ORIGINS` | `*` | Allowed origins |
+| `CORS_ORIGINS` | localhost | Allowed origins |
 
 ---
 
@@ -104,7 +103,7 @@ The web interface uses token-based authentication:
 1. **Auto-generated token** - Created on first run, saved to `/config/auth.json`
 2. **Custom token via wizard** - Set your own token during the setup wizard (Step 5)
 3. **Fixed token** - Set `WEB_AUTH_TOKEN` environment variable (overrides wizard setting)
-4. **Hide from logs** - Set `WEB_HIDE_TOKEN=true`
+4. **Token masking** - Tokens are always masked in logs (only last 4 chars shown)
 
 ### API Authentication
 

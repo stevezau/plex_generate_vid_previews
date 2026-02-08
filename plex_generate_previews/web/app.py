@@ -9,8 +9,10 @@ import secrets
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, request as flask_request
 from flask_socketio import SocketIO
+from flask_wtf.csrf import CSRFProtect
+from werkzeug.middleware.proxy_fix import ProxyFix
 from loguru import logger
 
 from .auth import log_token_on_startup, get_config_dir
@@ -20,6 +22,9 @@ from .scheduler import get_schedule_manager
 
 # Global SocketIO instance
 socketio = SocketIO()
+
+# Global CSRF instance
+csrf = CSRFProtect()
 
 
 def run_scheduled_job(library_id=None, library_name="", config=None):
@@ -61,10 +66,17 @@ def get_cors_origins() -> str:
     """
     Get CORS allowed origins from environment.
     
+    Defaults to the app's own origin (localhost:WEB_PORT) instead of "*".
+    Set CORS_ORIGINS environment variable to override.
+    
     Returns:
-        CORS origins string or "*" for all origins
+        CORS origins string
     """
-    return os.environ.get('CORS_ORIGINS', '*')
+    explicit = os.environ.get('CORS_ORIGINS')
+    if explicit:
+        return explicit
+    port = os.environ.get('WEB_PORT', '8080')
+    return f"http://localhost:{port}"
 
 
 def get_or_create_flask_secret(config_dir: str) -> str:
@@ -133,14 +145,28 @@ def create_app(config_dir: str = None) -> Flask:
     
     # Configuration with persistent secret key
     app.config['SECRET_KEY'] = get_or_create_flask_secret(config_dir)
-    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+    # SESSION_COOKIE_SECURE is set dynamically via ProxyFix + Talisman or per-request.
+    # ProxyFix below trusts X-Forwarded-Proto so request.scheme == 'https' works.
     app.config['SESSION_COOKIE_SECURE'] = os.environ.get('HTTPS', 'false').lower() == 'true'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     app.config['CONFIG_DIR'] = config_dir
+    app.config['WTF_CSRF_CHECK_DEFAULT'] = False  # We apply CSRF selectively
+    
+    # Trust reverse-proxy headers (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
+    # so request.scheme and request.remote_addr are correct behind nginx/traefik/etc.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     
     # Get CORS configuration
     cors_origins = get_cors_origins()
+    
+    # Initialize CSRF protection
+    csrf.init_app(app)
+    
+    # Exempt API endpoints that use token auth (not cookie-based)
+    from .routes import api
+    csrf.exempt(api)
     
     # Initialize SocketIO with the app
     socketio.init_app(
@@ -193,12 +219,15 @@ def create_app(config_dir: str = None) -> Flask:
             'api.auth_status',
             'api.api_login',
             'api.health_check',
+            'api.get_setup_token_info',
+            'api.save_setup_state',
+            'api.complete_setup',
+            'api.set_setup_token',
         ]
         
-        # Skip API endpoints (allow access for setup process)
+        # Only exempt specific setup-related API endpoints, not all api.*
         if request.endpoint and (
-            request.endpoint in exempt_endpoints or 
-            request.endpoint.startswith('api.')
+            request.endpoint in exempt_endpoints
         ):
             return None
         

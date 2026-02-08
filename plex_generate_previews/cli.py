@@ -58,7 +58,7 @@ class ApplicationState:
                 try:
                     print('\033[?25h', end='', flush=True)
                     print()  # Ensure we're on a new line
-                except:
+                except Exception:
                     pass
         
         # Clean up working tmp folder if it exists
@@ -524,7 +524,7 @@ def run_processing(config, selected_gpus, headless=False, progress_callback=None
                 console._live = None
             # Ensure we're on a fresh line
             console.print()
-        except:
+        except Exception:
             pass
 
 

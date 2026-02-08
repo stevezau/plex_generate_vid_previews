@@ -15,9 +15,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from loguru import logger
 
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 from .config import Config
 
 
@@ -54,9 +51,21 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
                 retry_delay *= 1.5  # Exponential backoff
             else:
                 logger.error(f"XML parsing failed after {max_retries + 1} attempts: {e}")
+        except (ConnectionError, TimeoutError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ReadTimeout) as e:
+            last_exception = e
+            if attempt < max_retries:
+                logger.warning(f"Network error on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 1.5
+            else:
+                logger.error(f"Network error failed after {max_retries + 1} attempts: {e}")
         except Exception as e:
-            # For non-XML errors, don't retry
-            raise e
+            # For other errors, don't retry
+            raise
     
     # If we get here, all retries failed
     raise last_exception
@@ -84,7 +93,14 @@ def plex_server(config: Config):
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session = requests.Session()
-    session.verify = False
+    
+    # SSL verification: default True, opt out via PLEX_VERIFY_SSL=false
+    verify_ssl = os.environ.get('PLEX_VERIFY_SSL', 'true').lower() not in ('false', '0', 'no')
+    session.verify = verify_ssl
+    if not verify_ssl:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        logger.warning("SSL verification is DISABLED for Plex connections. "
+                       "Set PLEX_VERIFY_SSL=true (default) to re-enable.")
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     

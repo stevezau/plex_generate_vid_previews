@@ -6,6 +6,7 @@ Uses APScheduler with SQLite storage for persistent scheduled jobs.
 
 import json
 import os
+import threading
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any
@@ -349,16 +350,18 @@ class ScheduleManager:
 
 # Global scheduler instance
 _schedule_manager: Optional[ScheduleManager] = None
+_schedule_lock = threading.Lock()
 
 # Default config directory from environment
 DEFAULT_CONFIG_DIR = os.environ.get('CONFIG_DIR', '/config')
 
 
 def get_schedule_manager(config_dir: Optional[str] = None, run_job_callback: Optional[Callable] = None) -> ScheduleManager:
-    """Get or create the global ScheduleManager instance."""
+    """Get or create the global ScheduleManager instance (thread-safe)."""
     global _schedule_manager
-    if _schedule_manager is None:
-        _schedule_manager = ScheduleManager(config_dir=config_dir or DEFAULT_CONFIG_DIR, run_job_callback=run_job_callback)
-    elif run_job_callback and _schedule_manager.run_job_callback is None:
-        _schedule_manager.set_run_job_callback(run_job_callback)
-    return _schedule_manager
+    with _schedule_lock:
+        if _schedule_manager is None:
+            _schedule_manager = ScheduleManager(config_dir=config_dir or DEFAULT_CONFIG_DIR, run_job_callback=run_job_callback)
+        elif run_job_callback and _schedule_manager.run_job_callback is None:
+            _schedule_manager.set_run_job_callback(run_job_callback)
+        return _schedule_manager

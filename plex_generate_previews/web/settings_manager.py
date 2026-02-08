@@ -7,6 +7,7 @@ These settings override environment variables when set.
 
 import json
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -48,6 +49,7 @@ class SettingsManager:
             self.config_dir.mkdir(parents=True, exist_ok=True)
             with open(self.settings_file, 'w') as f:
                 json.dump(self._settings, f, indent=2)
+            self.settings_file.chmod(0o600)
             logger.debug(f"Saved settings to {self.settings_file}")
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
@@ -322,24 +324,27 @@ class SettingsManager:
 
 # Global instance
 _settings_manager: Optional[SettingsManager] = None
+_settings_lock = threading.Lock()
 
 
 def get_settings_manager(config_dir: str = None) -> SettingsManager:
     """Get the global settings manager instance.
     
-    If config_dir is provided and different from current instance,
-    creates a new instance with the new config_dir.
+    Thread-safe singleton. If config_dir is provided and different from
+    current instance, creates a new instance with the new config_dir.
     """
     global _settings_manager
-    if _settings_manager is None:
-        _settings_manager = SettingsManager(config_dir)
-    elif config_dir is not None and str(_settings_manager.config_dir) != config_dir:
-        # Re-initialize with new config_dir
-        _settings_manager = SettingsManager(config_dir)
+    with _settings_lock:
+        if _settings_manager is None:
+            _settings_manager = SettingsManager(config_dir)
+        elif config_dir is not None and str(_settings_manager.config_dir) != config_dir:
+            # Re-initialize with new config_dir
+            _settings_manager = SettingsManager(config_dir)
     return _settings_manager
 
 
 def reset_settings_manager() -> None:
     """Reset the global settings manager. Used for testing."""
     global _settings_manager
-    _settings_manager = None
+    with _settings_lock:
+        _settings_manager = None

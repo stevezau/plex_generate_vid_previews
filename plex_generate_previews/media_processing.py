@@ -14,8 +14,6 @@ import time
 import subprocess
 import shutil
 import sys
-import http.client
-import xml.etree.ElementTree
 import tempfile
 from typing import Optional, List, Tuple
 from loguru import logger
@@ -329,29 +327,47 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
         import threading
         thread_id = threading.get_ident()
         output_file = os.path.join(tempfile.gettempdir(), f'ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log')
-        proc = subprocess.Popen(args, stderr=open(output_file, 'w', encoding='utf-8'), stdout=subprocess.DEVNULL)
+        stderr_fh = open(output_file, 'w', encoding='utf-8')
+        try:
+            proc = subprocess.Popen(args, stderr=stderr_fh, stdout=subprocess.DEVNULL)
 
-        # Signal that FFmpeg process has started
-        if progress_callback:
-            progress_callback(0, 0, 0, "0.0x", media_file=video_file)
-
-        # Track progress
-        total_duration = None
-        speed_local = "0.0x"
-        ffmpeg_output_lines = []
-        line_count = 0
-
-        def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value, 
-                                  remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
-            nonlocal speed_local
-            if speed_value and speed_value != "0.0x":
-                speed_local = speed_value
+            # Signal that FFmpeg process has started
             if progress_callback:
-                progress_callback(progress_percent, current_duration, total_duration_param, speed_value, 
-                                remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
+                progress_callback(0, 0, 0, "0.0x", media_file=video_file)
 
-        time.sleep(0.02)
-        while proc.poll() is None:
+            # Track progress
+            total_duration = None
+            speed_local = "0.0x"
+            ffmpeg_output_lines = []
+            line_count = 0
+
+            def speed_capture_callback(progress_percent, current_duration, total_duration_param, speed_value, 
+                                      remaining_time=None, frame=0, fps=0, q=0, size=0, time_str="00:00:00.00", bitrate=0):
+                nonlocal speed_local
+                if speed_value and speed_value != "0.0x":
+                    speed_local = speed_value
+                if progress_callback:
+                    progress_callback(progress_percent, current_duration, total_duration_param, speed_value, 
+                                    remaining_time, frame, fps, q, size, time_str, bitrate, media_file=video_file)
+
+            time.sleep(0.02)
+            while proc.poll() is None:
+                if os.path.exists(output_file):
+                    try:
+                        with open(output_file, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            if len(lines) > line_count:
+                                for i in range(line_count, len(lines)):
+                                    line = lines[i].strip()
+                                    if line:
+                                        ffmpeg_output_lines.append(line)
+                                        total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
+                                line_count = len(lines)
+                    except (OSError, IOError):
+                        pass
+                time.sleep(0.005)
+
+            # Process any remaining data
             if os.path.exists(output_file):
                 try:
                     with open(output_file, 'r', encoding='utf-8') as f:
@@ -362,29 +378,15 @@ def generate_images(video_file: str, output_folder: str, gpu: Optional[str],
                                 if line:
                                     ffmpeg_output_lines.append(line)
                                     total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
-                            line_count = len(lines)
                 except (OSError, IOError):
                     pass
-            time.sleep(0.005)
-
-        # Process any remaining data
-        if os.path.exists(output_file):
+        finally:
+            # Ensure stderr file handle is always closed
+            stderr_fh.close()
             try:
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if len(lines) > line_count:
-                        for i in range(line_count, len(lines)):
-                            line = lines[i].strip()
-                            if line:
-                                ffmpeg_output_lines.append(line)
-                                total_duration = parse_ffmpeg_progress_line(line, total_duration, speed_capture_callback)
-            except (OSError, IOError):
+                os.remove(output_file)
+            except OSError:
                 pass
-
-        try:
-            os.remove(output_file)
-        except OSError:
-            pass
 
         # Error logging
         if proc.returncode != 0:
@@ -658,7 +660,7 @@ def _generate_and_save_bif(media_file: str, tmp_path: str, index_bif: str,
     except Exception as e:
         logger.error(f'Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating images')
         _cleanup_temp_directory(tmp_path)
-        raise RuntimeError(f"Failed to generate images: {e}")
+        raise RuntimeError(f"Failed to generate images: {e}") from e
     
     # Determine image count from result or by scanning
     image_count = 0
@@ -796,17 +798,17 @@ def process_item(item_key: str, gpu: Optional[str], gpu_device_path: Optional[st
     """
     try:
         data = retry_plex_call(plex.query, f'{item_key}/tree')
-    except (Exception, http.client.BadStatusLine, xml.etree.ElementTree.ParseError) as e:
+    except Exception as e:
         logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
         logger.error(f"Exception type: {type(e).__name__}")
         # For connection errors, log more details
         if hasattr(e, 'request') and e.request:
             logger.error(f"Request URL: {e.request.url}")
             logger.error(f"Request method: {e.request.method}")
-            logger.error(f"Request headers: {e.request.headers}")
-        return
-    except Exception as e:
-        logger.error(f"Error querying Plex for item {item_key}: {e}")
+            # Sanitize headers to avoid leaking tokens
+            safe_headers = {k: ('****' if 'token' in k.lower() else v)
+                           for k, v in e.request.headers.items()}
+            logger.error(f"Request headers: {safe_headers}")
         return
 
     for media_part in data.findall('.//MediaPart'):

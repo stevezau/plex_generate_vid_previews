@@ -46,6 +46,7 @@ def save_auth_config(config: dict) -> None:
     try:
         with open(AUTH_FILE, 'w') as f:
             json.dump(config, f, indent=2)
+        os.chmod(AUTH_FILE, 0o600)
     except IOError as e:
         logger.error(f"Failed to save auth config: {e}")
 
@@ -74,7 +75,7 @@ def get_auth_token() -> str:
     new_token = generate_token()
     config['token'] = new_token
     save_auth_config(config)
-    logger.info(f"Generated new authentication token: {new_token}")
+    logger.info("Generated new authentication token (hidden)")
     return new_token
 
 
@@ -89,7 +90,7 @@ def regenerate_token() -> str:
     config = load_auth_config()
     config['token'] = new_token
     save_auth_config(config)
-    logger.info(f"Regenerated authentication token: {new_token}")
+    logger.info("Regenerated authentication token (hidden)")
     return new_token
 
 
@@ -146,9 +147,11 @@ def get_token_info() -> dict:
     env_controlled = is_token_env_controlled()
     token = get_auth_token()
     
+    # Mask token: show only last 4 chars
+    masked_token = '****' + token[-4:] if len(token) > 4 else '****'
     return {
         'env_controlled': env_controlled,
-        'token': token,
+        'token': masked_token,
         'token_length': len(token),
         'source': 'environment' if env_controlled else 'config'
     }
@@ -197,25 +200,16 @@ def api_token_required(f):
 
 def log_token_on_startup() -> None:
     """
-    Log the authentication token on startup.
+    Log authentication token information on startup.
     
-    Set WEB_HIDE_TOKEN=true environment variable to suppress token logging.
+    Tokens are never logged in full for security reasons.
     """
-    # Check if token logging should be suppressed
-    hide_token = os.environ.get('WEB_HIDE_TOKEN', 'false').lower() in ('true', '1', 'yes')
-    
     token = get_auth_token()
+    masked = '****' + token[-4:] if len(token) > 4 else '****'
     logger.info("=" * 60)
     logger.info("WEB AUTHENTICATION TOKEN")
     logger.info("=" * 60)
-    
-    if hide_token:
-        logger.info("Token: [HIDDEN - WEB_HIDE_TOKEN is enabled]")
-        logger.info("Check /config/auth.json or set WEB_AUTH_TOKEN env var.")
-    else:
-        logger.info(f"Token: {token}")
-        logger.info("Use this token to log in to the web interface.")
-        logger.info("Set WEB_HIDE_TOKEN=true to hide token in logs.")
-    
+    logger.info(f"Token: {masked}")
+    logger.info("Check /config/auth.json for the full token.")
     logger.info("You can also set WEB_AUTH_TOKEN environment variable.")
     logger.info("=" * 60)

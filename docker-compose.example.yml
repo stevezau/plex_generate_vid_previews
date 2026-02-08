@@ -42,7 +42,6 @@ services:
       # Web interface
       - WEB_PORT=8080
       # - WEB_AUTH_TOKEN=your-fixed-token  # Optional: set fixed token
-      # - WEB_HIDE_TOKEN=true  # Optional: hide token from logs
       
       # User/group (match your host user)
       - PUID=1000
@@ -280,8 +279,7 @@ services:
 # Web Interface:
 #   WEB_PORT             - Web server port (default: 8080)
 #   WEB_AUTH_TOKEN       - Fixed auth token (auto-generated if not set)
-#   WEB_HIDE_TOKEN       - Set 'true' to hide token from startup logs
-#   CORS_ORIGINS         - Allowed CORS origins (default: * for all)
+#   CORS_ORIGINS         - Allowed CORS origins (default: localhost)
 #   FLASK_SECRET_KEY     - Flask session secret (auto-generated if not set)
 #
 # Rate Limiting (for multi-worker deployments):
