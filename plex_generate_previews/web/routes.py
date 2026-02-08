@@ -959,40 +959,56 @@ def validate_paths():
         'info': []
     }
     
-    def _safe_path(p: str) -> str:
-        """Resolve path to its canonical absolute form and reject unsafe input."""
+    def _reject_null_bytes(p: str) -> None:
+        """Raise ValueError if path contains null bytes."""
         if '\x00' in p:
             raise ValueError('Path contains null bytes')
-        return os.path.realpath(p)
-    
+
     # Validate Plex Data Path
     if not plex_data_path:
         result['errors'].append('Plex Data Path is required')
         result['valid'] = False
     else:
+        # Reject null bytes in user input
         try:
-            plex_data_path = _safe_path(plex_data_path)
+            _reject_null_bytes(plex_data_path)
         except ValueError:
             result['errors'].append('Invalid Plex Data Path')
             result['valid'] = False
             return jsonify(result)
 
-        # Ensure the resolved path is within the allowed Plex data root
-        if not _is_within_base(PLEX_DATA_ROOT, plex_data_path):
+        # Resolve the user-provided path against the configured Plex data root
+        # and ensure the final canonical path is contained within that root.
+        # Using os.path.realpath and os.path.commonpath inline so that static
+        # analysis (CodeQL) can track the sanitization.
+        if os.path.isabs(plex_data_path):
+            candidate_path = plex_data_path
+        else:
+            candidate_path = os.path.join(PLEX_DATA_ROOT, plex_data_path)
+
+        resolved_plex_data_path = os.path.realpath(candidate_path)
+        canonical_root = os.path.realpath(PLEX_DATA_ROOT)
+
+        try:
+            common_root = os.path.commonpath([canonical_root, resolved_plex_data_path])
+        except ValueError:
+            common_root = ''
+
+        if common_root != canonical_root:
             result['errors'].append(
-                f'Plex Data Path must be within the configured root: {PLEX_DATA_ROOT}'
+                f'Plex Data Path must be within the configured root: {canonical_root}'
             )
             result['valid'] = False
             return jsonify(result)
 
-        if not os.path.exists(plex_data_path):
-            result['errors'].append(f'Plex Data Path does not exist: {plex_data_path}')
+        if not os.path.exists(resolved_plex_data_path):
+            result['errors'].append(f'Plex Data Path does not exist: {resolved_plex_data_path}')
             result['valid'] = False
         else:
             # Check for expected Plex structure
-            media_path = os.path.join(plex_data_path, 'Media')
+            media_path = os.path.join(resolved_plex_data_path, 'Media')
             localhost_path = os.path.join(media_path, 'localhost')
-            
+
             if not os.path.exists(media_path):
                 result['errors'].append(f'Missing "Media" folder in Plex Data Path. Expected: {media_path}')
                 result['valid'] = False
@@ -1011,14 +1027,14 @@ def validate_paths():
                 except Exception as e:
                     logger.warning(f"Could not verify Plex structure: {e}")
                     result['warnings'].append('Could not verify Plex structure')
-            
+
             # Check write permissions (non-destructive)
-            if os.access(plex_data_path, os.W_OK):
+            if os.access(resolved_plex_data_path, os.W_OK):
                 result['info'].append('✓ Write permissions OK')
             else:
                 result['errors'].append('Cannot write to Plex Data Path. Check permissions (PUID/PGID).')
                 result['valid'] = False
-    
+
     # Validate Path Mapping (if provided)
     if plex_media_path or local_media_path:
         if plex_media_path and not local_media_path:
@@ -1028,20 +1044,23 @@ def validate_paths():
             result['errors'].append('Plex Media Path is required when Local Media Path is set')
             result['valid'] = False
         elif local_media_path:
+            # Reject null bytes
             try:
-                local_media_path = _safe_path(local_media_path)
+                _reject_null_bytes(local_media_path)
             except ValueError:
                 result['errors'].append('Invalid Local Media Path')
                 result['valid'] = False
                 return jsonify(result)
-            
-            if not os.path.exists(local_media_path):
-                result['errors'].append(f'Local Media Path does not exist: {local_media_path}')
+
+            resolved_local_media = os.path.realpath(local_media_path)
+
+            if not os.path.exists(resolved_local_media):
+                result['errors'].append(f'Local Media Path does not exist: {resolved_local_media}')
                 result['valid'] = False
             else:
                 # Check if it contains media files/folders
                 try:
-                    contents = os.listdir(local_media_path)
+                    contents = os.listdir(resolved_local_media)
                     if len(contents) == 0:
                         result['warnings'].append('Local Media Path is empty')
                     else:
