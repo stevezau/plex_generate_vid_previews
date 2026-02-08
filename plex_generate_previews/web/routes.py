@@ -1303,31 +1303,50 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             selected_gpus = detect_all_gpus()
 
-            # Track timing for ETA calculation
+            # Track timing for ETA calculation using a sliding window.
+            # A simple lifetime average (items/elapsed) breaks when many
+            # items are skipped (already have BIF files) because the burst
+            # of fast completions permanently inflates the average rate,
+            # making the ETA show "1s" even when real items take minutes.
             import time
+            from collections import deque
 
-            job_start_time = time.time()
             last_total = 0
+            # Sliding window of (timestamp, completed_count) pairs
+            _completion_window: deque = deque()
+            _ETA_WINDOW_SECONDS = 60  # use the last 60s of completions
 
             # Create progress callback
             def progress_callback(current, total, message):
                 """Update job progress from processing."""
-                nonlocal job_start_time, last_total
+                nonlocal last_total
+
                 percent = (current / total * 100) if total > 0 else 0
 
-                # Reset timer when a new library starts (total changes or current resets)
+                # Reset tracking when a new library starts (total changes)
                 if total != last_total:
-                    job_start_time = time.time()
                     last_total = total
+                    _completion_window.clear()
 
-                # Calculate ETA
+                now = time.time()
+                _completion_window.append((now, current))
+
+                # Prune entries older than the window
+                cutoff = now - _ETA_WINDOW_SECONDS
+                while _completion_window and _completion_window[0][0] < cutoff:
+                    _completion_window.popleft()
+
+                # Calculate ETA from windowed rate
                 eta = ""
-                if current > 0 and total > 0:
-                    elapsed = time.time() - job_start_time
-                    items_per_second = current / elapsed if elapsed > 0 else 0
-                    if items_per_second > 0:
+                if current > 0 and total > 0 and len(_completion_window) >= 2:
+                    oldest_ts, oldest_count = _completion_window[0]
+                    window_elapsed = now - oldest_ts
+                    window_items = current - oldest_count
+
+                    if window_elapsed > 0 and window_items > 0:
+                        rate = window_items / window_elapsed
                         remaining_items = total - current
-                        remaining_seconds = remaining_items / items_per_second
+                        remaining_seconds = remaining_items / rate
 
                         # Format as human-readable time
                         if remaining_seconds < 60:
