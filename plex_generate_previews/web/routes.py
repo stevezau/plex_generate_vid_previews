@@ -29,6 +29,27 @@ from .jobs import get_job_manager
 from .scheduler import get_schedule_manager
 
 
+# Define a safe root directory for Plex data paths. All user-provided
+# Plex paths must resolve within this directory before any filesystem
+# operations are performed. Override via PLEX_DATA_ROOT env var.
+PLEX_DATA_ROOT = os.path.realpath(os.environ.get('PLEX_DATA_ROOT', '/plex'))
+
+
+def _is_within_base(base_path: str, candidate_path: str) -> bool:
+    """Return True if candidate_path is inside (or equal to) base_path.
+
+    Both paths are resolved via os.path.realpath before comparison.
+    Uses a trailing-separator check to avoid prefix collisions
+    (e.g. /plex2 should not match /plex).
+    """
+    base_real = os.path.realpath(base_path)
+    candidate_real = os.path.realpath(candidate_path)
+    if base_real == candidate_real:
+        return True
+    base_with_sep = base_real if base_real.endswith(os.sep) else base_real + os.sep
+    return candidate_real.startswith(base_with_sep)
+
+
 # Create blueprints
 main = Blueprint('main', __name__)
 api = Blueprint('api', __name__, url_prefix='/api')
@@ -144,7 +165,7 @@ def get_jobs():
         return jsonify({'jobs': jobs})
     except Exception as e:
         logger.error(f"Failed to get jobs: {e}")
-        return jsonify({'error': str(e), 'jobs': []}), 500
+        return jsonify({'error': 'Failed to retrieve jobs', 'jobs': []}), 500
 
 
 @api.route('/jobs/<job_id>')
@@ -237,7 +258,7 @@ def get_worker_statuses():
         })
     except Exception as e:
         logger.error(f"Failed to get worker statuses: {e}")
-        return jsonify({'error': str(e), 'workers': []}), 500
+        return jsonify({'error': 'Failed to retrieve worker statuses', 'workers': []}), 500
 
 
 @api.route('/jobs/<job_id>', methods=['DELETE'])
@@ -268,7 +289,7 @@ def get_job_stats():
         return jsonify(job_manager.get_stats())
     except Exception as e:
         logger.error(f"Failed to get job stats: {e}")
-        return jsonify({'error': str(e), 'pending': 0, 'running': 0, 'completed': 0, 'failed': 0, 'cancelled': 0, 'total': 0}), 500
+        return jsonify({'error': 'Failed to retrieve job statistics', 'pending': 0, 'running': 0, 'completed': 0, 'failed': 0, 'cancelled': 0, 'total': 0}), 500
 
 
 # ============================================================================
@@ -319,11 +340,12 @@ def create_schedule():
         )
         return jsonify(schedule), 201
     except ValueError as e:
-        return jsonify({'error': str(e)}), 400
+        logger.warning(f"Schedule validation error: {e}")
+        return jsonify({'error': 'Invalid schedule parameters'}), 400
     except Exception as e:
         import traceback
         logger.error(f"Failed to create schedule: {e}\n{traceback.format_exc()}")
-        return jsonify({'error': f'Failed to create schedule: {str(e)}'}), 500
+        return jsonify({'error': 'Failed to create schedule'}), 500
 
 
 @api.route('/schedules/<schedule_id>', methods=['PUT'])
@@ -456,7 +478,7 @@ def get_libraries():
         return jsonify({'libraries': libraries})
     except Exception as e:
         logger.error(f"Failed to get libraries: {e}")
-        return jsonify({'error': str(e), 'libraries': []}), 500
+        return jsonify({'error': 'Failed to retrieve libraries', 'libraries': []}), 500
 
 
 # ============================================================================
@@ -490,7 +512,7 @@ def get_system_status():
         })
     except Exception as e:
         logger.error(f"Failed to get system status: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Failed to retrieve system status'}), 500
 
 
 @api.route('/system/config')
@@ -528,7 +550,7 @@ def get_config():
         })
     except Exception as e:
         logger.error(f"Failed to get config: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Failed to retrieve configuration'}), 500
 
 
 @api.route('/health')
@@ -584,7 +606,7 @@ def create_plex_pin():
         })
     except requests.RequestException as e:
         logger.error(f"Failed to create Plex PIN: {e}")
-        return jsonify({'error': f'Failed to create PIN: {str(e)}'}), 500
+        return jsonify({'error': 'Failed to create PIN'}), 500
 
 
 @api.route('/plex/auth/pin/<int:pin_id>')
@@ -624,7 +646,7 @@ def check_plex_pin(pin_id: int):
         })
     except requests.RequestException as e:
         logger.error(f"Failed to check Plex PIN: {e}")
-        return jsonify({'error': f'Failed to check PIN: {str(e)}'}), 500
+        return jsonify({'error': 'Failed to check PIN'}), 500
 
 
 @api.route('/plex/servers')
@@ -684,7 +706,7 @@ def get_plex_servers():
         return jsonify({'servers': servers})
     except requests.RequestException as e:
         logger.error(f"Failed to get Plex servers: {e}")
-        return jsonify({'error': f'Failed to get servers: {str(e)}', 'servers': []}), 500
+        return jsonify({'error': 'Failed to get servers', 'servers': []}), 500
 
 
 @api.route('/plex/libraries')
@@ -724,7 +746,7 @@ def get_plex_libraries():
         return jsonify({'libraries': libraries})
     except requests.RequestException as e:
         logger.error(f"Failed to get Plex libraries: {e}")
-        return jsonify({'error': f'Failed to get libraries: {str(e)}', 'libraries': []}), 500
+        return jsonify({'error': 'Failed to get libraries', 'libraries': []}), 500
 
 
 @api.route('/plex/test', methods=['POST'])
@@ -764,7 +786,7 @@ def test_plex_connection():
         return jsonify({
             'success': False,
             'server_name': None,
-            'error': str(e),
+            'error': 'Connection test failed',
         })
 
 
@@ -937,47 +959,82 @@ def validate_paths():
         'info': []
     }
     
+    def _reject_null_bytes(p: str) -> None:
+        """Raise ValueError if path contains null bytes."""
+        if '\x00' in p:
+            raise ValueError('Path contains null bytes')
+
     # Validate Plex Data Path
     if not plex_data_path:
         result['errors'].append('Plex Data Path is required')
         result['valid'] = False
-    elif not os.path.exists(plex_data_path):
-        result['errors'].append(f'Plex Data Path does not exist: {plex_data_path}')
-        result['valid'] = False
     else:
-        # Check for expected Plex structure
-        media_path = os.path.join(plex_data_path, 'Media')
-        localhost_path = os.path.join(media_path, 'localhost')
-        
-        if not os.path.exists(media_path):
-            result['errors'].append(f'Missing "Media" folder in Plex Data Path. Expected: {media_path}')
+        # Reject null bytes in user input
+        try:
+            _reject_null_bytes(plex_data_path)
+        except ValueError:
+            result['errors'].append('Invalid Plex Data Path')
             result['valid'] = False
-        elif not os.path.exists(localhost_path):
-            result['errors'].append(f'Missing "Media/localhost" folder. Expected: {localhost_path}')
+            return jsonify(result)
+
+        # Resolve the user-provided path against the configured Plex data root
+        # and ensure the final canonical path is contained within that root.
+        # Using os.path.realpath and os.path.commonpath inline so that static
+        # analysis (CodeQL) can track the sanitization.
+        if os.path.isabs(plex_data_path):
+            candidate_path = plex_data_path
+        else:
+            candidate_path = os.path.join(PLEX_DATA_ROOT, plex_data_path)
+
+        resolved_plex_data_path = os.path.realpath(candidate_path)
+        canonical_root = os.path.realpath(PLEX_DATA_ROOT)
+
+        try:
+            common_root = os.path.commonpath([canonical_root, resolved_plex_data_path])
+        except ValueError:
+            common_root = ''
+
+        if common_root != canonical_root:
+            result['errors'].append(
+                f'Plex Data Path must be within the configured root: {canonical_root}'
+            )
+            result['valid'] = False
+            return jsonify(result)
+
+        if not os.path.exists(resolved_plex_data_path):
+            result['errors'].append(f'Plex Data Path does not exist: {resolved_plex_data_path}')
             result['valid'] = False
         else:
-            # Check for Plex database structure (hex directories)
-            try:
-                contents = os.listdir(localhost_path)
-                hex_dirs = [d for d in contents if len(d) == 1 and d in '0123456789abcdef']
-                if len(hex_dirs) >= 10:
-                    result['info'].append(f'✓ Valid Plex database structure found ({len(hex_dirs)} hash directories)')
-                else:
-                    result['warnings'].append(f'Plex database structure looks incomplete. Found {len(hex_dirs)}/16 hash directories.')
-            except Exception as e:
-                result['warnings'].append(f'Could not verify Plex structure: {str(e)}')
-        
-        # Check write permissions
-        try:
-            test_file = os.path.join(plex_data_path, '.write_test')
-            with open(test_file, 'w') as f:
-                f.write('test')
-            os.remove(test_file)
-            result['info'].append('✓ Write permissions OK')
-        except Exception:
-            result['errors'].append('Cannot write to Plex Data Path. Check permissions (PUID/PGID).')
-            result['valid'] = False
-    
+            # Check for expected Plex structure
+            media_path = os.path.join(resolved_plex_data_path, 'Media')
+            localhost_path = os.path.join(media_path, 'localhost')
+
+            if not os.path.exists(media_path):
+                result['errors'].append(f'Missing "Media" folder in Plex Data Path. Expected: {media_path}')
+                result['valid'] = False
+            elif not os.path.exists(localhost_path):
+                result['errors'].append(f'Missing "Media/localhost" folder. Expected: {localhost_path}')
+                result['valid'] = False
+            else:
+                # Check for Plex database structure (hex directories)
+                try:
+                    contents = os.listdir(localhost_path)
+                    hex_dirs = [d for d in contents if len(d) == 1 and d in '0123456789abcdef']
+                    if len(hex_dirs) >= 10:
+                        result['info'].append(f'✓ Valid Plex database structure found ({len(hex_dirs)} hash directories)')
+                    else:
+                        result['warnings'].append(f'Plex database structure looks incomplete. Found {len(hex_dirs)}/16 hash directories.')
+                except Exception as e:
+                    logger.warning(f"Could not verify Plex structure: {e}")
+                    result['warnings'].append('Could not verify Plex structure')
+
+            # Check write permissions (non-destructive)
+            if os.access(resolved_plex_data_path, os.W_OK):
+                result['info'].append('✓ Write permissions OK')
+            else:
+                result['errors'].append('Cannot write to Plex Data Path. Check permissions (PUID/PGID).')
+                result['valid'] = False
+
     # Validate Path Mapping (if provided)
     if plex_media_path or local_media_path:
         if plex_media_path and not local_media_path:
@@ -987,19 +1044,30 @@ def validate_paths():
             result['errors'].append('Plex Media Path is required when Local Media Path is set')
             result['valid'] = False
         elif local_media_path:
-            if not os.path.exists(local_media_path):
-                result['errors'].append(f'Local Media Path does not exist: {local_media_path}')
+            # Reject null bytes
+            try:
+                _reject_null_bytes(local_media_path)
+            except ValueError:
+                result['errors'].append('Invalid Local Media Path')
+                result['valid'] = False
+                return jsonify(result)
+
+            resolved_local_media = os.path.realpath(local_media_path)
+
+            if not os.path.exists(resolved_local_media):
+                result['errors'].append(f'Local Media Path does not exist: {resolved_local_media}')
                 result['valid'] = False
             else:
                 # Check if it contains media files/folders
                 try:
-                    contents = os.listdir(local_media_path)
+                    contents = os.listdir(resolved_local_media)
                     if len(contents) == 0:
                         result['warnings'].append('Local Media Path is empty')
                     else:
                         result['info'].append(f'✓ Local Media Path accessible ({len(contents)} items)')
                 except Exception as e:
-                    result['errors'].append(f'Cannot read Local Media Path: {str(e)}')
+                    logger.error(f"Cannot read Local Media Path: {e}")
+                    result['errors'].append('Cannot read Local Media Path')
                     result['valid'] = False
     else:
         result['info'].append('No path mapping configured (media mounted at same path as Plex)')
