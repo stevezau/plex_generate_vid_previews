@@ -10,7 +10,7 @@ Requires flask-socketio's built-in test client (no browser needed).
 import json
 import os
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from plex_generate_previews.web.app import create_app, socketio
 from plex_generate_previews.web.settings_manager import reset_settings_manager
@@ -20,14 +20,17 @@ from plex_generate_previews.web.settings_manager import reset_settings_manager
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Reset web singletons between tests."""
     reset_settings_manager()
     import plex_generate_previews.web.jobs as jobs_mod
+
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
     import plex_generate_previews.web.scheduler as sched_mod
+
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
     yield
@@ -48,11 +51,14 @@ def app(tmp_path):
     with open(auth_file, "w") as f:
         json.dump({"token": "test-token-12345678"}, f)
 
-    with patch.dict(os.environ, {
-        "CONFIG_DIR": config_dir,
-        "WEB_AUTH_TOKEN": "test-token-12345678",
-        "WEB_PORT": "8099",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CONFIG_DIR": config_dir,
+            "WEB_AUTH_TOKEN": "test-token-12345678",
+            "WEB_PORT": "8099",
+        },
+    ):
         flask_app = create_app(config_dir=config_dir)
         flask_app.config["TESTING"] = True
         flask_app.config["WTF_CSRF_ENABLED"] = False
@@ -78,7 +84,9 @@ def authed_socketio_client(app):
             flask_test_client=flask_test_client,
         )
     except Exception:
-        pytest.skip("flask-socketio test client not available (requires gevent/eventlet)")
+        pytest.skip(
+            "flask-socketio test client not available (requires gevent/eventlet)"
+        )
         return
 
     yield sio_client
@@ -113,6 +121,7 @@ def unauthed_socketio_client(app):
 # Connection Tests
 # ---------------------------------------------------------------------------
 
+
 class TestSocketIOConnection:
     """Test SocketIO connect/disconnect behavior."""
 
@@ -133,6 +142,7 @@ class TestSocketIOConnection:
 # ---------------------------------------------------------------------------
 # Subscribe / Unsubscribe
 # ---------------------------------------------------------------------------
+
 
 class TestSubscription:
     """Test room subscription via subscribe/unsubscribe events."""
@@ -169,6 +179,7 @@ class TestSubscription:
 # ---------------------------------------------------------------------------
 # Event Emission from JobManager
 # ---------------------------------------------------------------------------
+
 
 class TestJobEvents:
     """Test that job lifecycle events are emitted via SocketIO."""

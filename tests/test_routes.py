@@ -9,16 +9,16 @@ Uses Flask's test client with an in-memory config dir.
 import json
 import os
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.settings_manager import reset_settings_manager
-from plex_generate_previews.web.jobs import JobManager
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _reset_singletons():
@@ -26,10 +26,12 @@ def _reset_singletons():
     reset_settings_manager()
     # Also reset the jobs singleton
     import plex_generate_previews.web.jobs as jobs_mod
+
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
     # Reset schedule singleton
     import plex_generate_previews.web.scheduler as sched_mod
+
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
     yield
@@ -51,11 +53,14 @@ def app(tmp_path):
     with open(auth_file, "w") as f:
         json.dump({"token": "test-token-12345678"}, f)
 
-    with patch.dict(os.environ, {
-        "CONFIG_DIR": config_dir,
-        "WEB_AUTH_TOKEN": "test-token-12345678",
-        "WEB_PORT": "8099",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CONFIG_DIR": config_dir,
+            "WEB_AUTH_TOKEN": "test-token-12345678",
+            "WEB_PORT": "8099",
+        },
+    ):
         # Patch gevent async_mode to threading for test client compatibility
         flask_app = create_app(config_dir=config_dir)
         flask_app.config["TESTING"] = True
@@ -87,6 +92,7 @@ def _api_headers(token: str = "test-token-12345678") -> dict:
 # Page Routes
 # ---------------------------------------------------------------------------
 
+
 class TestPageRoutes:
     """Test HTML page routes."""
 
@@ -113,11 +119,14 @@ class TestPageRoutes:
 # Login / Logout
 # ---------------------------------------------------------------------------
 
+
 class TestLoginLogout:
     """Test login and logout flows."""
 
     def test_login_post_valid_token(self, client):
-        resp = client.post("/login", data={"token": "test-token-12345678"}, follow_redirects=False)
+        resp = client.post(
+            "/login", data={"token": "test-token-12345678"}, follow_redirects=False
+        )
         # Should redirect to dashboard
         assert resp.status_code in (302, 308)
         assert "/login" not in resp.headers.get("Location", "")
@@ -144,6 +153,7 @@ class TestLoginLogout:
 # Auth API
 # ---------------------------------------------------------------------------
 
+
 class TestAuthAPI:
     """Test /api/auth/* endpoints."""
 
@@ -158,8 +168,7 @@ class TestAuthAPI:
         assert data["authenticated"] is True
 
     def test_api_login_valid(self, client):
-        resp = client.post("/api/auth/login",
-                           json={"token": "test-token-12345678"})
+        resp = client.post("/api/auth/login", json={"token": "test-token-12345678"})
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
@@ -178,6 +187,7 @@ class TestAuthAPI:
 # Health Check
 # ---------------------------------------------------------------------------
 
+
 class TestHealthCheck:
     """Test /api/health endpoint."""
 
@@ -190,6 +200,7 @@ class TestHealthCheck:
 # ---------------------------------------------------------------------------
 # Token Endpoints
 # ---------------------------------------------------------------------------
+
 
 class TestTokenEndpoints:
     """Test token regeneration and info endpoints."""
@@ -218,6 +229,7 @@ class TestTokenEndpoints:
 # Jobs API
 # ---------------------------------------------------------------------------
 
+
 class TestJobsAPI:
     """Test /api/jobs/* endpoints."""
 
@@ -233,9 +245,9 @@ class TestJobsAPI:
     def test_create_job(self, client):
         """Test creating a job (mocking _start_job_async to avoid real processing)."""
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            resp = client.post("/api/jobs",
-                               headers=_api_headers(),
-                               json={"library_name": "Movies"})
+            resp = client.post(
+                "/api/jobs", headers=_api_headers(), json={"library_name": "Movies"}
+            )
         assert resp.status_code == 201
         data = resp.get_json()
         assert data["status"] == "pending"
@@ -243,9 +255,9 @@ class TestJobsAPI:
 
     def test_get_specific_job(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            create_resp = client.post("/api/jobs",
-                                      headers=_api_headers(),
-                                      json={"library_name": "TV"})
+            create_resp = client.post(
+                "/api/jobs", headers=_api_headers(), json={"library_name": "TV"}
+            )
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
         assert resp.status_code == 200
@@ -257,18 +269,14 @@ class TestJobsAPI:
 
     def test_cancel_job(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            create_resp = client.post("/api/jobs",
-                                      headers=_api_headers(),
-                                      json={})
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
         assert resp.status_code == 200
 
     def test_delete_job(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            create_resp = client.post("/api/jobs",
-                                      headers=_api_headers(),
-                                      json={})
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         # Cancel first so it can be deleted (only non-running jobs)
         client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
@@ -298,9 +306,7 @@ class TestJobsAPI:
 
     def test_get_job_logs(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            create_resp = client.post("/api/jobs",
-                                      headers=_api_headers(),
-                                      json={})
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
         assert resp.status_code == 200
@@ -310,6 +316,7 @@ class TestJobsAPI:
 # ---------------------------------------------------------------------------
 # Settings API
 # ---------------------------------------------------------------------------
+
 
 class TestSettingsAPI:
     """Test /api/settings endpoints."""
@@ -322,9 +329,11 @@ class TestSettingsAPI:
         assert "cpu_threads" in data
 
     def test_save_settings(self, client):
-        resp = client.post("/api/settings",
-                           headers=_api_headers(),
-                           json={"gpu_threads": 2, "cpu_threads": 4})
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"gpu_threads": 2, "cpu_threads": 4},
+        )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
@@ -335,15 +344,18 @@ class TestSettingsAPI:
         assert data["cpu_threads"] == 4
 
     def test_save_settings_ignores_unknown_fields(self, client):
-        resp = client.post("/api/settings",
-                           headers=_api_headers(),
-                           json={"gpu_threads": 1, "unknown_field": "ignored"})
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"gpu_threads": 1, "unknown_field": "ignored"},
+        )
         assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
 # Setup Wizard API
 # ---------------------------------------------------------------------------
+
 
 class TestSetupWizardAPI:
     """Test /api/setup/* endpoints."""
@@ -363,9 +375,11 @@ class TestSetupWizardAPI:
         assert "step" in data
 
     def test_save_setup_state(self, client):
-        resp = client.post("/api/setup/state",
-                           headers=_api_headers(),
-                           json={"step": 2, "data": {"plex_url": "http://plex:32400"}})
+        resp = client.post(
+            "/api/setup/state",
+            headers=_api_headers(),
+            json={"step": 2, "data": {"plex_url": "http://plex:32400"}},
+        )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
@@ -381,22 +395,27 @@ class TestSetupWizardAPI:
         assert data["redirect"] == "/"
 
     def test_set_setup_token_mismatch(self, client):
-        resp = client.post("/api/setup/set-token",
-                           headers=_api_headers(),
-                           json={"token": "new-token-1234", "confirm_token": "different"})
+        resp = client.post(
+            "/api/setup/set-token",
+            headers=_api_headers(),
+            json={"token": "new-token-1234", "confirm_token": "different"},
+        )
         assert resp.status_code == 400
         assert "match" in resp.get_json()["error"].lower()
 
     def test_set_setup_token_too_short(self, client):
-        resp = client.post("/api/setup/set-token",
-                           headers=_api_headers(),
-                           json={"token": "short", "confirm_token": "short"})
+        resp = client.post(
+            "/api/setup/set-token",
+            headers=_api_headers(),
+            json={"token": "short", "confirm_token": "short"},
+        )
         assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
 # Schedules API
 # ---------------------------------------------------------------------------
+
 
 class TestSchedulesAPI:
     """Test /api/schedules/* endpoints."""
@@ -407,15 +426,17 @@ class TestSchedulesAPI:
         assert resp.get_json()["schedules"] == []
 
     def test_create_schedule_missing_name(self, client):
-        resp = client.post("/api/schedules",
-                           headers=_api_headers(),
-                           json={"cron_expression": "0 */6 * * *"})
+        resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"cron_expression": "0 */6 * * *"},
+        )
         assert resp.status_code == 400
 
     def test_create_schedule_missing_trigger(self, client):
-        resp = client.post("/api/schedules",
-                           headers=_api_headers(),
-                           json={"name": "Test"})
+        resp = client.post(
+            "/api/schedules", headers=_api_headers(), json={"name": "Test"}
+        )
         assert resp.status_code == 400
 
 
@@ -423,11 +444,14 @@ class TestSchedulesAPI:
 # System API
 # ---------------------------------------------------------------------------
 
+
 class TestSystemAPI:
     """Test /api/system/* endpoints."""
 
     def test_get_system_status(self, client):
-        with patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]):
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+        ):
             resp = client.get("/api/system/status", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
@@ -443,21 +467,26 @@ class TestSystemAPI:
 # Path Validation
 # ---------------------------------------------------------------------------
 
+
 class TestPathValidation:
     """Test /api/setup/validate-paths endpoint."""
 
     def test_validate_paths_empty(self, client):
-        resp = client.post("/api/setup/validate-paths",
-                           headers=_api_headers(),
-                           json={"plex_config_folder": ""})
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": ""},
+        )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
 
     def test_validate_paths_null_bytes_rejected(self, client):
-        resp = client.post("/api/setup/validate-paths",
-                           headers=_api_headers(),
-                           json={"plex_config_folder": "/plex\x00evil"})
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": "/plex\x00evil"},
+        )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
@@ -467,17 +496,18 @@ class TestPathValidation:
 # Bearer vs Session Auth
 # ---------------------------------------------------------------------------
 
+
 class TestAuthMethods:
     """Test that both Bearer token and session auth work for API."""
 
     def test_bearer_auth(self, client):
-        resp = client.get("/api/jobs",
-                          headers={"Authorization": "Bearer test-token-12345678"})
+        resp = client.get(
+            "/api/jobs", headers={"Authorization": "Bearer test-token-12345678"}
+        )
         assert resp.status_code == 200
 
     def test_x_auth_token_header(self, client):
-        resp = client.get("/api/jobs",
-                          headers={"X-Auth-Token": "test-token-12345678"})
+        resp = client.get("/api/jobs", headers={"X-Auth-Token": "test-token-12345678"})
         assert resp.status_code == 200
 
     def test_session_auth(self, authed_client):

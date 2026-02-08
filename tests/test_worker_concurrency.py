@@ -6,10 +6,8 @@ CPU fallback queue, graceful cancellation, and thread safety of
 progress updates.
 """
 
-import queue
 import threading
 import time
-from collections import deque
 from typing import List, Tuple
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +19,7 @@ from plex_generate_previews.worker import Worker, WorkerPool
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_gpu_list(n: int = 1) -> List[Tuple[str, str, dict]]:
     """Create a dummy GPU selection list."""
@@ -37,14 +36,19 @@ def _slow_process_item(item_key, gpu, gpu_device, config, plex, progress_callbac
     time.sleep(0.5)
 
 
-def _failing_process_item(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+def _failing_process_item(
+    item_key, gpu, gpu_device, config, plex, progress_callback=None
+):
     """Simulate a processing failure."""
     raise RuntimeError("ffmpeg crashed")
 
 
-def _codec_error_process_item(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+def _codec_error_process_item(
+    item_key, gpu, gpu_device, config, plex, progress_callback=None
+):
     """Simulate a GPU codec error that should fall back to CPU."""
     from plex_generate_previews.media_processing import CodecNotSupportedError
+
     raise CodecNotSupportedError("HEVC not supported on this GPU")
 
 
@@ -68,6 +72,7 @@ def mock_plex():
 # Worker unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestWorker:
     """Unit tests for the Worker class."""
 
@@ -79,8 +84,9 @@ class TestWorker:
     def test_assign_task_marks_busy(self, mock_config, mock_plex):
         w = Worker(0, "CPU")
         with patch("plex_generate_previews.worker.process_item", _fake_process_item):
-            w.assign_task("/key/1", mock_config, mock_plex,
-                          media_title="Test", media_type="movie")
+            w.assign_task(
+                "/key/1", mock_config, mock_plex, media_title="Test", media_type="movie"
+            )
         assert w.is_busy
 
     def test_assign_task_raises_if_busy(self, mock_config, mock_plex):
@@ -94,8 +100,9 @@ class TestWorker:
     def test_check_completion_after_task_done(self, mock_config, mock_plex):
         w = Worker(0, "CPU")
         with patch("plex_generate_previews.worker.process_item", _fake_process_item):
-            w.assign_task("/key/1", mock_config, mock_plex,
-                          media_title="Test", media_type="movie")
+            w.assign_task(
+                "/key/1", mock_config, mock_plex, media_title="Test", media_type="movie"
+            )
             # Wait for tiny sleep
             w.current_thread.join(timeout=2)
             assert w.check_completion() is True
@@ -105,8 +112,9 @@ class TestWorker:
     def test_failed_task_increments_failed(self, mock_config, mock_plex):
         w = Worker(0, "CPU")
         with patch("plex_generate_previews.worker.process_item", _failing_process_item):
-            w.assign_task("/key/1", mock_config, mock_plex,
-                          media_title="Bad", media_type="movie")
+            w.assign_task(
+                "/key/1", mock_config, mock_plex, media_title="Bad", media_type="movie"
+            )
             w.current_thread.join(timeout=2)
             w.check_completion()
         assert w.failed == 1
@@ -144,6 +152,7 @@ class TestWorker:
 # WorkerPool construction
 # ---------------------------------------------------------------------------
 
+
 class TestWorkerPoolInit:
     """Test WorkerPool initialization."""
 
@@ -180,15 +189,14 @@ class TestWorkerPoolInit:
 # WorkerPool processing
 # ---------------------------------------------------------------------------
 
+
 class TestWorkerPoolProcessing:
     """Test WorkerPool item processing with real threads."""
 
     def test_process_all_items_headless(self, mock_config, mock_plex):
         """All items should be processed; completed count matches."""
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
-        items = [
-            (f"/key/{i}", f"Item {i}", "movie") for i in range(6)
-        ]
+        items = [(f"/key/{i}", f"Item {i}", "movie") for i in range(6)]
         progress_calls = []
 
         def progress_cb(current, total, msg):
@@ -196,7 +204,9 @@ class TestWorkerPoolProcessing:
 
         with patch("plex_generate_previews.worker.process_item", _fake_process_item):
             pool.process_items_headless(
-                items, mock_config, mock_plex,
+                items,
+                mock_config,
+                mock_plex,
                 progress_callback=progress_cb,
             )
 
@@ -219,12 +229,13 @@ class TestWorkerPoolProcessing:
     def test_mixed_success_and_failure(self, mock_config, mock_plex):
         """Mix of successes and failures should add up to total."""
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
-        items = [
-            (f"/key/{i}", f"Item {i}", "movie") for i in range(4)
-        ]
+        items = [(f"/key/{i}", f"Item {i}", "movie") for i in range(4)]
 
         call_count = {"n": 0}
-        def alternating_process(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+
+        def alternating_process(
+            item_key, gpu, gpu_device, config, plex, progress_callback=None
+        ):
             call_count["n"] += 1
             if call_count["n"] % 2 == 0:
                 raise RuntimeError("fail on even")
@@ -241,6 +252,7 @@ class TestWorkerPoolProcessing:
 # CPU Fallback Queue
 # ---------------------------------------------------------------------------
 
+
 class TestCPUFallbackQueue:
     """Test GPU→CPU fallback via the codec-error path."""
 
@@ -251,11 +263,17 @@ class TestCPUFallbackQueue:
         pool = WorkerPool(gpu_workers=1, cpu_workers=1, selected_gpus=_make_gpu_list(1))
 
         gpu_call_count = {"n": 0}
-        def gpu_then_cpu(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+
+        def gpu_then_cpu(
+            item_key, gpu, gpu_device, config, plex, progress_callback=None
+        ):
             gpu_call_count["n"] += 1
             if gpu is not None:
                 # GPU worker -> codec error
-                from plex_generate_previews.media_processing import CodecNotSupportedError
+                from plex_generate_previews.media_processing import (
+                    CodecNotSupportedError,
+                )
+
                 raise CodecNotSupportedError("HEVC not supported")
             # CPU worker -> success
             time.sleep(0.01)
@@ -266,7 +284,7 @@ class TestCPUFallbackQueue:
             pool.process_items_headless(items, mock_config, mock_plex)
 
         # GPU worker should have failed but not counted as completed
-        gpu_worker = [w for w in pool.workers if w.worker_type == "GPU"][0]
+        _ = [w for w in pool.workers if w.worker_type == "GPU"][0]
         cpu_worker = [w for w in pool.workers if w.worker_type == "CPU"][0]
         # CPU should have handled the fallback
         assert cpu_worker.completed == 1
@@ -282,6 +300,7 @@ class TestCPUFallbackQueue:
 # ---------------------------------------------------------------------------
 # Shutdown
 # ---------------------------------------------------------------------------
+
 
 class TestWorkerPoolShutdown:
     """Test graceful shutdown."""
@@ -302,6 +321,7 @@ class TestWorkerPoolShutdown:
 # ---------------------------------------------------------------------------
 # Thread safety of progress updates
 # ---------------------------------------------------------------------------
+
 
 class TestProgressThreadSafety:
     """Test that concurrent progress updates don't corrupt state."""
@@ -372,6 +392,7 @@ class TestProgressThreadSafety:
 # Worker callback in headless mode
 # ---------------------------------------------------------------------------
 
+
 class TestWorkerCallback:
     """Test worker status callback in headless mode."""
 
@@ -385,7 +406,9 @@ class TestWorkerCallback:
 
         with patch("plex_generate_previews.worker.process_item", _fake_process_item):
             pool.process_items_headless(
-                items, mock_config, mock_plex,
+                items,
+                mock_config,
+                mock_plex,
                 worker_callback=worker_cb,
             )
 
