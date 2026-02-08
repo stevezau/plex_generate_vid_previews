@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <Container version="2">
-    <Name>plex-generate-previews</Name>
+    <Name>plex-previews</Name>
     <Repository>vellajonathan/plex-previews:latest</Repository>
     <Registry>https://hub.docker.com/r/vellajonathan/plex-previews</Registry>
     <Network>bridge</Network>
@@ -63,7 +63,7 @@ For NVIDIA GPU support, you must:
     <!-- Path Mappings -->
     <Config Name="Media Path" Target="/media" Default="/mnt/user/media" Mode="ro" Description="Path to your media files on Unraid (read-only)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media</Config>
     <Config Name="Plex Data Path" Target="/plex" Default="/mnt/user/appdata/plex/Library/Application Support/Plex Media Server" Mode="rw" Description="Path to Plex application data where previews will be stored" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex/Library/Application Support/Plex Media Server</Config>
-    <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/plex-generate-previews" Mode="rw" Description="Path to store configuration, schedules, and job history" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-generate-previews</Config>
+    <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/plex-previews" Mode="rw" Description="Path to store configuration, schedules, and job history" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-previews</Config>
     
     <!-- Path Translation (for Docker-to-Host path mapping) -->
     <Config Name="Local Videos Path" Target="PLEX_LOCAL_VIDEOS_PATH_MAPPING" Default="/media" Mode="" Description="How this container sees media (usually /media)" Type="Variable" Display="advanced" Required="false" Mask="false">/media</Config>
