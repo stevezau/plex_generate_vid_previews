@@ -16,7 +16,7 @@ os.environ.setdefault(
 )
 os.environ.setdefault("PLEXAPI_HEADER_DEVICE_NAME", "PlexGeneratePreviews")
 
-from ._version import __version__
+from ._version import __version__ as __version__
 
 __author__ = "stevezau"
 __description__ = "Generate video preview thumbnails for Plex Media Server"

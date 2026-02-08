@@ -1,6 +1,9 @@
 #!/bin/bash
 # Wrapper script to run plex-generate-previews with proper user permissions
 # This script is executed by s6-overlay after user/group setup
+#
+# Default: Start web UI on port 8080
+# Use --cli flag to run in CLI mode instead
 
 cd /app || exit 1
 
@@ -41,13 +44,37 @@ if [ ! -d "/run/s6" ] && ps -p 1 -o comm= 2>/dev/null | grep -qE '(tini|docker-i
     exit 1
 fi
 
-# Check if we're running as root (UID 0)
-if [ "$(id -u)" = "0" ]; then
-    # Running as root - drop privileges to abc user
-    # gosu preserves environment variables
-    exec gosu abc plex-generate-previews "$@"
+# Determine run mode
+RUN_MODE="web"
+CLI_ARGS=()
+
+for arg in "$@"; do
+    if [ "$arg" = "--cli" ]; then
+        RUN_MODE="cli"
+    else
+        CLI_ARGS+=("$arg")
+    fi
+done
+
+# Function to run command with proper user
+run_as_user() {
+    if [ "$(id -u)" = "0" ]; then
+        # Running as root - drop privileges to abc user
+        exec gosu abc "$@"
+    else
+        # Already running as non-root - just run directly
+        exec "$@"
+    fi
+}
+
+# Run in appropriate mode
+if [ "$RUN_MODE" = "cli" ]; then
+    # CLI mode - run the original command line tool
+    echo "Running in CLI mode..."
+    run_as_user plex-generate-previews "${CLI_ARGS[@]}"
 else
-    # Already running as non-root - just run directly
-    exec plex-generate-previews "$@"
+    # Web mode - start the Flask web server
+    echo "Starting web server on port ${WEB_PORT:-8080}..."
+    run_as_user python3 -c "from plex_generate_previews.web.app import run_server; run_server(host='0.0.0.0', port=int('${WEB_PORT:-8080}'))"
 fi
 

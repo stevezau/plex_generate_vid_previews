@@ -1,0 +1,60 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Test files and cache
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Development files
+.git/
+.github/
+.gitignore
+.vscode/
+.idea/
+*.md
+!README.md
+
+# Environment files
+.env
+.env.*
+*.local
+env.example
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE and editor files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+docs/
+*.rst
+
+# Unraid templates (not needed in image)
+unraid-templates/
+
+# Copilot processing file
+Copilot-Processing.md
