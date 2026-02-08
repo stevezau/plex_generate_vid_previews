@@ -105,6 +105,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
     try:
         secret_file.parent.mkdir(parents=True, exist_ok=True)
         secret_file.write_text(new_secret)
+        secret_file.chmod(0o600)
         logger.info(f"Generated new Flask secret and saved to {secret_file}")
     except IOError as e:
         logger.warning(f"Failed to save Flask secret to file: {e}")

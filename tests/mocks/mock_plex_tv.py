@@ -5,6 +5,7 @@ Mimics the plex.tv API for OAuth PIN-based authentication.
 Run standalone: python -m tests.mocks.mock_plex_tv
 """
 
+import html
 import os
 import time
 import uuid
@@ -188,11 +189,11 @@ def get_resources_xml():
 @app.route("/auth")
 def auth_page():
     """Simulated OAuth login page."""
-    pin_id = request.args.get("pin")
-    code = request.args.get("code")
+    pin_id = html.escape(request.args.get("pin", ""))
+    code = html.escape(request.args.get("code", ""))
     
     # In real testing, the test would call /api/v2/pins/<id>/link to approve
-    html = f"""<!DOCTYPE html>
+    page = f"""<!DOCTYPE html>
 <html>
 <head><title>Mock Plex Login</title></head>
 <body>
@@ -203,7 +204,7 @@ def auth_page():
     <p>Call PUT /api/v2/pins/{pin_id}/link to simulate successful authentication.</p>
 </body>
 </html>"""
-    return html
+    return page
 
 
 # Health check
