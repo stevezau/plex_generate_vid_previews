@@ -253,6 +253,12 @@ def create_app(config_dir: str = None) -> Flask:
             "api.save_setup_state",
             "api.complete_setup",
             "api.set_setup_token",
+            "api.validate_paths",
+            "api.create_plex_pin",
+            "api.check_plex_pin",
+            "api.get_plex_servers",
+            "api.get_plex_libraries",
+            "api.test_plex_connection",
         ]
 
         # Only exempt specific setup-related API endpoints, not all api.*
