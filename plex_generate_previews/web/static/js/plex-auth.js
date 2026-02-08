@@ -100,9 +100,9 @@ class PlexAuth {
                 try {
                     const result = await this.checkPin(pinId);
                     
-                    if (result.authenticated && result.auth_token) {
+                    if (result.authenticated) {
                         this.cleanup();
-                        resolve(result.auth_token);
+                        resolve(result.authenticated);
                         return;
                     }
                 } catch (error) {
