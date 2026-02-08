@@ -654,21 +654,35 @@ class WorkerPool:
             worker_callback: Optional callback function(workers_list) for worker status updates
         """
         last_worker_update = time.time()
+        last_progress_update = time.time()
         library_prefix = f"[{library_name}] " if library_name else ""
 
         def on_task_complete(completed_tasks: int, total_items: int) -> None:
             """Call progress callback on task completion."""
+            nonlocal last_progress_update
             if progress_callback:
                 progress_callback(
                     completed_tasks,
                     total_items,
                     f"{library_prefix}{completed_tasks}/{total_items} completed",
                 )
+                last_progress_update = time.time()
 
         def on_poll(completed_tasks: int, total_items: int) -> None:
-            """Emit worker status updates periodically."""
-            nonlocal last_worker_update
+            """Emit worker status and progress updates periodically."""
+            nonlocal last_worker_update, last_progress_update
             current_time = time.time()
+
+            # Emit progress/ETA updates every 3 seconds so the ETA stays
+            # fresh even during long FFmpeg runs between task completions.
+            if progress_callback and current_time - last_progress_update >= 3.0:
+                progress_callback(
+                    completed_tasks,
+                    total_items,
+                    f"{library_prefix}{completed_tasks}/{total_items} completed",
+                )
+                last_progress_update = current_time
+
             if worker_callback and current_time - last_worker_update >= 2.0:
                 worker_statuses = []
                 for worker in self.workers:

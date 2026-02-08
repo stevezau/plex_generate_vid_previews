@@ -1,5 +1,4 @@
-"""
-Flask routes for the web interface.
+"""Flask routes for the web interface.
 
 Provides both page routes and API endpoints for the dashboard,
 settings, schedules, and job management.
@@ -1303,62 +1302,77 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             selected_gpus = detect_all_gpus()
 
-            # Track timing for ETA calculation using a sliding window.
-            # A simple lifetime average (items/elapsed) breaks when many
-            # items are skipped (already have BIF files) because the burst
-            # of fast completions permanently inflates the average rate,
-            # making the ETA show "1s" even when real items take minutes.
+            # Track timing for ETA calculation using burst detection.
+            # Items that already have BIF files complete in milliseconds,
+            # which corrupts any simple rate average. Instead we detect
+            # the transition from fast (skipped) to slow (real FFmpeg)
+            # completions and measure the rate only from real work.
             import time
-            from collections import deque
 
             last_total = 0
-            # Sliding window of (timestamp, completed_count) pairs
-            _completion_window: deque = deque()
-            _ETA_WINDOW_SECONDS = 60  # use the last 60s of completions
+            _last_completed = 0
+            _last_completion_time: float = 0  # 0 = not yet set
+            _in_burst = True          # True until first slow item completes
+            _real_work_start_time: float = 0
+            _real_work_start_count = 0
+            _SKIP_THRESHOLD = 2.0     # seconds per item; below = skipped
+
+            def _format_eta(seconds: float) -> str:
+                """Format seconds into human-readable ETA string."""
+                if seconds < 60:
+                    return f"{int(seconds)}s"
+                elif seconds < 3600:
+                    return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+                else:
+                    return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
             # Create progress callback
             def progress_callback(current, total, message):
                 """Update job progress from processing."""
-                nonlocal last_total
+                nonlocal last_total, _last_completed, _last_completion_time
+                nonlocal _in_burst, _real_work_start_time, _real_work_start_count
 
+                now = time.time()
                 percent = (current / total * 100) if total > 0 else 0
 
                 # Reset tracking when a new library starts (total changes)
                 if total != last_total:
                     last_total = total
-                    _completion_window.clear()
+                    _last_completed = 0
+                    _last_completion_time = 0
+                    _in_burst = True
+                    _real_work_start_time = 0
+                    _real_work_start_count = 0
 
-                now = time.time()
-                _completion_window.append((now, current))
+                # Detect new completions and classify as fast or slow
+                new = current - _last_completed
+                if new > 0 and _last_completion_time > 0:
+                    per_item = (now - _last_completion_time) / new
+                    if per_item >= _SKIP_THRESHOLD and _in_burst:
+                        # First slow item — transition from burst to real work
+                        _in_burst = False
+                        _real_work_start_time = now
+                        _real_work_start_count = current - new
 
-                # Prune entries older than the window
-                cutoff = now - _ETA_WINDOW_SECONDS
-                while _completion_window and _completion_window[0][0] < cutoff:
-                    _completion_window.popleft()
+                if new > 0:
+                    _last_completion_time = now
+                    _last_completed = current
 
-                # Calculate ETA from windowed rate
+                # Calculate ETA from real (non-skipped) processing rate.
+                # Uses `now` as the endpoint so the rate naturally decays
+                # during idle periods (poll calls with no new completions),
+                # keeping the ETA honest between task completions.
                 eta = ""
-                if current > 0 and total > 0 and len(_completion_window) >= 2:
-                    oldest_ts, oldest_count = _completion_window[0]
-                    window_elapsed = now - oldest_ts
-                    window_items = current - oldest_count
+                remaining = total - current
+                if not _in_burst and _real_work_start_time > 0 and remaining > 0:
+                    real_elapsed = now - _real_work_start_time
+                    real_items = current - _real_work_start_count
 
-                    if window_elapsed > 0 and window_items > 0:
-                        rate = window_items / window_elapsed
-                        remaining_items = total - current
-                        remaining_seconds = remaining_items / rate
-
-                        # Format as human-readable time
-                        if remaining_seconds < 60:
-                            eta = f"{int(remaining_seconds)}s"
-                        elif remaining_seconds < 3600:
-                            mins = int(remaining_seconds // 60)
-                            secs = int(remaining_seconds % 60)
-                            eta = f"{mins}m {secs}s"
-                        else:
-                            hours = int(remaining_seconds // 3600)
-                            mins = int((remaining_seconds % 3600) // 60)
-                            eta = f"{hours}h {mins}m"
+                    # Require >=10s of data and >=2 real items before showing ETA
+                    if real_elapsed >= 10 and real_items >= 2:
+                        rate = real_items / real_elapsed
+                        remaining_seconds = remaining / rate
+                        eta = _format_eta(remaining_seconds)
 
                 job_manager.update_progress(
                     job_id,
