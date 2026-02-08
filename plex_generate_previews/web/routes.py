@@ -1302,12 +1302,22 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             selected_gpus = detect_all_gpus()
 
-            # Track timing for ETA calculation using burst detection.
-            # Items that already have BIF files complete in milliseconds,
-            # which corrupts any simple rate average. Instead we detect
-            # the transition from fast (skipped) to slow (real FFmpeg)
-            # completions and measure the rate only from real work.
-            import time
+            # ===================================================================
+            # ETA Calculation using Burst Detection Algorithm
+            # ===================================================================
+            # Problem: Items that already have BIF files complete in milliseconds,
+            # which corrupts any simple rate average. A burst of 525 fast items
+            # (existing files) can inflate the per-item rate to ~175 items/sec,
+            # permanently showing \"1s\" ETA even when real items take 2-5 minutes.
+            #
+            # Solution: Burst Detection Algorithm
+            # 1. Classify each completion by elapsed time per item
+            #    - <2 sec per item = skip burst (file already had BIF)
+            #    - ≥2 sec per item = real FFmpeg processing
+            # 2. Detect transition from burst phase to real processing
+            # 3. Measure rate ONLY from when real work begins
+            # 4. Use 'now' as the moving endpoint, so idle periods naturally
+            #    increase remaining time (prevents \"1s\" during pauses)\n            # 5. Require ≥10s of accumulated real work + ≥2 real items before\n            #    showing any ETA (prevents wild guesses from partial data)\n            #\n            # Expected User Experience:\n            # - Duration 0-30s: ETA shows \"Calculating...\" (skip burst detected)\n            # - Duration 30s-5min: Still \"Calculating...\" (gathering real work data\n            # - Duration 5+ min: Shows realistic estimate (e.g., \"8h 30m\")\n            #   * Updates every 3 seconds via on_poll() callback\n            #   * Counts down as completion % increases\n            #   * Adjusts if processing rate varies mid-job\n            # - Final phase: Converges on actual time-to-completion\n            #\n            # Why this design? Early ETA guesses based on incomplete/skewed data\n            # are worse than \"Calculating...\". For example:\n            # - First 100 items cached+skipped: 100 items in 5 sec = 12h ETA\n            # - Next 100 items real work: 100 items in 200 min = actual 9h total\n            # The algorithm waits for enough real work data before committing.\n            #\n            # See docs/faq.md#why-does-eta-show-calculating-for-so-long\n            import time
 
             last_total = 0
             _last_completed = 0
