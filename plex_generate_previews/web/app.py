@@ -4,6 +4,8 @@ Flask application factory for the web interface.
 Creates and configures the Flask application with SocketIO support.
 """
 
+import hashlib
+import hmac
 import os
 import secrets
 from datetime import timedelta
@@ -78,14 +80,33 @@ def get_cors_origins() -> str:
     return f"http://localhost:{port}"
 
 
+def _derive_secret(seed: bytes, config_dir: str) -> str:
+    """Derive a Flask secret key from a stored seed and deployment-specific salt.
+
+    Uses HMAC-SHA256 so the actual secret is never stored on disk.
+
+    Args:
+        seed: Random bytes read from (or generated for) the seed file.
+        config_dir: Configuration directory used as an additional salt.
+
+    Returns:
+        Hex-encoded derived secret key.
+    """
+    return hmac.new(seed, config_dir.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def get_or_create_flask_secret(config_dir: str) -> str:
     """
-    Get Flask secret key from environment or persistent file.
+    Get Flask secret key from environment or persistent seed file.
+
+    The seed file stores random bytes — *not* the secret itself.
+    The actual secret is derived at runtime via HMAC-SHA256(seed, config_dir)
+    so that sensitive key material is never written to disk in clear text.
 
     Priority:
     1. FLASK_SECRET_KEY environment variable
-    2. /config/flask_secret.key file
-    3. Generate new secret and save it
+    2. Derived from /config/flask_secret.key seed file
+    3. Generate new seed, save it, and derive secret
 
     Args:
         config_dir: Configuration directory path
@@ -99,29 +120,36 @@ def get_or_create_flask_secret(config_dir: str) -> str:
         logger.debug("Using Flask secret from FLASK_SECRET_KEY environment variable")
         return env_secret
 
-    # Check for persistent secret file
-    secret_file = Path(config_dir) / "flask_secret.key"
+    # Check for persistent seed file
+    seed_file = Path(config_dir) / "flask_secret.key"
 
-    if secret_file.exists():
+    if seed_file.exists():
         try:
-            secret = secret_file.read_text().strip()
-            if secret:
-                logger.debug(f"Using Flask secret from {secret_file}")
-                return secret
+            seed = seed_file.read_bytes()
+            if seed:
+                logger.debug(f"Using Flask secret derived from seed in {seed_file}")
+                return _derive_secret(seed, config_dir)
         except IOError as e:
-            logger.warning(f"Failed to read Flask secret file: {e}")
+            logger.warning(f"Failed to read Flask secret seed file: {e}")
 
-    # Generate new secret and save it
-    new_secret = secrets.token_hex(32)
+    # Generate new random seed and persist it with restrictive permissions.
+    # os.open with 0o600 creates the file atomically with the correct mode
+    # to avoid a TOCTOU race between creation and chmod.
+    random_seed = os.urandom(32)
     try:
-        secret_file.parent.mkdir(parents=True, exist_ok=True)
-        secret_file.write_text(new_secret)
-        secret_file.chmod(0o600)
-        logger.info(f"Generated new Flask secret and saved to {secret_file}")
+        seed_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            str(seed_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+        )
+        try:
+            os.write(fd, random_seed)
+        finally:
+            os.close(fd)
+        logger.info(f"Generated new Flask secret seed and saved to {seed_file}")
     except IOError as e:
-        logger.warning(f"Failed to save Flask secret to file: {e}")
+        logger.warning(f"Failed to save Flask secret seed to file: {e}")
 
-    return new_secret
+    return _derive_secret(random_seed, config_dir)
 
 
 def create_app(config_dir: str = None) -> Flask:

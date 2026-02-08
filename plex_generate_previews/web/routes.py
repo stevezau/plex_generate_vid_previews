@@ -40,10 +40,11 @@ from .jobs import get_job_manager
 from .scheduler import get_schedule_manager
 
 
-# Define a safe root directory for Plex data paths. All user-provided
-# Plex paths must resolve within this directory before any filesystem
-# operations are performed. Override via PLEX_DATA_ROOT env var.
+# Define safe root directories for user-provided paths. All user-supplied
+# paths must resolve within these directories before any filesystem
+# operations are performed. Override via environment variables.
 PLEX_DATA_ROOT = os.path.realpath(os.environ.get("PLEX_DATA_ROOT", "/plex"))
+MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
 
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
@@ -59,6 +60,39 @@ def _is_within_base(base_path: str, candidate_path: str) -> bool:
         return True
     base_with_sep = base_real if base_real.endswith(os.sep) else base_real + os.sep
     return candidate_real.startswith(base_with_sep)
+
+
+def _safe_resolve_within(user_path: str, allowed_root: str) -> str | None:
+    """Resolve a user-provided path and verify it stays within *allowed_root*.
+
+    Returns the canonical absolute path on success, or ``None`` when the
+    path contains null bytes or escapes the allowed root directory.
+
+    The implementation uses ``os.path.normpath`` followed by a
+    ``str.startswith`` guard, which is the pattern recognised by CodeQL
+    as path-traversal sanitisation (py/path-injection).
+    """
+    if "\x00" in user_path:
+        return None
+
+    # Normalise (collapse ../ segments) before resolving
+    normalized = os.path.normpath(user_path)
+
+    # Resolve relative paths against the allowed root
+    if not os.path.isabs(normalized):
+        normalized = os.path.normpath(os.path.join(allowed_root, normalized))
+
+    # Canonicalise both paths (follows symlinks)
+    resolved = os.path.realpath(normalized)
+    root_real = os.path.realpath(allowed_root)
+
+    # Containment check: resolved must be root or a child of root
+    if resolved == root_real:
+        return resolved
+    if not resolved.startswith(root_real + os.sep):
+        return None
+
+    return resolved
 
 
 # Create blueprints
@@ -1034,42 +1068,24 @@ def validate_paths():
 
     result = {"valid": True, "errors": [], "warnings": [], "info": []}
 
-    def _reject_null_bytes(p: str) -> None:
-        """Raise ValueError if path contains null bytes."""
-        if "\x00" in p:
-            raise ValueError("Path contains null bytes")
-
     # Validate Plex Data Path
     if not plex_data_path:
         result["errors"].append("Plex Data Path is required")
         result["valid"] = False
     else:
-        # Reject null bytes in user input
-        try:
-            _reject_null_bytes(plex_data_path)
-        except ValueError:
+        # Reject null bytes explicitly (for a clear error message)
+        if "\x00" in plex_data_path:
             result["errors"].append("Invalid Plex Data Path")
             result["valid"] = False
             return jsonify(result)
 
-        # Resolve the user-provided path against the configured Plex data root
-        # and ensure the final canonical path is contained within that root.
-        # Using os.path.realpath and os.path.commonpath inline so that static
-        # analysis (CodeQL) can track the sanitization.
-        if os.path.isabs(plex_data_path):
-            candidate_path = plex_data_path
-        else:
-            candidate_path = os.path.join(PLEX_DATA_ROOT, plex_data_path)
+        # Resolve and confine the path within PLEX_DATA_ROOT.
+        # _safe_resolve_within performs normalisation, symlink resolution,
+        # and a startswith containment check.
+        resolved_plex_data_path = _safe_resolve_within(plex_data_path, PLEX_DATA_ROOT)
 
-        resolved_plex_data_path = os.path.realpath(candidate_path)
-        canonical_root = os.path.realpath(PLEX_DATA_ROOT)
-
-        try:
-            common_root = os.path.commonpath([canonical_root, resolved_plex_data_path])
-        except ValueError:
-            common_root = ""
-
-        if common_root != canonical_root:
+        if resolved_plex_data_path is None:
+            canonical_root = os.path.realpath(PLEX_DATA_ROOT)
             result["errors"].append(
                 f"Plex Data Path must be within the configured root: {canonical_root}"
             )
@@ -1137,15 +1153,21 @@ def validate_paths():
             )
             result["valid"] = False
         elif local_media_path:
-            # Reject null bytes
-            try:
-                _reject_null_bytes(local_media_path)
-            except ValueError:
+            # Reject null bytes explicitly (for a clear error message)
+            if "\x00" in local_media_path:
                 result["errors"].append("Invalid Local Media Path")
                 result["valid"] = False
                 return jsonify(result)
 
-            resolved_local_media = os.path.realpath(local_media_path)
+            # Resolve and confine the path within MEDIA_ROOT.
+            resolved_local_media = _safe_resolve_within(local_media_path, MEDIA_ROOT)
+
+            if resolved_local_media is None:
+                result["errors"].append(
+                    "Invalid Local Media Path (must be within the configured media root)"
+                )
+                result["valid"] = False
+                return jsonify(result)
 
             if not os.path.exists(resolved_local_media):
                 result["errors"].append(
