@@ -41,7 +41,6 @@ dependencies = [
     "flask-socketio>=5.3.0",
     "flask-limiter>=3.5.0",
     "apscheduler>=3.10.0",
-    "python-jose>=3.3.0",
     "gevent>=23.0.0",
     "gevent-websocket>=0.10.1",
     "sqlalchemy>=2.0.0",

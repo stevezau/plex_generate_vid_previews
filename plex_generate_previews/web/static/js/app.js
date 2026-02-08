@@ -454,8 +454,8 @@ function updateCurrentJob(job) {
             <span id="currentJobSpeed">${escapeHtml(job.progress.speed) || ''}</span>
         </div>
         <div class="mt-2 text-muted small">
-            <span>Items: ${escapeHtml(job.progress.processed_items) || 0} / ${escapeHtml(job.progress.total_items) || '?'}</span>
-            <span class="ms-3">ETA: ${escapeHtml(job.progress.eta) || 'Calculating...'}</span>
+            <span id="currentJobItems">Items: ${escapeHtml(job.progress.processed_items) || 0} / ${escapeHtml(job.progress.total_items) || '?'}</span>
+            <span class="ms-3" id="currentJobEta">ETA: ${escapeHtml(job.progress.eta) || 'Calculating...'}</span>
         </div>
     `;
 }
@@ -477,6 +477,18 @@ function updateJobProgress(jobId, progress) {
     const speedEl = document.getElementById('currentJobSpeed');
     if (speedEl && progress.speed) {
         speedEl.textContent = progress.speed;
+    }
+    
+    // Update items count
+    const itemsEl = document.getElementById('currentJobItems');
+    if (itemsEl) {
+        itemsEl.textContent = `Items: ${progress.processed_items || 0} / ${progress.total_items || '?'}`;
+    }
+    
+    // Update ETA
+    const etaEl = document.getElementById('currentJobEta');
+    if (etaEl) {
+        etaEl.textContent = `ETA: ${progress.eta || 'Calculating...'}`;
     }
     
     // Update job queue row

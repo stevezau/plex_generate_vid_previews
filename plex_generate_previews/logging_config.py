@@ -5,6 +5,9 @@ Centralized logging setup to avoid circular imports and provide
 consistent logging configuration across the application.
 """
 
+import os
+import sys
+
 from loguru import logger
 from rich.console import Console
 
@@ -29,7 +32,6 @@ def setup_logging(log_level: str = 'INFO', console: Console = None) -> None:
         )
     else:
         # Fallback to stderr for simple logging
-        import sys
         logger.add(
             sys.stderr,
             level=log_level,
@@ -37,4 +39,21 @@ def setup_logging(log_level: str = 'INFO', console: Console = None) -> None:
             colorize=True,
             enqueue=True
         )
+    
+    # Add persistent error log file
+    log_dir = os.path.join(os.environ.get('CONFIG_DIR', '/config'), 'logs')
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        error_log_path = os.path.join(log_dir, 'error.log')
+        logger.add(
+            error_log_path,
+            level='ERROR',
+            format='{time:YYYY/MM/DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}',
+            rotation='10 MB',
+            retention='30 days',
+            compression='gz',
+            enqueue=True,
+        )
+    except (PermissionError, OSError):
+        pass  # Skip file logging if config directory is not writable
 

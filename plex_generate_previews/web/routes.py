@@ -1191,11 +1191,18 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             # Track timing for ETA calculation
             import time
             job_start_time = time.time()
+            last_total = 0
             
             # Create progress callback
             def progress_callback(current, total, message):
                 """Update job progress from processing."""
+                nonlocal job_start_time, last_total
                 percent = (current / total * 100) if total > 0 else 0
+                
+                # Reset timer when a new library starts (total changes or current resets)
+                if total != last_total:
+                    job_start_time = time.time()
+                    last_total = total
                 
                 # Calculate ETA
                 eta = ""
