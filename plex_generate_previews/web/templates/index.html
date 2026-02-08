@@ -42,8 +42,11 @@
                 
                 <hr>
                 
-                <!-- Workers Status -->
-                <div id="systemStatus">
+                <!-- Dynamic Status (replaced by app.js) -->
+                <div id="systemStatus"></div>
+                
+                <!-- Workers Status (preserved across updates) -->
+                <div id="workerCounts">
                     <div class="d-flex justify-content-between mb-2">
                         <span>GPU Workers:</span>
                         <span id="gpuWorkers" class="badge bg-primary">-</span>
@@ -464,8 +467,10 @@
                 const configResponse = await fetch('/api/system/config');
                 const config = await configResponse.json();
                 
-                document.getElementById('gpuWorkers').textContent = config.gpu_threads || 0;
-                document.getElementById('cpuWorkers').textContent = config.cpu_threads || 1;
+                const gpuEl = document.getElementById('gpuWorkers');
+                const cpuEl = document.getElementById('cpuWorkers');
+                if (gpuEl) gpuEl.textContent = config.gpu_threads || 0;
+                if (cpuEl) cpuEl.textContent = config.cpu_threads || 1;
             } catch (e) {
                 console.warn('Failed to load config:', e);
             }
