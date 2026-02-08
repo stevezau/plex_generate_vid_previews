@@ -292,7 +292,8 @@ class TestAuthTokenFunctions:
         info = get_token_info()
         assert info["env_controlled"] is True
         assert info["source"] == "environment"
-        assert info["token"] == "env-token-12345"
+        # Token should be masked — only last 4 chars visible
+        assert info["token"] == "****2345"
 
 
 class TestTokenAPIEndpoints:

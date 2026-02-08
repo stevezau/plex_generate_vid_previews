@@ -53,6 +53,11 @@ def app(tmp_path):
     with open(auth_file, "w") as f:
         json.dump({"token": "test-token-12345678"}, f)
 
+    # Mark setup as complete so before_request doesn't redirect to /setup
+    settings_file = os.path.join(config_dir, "settings.json")
+    with open(settings_file, "w") as f:
+        json.dump({"setup_complete": True}, f)
+
     with patch.dict(
         os.environ,
         {

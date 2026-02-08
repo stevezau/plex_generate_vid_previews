@@ -202,7 +202,7 @@ class TestJobEvents:
         assert payload["library_name"] == "Movies"
 
     def test_job_started_event(self, app, authed_socketio_client):
-        """Starting a job should emit a job_updated event."""
+        """Starting a job should emit a job_started event."""
         from plex_generate_previews.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
@@ -213,7 +213,7 @@ class TestJobEvents:
         job_manager.start_job(job.id)
         received = authed_socketio_client.get_received(namespace="/jobs")
         event_names = [r["name"] for r in received]
-        assert "job_updated" in event_names
+        assert "job_started" in event_names
 
     def test_progress_update_event(self, app, authed_socketio_client):
         """Progress updates should emit events."""
@@ -239,7 +239,7 @@ class TestJobEvents:
         assert "job_progress" in event_names
 
     def test_job_completed_event(self, app, authed_socketio_client):
-        """Completing a job should emit a job_updated event with completed status."""
+        """Completing a job should emit a job_completed event with completed status."""
         from plex_generate_previews.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
@@ -250,7 +250,7 @@ class TestJobEvents:
         job_manager.complete_job(job.id)
         received = authed_socketio_client.get_received(namespace="/jobs")
         event_names = [r["name"] for r in received]
-        assert "job_updated" in event_names
+        assert "job_completed" in event_names
 
-        updated = [r for r in received if r["name"] == "job_updated"]
+        updated = [r for r in received if r["name"] == "job_completed"]
         assert updated[0]["args"][0]["status"] == "completed"
