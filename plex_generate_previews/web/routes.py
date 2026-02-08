@@ -660,7 +660,6 @@ PLEX_HEADERS = {
 
 
 @api.route("/plex/auth/pin", methods=["POST"])
-@api_token_required
 def create_plex_pin():
     """Create a new PIN for Plex OAuth authentication."""
     import requests
@@ -700,7 +699,6 @@ def create_plex_pin():
 
 
 @api.route("/plex/auth/pin/<int:pin_id>")
-@api_token_required
 def check_plex_pin(pin_id: int):
     """Check if a PIN has been authenticated."""
     import requests
@@ -741,7 +739,6 @@ def check_plex_pin(pin_id: int):
 
 
 @api.route("/plex/servers")
-@api_token_required
 def get_plex_servers():
     """Get user's Plex servers."""
     import requests
@@ -802,7 +799,6 @@ def get_plex_servers():
 
 
 @api.route("/plex/libraries")
-@api_token_required
 def get_plex_libraries():
     """Get libraries from a Plex server."""
     import requests
@@ -844,7 +840,6 @@ def get_plex_libraries():
 
 
 @api.route("/plex/test", methods=["POST"])
-@api_token_required
 def test_plex_connection():
     """Test connection to a Plex server."""
     import requests
