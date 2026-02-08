@@ -48,6 +48,36 @@ def auth_headers(flask_app):
     return {'X-Auth-Token': token}
 
 
+class TestIsWithinBase:
+    """Tests for the _is_within_base helper function."""
+
+    def test_exact_match(self):
+        """Path equal to the base returns True."""
+        from plex_generate_previews.web.routes import _is_within_base
+        assert _is_within_base('/plex', '/plex') is True
+
+    def test_child_path(self, tmp_path):
+        """Path inside the base returns True."""
+        from plex_generate_previews.web.routes import _is_within_base
+        base = str(tmp_path)
+        child = str(tmp_path / 'subdir')
+        assert _is_within_base(base, child) is True
+
+    def test_outside_path(self, tmp_path):
+        """Path outside the base returns False."""
+        from plex_generate_previews.web.routes import _is_within_base
+        base = str(tmp_path / 'allowed')
+        outside = str(tmp_path / 'other')
+        assert _is_within_base(base, outside) is False
+
+    def test_prefix_collision(self, tmp_path):
+        """Base /plex should not match /plex2 (no trailing sep trick)."""
+        from plex_generate_previews.web.routes import _is_within_base
+        base = str(tmp_path / 'plex')
+        candidate = str(tmp_path / 'plex2')
+        assert _is_within_base(base, candidate) is False
+
+
 class TestPathTraversalPrevention:
     """Tests for path traversal prevention in validate_paths endpoint."""
 
@@ -65,7 +95,7 @@ class TestPathTraversalPrevention:
         assert data['valid'] is False
         assert any('Invalid' in e for e in data['errors'])
 
-    def test_validate_paths_traversal_resolved(self, client, auth_headers, tmp_path):
+    def test_validate_paths_traversal_resolved(self, client, auth_headers, tmp_path, monkeypatch):
         """Paths with .. components are resolved via realpath."""
         plex_dir = tmp_path / 'plex'
         plex_dir.mkdir()
@@ -73,6 +103,9 @@ class TestPathTraversalPrevention:
         media_dir.mkdir()
         localhost_dir = media_dir / 'localhost'
         localhost_dir.mkdir()
+
+        # Set PLEX_DATA_ROOT to tmp_path so the path is allowed
+        monkeypatch.setattr('plex_generate_previews.web.routes.PLEX_DATA_ROOT', str(tmp_path))
 
         # Path with traversal components should be resolved
         traversal_path = str(plex_dir) + '/../plex'
@@ -88,6 +121,48 @@ class TestPathTraversalPrevention:
         data = json.loads(response.data)
         # Should resolve to the real path without errors about traversal
         assert not any('Invalid' in e for e in data['errors'])
+
+    def test_validate_paths_outside_root_rejected(self, client, auth_headers, tmp_path, monkeypatch):
+        """Paths outside the configured PLEX_DATA_ROOT are rejected."""
+        allowed_root = tmp_path / 'allowed'
+        allowed_root.mkdir()
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+
+        monkeypatch.setattr('plex_generate_previews.web.routes.PLEX_DATA_ROOT', str(allowed_root))
+
+        response = client.post(
+            '/api/setup/validate-paths',
+            headers={**auth_headers, 'Content-Type': 'application/json'},
+            data=json.dumps({
+                'plex_config_folder': str(outside)
+            })
+        )
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['valid'] is False
+        assert any('must be within' in e for e in data['errors'])
+
+    def test_validate_paths_traversal_escape_rejected(self, client, auth_headers, tmp_path, monkeypatch):
+        """Path using .. to escape the root is rejected."""
+        allowed_root = tmp_path / 'plex'
+        allowed_root.mkdir()
+        secret = tmp_path / 'secret'
+        secret.mkdir()
+
+        monkeypatch.setattr('plex_generate_previews.web.routes.PLEX_DATA_ROOT', str(allowed_root))
+
+        response = client.post(
+            '/api/setup/validate-paths',
+            headers={**auth_headers, 'Content-Type': 'application/json'},
+            data=json.dumps({
+                'plex_config_folder': str(allowed_root) + '/../secret'
+            })
+        )
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['valid'] is False
+        assert any('must be within' in e for e in data['errors'])
 
     def test_validate_paths_local_media_null_byte(self, client, auth_headers):
         """Local media path with null bytes is rejected."""

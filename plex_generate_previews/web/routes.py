@@ -29,6 +29,27 @@ from .jobs import get_job_manager
 from .scheduler import get_schedule_manager
 
 
+# Define a safe root directory for Plex data paths. All user-provided
+# Plex paths must resolve within this directory before any filesystem
+# operations are performed. Override via PLEX_DATA_ROOT env var.
+PLEX_DATA_ROOT = os.path.realpath(os.environ.get('PLEX_DATA_ROOT', '/plex'))
+
+
+def _is_within_base(base_path: str, candidate_path: str) -> bool:
+    """Return True if candidate_path is inside (or equal to) base_path.
+
+    Both paths are resolved via os.path.realpath before comparison.
+    Uses a trailing-separator check to avoid prefix collisions
+    (e.g. /plex2 should not match /plex).
+    """
+    base_real = os.path.realpath(base_path)
+    candidate_real = os.path.realpath(candidate_path)
+    if base_real == candidate_real:
+        return True
+    base_with_sep = base_real if base_real.endswith(os.sep) else base_real + os.sep
+    return candidate_real.startswith(base_with_sep)
+
+
 # Create blueprints
 main = Blueprint('main', __name__)
 api = Blueprint('api', __name__, url_prefix='/api')
@@ -955,7 +976,15 @@ def validate_paths():
             result['errors'].append('Invalid Plex Data Path')
             result['valid'] = False
             return jsonify(result)
-        
+
+        # Ensure the resolved path is within the allowed Plex data root
+        if not _is_within_base(PLEX_DATA_ROOT, plex_data_path):
+            result['errors'].append(
+                f'Plex Data Path must be within the configured root: {PLEX_DATA_ROOT}'
+            )
+            result['valid'] = False
+            return jsonify(result)
+
         if not os.path.exists(plex_data_path):
             result['errors'].append(f'Plex Data Path does not exist: {plex_data_path}')
             result['valid'] = False
@@ -983,14 +1012,10 @@ def validate_paths():
                     logger.warning(f"Could not verify Plex structure: {e}")
                     result['warnings'].append('Could not verify Plex structure')
             
-            # Check write permissions
-            try:
-                test_file = os.path.join(plex_data_path, '.write_test')
-                with open(test_file, 'w') as f:
-                    f.write('test')
-                os.remove(test_file)
+            # Check write permissions (non-destructive)
+            if os.access(plex_data_path, os.W_OK):
                 result['info'].append('✓ Write permissions OK')
-            except Exception:
+            else:
                 result['errors'].append('Cannot write to Plex Data Path. Check permissions (PUID/PGID).')
                 result['valid'] = False
     
