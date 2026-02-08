@@ -29,7 +29,7 @@ MOCK_USER = {
     "subscription": {
         "active": True,
         "plan": "lifetime",
-    }
+    },
 }
 
 # Mock server resources
@@ -77,7 +77,7 @@ MOCK_RESOURCES = [
                 "relay": False,
                 "IPv6": False,
             },
-        ]
+        ],
     }
 ]
 
@@ -88,7 +88,7 @@ def create_pin():
     # Generate a unique PIN
     pin_id = len(pins) + 1
     code = str(uuid.uuid4())[:8].upper()
-    
+
     pin_data = {
         "id": pin_id,
         "code": code,
@@ -97,13 +97,15 @@ def create_pin():
         "clientIdentifier": request.headers.get("X-Plex-Client-Identifier", "unknown"),
         "expiresIn": 1800,
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "expiresAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1800)),
+        "expiresAt": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1800)
+        ),
         "authToken": None,  # Not authenticated yet
         "newRegistration": None,
     }
-    
+
     pins[pin_id] = pin_data
-    
+
     return jsonify(pin_data)
 
 
@@ -112,7 +114,7 @@ def check_pin(pin_id: int):
     """Check if a PIN has been authenticated."""
     if pin_id not in pins:
         return jsonify({"errors": [{"code": 1020, "message": "PIN not found"}]}), 404
-    
+
     pin_data = pins[pin_id]
     return jsonify(pin_data)
 
@@ -122,11 +124,11 @@ def link_pin(pin_id: int):
     """Simulate user authenticating the PIN (called by test to approve)."""
     if pin_id not in pins:
         return jsonify({"errors": [{"code": 1020, "message": "PIN not found"}]}), 404
-    
+
     # Mark as authenticated
     pins[pin_id]["authToken"] = MOCK_USER["authToken"]
     pins[pin_id]["trusted"] = True
-    
+
     return jsonify(pins[pin_id])
 
 
@@ -136,7 +138,7 @@ def get_user():
     token = request.headers.get("X-Plex-Token")
     if not token:
         return jsonify({"errors": [{"code": 1001, "message": "Unauthorized"}]}), 401
-    
+
     return jsonify(MOCK_USER)
 
 
@@ -146,11 +148,8 @@ def get_resources():
     token = request.headers.get("X-Plex-Token")
     if not token:
         return jsonify({"errors": [{"code": 1001, "message": "Unauthorized"}]}), 401
-    
+
     # Return JSON for newer API
-    include_https = request.args.get("includeHttps", "0") == "1"
-    include_relay = request.args.get("includeRelay", "0") == "1"
-    
     return jsonify(MOCK_RESOURCES)
 
 
@@ -162,22 +161,22 @@ def get_resources_xml():
         return Response(
             '<?xml version="1.0"?><Response code="401" status="Unauthorized"/>',
             status=401,
-            mimetype="application/xml"
+            mimetype="application/xml",
         )
-    
+
     resources_xml = ""
     for resource in MOCK_RESOURCES:
         connections = ""
         for conn in resource.get("connections", []):
             connections += f'<Connection protocol="{conn["protocol"]}" address="{conn["address"]}" port="{conn["port"]}" uri="{conn["uri"]}" local="{1 if conn["local"] else 0}"/>'
-        
+
         resources_xml += f'''<Device name="{resource["name"]}" product="{resource["product"]}" 
             productVersion="{resource["productVersion"]}" platform="{resource["platform"]}" 
             clientIdentifier="{resource["clientIdentifier"]}" provides="{resource["provides"]}" 
             owned="{1 if resource["owned"] else 0}" accessToken="{resource.get("accessToken", "")}">
             {connections}
         </Device>'''
-    
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="{len(MOCK_RESOURCES)}">
 {resources_xml}
@@ -191,7 +190,7 @@ def auth_page():
     """Simulated OAuth login page."""
     pin_id = html.escape(request.args.get("pin", ""))
     code = html.escape(request.args.get("code", ""))
-    
+
     # In real testing, the test would call /api/v2/pins/<id>/link to approve
     page = f"""<!DOCTYPE html>
 <html>

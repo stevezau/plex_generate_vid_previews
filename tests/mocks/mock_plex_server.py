@@ -7,7 +7,6 @@ Run standalone: python -m tests.mocks.mock_plex_server
 
 import os
 from flask import Flask, jsonify, request, Response
-import xml.etree.ElementTree as ET
 
 
 app = Flask(__name__)
@@ -41,7 +40,7 @@ def check_token():
         return False, Response(
             '<?xml version="1.0"?><Response code="401" status="Unauthorized"/>',
             status=401,
-            mimetype="application/xml"
+            mimetype="application/xml",
         )
     return True, None
 
@@ -52,7 +51,7 @@ def server_identity():
     valid, error = check_token()
     if not valid:
         return error
-    
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="0" allowCameraUpload="1" allowChannelAccess="1" 
     allowMediaDeletion="1" allowSharing="1" allowSync="1" allowTuners="1" 
@@ -86,20 +85,20 @@ def library_sections():
     valid, error = check_token()
     if not valid:
         return error
-    
+
     sections = ""
     for lib in MOCK_LIBRARIES:
         sections += f'''<Directory allowSync="1" art="/:/resources/movie-fanart.jpg" 
-            composite="/library/sections/{lib['key']}/composite/1234" 
+            composite="/library/sections/{lib["key"]}/composite/1234" 
             filters="1" refreshing="0" thumb="/:/resources/movie.png" 
-            key="{lib['key']}" type="{lib['type']}" title="{lib['title']}" 
-            agent="{lib['agent']}" scanner="Plex Movie" language="en-US" 
-            uuid="abc-{lib['key']}" updatedAt="1704067200" createdAt="1704000000" 
+            key="{lib["key"]}" type="{lib["type"]}" title="{lib["title"]}" 
+            agent="{lib["agent"]}" scanner="Plex Movie" language="en-US" 
+            uuid="abc-{lib["key"]}" updatedAt="1704067200" createdAt="1704000000" 
             scannedAt="1704067200" content="1" directory="1" 
             contentChangedAt="1234" hidden="0">
-            <Location id="{lib['key']}" path="/media/{lib['title'].lower().replace(' ', '_')}"/>
+            <Location id="{lib["key"]}" path="/media/{lib["title"].lower().replace(" ", "_")}"/>
         </Directory>'''
-    
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="{len(MOCK_LIBRARIES)}" allowSync="1" title1="Plex Library">
 {sections}
@@ -113,35 +112,35 @@ def library_section_all(section_id: str):
     valid, error = check_token()
     if not valid:
         return error
-    
+
     items = ""
     if section_id == "1":  # Movies
         for movie in MOCK_MOVIES:
-            items += f'''<Video ratingKey="{movie['ratingKey']}" 
-                key="/library/metadata/{movie['ratingKey']}" 
-                type="movie" title="{movie['title']}" year="{movie['year']}" 
-                duration="{movie['duration']}" 
+            items += f'''<Video ratingKey="{movie["ratingKey"]}" 
+                key="/library/metadata/{movie["ratingKey"]}" 
+                type="movie" title="{movie["title"]}" year="{movie["year"]}" 
+                duration="{movie["duration"]}" 
                 addedAt="1704067200" updatedAt="1704067200">
-                <Media id="1" duration="{movie['duration']}" 
+                <Media id="1" duration="{movie["duration"]}" 
                     bitrate="8000" width="1920" height="1080" 
                     aspectRatio="1.78" audioChannels="6" audioCodec="ac3" 
                     videoCodec="h264" videoResolution="1080" container="mkv">
                     <Part id="1" key="/library/parts/1/1234/file.mkv" 
-                        duration="{movie['duration']}" 
-                        file="/media/movies/{movie['title'].lower().replace(' ', '_')}.mkv" 
+                        duration="{movie["duration"]}" 
+                        file="/media/movies/{movie["title"].lower().replace(" ", "_")}.mkv" 
                         size="8000000000" container="mkv" 
                         videoProfile="main"/>
                 </Media>
             </Video>'''
     elif section_id == "2":  # TV Shows
         for show in MOCK_SHOWS:
-            items += f'''<Directory ratingKey="{show['ratingKey']}" 
-                key="/library/metadata/{show['ratingKey']}/children" 
-                type="show" title="{show['title']}" year="{show['year']}" 
+            items += f'''<Directory ratingKey="{show["ratingKey"]}" 
+                key="/library/metadata/{show["ratingKey"]}/children" 
+                type="show" title="{show["title"]}" year="{show["year"]}" 
                 addedAt="1704067200" updatedAt="1704067200" 
                 leafCount="10" viewedLeafCount="0" childCount="1">
             </Directory>'''
-    
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="2" allowSync="1" art="/:/resources/movie-fanart.jpg" 
     identifier="com.plexapp.plugins.library" 
@@ -161,7 +160,7 @@ def library_metadata(item_id: str):
     valid, error = check_token()
     if not valid:
         return error
-    
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="1">
     <Video ratingKey="{item_id}" key="/library/metadata/{item_id}" 
@@ -177,7 +176,7 @@ def status_sessions():
     valid, error = check_token()
     if not valid:
         return error
-    
+
     xml = """<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="0">
 </MediaContainer>"""

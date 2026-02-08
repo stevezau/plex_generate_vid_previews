@@ -22,6 +22,7 @@ from rich.console import Console
 # JSON serialiser for structured logging
 # ---------------------------------------------------------------------------
 
+
 def _json_sink(message) -> None:
     """Loguru sink that writes one JSON object per log record to *stderr*.
 
@@ -49,8 +50,9 @@ def _json_sink(message) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def setup_logging(
-    log_level: str = 'INFO',
+    log_level: str = "INFO",
     console: Console = None,
     log_format: str = None,
 ) -> None:
@@ -66,11 +68,11 @@ def setup_logging(
             to the ``LOG_FORMAT`` environment variable when *None*.
     """
     if log_format is None:
-        log_format = os.environ.get('LOG_FORMAT', 'pretty').lower()
+        log_format = os.environ.get("LOG_FORMAT", "pretty").lower()
 
     logger.remove()
 
-    if log_format == 'json':
+    if log_format == "json":
         # Structured JSON — one object per line on stderr
         logger.add(
             _json_sink,
@@ -81,35 +83,34 @@ def setup_logging(
     elif console:
         # Use provided console for coordinated output with progress bars
         logger.add(
-            lambda msg: console.print(msg, end=''),
+            lambda msg: console.print(msg, end=""),
             level=log_level,
-            format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>',
-            enqueue=True
+            format="<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>",
+            enqueue=True,
         )
     else:
         # Fallback to stderr for simple logging
         logger.add(
             sys.stderr,
             level=log_level,
-            format='<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>',
+            format="<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>",
             colorize=True,
-            enqueue=True
+            enqueue=True,
         )
-    
+
     # Add persistent error log file (always plain text, regardless of format)
-    log_dir = os.path.join(os.environ.get('CONFIG_DIR', '/config'), 'logs')
+    log_dir = os.path.join(os.environ.get("CONFIG_DIR", "/config"), "logs")
     try:
         os.makedirs(log_dir, exist_ok=True)
-        error_log_path = os.path.join(log_dir, 'error.log')
+        error_log_path = os.path.join(log_dir, "error.log")
         logger.add(
             error_log_path,
-            level='ERROR',
-            format='{time:YYYY/MM/DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}',
-            rotation='10 MB',
-            retention='30 days',
-            compression='gz',
+            level="ERROR",
+            format="{time:YYYY/MM/DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
+            rotation="10 MB",
+            retention="30 days",
+            compression="gz",
             enqueue=True,
         )
     except (PermissionError, OSError) as e:
         logger.warning(f"Could not create error log file: {e}")
-
