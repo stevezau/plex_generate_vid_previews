@@ -102,6 +102,28 @@ Possible causes:
 - File not found (check path mappings)
 - Invalid file format
 
+### Why does ETA show "Calculating..." for so long?
+
+The ETA calculation is designed to be **accurate, not fast**. Here's what to expect:
+
+1. **Initial skip burst (0-30 seconds)**: Shows "Calculating..."
+   - Many files may already have thumbnails and are skipped instantly
+   - The tool detects this burst and waits for "real" processing to begin
+
+2. **First few items processed (30s-5 min)**: Still shows "Calculating..."
+   - Real FFmpeg encoding is underway, but not enough data yet
+   - Requires ≥10 seconds of sustained processing + 2+ real completions
+
+3. **Realistic estimate appears (5+ min)**: Shows time like "8h 30m"
+   - ETA is calculated from actual per-item processing time
+   - Updates every 3 seconds as files complete
+   - Becomes increasingly accurate as more items process
+
+4. **During processing**: ETA counts down as completion percentage reaches 100%
+   - If processing rate varies, ETA adjusts in real-time
+
+**Why this design?** Early ETA guesses based on incomplete data are wildly inaccurate. For example, if the first 100 files are already cached, the rate would be ~100 items/min, but real files take 2-3 min each. The "Calculating..." phase filters out this noise.
+
 ---
 
 ## Troubleshooting
