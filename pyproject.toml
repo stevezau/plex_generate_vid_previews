@@ -11,7 +11,7 @@ authors = [
 description = "Generate video preview thumbnails for Plex Media Server"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
@@ -19,24 +19,29 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Multimedia :: Video",
     "Topic :: System :: Archiving",
 ]
 keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
 dependencies = [
-    "requests==2.32.3",
+    "requests==2.32.4",
     "urllib3>=1.26.0,<3.0.0",
     "python-dotenv==1.1.1",
     "plexapi==4.17.1",
     "loguru==0.7.3",
-    "rich==13.8.1",
+    "rich>=13.9,<14",
     "pymediainfo==7.0.1",
-    "psutil>=5.9.0,<6.0.0",
+    "flask>=3.0.0,<4",
+    "flask-wtf>=1.2.0,<2",
+    "flask-socketio>=5.3.0,<6",
+    "flask-limiter>=3.5.0,<4",
+    "apscheduler>=3.10.0,<4",
+    "gunicorn>=22.0.0,<24",
+    "simple-websocket>=1.0.0,<2",
+    "sqlalchemy>=2.0.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +52,16 @@ test = [
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
     "pytest-xdist>=3.0.0",
+    "pytest-playwright>=0.4.0",
+    "playwright>=1.40.0",
+    "flask-cors>=4.0.0",
+]
+dev = [
+    "plex-generate-previews[test]",
+    "ruff>=0.6.0",
+    "pre-commit>=3.6.0",
+    "locust>=2.20.0",
+    "httpie>=3.2.0",
 ]
 
 [project.urls]
@@ -72,11 +87,23 @@ addopts = [
     "--cov-report=html",
     "--cov-report=xml",
     "--cov-fail-under=70",
-    "-v"
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "-m", "not gpu",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: marks tests as integration tests",
+    "gpu: marks tests that require GPU hardware",
+    "plex: marks tests that require Plex server connection",
+    "slow: marks tests as slow running",
+    "ci: marks tests that work in CI environments",
+    "e2e: marks tests as end-to-end browser tests",
+]
 
 [tool.coverage.run]
 source = ["plex_generate_previews"]

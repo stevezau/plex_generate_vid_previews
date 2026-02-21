@@ -117,7 +117,7 @@ def reference_bif(fixtures_dir):
 def plex_xml_library_sections(fixtures_dir):
     """Load library sections XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "library_sections.xml"
-    with open(xml_path, 'r', encoding='utf-8') as f:
+    with open(xml_path, "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -125,7 +125,7 @@ def plex_xml_library_sections(fixtures_dir):
 def plex_xml_episode_tree(fixtures_dir):
     """Load episode tree XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "episode_tree.xml"
-    with open(xml_path, 'r', encoding='utf-8') as f:
+    with open(xml_path, "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -133,73 +133,86 @@ def plex_xml_episode_tree(fixtures_dir):
 def plex_xml_movie_tree(fixtures_dir):
     """Load movie tree XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "movie_tree.xml"
-    with open(xml_path, 'r', encoding='utf-8') as f:
+    with open(xml_path, "r", encoding="utf-8") as f:
         return f.read()
 
 
-def create_mock_ffmpeg_process(returncode=0, duration=60.0, create_images=True, output_dir=None):
+def create_mock_ffmpeg_process(
+    returncode=0, duration=60.0, create_images=True, output_dir=None
+):
     """
     Helper function to create a mock FFmpeg process for testing.
-    
+
     Args:
         returncode: Exit code for the process (0 = success)
         duration: Video duration in seconds for progress simulation
         create_images: Whether to create actual image files in output_dir
         output_dir: Directory to create test images in
-        
+
     Returns:
         MagicMock: Mocked subprocess.Popen object
     """
     mock_proc = MagicMock()
     mock_proc.returncode = returncode
-    
+
     # Simulate progress by returning None (running) then returncode (done)
     poll_count = [0]
+
     def mock_poll():
         poll_count[0] += 1
         if poll_count[0] > 2:  # Return done after 2 polls
             return returncode
         return None
-    
+
     mock_proc.poll = mock_poll
-    
+
     # If requested, create test images
     if create_images and output_dir and returncode == 0:
         os.makedirs(output_dir, exist_ok=True)
         # Create some test images
         for i in range(1, 4):
-            img_path = os.path.join(output_dir, f'img-{i:06d}.jpg')
-            with open(img_path, 'wb') as f:
-                f.write(b'\xFF\xD8\xFF')  # Minimal JPEG
-    
+            img_path = os.path.join(output_dir, f"img-{i:06d}.jpg")
+            with open(img_path, "wb") as f:
+                f.write(b"\xff\xd8\xff")  # Minimal JPEG
+
     return mock_proc
 
 
-def create_mock_mediainfo(has_hdr=False, duration=60.0):
+def create_mock_mediainfo(has_hdr=False, hdr_format_override=None, duration=60.0):
     """
     Helper function to create a mock MediaInfo object.
-    
+
     Args:
-        has_hdr: Whether video has HDR format
+        has_hdr: Whether video has HDR format (sets ``"HDR10"`` if True)
+        hdr_format_override: Explicit ``hdr_format`` string.  When provided,
+            this value is used verbatim and *has_hdr* is ignored.  Useful for
+            testing Dolby Vision variants, e.g.
+            ``"Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU"``.
         duration: Video duration in seconds
-        
+
     Returns:
         MagicMock: Mocked MediaInfo object
     """
     mock_info = MagicMock()
-    
+
     # Video track
     video_track = MagicMock()
-    video_track.hdr_format = "HDR10" if has_hdr else None
+    if hdr_format_override is not None:
+        video_track.hdr_format = hdr_format_override
+    else:
+        video_track.hdr_format = "HDR10" if has_hdr else None
+    video_track.maximum_content_light_level = (
+        None  # MaxCLL — override in tests as needed
+    )
     video_track.duration = duration * 1000  # milliseconds
     video_track.width = 1920
     video_track.height = 1080
     video_track.frame_rate = 24.0
-    
+
     mock_info.video_tracks = [video_track]
     mock_info.audio_tracks = []
     mock_info.general_tracks = []
-    
+
     return mock_info
 
 
@@ -227,9 +240,27 @@ def mock_mediainfo_hdr():
     return create_mock_mediainfo(has_hdr=True)
 
 
+@pytest.fixture
+def mock_mediainfo_dv_profile5():
+    """Create a mock MediaInfo for Dolby Vision Profile 5 (no backward compat)."""
+    return create_mock_mediainfo(
+        hdr_format_override="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU"
+    )
+
+
+@pytest.fixture
+def mock_mediainfo_dv_with_hdr10():
+    """Create a mock MediaInfo for Dolby Vision Profile 8 with HDR10 compat."""
+    return create_mock_mediainfo(
+        hdr_format_override=(
+            "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, "
+            "HDR10 compatible / SMPTE ST 2086"
+        )
+    )
+
+
 # Export helper functions so tests can use them
 __all__ = [
-    'create_mock_ffmpeg_process',
-    'create_mock_mediainfo',
+    "create_mock_ffmpeg_process",
+    "create_mock_mediainfo",
 ]
-

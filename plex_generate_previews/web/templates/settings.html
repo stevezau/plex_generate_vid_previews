@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Plex Preview Generator{% endblock %}
+
+{% block head %}
+<style>
+    .section-card {
+        margin-bottom: 1.5rem;
+    }
+
+    .auth-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.25rem 0.75rem;
+        border-radius: 1rem;
+        font-size: 0.875rem;
+    }
+
+    .auth-badge.authenticated {
+        background-color: rgba(25, 135, 84, 0.2);
+        color: var(--bs-success);
+    }
+
+    .auth-badge.expired {
+        background-color: rgba(220, 53, 69, 0.2);
+        color: var(--bs-danger);
+    }
+
+    .library-checkbox {
+        padding: 0.5rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.375rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .library-checkbox:hover {
+        border-color: var(--bs-primary);
+    }
+
+    .library-checkbox input {
+        margin-right: 0.5rem;
+    }
+
+    .save-banner {
+        position: sticky;
+        bottom: 1rem;
+        z-index: 100;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8 mx-auto">
+        <!-- Header with Save Button -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2><i class="bi bi-gear me-2"></i>Settings</h2>
+            <button class="btn btn-primary" id="saveAllBtn" disabled onclick="saveAllSettings()">
+                <i class="bi bi-check-lg me-1"></i>Save Changes
+            </button>
+        </div>
+
+        <!-- Token Expired Warning -->
+        <div id="tokenWarning" class="alert alert-warning d-none mb-4">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <strong>Plex token may be invalid.</strong>
+            <a href="#" onclick="reAuthPlex()" class="alert-link">Re-authenticate with Plex</a>
+        </div>
+
+        <!-- Plex Connection -->
+        <div class="card section-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-hdd-network me-2"></i>Plex Connection</span>
+                <span id="authBadge" class="auth-badge authenticated d-none">
+                    <i class="bi bi-check-circle me-1"></i>Connected
+                </span>
+            </div>
+            <div class="card-body">
+                <div class="row mb-3">
+                    <div class="col-md-8">
+                        <label for="plexUrl" class="form-label">Plex Server URL</label>
+                        <input type="text" class="form-control" id="plexUrl"
+                               placeholder="http://192.168.1.100:32400">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">&nbsp;</label>
+                        <button class="btn btn-outline-secondary w-100" onclick="testConnection()">
+                            <i class="bi bi-plug me-1"></i>Test Connection
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Plex Authentication</label>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-primary" onclick="reAuthPlex()">
+                            <i class="bi bi-box-arrow-in-right me-1"></i>Sign in with Plex
+                        </button>
+                        <span id="plexServerName" class="align-self-center text-muted"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Libraries -->
+        <div class="card section-card">
+            <div class="card-header">
+                <i class="bi bi-collection me-2"></i>Libraries
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">Select which libraries to generate previews for:</p>
+
+                <div id="libraryLoading" class="text-center py-3">
+                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                    Loading libraries...
+                </div>
+
+                <div id="libraryList" class="d-none">
+                    <!-- Libraries loaded dynamically -->
+                </div>
+
+                <div id="libraryError" class="text-danger d-none"></div>
+            </div>
+        </div>
+
+        <!-- Path Configuration -->
+        <div class="card section-card">
+            <div class="card-header">
+                <i class="bi bi-folder me-2"></i>Path Configuration
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label for="plexConfigFolder" class="form-label">Plex Data Path</label>
+                    <input type="text" class="form-control" id="plexConfigFolder"
+                           placeholder="/plex">
+                    <div class="form-text">Container path to Plex Media Server data folder</div>
+                </div>
+
+                <hr class="my-4">
+                <h6 class="mb-3">Path Mapping (Optional)</h6>
+
+                <div class="mb-3">
+                    <label for="plexVideosPathMapping" class="form-label">Plex Media Path</label>
+                    <input type="text" class="form-control" id="plexVideosPathMapping"
+                           placeholder="/data/media">
+                    <div class="form-text">Path as Plex sees media files</div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="plexLocalVideosPathMapping" class="form-label">Local Media Path</label>
+                    <input type="text" class="form-control" id="plexLocalVideosPathMapping"
+                           placeholder="/media">
+                    <div class="form-text">Path as this container sees media files</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Processing Options -->
+        <div class="card section-card">
+            <div class="card-header">
+                <i class="bi bi-speedometer2 me-2"></i>Processing Options
+            </div>
+            <div class="card-body">
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
+                        <label for="gpuThreads" class="form-label">GPU Workers</label>
+                        <input type="number" class="form-control" id="gpuThreads"
+                               min="0" max="16" value="1">
+                        <div class="form-text">Parallel GPU jobs (0 to disable)</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="cpuThreads" class="form-label">CPU Workers</label>
+                        <input type="number" class="form-control" id="cpuThreads"
+                               min="0" max="32" value="1">
+                        <div class="form-text">Parallel CPU jobs</div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailInterval" class="form-label">Thumbnail Interval</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="thumbnailInterval"
+                                   min="1" max="60" value="2">
+                            <span class="input-group-text">seconds</span>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailQuality" class="form-label">
+                            Thumbnail Quality: <span id="qualityValue">4</span>/10
+                        </label>
+                        <input type="range" class="form-range" id="thumbnailQuality"
+                               min="1" max="10" value="4">
+                    </div>
+                </div>
+
+                <!-- GPU Info -->
+                <div id="gpuInfo" class="alert alert-info mt-3">
+                    <i class="bi bi-gpu-card me-2"></i>
+                    <span id="gpuInfoText">Detecting GPUs...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logging -->
+        <div class="card section-card">
+            <div class="card-header">
+                <i class="bi bi-journal-text me-2"></i>Logging
+            </div>
+            <div class="card-body">
+                <div class="row mb-3">
+                    <div class="col-md-6 mb-3">
+                        <label for="logLevel" class="form-label">Log Level</label>
+                        <select class="form-select" id="logLevel">
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO" selected>INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="CRITICAL">CRITICAL</option>
+                        </select>
+                        <div class="form-text">Controls console and job log verbosity</div>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label for="logRotationSize" class="form-label">Rotation Size</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="logRotationSize" min="1" max="100" value="10">
+                            <span class="input-group-text">MB</span>
+                        </div>
+                        <div class="form-text">Max size per log file</div>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label for="logRetentionCount" class="form-label">Retention</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="logRetentionCount" min="1" max="50" value="5">
+                            <span class="input-group-text">files</span>
+                        </div>
+                        <div class="form-text">Rotated files to keep</div>
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-outline-primary" onclick="applyLogLevel()">
+                    <i class="bi bi-arrow-repeat me-1"></i>Apply Log Level Now
+                </button>
+                <div class="form-text mt-1">
+                    Applies immediately without restarting. Rotation &amp; retention take effect on next restart.
+                </div>
+            </div>
+        </div>
+
+        <!-- Authentication Token -->
+        <div class="card section-card">
+            <div class="card-header">
+                <i class="bi bi-key me-2"></i>Web Authentication
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">
+                    The authentication token secures access to this web interface.
+                </p>
+
+                <button class="btn btn-outline-danger" onclick="regenerateToken()">
+                    <i class="bi bi-arrow-repeat me-1"></i>Regenerate Token
+                </button>
+
+                <div class="form-text mt-2">
+                    Warning: This will log out all current sessions.
+                </div>
+            </div>
+        </div>
+
+        <!-- About -->
+        <div class="card section-card">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>About
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    <strong>Plex Preview Generator</strong>
+                </p>
+                <p class="text-muted mb-2">
+                    Generate video preview thumbnails for Plex with GPU acceleration.
+                </p>
+                <a href="https://github.com/stevezau/plex_generate_vid_previews"
+                   target="_blank" class="text-decoration-none">
+                    <i class="bi bi-github me-1"></i>View on GitHub
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadSettings();
+    loadLibraries();
+    loadGpuInfo();
+
+    // Track changes
+    document.querySelectorAll('input, select').forEach(el => {
+        el.addEventListener('change', markDirty);
+        el.addEventListener('input', markDirty);
+    });
+
+    // Quality slider display
+    document.getElementById('thumbnailQuality').addEventListener('input', function() {
+        document.getElementById('qualityValue').textContent = this.value;
+    });
+});
+
+let isDirty = false;
+
+function markDirty() {
+    isDirty = true;
+    document.getElementById('saveAllBtn').disabled = false;
+}
+
+async function loadSettings() {
+    try {
+        const settings = await new SettingsManager().get();
+
+        // Populate form
+        document.getElementById('plexUrl').value = settings.plex_url || '';
+        document.getElementById('plexConfigFolder').value = settings.plex_config_folder || '/plex';
+        document.getElementById('plexVideosPathMapping').value = settings.plex_videos_path_mapping || '';
+        document.getElementById('plexLocalVideosPathMapping').value = settings.plex_local_videos_path_mapping || '';
+        document.getElementById('gpuThreads').value = settings.gpu_threads || 1;
+        document.getElementById('cpuThreads').value = settings.cpu_threads || 1;
+        document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
+        document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
+        document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
+
+        // Logging settings
+        document.getElementById('logLevel').value = settings.log_level || 'INFO';
+        document.getElementById('logRotationSize').value = parseInt(settings.log_rotation_size) || 10;
+        document.getElementById('logRetentionCount').value = settings.log_retention_count || 5;
+
+        // Show server name and auth status
+        if (settings.plex_name) {
+            document.getElementById('plexServerName').textContent = `Connected to: ${settings.plex_name}`;
+        }
+
+        if (settings.plex_token && settings.plex_token !== '') {
+            document.getElementById('authBadge').classList.remove('d-none');
+        }
+
+        // Store selected libraries for comparison
+        window.selectedLibraries = settings.selected_libraries || [];
+
+    } catch (error) {
+        console.error('Failed to load settings:', error);
+        showToast('Failed to load settings', 'danger');
+    }
+}
+
+async function loadLibraries() {
+    const loading = document.getElementById('libraryLoading');
+    const list = document.getElementById('libraryList');
+    const error = document.getElementById('libraryError');
+
+    try {
+        const serverManager = new PlexServerManager();
+        const libraries = await serverManager.getLibraries();
+
+        loading.classList.add('d-none');
+
+        if (libraries.length === 0) {
+            error.textContent = 'No libraries found. Make sure Plex is connected.';
+            error.classList.remove('d-none');
+            return;
+        }
+
+        list.innerHTML = '';
+        libraries.forEach(lib => {
+            const isSelected = (window.selectedLibraries || []).includes(lib.id);
+            const div = document.createElement('div');
+            div.className = 'library-checkbox';
+            div.innerHTML = `
+                <input type="checkbox" id="lib-${lib.id}" value="${lib.id}"
+                       ${isSelected ? 'checked' : ''} onchange="markDirty()">
+                <label for="lib-${lib.id}">
+                    <strong>${lib.name}</strong>
+                    <span class="text-muted ms-2">(${lib.type})</span>
+                </label>
+            `;
+            list.appendChild(div);
+        });
+
+        list.classList.remove('d-none');
+
+    } catch (err) {
+        loading.classList.add('d-none');
+        error.textContent = 'Failed to load libraries. ' + err.message;
+        error.classList.remove('d-none');
+    }
+}
+
+async function loadGpuInfo() {
+    try {
+        const response = await fetch('/api/system/status');
+        const data = await response.json();
+
+        const gpuText = document.getElementById('gpuInfoText');
+        const gpuInfo = document.getElementById('gpuInfo');
+
+        if (data.gpus && data.gpus.length > 0) {
+            const names = data.gpus.map(g => `${g.name} (${g.type})`).join(', ');
+            gpuText.textContent = `Detected: ${names}`;
+            gpuInfo.classList.remove('alert-info');
+            gpuInfo.classList.add('alert-success');
+        } else {
+            gpuText.textContent = 'No GPU detected. CPU processing will be used.';
+        }
+    } catch (error) {
+        document.getElementById('gpuInfoText').textContent = 'Failed to detect GPUs.';
+    }
+}
+
+async function saveAllSettings() {
+    const btn = document.getElementById('saveAllBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+    try {
+        // Collect selected libraries
+        const libraries = [];
+        document.querySelectorAll('#libraryList input:checked').forEach(cb => {
+            libraries.push(cb.value);
+        });
+
+        const settings = {
+            plex_url: document.getElementById('plexUrl').value,
+            plex_config_folder: document.getElementById('plexConfigFolder').value,
+            plex_videos_path_mapping: document.getElementById('plexVideosPathMapping').value,
+            plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value,
+            gpu_threads: parseInt(document.getElementById('gpuThreads').value),
+            cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+            thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
+            thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
+            selected_libraries: libraries,
+            log_level: document.getElementById('logLevel').value,
+            log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
+            log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
+        };
+
+        await new SettingsManager().save(settings);
+
+        isDirty = false;
+        showToast('Settings saved successfully', 'success');
+
+    } catch (error) {
+        showToast('Failed to save settings: ' + error.message, 'danger');
+    }
+
+    btn.disabled = !isDirty;
+    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
+}
+
+async function testConnection() {
+    const url = document.getElementById('plexUrl').value;
+
+    if (!url) {
+        showToast('Please enter a Plex URL first', 'warning');
+        return;
+    }
+
+    try {
+        const result = await new PlexServerManager().testConnection(url);
+
+        if (result.success) {
+            showToast(`Connected to: ${result.server_name}`, 'success');
+            document.getElementById('plexServerName').textContent = `Connected to: ${result.server_name}`;
+            document.getElementById('authBadge').classList.remove('d-none');
+        } else {
+            showToast('Connection failed: ' + result.error, 'danger');
+        }
+    } catch (error) {
+        showToast('Connection test failed: ' + error.message, 'danger');
+    }
+}
+
+async function reAuthPlex() {
+    const plexAuth = new PlexAuth({
+        onSuccess: async (token) => {
+            showToast('Successfully authenticated with Plex!', 'success');
+            document.getElementById('authBadge').classList.remove('d-none');
+            document.getElementById('tokenWarning').classList.add('d-none');
+            loadLibraries();
+        },
+        onError: (error) => {
+            showToast('Authentication failed: ' + error.message, 'danger');
+        },
+        onCancel: () => {
+            showToast('Authentication cancelled', 'warning');
+        }
+    });
+
+    try {
+        await plexAuth.login();
+    } catch (error) {
+        // Handled by callbacks
+    }
+}
+
+async function regenerateToken() {
+    if (!confirm('Are you sure? This will log out all sessions.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/token/regenerate', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.success) {
+            alert('Token regenerated. New token: ' + data.token + '\n\nYou will now be logged out.');
+            window.location.href = '/login';
+        } else {
+            showToast('Failed to regenerate token: ' + data.error, 'danger');
+        }
+    } catch (error) {
+        showToast('Failed to regenerate token', 'danger');
+    }
+}
+
+async function applyLogLevel() {
+    const level = document.getElementById('logLevel').value;
+    try {
+        const response = await fetch('/api/settings/log-level', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ log_level: level })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(`Log level set to ${data.log_level}`, 'success');
+        } else {
+            showToast('Failed: ' + (data.error || 'Unknown error'), 'danger');
+        }
+    } catch (error) {
+        showToast('Failed to update log level: ' + error.message, 'danger');
+    }
+}
+</script>
+{% endblock %}

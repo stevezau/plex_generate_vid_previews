@@ -29,5 +29,3 @@ def test_env_overrides_respected(monkeypatch):
 
     assert os.environ.get("PLEXAPI_HEADER_IDENTIFIER") == "custom-id"
     assert os.environ.get("PLEXAPI_HEADER_DEVICE_NAME") == "custom-name"
-
-

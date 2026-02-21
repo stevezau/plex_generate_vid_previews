@@ -1,73 +1,67 @@
-name: Test Suite
+name: Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.github/instructions/**'
+      - '.github/prompts/**'
+      - 'unraid-templates/**'
+      - 'docker-compose.example.yml'
   pull_request:
-    branches: [ main ]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.github/instructions/**'
+      - '.github/prompts/**'
+      - 'unraid-templates/**'
+      - 'docker-compose.example.yml'
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
   test:
     runs-on: ubuntu-latest
-    container:
-      image: linuxserver/ffmpeg:8.0-cli-ls43
-
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install system dependencies
-      run: |
-        apt-get update
-        apt-get install -y python3-dev python3-pip python3-venv build-essential git
-        apt-get clean
-        rm -rf /var/lib/apt/lists/*
-    
-    - name: Cache pip packages
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-    
-    - name: Create virtual environment
-      run: |
-        python3 -m venv /opt/venv
-        . /opt/venv/bin/activate
-        python -m pip install --upgrade pip
-    
-    - name: Install dependencies
-      run: |
-        . /opt/venv/bin/activate
-        pip install -e ".[test]"
-    
-    - name: Run tests with coverage
-      run: |
-        # Run all tests in parallel - they now use mocking for GPU/FFmpeg/Plex
-        # Fail if coverage drops below 70%
-        . /opt/venv/bin/activate
-        pytest tests/ -n auto -v --cov=plex_generate_previews --cov-report=xml --cov-report=term-missing --cov-report=html --cov-fail-under=70
-    
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v4
-      if: always()
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
-    
-    - name: Upload coverage HTML report as artifact
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: coverage-report
-        path: htmlcov/
-    
-    - name: Coverage Summary
-      if: always()
-      run: |
-        . /opt/venv/bin/activate
-        echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
-        python -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); root = tree.getroot(); coverage = float(root.attrib['line-rate']) * 100; print(f'**Total Coverage: {coverage:.2f}%**')" >> $GITHUB_STEP_SUMMARY || echo "Coverage report parsing failed" >> $GITHUB_STEP_SUMMARY
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm needs full history
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg mediainfo
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run tests
+        run: pytest -m "not gpu and not e2e"

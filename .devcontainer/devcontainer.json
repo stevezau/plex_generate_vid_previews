@@ -1,0 +1,66 @@
+{
+  "name": "plex-generate-previews",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+          }
+        },
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true,
+        "coverage-gutters.coverageFileNames": ["coverage.xml"],
+        "coverage-gutters.showLineCoverage": true,
+        "coverage-gutters.showRulerCoverage": true
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
+        "ms-python.vscode-pylance",
+        "tamasfe.even-better-toml",
+        "GitHub.copilot",
+        "ms-playwright.playwright",
+        "ryanluker.vscode-coverage-gutters",
+        "ms-azuretools.vscode-docker",
+        "humao.rest-client"
+      ]
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1"
+  },
+  "forwardPorts": [8080, 8089],
+  "portsAttributes": {
+    "8080": {
+      "label": "Web UI",
+      "onAutoForward": "notify"
+    },
+    "8089": {
+      "label": "Locust UI",
+      "onAutoForward": "silent"
+    }
+  },
+  "runArgs": [
+    "--init"
+  ]
+}

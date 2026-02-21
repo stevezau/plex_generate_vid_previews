@@ -1,0 +1,260 @@
+/* Plex Preview Generator - Custom Styles */
+
+:root {
+    --plex-orange: #e5a00d;
+    --plex-gray: #1a1a2e;
+    --plex-dark: #0f0f1a;
+}
+
+body {
+    background-color: var(--plex-gray);
+    min-height: 100vh;
+}
+
+/* Navbar */
+.navbar {
+    background-color: var(--plex-dark) !important;
+}
+
+.navbar-brand {
+    color: var(--plex-orange) !important;
+    font-weight: bold;
+}
+
+/* Cards */
+.card {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.card-header {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    font-weight: 500;
+}
+
+/* Stats */
+.stat-value {
+    font-size: 1.75rem;
+    font-weight: bold;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+}
+
+/* Progress bars */
+.progress {
+    background-color: rgba(255, 255, 255, 0.1);
+    height: 1.5rem;
+}
+
+.progress-bar {
+    transition: width 0.3s ease;
+}
+
+/* Tables */
+.table {
+    color: #e0e0e0;
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Buttons */
+.btn-warning {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #000;
+}
+
+.btn-warning:hover {
+    background-color: #c98b0b;
+    border-color: #c98b0b;
+    color: #000;
+}
+
+/* Job status badges */
+.badge-pending {
+    background-color: #6c757d;
+}
+
+.badge-running {
+    background-color: #0d6efd;
+}
+
+.badge-completed {
+    background-color: #198754;
+}
+
+.badge-failed {
+    background-color: #dc3545;
+}
+
+.badge-cancelled {
+    background-color: #ffc107;
+    color: #000;
+}
+
+/* Current job card */
+#currentJobCard .progress-info {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+    color: #adb5bd;
+}
+
+/* GPU cards */
+.gpu-card {
+    background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 110, 253, 0.05));
+    border: 1px solid rgba(13, 110, 253, 0.3);
+}
+
+/* Library list */
+.library-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+    margin-bottom: 0.25rem;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.library-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.library-item .library-name {
+    font-weight: 500;
+}
+
+.library-item .library-count {
+    font-size: 0.75rem;
+    color: #adb5bd;
+}
+
+/* Toast notifications */
+.toast {
+    background-color: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Modals */
+.modal-content {
+    background-color: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-footer {
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Form controls */
+.form-control, .form-select {
+    background-color: rgba(0, 0, 0, 0.3);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #e0e0e0;
+}
+
+.form-control:focus, .form-select:focus {
+    background-color: rgba(0, 0, 0, 0.4);
+    border-color: var(--plex-orange);
+    color: #e0e0e0;
+    box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
+}
+
+.form-control::placeholder {
+    color: #6c757d;
+}
+
+/* Alerts */
+.alert {
+    border: none;
+}
+
+/* Code blocks */
+code {
+    background-color: rgba(0, 0, 0, 0.3);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    color: var(--plex-orange);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* Animations */
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.pulse {
+    animation: pulse 2s infinite;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .stat-value {
+        font-size: 1.25rem;
+    }
+
+    .table-responsive {
+        font-size: 0.875rem;
+    }
+}
+
+/* Log viewer */
+.log-viewer {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.log-line { display: block; padding: 1px 0; }
+.log-line:hover { background-color: rgba(255, 255, 255, 0.05); }
+.log-level-debug { color: #6c757d; }
+.log-level-info { color: #20c997; }
+.log-level-warning { color: #ffc107; }
+.log-level-error { color: #dc3545; }
+.log-level-critical { color: #dc3545; font-weight: bold; }
+.log-highlight { background-color: rgba(229, 160, 13, 0.3); border-radius: 2px; }
+.log-line-hidden { display: none; }
+
+/* Dropdown menus (dark theme) */
+.dropdown-menu {
+    background-color: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dropdown-menu .form-check-label {
+    color: #e0e0e0;
+}
