@@ -1,0 +1,542 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Plex Preview Generator{% endblock %}
+
+{% block content %}
+<!-- Token Warning Banner (hidden by default) -->
+<div id="tokenWarningBanner" class="alert alert-warning d-none mb-4">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <strong>Plex token may be invalid or expired.</strong>
+    <a href="/settings" class="alert-link ms-2">Re-authenticate in Settings</a>
+</div>
+
+<!-- Setup Required Banner (hidden by default) -->
+<div id="setupRequiredBanner" class="alert alert-info d-none mb-4">
+    <i class="bi bi-gear me-2"></i>
+    <strong>Setup not complete.</strong>
+    <a href="/setup" class="alert-link ms-2">Complete the setup wizard</a>
+</div>
+
+<div class="row">
+    <!-- System Status Card -->
+    <div class="col-lg-4 col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-pc-display me-2"></i>System Status
+            </div>
+            <div class="card-body">
+                <!-- Plex Connection Status -->
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span><i class="bi bi-hdd-network me-2"></i>Plex Server</span>
+                    <span id="plexStatus" class="badge bg-secondary">Checking...</span>
+                </div>
+                <div id="plexServerInfo" class="small text-muted mb-3"></div>
+
+                <hr>
+
+                <!-- GPU Info -->
+                <h6 class="mb-2"><i class="bi bi-gpu-card me-2"></i>GPU Acceleration</h6>
+                <div id="gpuStatus" class="small text-muted mb-3">
+                    Detecting GPUs...
+                </div>
+
+                <hr>
+
+                <!-- Dynamic Status (replaced by app.js) -->
+                <div id="systemStatus"></div>
+
+                <hr>
+
+                <!-- Workers Status (preserved across updates) -->
+                <div id="workerCounts">
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>GPU Workers:</span>
+                        <span id="gpuWorkers" class="badge bg-primary">-</span>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>CPU Workers:</span>
+                        <span id="cpuWorkers" class="badge bg-secondary">-</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions Card -->
+    <div class="col-lg-4 col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-lightning me-2"></i>Quick Actions
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary" onclick="showNewJobModal()">
+                        <i class="bi bi-play-fill me-2"></i>Start New Job
+                    </button>
+                    <a href="/settings" class="btn btn-outline-secondary">
+                        <i class="bi bi-gear me-2"></i>Settings
+                    </a>
+                    <button class="btn btn-outline-secondary" onclick="refreshStatus()">
+                        <i class="bi bi-arrow-clockwise me-2"></i>Refresh Status
+                    </button>
+                </div>
+
+                <hr>
+
+                <h6 class="mb-3"><i class="bi bi-collection me-2"></i>Selected Libraries</h6>
+                <div id="libraryList">
+                    <div class="text-muted small">Loading libraries...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Job Stats Card -->
+    <div class="col-lg-4 col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-bar-chart me-2"></i>Job Statistics
+            </div>
+            <div class="card-body">
+                <div id="jobStats">
+                    <div class="row text-center">
+                        <div class="col-6 col-md-4 mb-3">
+                            <div class="stat-value" id="statPending">-</div>
+                            <div class="stat-label text-muted">Pending</div>
+                        </div>
+                        <div class="col-6 col-md-4 mb-3">
+                            <div class="stat-value text-primary" id="statRunning">-</div>
+                            <div class="stat-label text-muted">Running</div>
+                        </div>
+                        <div class="col-6 col-md-4 mb-3">
+                            <div class="stat-value text-success" id="statCompleted">-</div>
+                            <div class="stat-label text-muted">Completed</div>
+                        </div>
+                        <div class="col-6 col-md-4 mb-3">
+                            <div class="stat-value text-danger" id="statFailed">-</div>
+                            <div class="stat-label text-muted">Failed</div>
+                        </div>
+                        <div class="col-6 col-md-4 mb-3">
+                            <div class="stat-value text-warning" id="statCancelled">-</div>
+                            <div class="stat-label text-muted">Cancelled</div>
+                        </div>
+                        <div class="col-6 col-md-4 mb-3">
+                            <div class="stat-value" id="statTotal">-</div>
+                            <div class="stat-label text-muted">Total</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+
+<!-- Worker Status Cards -->
+<div class="row">
+    <div class="col-12 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-cpu me-2"></i>Workers
+            </div>
+            <div class="card-body" id="workerStatusContainer">
+                <div class="text-muted text-center py-3">
+                    <span>No active workers</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Current Job Progress -->
+<div class="row">
+    <div class="col-12 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-activity me-2"></i>Current Job</span>
+                <div>
+                    <button class="btn btn-sm btn-outline-info me-2" id="viewLogsBtn" onclick="showLogsModal()" style="display: none;">
+                        <i class="bi bi-file-text me-1"></i>View Logs
+                    </button>
+                    <span class="badge bg-secondary" id="currentJobStatus">No active job</span>
+                </div>
+            </div>
+            <div class="card-body" id="currentJobCard">
+                <div class="text-muted text-center py-4">
+                    <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                    No job is currently running
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Job Queue -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-list-task me-2"></i>Job Queue</span>
+                <div>
+                    <div class="dropdown d-inline-block">
+                        <button class="btn btn-sm btn-outline-danger dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                            <i class="bi bi-trash me-1"></i>Clear Jobs
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end p-3" style="min-width: 200px;">
+                            <div class="form-check mb-2">
+                                <input class="form-check-input clear-status-cb" type="checkbox" value="completed" id="clearCompleted" checked>
+                                <label class="form-check-label" for="clearCompleted">
+                                    <span class="badge bg-success me-1">Completed</span>
+                                </label>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input clear-status-cb" type="checkbox" value="failed" id="clearFailed" checked>
+                                <label class="form-check-label" for="clearFailed">
+                                    <span class="badge bg-danger me-1">Failed</span>
+                                </label>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input clear-status-cb" type="checkbox" value="cancelled" id="clearCancelled" checked>
+                                <label class="form-check-label" for="clearCancelled">
+                                    <span class="badge bg-warning text-dark me-1">Cancelled</span>
+                                </label>
+                            </div>
+                            <button class="btn btn-sm btn-danger w-100" onclick="clearJobsByStatus()">
+                                <i class="bi bi-trash me-1"></i>Clear Selected
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Library</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="jobQueue">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">
+                                    Loading jobs...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Schedules Section -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-calendar-event me-2"></i>Schedules</span>
+                <button class="btn btn-sm btn-primary" onclick="showNewScheduleModal()">
+                    <i class="bi bi-plus me-1"></i>Add Schedule
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Library</th>
+                                <th>Schedule</th>
+                                <th>Next Run</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scheduleList">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">
+                                    Loading schedules...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- New Job Modal -->
+<div class="modal fade" id="newJobModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-play-fill me-2"></i>Start New Job</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="newJobForm">
+                    <div class="mb-3">
+                        <label class="form-label">Libraries</label>
+                        <div class="mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="jobLibraryAll" checked onchange="toggleAllLibraries(this)">
+                                <label class="form-check-label fw-bold" for="jobLibraryAll">
+                                    All Libraries
+                                </label>
+                            </div>
+                        </div>
+                        <div id="jobLibraryList" class="ms-3 border-start ps-3">
+                            <div class="text-muted small">Loading libraries...</div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Processing Mode</label>
+                        <div class="form-check mb-1">
+                            <input class="form-check-input" type="radio" name="jobProcessingMode" id="jobMissingOnly" value="missing" checked>
+                            <label class="form-check-label" for="jobMissingOnly">
+                                <i class="bi bi-funnel me-1"></i>Process only items missing previews
+                            </label>
+                            <div class="form-text ms-4">Skips items that already have BIF files (default)</div>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="jobProcessingMode" id="jobRegenerateAll" value="regenerate">
+                            <label class="form-check-label" for="jobRegenerateAll">
+                                <i class="bi bi-arrow-repeat me-1"></i>Regenerate all previews
+                            </label>
+                            <div class="form-text ms-4">Re-creates BIF files even if they already exist</div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="startNewJob()">
+                    <i class="bi bi-play-fill me-1"></i>Start Job
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- New Schedule Modal -->
+<div class="modal fade" id="newScheduleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-calendar-plus me-2"></i>Add Schedule</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="newScheduleForm">
+                    <div class="mb-3">
+                        <label for="scheduleName" class="form-label">Name</label>
+                        <input type="text" class="form-control" id="scheduleName" placeholder="e.g., Nightly Scan" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="scheduleLibrary" class="form-label">Library</label>
+                        <select class="form-select" id="scheduleLibrary">
+                            <option value="">All Libraries</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="scheduleTime" class="form-label">Time</label>
+                        <input type="time" class="form-control" id="scheduleTime" value="02:00" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Days</label>
+                        <div class="d-flex flex-wrap gap-2">
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="0" id="daySun">
+                                <label class="form-check-label" for="daySun">Sun</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="1" id="dayMon" checked>
+                                <label class="form-check-label" for="dayMon">Mon</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="2" id="dayTue" checked>
+                                <label class="form-check-label" for="dayTue">Tue</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="3" id="dayWed" checked>
+                                <label class="form-check-label" for="dayWed">Wed</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="4" id="dayThu" checked>
+                                <label class="form-check-label" for="dayThu">Thu</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="5" id="dayFri" checked>
+                                <label class="form-check-label" for="dayFri">Fri</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input schedule-day" type="checkbox" value="6" id="daySat">
+                                <label class="form-check-label" for="daySat">Sat</label>
+                            </div>
+                        </div>
+                        <div class="form-text">Select which days to run</div>
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="scheduleEnabled" checked>
+                            <label class="form-check-label" for="scheduleEnabled">
+                                Enable schedule
+                            </label>
+                        </div>
+                    </div>
+                    <input type="hidden" id="scheduleCron" value="">
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createSchedule()">
+                    <i class="bi bi-check me-1"></i>Create Schedule
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Job Logs Modal -->
+<div class="modal fade" id="logsModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-file-text me-2"></i>Job Logs</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <small class="text-muted" id="logsJobId">Job ID: -</small>
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="input-group input-group-sm" style="width: 250px;">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" id="logsSearchInput" placeholder="Filter logs..." oninput="filterLogs()">
+                            <button class="btn btn-outline-secondary" type="button" onclick="clearLogSearch()" title="Clear search">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" id="logsAutoScroll" checked>
+                            <label class="form-check-label" for="logsAutoScroll">Auto-scroll</label>
+                        </div>
+                    </div>
+                </div>
+                <div id="logsContent" class="bg-dark text-light p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" onclick="copyLogs()" title="Copy to clipboard">
+                    <i class="bi bi-clipboard me-1"></i>Copy
+                </button>
+                <button type="button" class="btn btn-outline-secondary" onclick="downloadLogs()" title="Download as text file">
+                    <i class="bi bi-download me-1"></i>Download
+                </button>
+                <button type="button" class="btn btn-outline-secondary" onclick="refreshLogs()">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script>
+    // Initialize dashboard on load
+    document.addEventListener('DOMContentLoaded', function() {
+        checkSetupStatus();
+        // GPU/system status is loaded by initDashboard() -> refreshStatus()
+        // and then polled on an interval — no need to call loadSystemStatus()
+        // separately (it triggers a duplicate /api/system/status request that
+        // runs expensive GPU detection subprocesses).
+        initDashboard();
+    });
+
+    async function checkSetupStatus() {
+        try {
+            const response = await fetch('/api/setup/status');
+            const data = await response.json();
+
+            if (!data.configured && !data.setup_complete) {
+                document.getElementById('setupRequiredBanner').classList.remove('d-none');
+            }
+
+            if (!data.plex_authenticated) {
+                document.getElementById('tokenWarningBanner').classList.remove('d-none');
+            }
+        } catch (error) {
+            console.warn('Failed to check setup status:', error);
+        }
+    }
+
+    async function loadSystemStatus() {
+        try {
+            const response = await fetch('/api/system/status');
+            const data = await response.json();
+
+            // Update Plex status
+            const plexStatus = document.getElementById('plexStatus');
+            const plexInfo = document.getElementById('plexServerInfo');
+
+            // Get settings for server name
+            try {
+                const settings = await new SettingsManager().get();
+                if (settings.plex_name) {
+                    plexInfo.textContent = settings.plex_name;
+                    plexStatus.textContent = 'Connected';
+                    plexStatus.className = 'badge bg-success';
+                } else if (settings.plex_url) {
+                    plexInfo.textContent = settings.plex_url;
+                    plexStatus.textContent = 'Configured';
+                    plexStatus.className = 'badge bg-info';
+                } else {
+                    plexStatus.textContent = 'Not configured';
+                    plexStatus.className = 'badge bg-warning';
+                }
+            } catch (e) {
+                plexStatus.textContent = 'Unknown';
+                plexStatus.className = 'badge bg-secondary';
+            }
+
+            // Update GPU status
+            const gpuStatus = document.getElementById('gpuStatus');
+            if (data.gpus && data.gpus.length > 0) {
+                gpuStatus.innerHTML = data.gpus.map(g =>
+                    `<span class="badge bg-success me-1">${g.name}</span>`
+                ).join('');
+            } else {
+                gpuStatus.innerHTML = '<span class="text-muted">No GPU detected - using CPU</span>';
+            }
+
+            // Get config for workers
+            try {
+                const configResponse = await fetch('/api/system/config');
+                const config = await configResponse.json();
+
+                const gpuEl = document.getElementById('gpuWorkers');
+                const cpuEl = document.getElementById('cpuWorkers');
+                if (gpuEl) gpuEl.textContent = config.gpu_threads || 0;
+                if (cpuEl) cpuEl.textContent = config.cpu_threads || 1;
+            } catch (e) {
+                console.warn('Failed to load config:', e);
+            }
+
+        } catch (error) {
+            console.error('Failed to load system status:', error);
+        }
+    }
+
+    // Library loading is handled by app.js loadLibraries()
+    // which calls /api/libraries (uses settings.json)
+</script>
+{% endblock %}

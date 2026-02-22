@@ -29,4 +29,3 @@ ignore:
   - "**/venv/**/*"
   - "**/test_env/**/*"
   - "plex_generate_previews/_version.py"  # Auto-generated version file
-

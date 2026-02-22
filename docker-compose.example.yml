@@ -1,0 +1,136 @@
+# Docker Compose Examples for Plex Generate Previews
+#
+# Copy this file to docker-compose.yml and modify as needed.
+# Choose ONE of the configurations below based on your setup.
+#
+# PLEX_URL and PLEX_TOKEN are optional — the Setup Wizard at
+# http://YOUR_IP:8080 configures them via Plex OAuth.
+#
+# Full configuration reference: docs/reference.md
+
+# =============================================================================
+# CONFIGURATION 1: GPU (Intel / AMD / NVIDIA)
+# =============================================================================
+# Covers all three GPU vendors in one service.
+# Uncomment/modify the blocks for your hardware.
+# =============================================================================
+
+services:
+  plex-previews-gpu:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+
+    # --- Intel / AMD GPU (VAAPI) ---
+    # Both use /dev/dri passthrough. Verify with: ls -la /dev/dri
+    devices:
+      - /dev/dri:/dev/dri
+    # AMD may also need the video group:
+    # group_add:
+    #   - "109"  # video group ID — check with: getent group video
+
+    # --- NVIDIA GPU ---
+    # Comment out the 'devices' block above and uncomment the deploy block.
+    # Requires NVIDIA Container Toolkit:
+    #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    environment:
+      # --- NVIDIA only (uncomment if using NVIDIA) ---
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+      # Processing
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+
+      # User/group (match your host user)
+      - PUID=1000
+      - PGID=1000
+
+      # Optional: set a fixed auth token (otherwise check container logs)
+      # - WEB_AUTH_TOKEN=your-password
+
+    volumes:
+      # Your media files (read-only)
+      - /path/to/your/media:/media:ro
+      # Plex application data (read-write for saving BIF files)
+      - /path/to/plex/config:/plex:rw
+      # App settings, schedules, and job history
+      - /path/to/app/config:/config:rw
+
+# =============================================================================
+# CONFIGURATION 2: CPU-Only
+# =============================================================================
+# For systems without GPU or when GPU acceleration isn't needed.
+# =============================================================================
+
+  plex-previews-cpu:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - GPU_THREADS=0
+      - CPU_THREADS=8
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - /path/to/your/media:/media:ro
+      - /path/to/plex/config:/plex:rw
+      - /path/to/app/config:/config:rw
+
+# =============================================================================
+# CONFIGURATION 3: Unraid
+# =============================================================================
+# Intel iGPU by default. For NVIDIA, uncomment the runtime line and NVIDIA
+# env vars, and remove the devices block.
+# Uses Unraid PUID/PGID (nobody:users = 99/100).
+# =============================================================================
+
+  plex-previews-unraid:
+    image: stevezzau/plex_generate_vid_previews:latest
+    container_name: plex-generate-previews
+    restart: unless-stopped
+    # For NVIDIA on Unraid, uncomment the next line and remove the devices block:
+    # runtime: nvidia
+    ports:
+      - "8080:8080"
+    labels:
+      - net.unraid.docker.webui=http://[IP]:[PORT:8080]/
+    devices:
+      # Intel iGPU — verify with: ls -la /dev/dri
+      - /dev/dri:/dev/dri
+    environment:
+      # --- NVIDIA only (uncomment if using NVIDIA, remove devices block) ---
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+      # Processing
+      - GPU_THREADS=4
+      - CPU_THREADS=2
+
+      # Unraid permissions (nobody:users)
+      - PUID=99
+      - PGID=100
+
+      # Optional: set a fixed auth token (otherwise check container logs)
+      # - WEB_AUTH_TOKEN=your-password
+
+    volumes:
+      # Media share (read-only) — use the same path as your Plex container
+      - /mnt/user/data/plex:/data/plex:ro
+      # Plex appdata (read-write for BIF files)
+      - /mnt/user/appdata/plex/Library/Application Support/Plex Media Server:/plex:rw
+      # App config storage
+      - /mnt/user/appdata/plex-generate-previews:/config:rw

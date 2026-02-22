@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<Container version="2">
+    <Name>plex-previews</Name>
+    <Repository>stevezzau/plex_generate_vid_previews:latest</Repository>
+    <Registry>https://hub.docker.com/r/stevezzau/plex_generate_vid_previews</Registry>
+    <Network>bridge</Network>
+    <MyIP/>
+    <Shell>bash</Shell>
+    <Privileged>false</Privileged>
+    <PrivilegedReq>false</PrivilegedReq>
+    <Support>https://github.com/stevezau/plex_generate_vid_previews/issues</Support>
+    <Project>https://github.com/stevezau/plex_generate_vid_previews</Project>
+    <Overview>
+Generate video preview thumbnails (BIF files) for Plex Media Server with GPU acceleration support.
+
+Features:
+- Web UI with setup wizard for easy configuration
+- Plex OAuth authentication (no manual token needed)
+- GPU acceleration (NVIDIA, Intel QuickSync, AMD)
+- Background processing with job queue
+- Real-time progress display
+- Scheduled generation via cron expressions
+- Browser notifications when jobs complete
+
+The web interface is available at http://[IP]:8080 after starting the container.
+A setup wizard will guide you through connecting to your Plex server.
+
+IMPORTANT - NETWORKING:
+If your Plex container uses a custom network (like br1 or macvlan), this container
+must use the SAME network to communicate with Plex. Change the Network Type setting
+to match your Plex container's network.
+
+For Intel QuickSync, /dev/dri is passed through automatically (see GPU Device below).
+
+For NVIDIA GPU support, you must:
+1. Install NVIDIA driver and nvidia-container-toolkit on Unraid
+2. Add --runtime=nvidia to Extra Parameters
+3. Or use the Nvidia-Driver and nvidia-container-toolkit plugins from Community Applications
+    </Overview>
+    <Category>MediaApp:Video MediaServer:Video</Category>
+    <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+    <TemplateURL>https://raw.githubusercontent.com/stevezau/plex_generate_vid_previews/main/unraid-templates/plex-generate-previews.xml</TemplateURL>
+    <Icon>https://raw.githubusercontent.com/stevezau/plex_generate_vid_previews/main/docs/images/icon.png</Icon>
+    <ExtraParams>--restart=unless-stopped</ExtraParams>
+    <PostArgs/>
+    <CPUset/>
+    <DateInstalled/>
+    <Date>2025-01-01</Date>
+    <Changes>
+[2025-01-01] Initial release with web UI and OAuth support
+    </Changes>
+    <DonateText/>
+    <DonateLink/>
+    <Requires/>
+
+    <!-- Web UI Port -->
+    <Config Name="Web UI Port" Target="8080" Default="8080" Mode="tcp" Description="Port for the web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+    <!-- Plex Configuration -->
+    <Config Name="Plex URL" Target="PLEX_URL" Default="http://192.168.1.100:32400" Mode="" Description="URL to your Plex Media Server (use IP address, not localhost)" Type="Variable" Display="always" Required="true" Mask="false"/>
+    <Config Name="Plex Token" Target="PLEX_TOKEN" Default="" Mode="" Description="Plex authentication token. Find it at: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ (or use OAuth via Web UI)" Type="Variable" Display="always" Required="false" Mask="true"/>
+
+    <!-- Path Mappings -->
+    <Config Name="Media Path" Target="/media" Default="/mnt/user/media" Mode="ro" Description="Path to your media files on Unraid (read-only)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media</Config>
+    <Config Name="Plex Data Path" Target="/plex" Default="/mnt/user/appdata/plex/Library/Application Support/Plex Media Server" Mode="rw" Description="Path to Plex application data where previews will be stored" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex/Library/Application Support/Plex Media Server</Config>
+    <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/plex-previews" Mode="rw" Description="Path to store configuration, schedules, and job history" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-previews</Config>
+
+    <!-- Path Translation (for Docker-to-Host path mapping) -->
+    <Config Name="Local Videos Path" Target="PLEX_LOCAL_VIDEOS_PATH_MAPPING" Default="/media" Mode="" Description="How this container sees media (usually /media)" Type="Variable" Display="advanced" Required="false" Mask="false">/media</Config>
+    <Config Name="Plex Videos Path" Target="PLEX_VIDEOS_PATH_MAPPING" Default="" Mode="" Description="How Plex sees media (if different from this container's path)" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+    <!-- Processing Options -->
+    <Config Name="Frame Interval (seconds)" Target="PLEX_BIF_FRAME_INTERVAL" Default="5" Mode="" Description="Seconds between each preview frame (default: 5)" Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
+    <Config Name="Thumbnail Quality" Target="THUMBNAIL_QUALITY" Default="4" Mode="" Description="Preview image quality 1-10, higher = better quality but larger files (default: 4)" Type="Variable" Display="advanced" Required="false" Mask="false">4</Config>
+    <Config Name="GPU Threads" Target="GPU_THREADS" Default="1" Mode="" Description="Number of parallel GPU workers (default: 1)" Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
+    <Config Name="CPU Threads" Target="CPU_THREADS" Default="1" Mode="" Description="Number of parallel CPU workers for fallback (default: 1)" Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
+
+    <!-- Web Authentication -->
+    <Config Name="Auth Token Override" Target="WEB_AUTH_TOKEN" Default="" Mode="" Description="Optional: Override the authentication token. If empty, use the token set during the setup wizard (or auto-generated if skipped)" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+    <Config Name="Web Port" Target="WEB_PORT" Default="8080" Mode="" Description="Internal port for web server (usually matches Web UI Port)" Type="Variable" Display="advanced" Required="false" Mask="false">8080</Config>
+
+    <!-- User/Group -->
+    <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for file permissions (99 = nobody on Unraid)" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+    <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for file permissions (100 = users on Unraid)" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+    <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File permission mask" Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+
+    <!-- GPU Support (Intel) -->
+    <Config Name="Intel GPU Device" Target="/dev/dri" Default="/dev/dri" Mode="" Description="Pass through Intel GPU for QuickSync acceleration" Type="Device" Display="advanced" Required="false" Mask="false">/dev/dri</Config>
+
+    <!-- Advanced -->
+    <Config Name="Log Level" Target="LOG_LEVEL" Default="INFO" Mode="" Description="Logging level: DEBUG, INFO, WARNING, ERROR" Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+</Container>

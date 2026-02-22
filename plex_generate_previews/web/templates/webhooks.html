@@ -1,0 +1,378 @@
+{% extends "base.html" %}
+
+{% block title %}Webhooks - Plex Preview Generator{% endblock %}
+
+{% block head %}
+<style>
+    .section-card {
+        margin-bottom: 1.5rem;
+    }
+    .webhook-url {
+        font-family: monospace;
+        background: var(--bs-dark);
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        border: 1px solid var(--bs-border-color);
+    }
+    .history-table {
+        font-size: 0.875rem;
+    }
+    .status-badge.queued { background-color: rgba(255,193,7,0.2); color: var(--bs-warning); }
+    .status-badge.triggered { background-color: rgba(25,135,84,0.2); color: var(--bs-success); }
+    .status-badge.ignored { background-color: rgba(108,117,125,0.2); color: var(--bs-secondary); }
+    .status-badge.test { background-color: rgba(13,202,240,0.2); color: var(--bs-info); }
+    .status-badge.disabled { background-color: rgba(108,117,125,0.2); color: var(--bs-secondary); }
+    .source-badge.radarr { background-color: rgba(255,165,0,0.2); color: #ffa500; }
+    .source-badge.sonarr { background-color: rgba(25,135,84,0.2); color: var(--bs-success); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-broadcast me-2"></i>Webhooks</h2>
+    <button class="btn btn-primary" id="saveAllBtn" disabled onclick="saveWebhookSettings()">
+        <i class="bi bi-check-lg me-1"></i>Save Changes
+    </button>
+</div>
+
+<!-- Card 1: Webhook URLs -->
+<div class="card section-card">
+    <div class="card-header">
+        <i class="bi bi-link-45deg me-2"></i>Webhook URLs
+    </div>
+    <div class="card-body">
+        <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="webhookEnabled" checked>
+            <label class="form-check-label" for="webhookEnabled">Enable webhooks</label>
+        </div>
+
+        <label class="form-label">Radarr Webhook URL</label>
+        <div class="input-group mb-3">
+            <input type="text" class="form-control webhook-url" id="radarrUrl" readonly>
+            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('radarrUrl')">
+                <i class="bi bi-clipboard"></i>
+            </button>
+        </div>
+
+        <label class="form-label">Sonarr Webhook URL</label>
+        <div class="input-group mb-3">
+            <input type="text" class="form-control webhook-url" id="sonarrUrl" readonly>
+            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('sonarrUrl')">
+                <i class="bi bi-clipboard"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Card 2: Configuration -->
+<div class="card section-card">
+    <div class="card-header">
+        <i class="bi bi-gear me-2"></i>Configuration
+    </div>
+    <div class="card-body">
+        <div class="mb-3">
+            <label for="webhookDelay" class="form-label">
+                Delay before processing: <strong><span id="delayValue">60</span>s</strong>
+            </label>
+            <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
+            <div class="form-text">Seconds to wait after import before triggering. Gives Plex time to detect and index new files.</div>
+        </div>
+
+        <div class="mb-3">
+            <label for="webhookRadarrLibrary" class="form-label">Radarr Library</label>
+            <select class="form-select" id="webhookRadarrLibrary">
+                <option value="">All Libraries</option>
+            </select>
+            <div class="form-text">Library to scan when Radarr reports a new import.</div>
+        </div>
+
+        <div class="mb-3">
+            <label for="webhookSonarrLibrary" class="form-label">Sonarr Library</label>
+            <select class="form-select" id="webhookSonarrLibrary">
+                <option value="">All Libraries</option>
+            </select>
+            <div class="form-text">Library to scan when Sonarr reports a new import.</div>
+        </div>
+
+        <div class="mb-3">
+            <label for="webhookSecret" class="form-label">Webhook Secret</label>
+            <div class="input-group">
+                <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
+                <button class="btn btn-outline-secondary" type="button" onclick="toggleSecretVisibility()">
+                    <i class="bi bi-eye" id="secretToggleIcon"></i>
+                </button>
+                <button class="btn btn-outline-secondary" type="button" onclick="generateSecret()">
+                    Generate
+                </button>
+            </div>
+            <div class="form-text">Dedicated secret for webhook authentication. Leave empty to use the main API token.</div>
+        </div>
+    </div>
+</div>
+
+<!-- Card 3: Setup Instructions -->
+<div class="card section-card">
+    <div class="card-header" role="button" data-bs-toggle="collapse" data-bs-target="#setupInstructions" aria-expanded="false">
+        <i class="bi bi-book me-2"></i>Setup Instructions
+        <i class="bi bi-chevron-down float-end"></i>
+    </div>
+    <div class="collapse" id="setupInstructions">
+        <div class="card-body">
+            <h6>Radarr</h6>
+            <ol>
+                <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
+                <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
+                <li>Set <strong>URL</strong>: copy the Radarr Webhook URL above</li>
+                <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
+                <li>Add header <code>X-Auth-Token</code> with your API token (or webhook secret if configured)</li>
+                <li>Click <strong>Test</strong> then <strong>Save</strong></li>
+            </ol>
+
+            <h6 class="mt-3">Sonarr</h6>
+            <ol>
+                <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
+                <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
+                <li>Set <strong>URL</strong>: copy the Sonarr Webhook URL above</li>
+                <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
+                <li>Add header <code>X-Auth-Token</code> with your API token (or webhook secret if configured)</li>
+                <li>Click <strong>Test</strong> then <strong>Save</strong></li>
+            </ol>
+        </div>
+    </div>
+</div>
+
+<!-- Card 4: Recent Activity -->
+<div class="card section-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-clock-history me-2"></i>Recent Activity</span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="clearHistory()">
+            <i class="bi bi-trash me-1"></i>Clear
+        </button>
+    </div>
+    <div class="card-body">
+        <div id="historyLoading" class="text-center py-3">
+            <div class="spinner-border spinner-border-sm" role="status"></div>
+            <span class="ms-2">Loading...</span>
+        </div>
+        <div id="historyEmpty" class="d-none text-center text-muted py-3">
+            No webhook events received yet.
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm history-table d-none" id="historyTable">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Source</th>
+                        <th>Title</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="historyBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Set webhook URLs from current origin
+    document.getElementById('radarrUrl').value = window.location.origin + '/api/webhooks/radarr';
+    document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
+
+    loadWebhookSettings();
+    loadLibraries();
+    loadHistory();
+
+    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRadarrLibrary, #webhookSonarrLibrary, #webhookSecret').forEach(function(el) {
+        el.addEventListener('change', markDirty);
+        el.addEventListener('input', markDirty);
+    });
+
+    document.getElementById('webhookDelay').addEventListener('input', function() {
+        document.getElementById('delayValue').textContent = this.value;
+    });
+
+    setInterval(loadHistory, 10000);
+});
+
+let isDirty = false;
+
+function markDirty() {
+    isDirty = true;
+    document.getElementById('saveAllBtn').disabled = false;
+}
+
+async function loadWebhookSettings() {
+    try {
+        const data = await apiGet('/api/settings');
+        document.getElementById('webhookEnabled').checked = data.webhook_enabled !== false;
+        document.getElementById('webhookDelay').value = data.webhook_delay || 60;
+        document.getElementById('delayValue').textContent = data.webhook_delay || 60;
+        if (data.webhook_secret && data.webhook_secret !== '****') {
+            document.getElementById('webhookSecret').value = data.webhook_secret;
+        } else if (data.webhook_secret === '****') {
+            document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
+        }
+        // Library selects populated after loadLibraries
+        window._savedRadarrLibrary = data.webhook_radarr_library || '';
+        window._savedSonarrLibrary = data.webhook_sonarr_library || '';
+    } catch (e) {
+        console.error('Failed to load webhook settings:', e);
+    }
+}
+
+async function loadLibraries() {
+    try {
+        const data = await apiGet('/api/libraries');
+        const libs = data.libraries || data || [];
+        ['webhookRadarrLibrary', 'webhookSonarrLibrary'].forEach(function(selectId) {
+            const sel = document.getElementById(selectId);
+            // Keep the "All Libraries" default
+            while (sel.options.length > 1) sel.remove(1);
+            libs.forEach(function(lib) {
+                const name = lib.title || lib.name || lib;
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                sel.appendChild(opt);
+            });
+        });
+        // Apply saved values after populating
+        if (window._savedRadarrLibrary) {
+            document.getElementById('webhookRadarrLibrary').value = window._savedRadarrLibrary;
+        }
+        if (window._savedSonarrLibrary) {
+            document.getElementById('webhookSonarrLibrary').value = window._savedSonarrLibrary;
+        }
+    } catch (e) {
+        console.error('Failed to load libraries:', e);
+    }
+}
+
+async function saveWebhookSettings() {
+    const btn = document.getElementById('saveAllBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+    const payload = {
+        webhook_enabled: document.getElementById('webhookEnabled').checked,
+        webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
+        webhook_radarr_library: document.getElementById('webhookRadarrLibrary').value,
+        webhook_sonarr_library: document.getElementById('webhookSonarrLibrary').value,
+    };
+
+    const secretVal = document.getElementById('webhookSecret').value;
+    if (secretVal && secretVal !== '****') {
+        payload.webhook_secret = secretVal;
+    }
+
+    try {
+        await apiPost('/api/settings', payload);
+        isDirty = false;
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Saved!';
+        showToast('Settings saved', 'Webhook settings updated successfully.', 'success');
+        setTimeout(function() {
+            btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
+        }, 2000);
+    } catch (e) {
+        showToast('Error', 'Failed to save settings: ' + e.message, 'danger');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
+    }
+}
+
+async function loadHistory() {
+    try {
+        const data = await apiGet('/api/webhooks/history');
+        const events = data.events || [];
+        const loading = document.getElementById('historyLoading');
+        const empty = document.getElementById('historyEmpty');
+        const table = document.getElementById('historyTable');
+        const tbody = document.getElementById('historyBody');
+
+        loading.classList.add('d-none');
+
+        if (events.length === 0) {
+            empty.classList.remove('d-none');
+            table.classList.add('d-none');
+            return;
+        }
+
+        empty.classList.add('d-none');
+        table.classList.remove('d-none');
+        tbody.innerHTML = '';
+
+        events.forEach(function(evt) {
+            const tr = document.createElement('tr');
+            const time = new Date(evt.timestamp);
+            const relative = timeAgo(time);
+
+            const sourceBadge = evt.source === 'radarr'
+                ? '<span class="badge source-badge radarr">Radarr</span>'
+                : '<span class="badge source-badge sonarr">Sonarr</span>';
+
+            const statusClass = evt.status || 'ignored';
+
+            tr.innerHTML =
+                '<td title="' + escapeHtml(time.toLocaleString()) + '">' + escapeHtml(relative) + '</td>' +
+                '<td>' + sourceBadge + '</td>' +
+                '<td>' + escapeHtml(evt.title || '-') + '</td>' +
+                '<td><span class="badge status-badge ' + escapeHtml(statusClass) + '">' + escapeHtml(evt.status) + '</span></td>';
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        console.error('Failed to load history:', e);
+        document.getElementById('historyLoading').classList.add('d-none');
+    }
+}
+
+async function clearHistory() {
+    try {
+        await apiDelete('/api/webhooks/history');
+        loadHistory();
+    } catch (e) {
+        showToast('Error', 'Failed to clear history: ' + e.message, 'danger');
+    }
+}
+
+function copyUrl(elementId) {
+    const input = document.getElementById(elementId);
+    copyToClipboard(input.value, 'URL copied to clipboard.', 'Failed to copy URL.');
+}
+
+function generateSecret() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const hex = Array.from(bytes, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+    document.getElementById('webhookSecret').value = hex;
+    document.getElementById('webhookSecret').type = 'text';
+    document.getElementById('secretToggleIcon').classList.replace('bi-eye', 'bi-eye-slash');
+    markDirty();
+}
+
+function toggleSecretVisibility() {
+    const input = document.getElementById('webhookSecret');
+    const icon = document.getElementById('secretToggleIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.replace('bi-eye', 'bi-eye-slash');
+    } else {
+        input.type = 'password';
+        icon.classList.replace('bi-eye-slash', 'bi-eye');
+    }
+}
+
+function timeAgo(date) {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    return days + 'd ago';
+}
+</script>
+{% endblock %}

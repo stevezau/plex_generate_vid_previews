@@ -1,0 +1,42 @@
+# Auto detect text files and ensure LF line endings
+* text=auto eol=lf
+
+# Shell scripts must always use LF
+*.sh text eol=lf
+
+# Docker files must always use LF
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+
+# Python
+*.py text eol=lf
+
+# Config files
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.json text eol=lf
+
+# Web
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+
+# Docs
+*.md text eol=lf
+*.txt text eol=lf
+
+# Binary files
+*.bif binary
+*.mp4 binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

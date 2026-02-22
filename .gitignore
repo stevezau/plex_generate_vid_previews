@@ -39,3 +39,9 @@ coverage.xml
 .pytest_cache/
 .tox/
 test_env/
+
+# Local planning files
+plan.md
+
+# Copilot scratchpad (not for source control)
+Copilot-Processing.md
