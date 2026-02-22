@@ -239,7 +239,9 @@ class TestLoadConfig:
     @patch("shutil.which")
     @patch("plex_generate_previews.config.load_dotenv")
     @patch("plex_generate_previews.logging_config.setup_logging")
-    def test_load_config_missing_config_folder(self, mock_logging, mock_load_dotenv, mock_which):
+    def test_load_config_missing_config_folder(
+        self, mock_logging, mock_load_dotenv, mock_which
+    ):
         """Test error when config folder is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
         # Prevent load_dotenv from repopulating os.environ so missing_params is triggered

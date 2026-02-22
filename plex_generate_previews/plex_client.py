@@ -230,7 +230,9 @@ def get_library_sections(plex, config: Config):
                     )
                 )
                 continue
-        elif config.plex_libraries and section.title.lower() not in config.plex_libraries:
+        elif (
+            config.plex_libraries and section.title.lower() not in config.plex_libraries
+        ):
             logger.info(
                 "Skipping library '{}' as it's not in the configured libraries list".format(
                     section.title
