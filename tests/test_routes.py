@@ -158,6 +158,20 @@ class TestLoginLogout:
         assert resp2.status_code in (302, 308)
         assert "/login" in resp2.headers.get("Location", "")
 
+    def test_login_rate_limit_exceeded(self, client):
+        """After 5 POSTs to /login, 6th returns 429."""
+        for _ in range(5):
+            client.post("/login", data={"token": "wrong"})
+        resp = client.post("/login", data={"token": "wrong"})
+        assert resp.status_code == 429
+
+    def test_api_login_rate_limit_exceeded(self, client):
+        """After 10 POSTs to /api/auth/login, 11th returns 429."""
+        for _ in range(10):
+            client.post("/api/auth/login", json={"token": "wrong"})
+        resp = client.post("/api/auth/login", json={"token": "wrong"})
+        assert resp.status_code == 429
+
 
 # ---------------------------------------------------------------------------
 # Auth API
@@ -226,6 +240,13 @@ class TestTokenEndpoints:
         assert data["success"] is True
         assert data["token"].startswith("****")
 
+    def test_regenerate_token_invalidates_session(self, client):
+        """After token regeneration, session is cleared; request with old session gets 401."""
+        client.post("/api/auth/login", json={"token": "test-token-12345678"})
+        client.post("/api/token/regenerate", headers=_api_headers())
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 401
+
     def test_setup_token_info(self, client):
         resp = client.get("/api/setup/token-info", headers=_api_headers())
         assert resp.status_code == 200
@@ -262,6 +283,24 @@ class TestJobsAPI:
         data = resp.get_json()
         assert data["status"] == "pending"
         assert "id" in data
+
+    def test_create_job_ignores_credential_overrides(self, client):
+        """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
+        with patch("plex_generate_previews.web.routes._start_job_async") as mock_start:
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={
+                    "library_name": "Movies",
+                    "config": {
+                        "plex_token": "evil-token",
+                        "plex_url": "http://evil.com",
+                    },
+                },
+            )
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        assert mock_start.call_args[0][0]  # job_id present
 
     def test_get_specific_job(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
@@ -565,6 +604,15 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+
+    def test_validate_paths_requires_auth_after_setup(self, client):
+        """When setup is complete, validate_paths requires authentication."""
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers={"Content-Type": "application/json"},
+            json={"plex_config_folder": "/plex"},
+        )
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------

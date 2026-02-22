@@ -213,5 +213,5 @@ class TestCheckForUpdates:
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should show pip install instructions
+        # Should show update instructions (from source or Docker)
         check_for_updates()

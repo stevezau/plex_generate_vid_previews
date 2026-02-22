@@ -40,6 +40,8 @@ def mock_config():
     config.ffmpeg_path = "/usr/bin/ffmpeg"
     config.log_level = "INFO"
     config.worker_pool_timeout = 30
+    # None so get_library_sections filters by plex_libraries (titles), not by ID
+    config.plex_library_ids = None
     return config
 
 

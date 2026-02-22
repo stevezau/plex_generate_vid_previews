@@ -157,15 +157,19 @@ class TestSetupRoutes:
 class TestPlexServerRoutes:
     """Tests for Plex server discovery routes."""
 
-    def test_get_servers_without_token(self, client, auth_headers):
+    def test_get_servers_without_token(self, client, auth_headers, monkeypatch):
         """Test getting servers without Plex token returns error."""
+        monkeypatch.delenv("PLEX_TOKEN", raising=False)
+        monkeypatch.delenv("PLEX_URL", raising=False)
         response = client.get("/api/plex/servers", headers=auth_headers)
 
         # Should return error since no Plex token is configured
         assert response.status_code in [400, 401, 500]
 
-    def test_get_libraries_without_server(self, client, auth_headers):
+    def test_get_libraries_without_server(self, client, auth_headers, monkeypatch):
         """Test getting libraries without server configured."""
+        monkeypatch.delenv("PLEX_TOKEN", raising=False)
+        monkeypatch.delenv("PLEX_URL", raising=False)
         response = client.get("/api/plex/libraries", headers=auth_headers)
 
         # Should return error since no server is configured

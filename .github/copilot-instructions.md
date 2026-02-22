@@ -24,7 +24,7 @@ plex_generate_previews/
 ├── gpu_detection.py    # GPU detection (NVIDIA/AMD/Intel/Apple)
 ├── utils.py            # Path sanitization, Docker detection
 ├── logging_config.py   # Loguru + Rich console setup
-├── version_check.py    # PyPI/GitHub version checking
+├── version_check.py    # GitHub release version checking
 └── web/                # Flask app with SocketIO, auth, scheduler
     ├── wsgi.py         # Gunicorn entry point
     ├── app.py         # App factory, SocketIO init (async_mode=threading)

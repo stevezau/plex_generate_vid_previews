@@ -5,7 +5,7 @@ Behavior:
 - Dev Docker image (GIT_BRANCH and GIT_SHA set): compare baked commit to GitHub
   branch head and warn if behind.
 - Git checkout (running from source): compare current commit to GitHub branch head.
-- Otherwise (pip, zip, release Docker): compare package SemVer to GitHub latest release.
+- Otherwise (installed package, zip, release Docker): compare package SemVer to GitHub latest release.
 """
 
 import os
@@ -345,10 +345,10 @@ def check_for_updates() -> None:
                 )
                 logger.warning(f"ℹ️  Latest stable release: {latest_version}")
                 logger.warning(
-                    "📦 Install stable version: pip install plex-generate-previews"
+                    "🐳 Install stable: docker pull stevezzau/plex_generate_vid_previews:latest"
                 )
                 logger.warning(
-                    "🔗 Or use Docker: docker pull stevezzau/plex_generate_vid_previews:latest"
+                    "🔗 Or from source: pip install git+https://github.com/stevezau/plex_generate_vid_previews.git"
                 )
             else:
                 # Normal version update available
@@ -363,7 +363,7 @@ def check_for_updates() -> None:
                     )
                 else:
                     logger.warning(
-                        "📦 Update: pip install --upgrade plex-generate-previews"
+                        "📦 Update: pip install --upgrade git+https://github.com/stevezau/plex_generate_vid_previews.git"
                     )
 
             logger.warning(

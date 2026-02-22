@@ -153,7 +153,7 @@ plex_generate_previews/
 ├── gpu_detection.py       # GPU discovery
 ├── utils.py               # Path sanitization, Docker detection
 ├── logging_config.py      # Loguru + Rich console setup
-├── version_check.py       # PyPI/GitHub version checking
+├── version_check.py       # GitHub release version checking
 └── web/                   # Flask web app
     ├── wsgi.py            # Gunicorn entry point
     ├── app.py             # App factory, SocketIO init

@@ -14,12 +14,24 @@ env:
   # See CONTRIBUTING.md for full instructions.
   DOCKER_IMAGE: stevezzau/plex_generate_vid_previews
 
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # workflow_dispatch allows manual publish; ensure tests have passed for workflow_run/push triggers
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/dev') }}
 
     steps:
+      - name: Validate Docker secrets
+        run: |
+          if [ -z "${{ secrets.DOCKER_USERNAME }}" ] || [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
+            echo "::error::DOCKER_USERNAME and DOCKER_PASSWORD must be set in repository secrets"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:

@@ -178,7 +178,7 @@ def test_webhook_invalid_token(client):
 
 
 def test_webhook_secret_auth(client, app):
-    """Configure webhook_secret and authenticate with it."""
+    """Configure webhook_secret and authenticate with it (X-Auth-Token)."""
     from plex_generate_previews.web.settings_manager import get_settings_manager
 
     with app.app_context():
@@ -190,6 +190,26 @@ def test_webhook_secret_auth(client, app):
         "/api/webhooks/radarr",
         json=payload,
         headers=_auth_headers("my-webhook-secret-1234"),
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["success"] is True
+
+
+def test_webhook_bearer_token_auth(client, app):
+    """Webhook accepts Authorization: Bearer with webhook_secret."""
+    from plex_generate_previews.web.settings_manager import get_settings_manager
+
+    with app.app_context():
+        sm = get_settings_manager()
+        sm.set("webhook_secret", "bearer-secret-1234")
+
+    resp = client.post(
+        "/api/webhooks/radarr",
+        json={"eventType": "Test"},
+        headers={
+            "Authorization": "Bearer bearer-secret-1234",
+            "Content-Type": "application/json",
+        },
     )
     assert resp.status_code == 200
     assert resp.get_json()["success"] is True

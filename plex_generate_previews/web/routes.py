@@ -1165,6 +1165,7 @@ def set_setup_token():
 
 
 @api.route("/setup/validate-paths", methods=["POST"])
+@setup_or_auth_required
 def validate_paths():
     """Validate path configuration."""
     import os

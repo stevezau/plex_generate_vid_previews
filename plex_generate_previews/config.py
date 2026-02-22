@@ -123,6 +123,9 @@ class Config:
     # Internal constants
     worker_pool_timeout: int = 30
 
+    # When set, filter libraries by Plex section key (ID) instead of plex_libraries (names)
+    plex_library_ids: Optional[List[str]] = None
+
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
         fields = []
@@ -631,7 +634,7 @@ def load_config(cli_args=None) -> Config:
                 try:
                     return int(val)
                 except (ValueError, TypeError):
-                    pass
+                    return default
             else:
                 return str(val) if val else default
             return val

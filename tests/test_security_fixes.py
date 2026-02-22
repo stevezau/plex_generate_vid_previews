@@ -105,6 +105,19 @@ class TestPathTraversalPrevention:
         assert data["valid"] is False
         assert any("Invalid" in e for e in data["errors"])
 
+    def test_validate_paths_unauthenticated_rejects_null_byte(self, client):
+        """Without auth (e.g. during setup), path with null byte is still rejected."""
+        response = client.post(
+            "/api/setup/validate-paths",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"plex_config_folder": "/plex\x00evil"}),
+        )
+        assert response.status_code in (200, 401)
+        if response.status_code == 200:
+            data = json.loads(response.data)
+            assert data["valid"] is False
+            assert any("Invalid" in e for e in data["errors"])
+
     def test_validate_paths_traversal_resolved(
         self, client, auth_headers, tmp_path, monkeypatch
     ):

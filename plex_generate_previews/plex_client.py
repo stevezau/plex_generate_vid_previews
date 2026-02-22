@@ -221,8 +221,16 @@ def get_library_sections(plex, config: Config):
 
     # Step 2: Filter and process each library
     for section in sections:
-        # Skip libraries that aren't in the PLEX_LIBRARIES list if it's not empty
-        if config.plex_libraries and section.title.lower() not in config.plex_libraries:
+        # Filter by section key (ID) when plex_library_ids is set; otherwise by title (plex_libraries)
+        if getattr(config, "plex_library_ids", None):
+            if str(section.key) not in config.plex_library_ids:
+                logger.info(
+                    "Skipping library '{}' (id={}) as it's not in the configured library IDs list".format(
+                        section.title, section.key
+                    )
+                )
+                continue
+        elif config.plex_libraries and section.title.lower() not in config.plex_libraries:
             logger.info(
                 "Skipping library '{}' as it's not in the configured libraries list".format(
                     section.title
