@@ -1388,6 +1388,17 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 eta="",
             )
 
+            # Push UI settings into environment so load_config() sees them.
+            # load_config() reads env before applying settings; injecting here
+            # ensures saved path/URL/token are used and validation passes.
+            _job_settings = get_settings_manager()
+            if _job_settings.plex_url:
+                os.environ["PLEX_URL"] = _job_settings.plex_url
+            if _job_settings.plex_token:
+                os.environ["PLEX_TOKEN"] = _job_settings.plex_token
+            if _job_settings.plex_config_folder:
+                os.environ["PLEX_CONFIG_FOLDER"] = _job_settings.plex_config_folder
+
             # Create config with overrides
             config = load_config()
             if config is None:

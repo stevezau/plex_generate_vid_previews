@@ -21,19 +21,18 @@ Complete reference for all configuration options and REST API endpoints.
 
 Settings are applied in this order (highest priority first):
 
-1. **CLI arguments** — override everything
+1. **CLI arguments** — override everything (used when running with `--cli`)
 2. **Web UI / Settings page** — saved to `/config/settings.json`
 3. **Environment variables** — fallback when not set in UI
 4. **Default values** — used when nothing is configured
 
-> [!TIP]
-> Most settings can be configured via the web interface at `http://your-server:8080/settings`. No need to restart the container when changing settings!
+For normal Docker use, configure everything in the **Setup Wizard** and **Settings**; no environment variables are required. Use env vars only when you need to override UI settings or run in CLI mode without an existing `/config`.
 
 ---
 
 ## Plex Connection
 
-Configured automatically via the **Setup Wizard** using Plex OAuth, but can also be set manually:
+Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env vars are only needed if you skip the UI (e.g. CLI-only runs).
 
 | Variable | CLI Argument | Web UI | Description |
 |----------|--------------|--------|-------------|

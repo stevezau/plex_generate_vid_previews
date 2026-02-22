@@ -44,8 +44,7 @@ docker run -d \
 ```
 
 > [!NOTE]
-> No environment variables are required for first-time setup.
-> Advanced deployments can still use environment variables from the reference docs.
+> No environment variables are required for first-time setup. Plex connection, libraries, GPU/CPU threads, and path mappings are all configured in the Setup Wizard and **Settings**. Environment variables are optional overrides (see [Reference](reference.md)).
 
 ### Step 2: Get Your Access Token
 
@@ -197,21 +196,11 @@ Apple Silicon and Intel Macs use VideoToolbox. Run the app via Docker; the web U
 
 ### Multi-GPU Selection
 
-```bash
-# Use only GPU 0 and 2
---gpu-selection "0,2"
-
-# Use all GPUs (default)
---gpu-selection "all"
-```
+Configure in the web UI under **Settings** (or use env var `GPU_SELECTION` / CLI flag `--gpu-selection` for one-off runs). Values: `all` (default) or `0,2` to use specific GPUs.
 
 ### CPU-Only Mode
 
-Disable GPU acceleration:
-
-```bash
---gpu-threads 0 --cpu-threads 8
-```
+Disable GPU acceleration by setting **GPU Workers** to `0` and **CPU Workers** to your desired value (e.g. `8`) in **Settings**.
 
 ### Performance Tuning
 
@@ -222,8 +211,7 @@ Disable GPU acceleration:
 | GPU: 8, CPU: 4 | High-end systems |
 | GPU: 0, CPU: 8 | CPU-only |
 
-> [!TIP]
-> Start with the defaults and increase GPU/CPU threads gradually. Monitor system load to find the optimal balance for your hardware.
+Set **GPU Workers** and **CPU Workers** in the web UI (**Settings**). Start with the defaults and increase gradually; monitor system load to find the best balance.
 
 ---
 
@@ -422,17 +410,18 @@ docker run -d \
 
 ## CLI Mode
 
-Run one-time processing without the web server:
+Run one-time processing without the web server (e.g. for cron or batch scripts). Either pass connection details via env vars, or mount an existing `/config` volume so the CLI uses settings from the web UI:
 
 ```bash
 docker run --rm \
   --device /dev/dri:/dev/dri \
-  -e PLEX_URL=http://192.168.1.100:32400 \
-  -e PLEX_TOKEN=your-token \
   -v /path/to/media:/media:ro \
   -v /path/to/plex/config:/plex:rw \
+  -v /path/to/app/config:/config:rw \
   stevezzau/plex_generate_vid_previews:latest --cli
 ```
+
+If `/config` already has `settings.json` (from a previous web UI setup), the CLI uses those. Otherwise set `PLEX_URL`, `PLEX_TOKEN`, and other options via environment variables.
 
 ---
 
@@ -501,14 +490,9 @@ See `.devcontainer/` for the full configuration.
 
 This container uses s6-overlay. Adding `init: true` in docker-compose will break it.
 
-**Use IP Address, Not localhost**
+**Use IP address for Plex when needed**
 
-The container can't reach `localhost` on your host:
-
-```bash
-# WRONG:  PLEX_URL=http://localhost:32400
-# CORRECT: PLEX_URL=http://192.168.1.100:32400
-```
+The container cannot reach `localhost` on your host. When using the Setup Wizard, pick your Plex server from the list (it will show the correct URL). If you set a Plex URL manually (env var or CLI), use your host's IP (e.g. `http://192.168.1.100:32400`), not `localhost`.
 
 ---
 

@@ -2,6 +2,8 @@
 
 Thank you for contributing to Plex Generate Previews!
 
+The supported way to run the app in production is **Docker** and the **web UI**. The setup below is for developing and testing the codebase (run the web app or CLI locally).
+
 ---
 
 ## Code of Conduct

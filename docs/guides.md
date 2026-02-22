@@ -284,7 +284,7 @@ Yes! Windows supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD
 
 **Can I use this without a GPU?**
 
-Yes! Set `--gpu-threads 0` and `--cpu-threads 4` (or higher) for CPU-only processing.
+Yes! In the web UI go to **Settings** and set **GPU Workers** to `0` and **CPU Workers** to `4` (or higher) for CPU-only processing.
 
 **What's the difference between web mode and CLI mode?**
 
@@ -299,7 +299,7 @@ Open the web UI and go to **Settings** or **Setup**. Detected GPUs are shown the
 
 **Can I use multiple GPUs?**
 
-Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-selection "0,1,2"` to select specific ones.
+Yes! The tool detects all available GPUs. Use **Settings** to configure worker counts; for CLI or env overrides, set `GPU_SELECTION` to `0,1,2` (or `all`) to choose which GPUs to use.
 
 **Which GPU should I use?**
 

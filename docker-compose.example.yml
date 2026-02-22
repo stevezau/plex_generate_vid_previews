@@ -49,11 +49,11 @@ services:
       # - NVIDIA_VISIBLE_DEVICES=all
       # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-      # Processing
-      - GPU_THREADS=4
-      - CPU_THREADS=2
+      # Optional: override processing (otherwise set in web UI Settings)
+      # - GPU_THREADS=4
+      # - CPU_THREADS=2
 
-      # User/group (match your host user)
+      # User/group (match your host user; Unraid: 99/100)
       - PUID=1000
       - PGID=1000
 
@@ -81,6 +81,7 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Optional: or set GPU Workers = 0, CPU Workers = 8 in web UI Settings
       - GPU_THREADS=0
       - CPU_THREADS=8
       - PUID=1000
@@ -116,7 +117,7 @@ services:
       # - NVIDIA_VISIBLE_DEVICES=all
       # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-      # Processing
+      # Optional: or set in web UI Settings
       - GPU_THREADS=4
       - CPU_THREADS=2
 
