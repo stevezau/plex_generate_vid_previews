@@ -51,6 +51,10 @@ from .scheduler import get_schedule_manager
 PLEX_DATA_ROOT = os.path.realpath(os.environ.get("PLEX_DATA_ROOT", "/plex"))
 MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
+# Ensures only one processing job runs at a time regardless of trigger source
+# (scheduled job, webhook, or manual start).
+_job_execution_lock = threading.Lock()
+
 
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
     """Return True if candidate_path is inside (or equal to) base_path.
@@ -1336,6 +1340,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
     def run_job():
         log_handler_id = None
+        _acquired_execution_lock = False
         try:
             import os
 
@@ -1352,6 +1357,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job = job_manager.get_job(job_id)
             if not job:
                 return
+
+            if not _job_execution_lock.acquire(blocking=False):
+                logger.warning(f"Job {job_id} skipped — another job is already running")
+                job_manager.cancel_job(job_id)
+                return
+
+            _acquired_execution_lock = True
 
             # Set up log capture for this job
             def log_sink(message):
@@ -1701,6 +1713,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     loguru_logger.remove(log_handler_id)
                 except Exception:
                     pass
+            if _acquired_execution_lock:
+                _job_execution_lock.release()
 
     thread = threading.Thread(target=run_job, daemon=True)
     thread.start()
