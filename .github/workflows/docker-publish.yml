@@ -10,7 +10,7 @@ on:
 env:
   # Change this to your Docker Hub image name for forks.
   # See CONTRIBUTING.md for full instructions.
-  DOCKER_IMAGE: vellajonathan/plex-previews
+  DOCKER_IMAGE: stevezzau/plex_generate_vid_previews
 
 jobs:
   build-and-push:
