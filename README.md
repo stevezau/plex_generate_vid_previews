@@ -20,6 +20,16 @@
 
   <h1 align="center">Plex Generate Previews</h1>
 
+  <!-- CHANGE NOTIFICATION -->
+  <div align="center">
+
+  > ## ⚠️ NOTICE — Recent Breaking Changes
+  >
+  > - **Docker + Web UI** are now the **recommended** way to run Plex Generate Previews. The **CLI still works** (e.g. `plex-generate-previews --help`), but we recommend using the **Docker image and Web UI** for setup, scheduling, and job management.
+  > - **PyPI:** The package is **no longer published on PyPI**. Use **Docker** (or install from source) instead.
+
+  </div>
+
   <p align="center">
     GPU-accelerated video preview thumbnail generation for Plex Media Server
     <br />
@@ -142,6 +152,9 @@ For Docker Compose, Unraid, and GPU-specific setup:
 | **Docker** | Most users, easy GPU setup | [Getting Started](docs/getting-started.md) |
 | **Docker Compose** | Managed deployments | [docker-compose.example.yml](docker-compose.example.yml) |
 | **Unraid** | Unraid servers | [Getting Started — Unraid](docs/getting-started.md#unraid) |
+
+- **CLI:** The command-line interface still works when run inside the container or from source; we recommend using the **Docker image and Web UI** for normal use.
+- **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
 > Note the extra "z" in Docker Hub: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)

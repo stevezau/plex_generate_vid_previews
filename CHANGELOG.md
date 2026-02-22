@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Web UI:** Jobs now correctly use Plex Data Path (and Plex URL/token) saved in Settings. Previously, `load_config()` ran before UI settings were applied, so jobs could fail with "PLEX_CONFIG_FOLDER is required" even when the path was set in the UI. The job runner now injects saved UI settings into the environment before loading config so validation passes.
 - ETA calculation no longer shows misleading "0s" when most items are skipped and remaining items need real processing (stall detection)
 - WebSocket connections no longer hang or 500 on page refresh
 - CORS configured correctly for LAN access
