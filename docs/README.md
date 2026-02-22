@@ -9,7 +9,7 @@ Use this page to find the right doc quickly based on what you are trying to do.
 ### I want to install and run it
 
 - Start with [Getting Started](getting-started.md)
-- Includes Docker quick start, Docker Compose, GPU setup, Unraid, and local pip install
+- Includes Docker quick start, Docker Compose, GPU setup, and Unraid
 
 ### I want to operate it in production
 

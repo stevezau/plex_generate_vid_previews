@@ -233,9 +233,10 @@ See [Development Environment](docs/getting-started.md#development-environment) f
 
 ```bash
 LOG_LEVEL=DEBUG python -m plex_generate_previews  # Debug logging
-plex-generate-previews --list-gpus                 # Check GPUs
 docker exec -it plex-generate-previews /bin/bash   # Inspect container
 ```
+
+Check detected GPUs in the web UI (**Settings** or **Setup**).
 
 ---
 

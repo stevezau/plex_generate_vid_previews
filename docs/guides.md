@@ -158,11 +158,7 @@ RATELIMIT_STORAGE_URL=redis://localhost:6379
 To skip the web interface and run one-time processing:
 
 ```bash
-# Docker
 docker run ... stevezzau/plex_generate_vid_previews:latest --cli
-
-# Local
-plex-generate-previews --cli --plex-url ... --plex-token ...
 ```
 
 ### Real-Time Updates
@@ -299,9 +295,7 @@ Yes! Set `--gpu-threads 0` and `--cpu-threads 4` (or higher) for CPU-only proces
 
 **How do I know which GPUs are detected?**
 
-```bash
-plex-generate-previews --list-gpus
-```
+Open the web UI and go to **Settings** or **Setup**. Detected GPUs are shown there.
 
 **Can I use multiple GPUs?**
 

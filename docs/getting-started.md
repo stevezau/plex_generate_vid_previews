@@ -115,23 +115,7 @@ Hardware-accelerated video processing for faster thumbnail generation.
 
 ### GPU Detection
 
-Check which GPUs are detected:
-
-```bash
-# Docker
-docker run --rm --device /dev/dri:/dev/dri stevezzau/plex_generate_vid_previews:latest --list-gpus
-
-# Local install
-plex-generate-previews --list-gpus
-```
-
-Example output:
-
-```
-✅ Found 2 GPU(s):
-  [0] NVIDIA GeForce RTX 4090 (CUDA)
-  [1] Intel UHD Graphics 770 (VAAPI - /dev/dri/renderD128)
-```
+Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup**. Detected GPUs are shown there.
 
 ### Intel iGPU (QuickSync)
 
@@ -205,21 +189,11 @@ AMD requires proper VAAPI drivers on the host system.
 
 ### Windows (Native)
 
-Windows uses D3D11VA hardware acceleration automatically with any GPU.
-
-```bash
-plex-generate-previews --list-gpus
-```
-
-Requirements: latest GPU drivers (NVIDIA, AMD, or Intel) and FFmpeg with D3D11VA support.
+Windows uses D3D11VA hardware acceleration automatically with any GPU. Run the app via Docker; the web UI will show detected GPUs in Settings or Setup. Requirements: latest GPU drivers (NVIDIA, AMD, or Intel) and FFmpeg with D3D11VA support.
 
 ### macOS (Native)
 
-Apple Silicon and Intel Macs use VideoToolbox.
-
-```bash
-plex-generate-previews --list-gpus
-```
+Apple Silicon and Intel Macs use VideoToolbox. Run the app via Docker; the web UI shows detected GPUs in Settings or Setup.
 
 ### Multi-GPU Selection
 
@@ -462,24 +436,6 @@ docker run --rm \
 
 ---
 
-## Pip Install
-
-```bash
-# Install
-pip install git+https://github.com/stevezau/plex_generate_vid_previews.git
-
-# Check GPUs
-plex-generate-previews --list-gpus
-
-# Run
-plex-generate-previews \
-  --plex-url http://localhost:32400 \
-  --plex-token your-plex-token \
-  --plex-config-folder "/path/to/Plex Media Server"
-```
-
----
-
 ## Common Operations
 
 ### View Logs
@@ -531,7 +487,7 @@ Python, Debugpy, Ruff, Pylance, TOML, Copilot, Playwright, Coverage Gutters, Doc
 
 The devcontainer automatically:
 
-1. Installs the package with dev dependencies (`pip install -e ".[dev]"`)
+1. Installs the package with dev dependencies
 2. Installs Playwright Chromium browser
 3. Sets up pre-commit hooks
 

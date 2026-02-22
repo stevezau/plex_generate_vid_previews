@@ -98,5 +98,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 ENTRYPOINT ["/init", "/app/wrapper.sh"]
 
 # Default: run without arguments (environment variables will be used)
-# CLI arguments are supported: docker run image:tag --list-gpus --plex-url http://... --plex-token ...
+# Optional: docker run image:tag --cli for one-off CLI processing
 CMD []

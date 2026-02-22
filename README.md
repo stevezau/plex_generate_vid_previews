@@ -126,7 +126,7 @@ docker run -d \
 
 Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard.
 
-For Docker Compose, Unraid, local pip install, and GPU-specific setup:
+For Docker Compose, Unraid, and GPU-specific setup:
 
 - [Getting Started](docs/getting-started.md)
 - [Configuration & API Reference](docs/reference.md)
@@ -142,7 +142,6 @@ For Docker Compose, Unraid, local pip install, and GPU-specific setup:
 | **Docker** | Most users, easy GPU setup | [Getting Started](docs/getting-started.md) |
 | **Docker Compose** | Managed deployments | [docker-compose.example.yml](docker-compose.example.yml) |
 | **Unraid** | Unraid servers | [Getting Started — Unraid](docs/getting-started.md#unraid) |
-| **Pip** | Local development | [Getting Started — Pip Install](docs/getting-started.md#pip-install) |
 
 > [!IMPORTANT]
 > Note the extra "z" in Docker Hub: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)
@@ -167,11 +166,7 @@ For complete GPU setup, tuning, and troubleshooting:
 - [Getting Started — GPU Acceleration](docs/getting-started.md#gpu-acceleration)
 - [Guides & Troubleshooting](docs/guides.md#troubleshooting)
 
-Check detected GPUs:
-
-```bash
-plex-generate-previews --list-gpus
-```
+**Check detected GPUs:** Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup** — detected GPUs are shown there.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -182,7 +177,7 @@ plex-generate-previews --list-gpus
 | Document | Description |
 |----------|-------------|
 | [📖 Documentation Hub](docs/README.md) | Start here — architecture diagrams |
-| [⚡ Getting Started](docs/getting-started.md) | Docker, GPU, Unraid, pip, devcontainer |
+| [⚡ Getting Started](docs/getting-started.md) | Docker, GPU, Unraid, devcontainer |
 | [⚙️ Reference](docs/reference.md) | Configuration options & REST API |
 | [📘 Guides](docs/guides.md) | Web interface, webhooks, FAQ, troubleshooting |
 

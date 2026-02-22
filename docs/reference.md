@@ -113,13 +113,16 @@ Settings for automatic preview generation when media is imported via Radarr or S
 
 ---
 
-## Special Commands
+## Special Commands (Docker CLI mode)
+
+When running the container with `--cli`, you can pass:
 
 | Command | Description |
 |---------|-------------|
-| `--list-gpus` | List detected GPUs and exit |
 | `--help` | Show help message and exit |
 | `--cli` | Run in CLI mode (instead of web server) |
+
+To see detected GPUs, use the web UI: open **Settings** or **Setup**.
 
 ---
 
