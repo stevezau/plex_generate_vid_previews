@@ -5,6 +5,8 @@ on:
     workflows: [Tests]
     types: [completed]
     branches: [main]
+  push:
+    branches: [dev]
   workflow_dispatch:
 
 env:
@@ -15,7 +17,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/dev') }}
 
     steps:
       - name: Checkout repository
@@ -38,14 +40,25 @@ jobs:
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "branch=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Set image tags
+        id: set_tags
+        run: |
+          if [ "${{ steps.meta.outputs.branch }}" = "main" ]; then
+            echo "tag_suffix=latest" >> "$GITHUB_OUTPUT"
+            echo "tag_sha=${{ steps.meta.outputs.sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_suffix=dev" >> "$GITHUB_OUTPUT"
+            echo "tag_sha=dev-${{ steps.meta.outputs.sha_short }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ env.DOCKER_IMAGE }}:latest
-            ${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.sha_short }}
+            ${{ env.DOCKER_IMAGE }}:${{ steps.set_tags.outputs.tag_suffix }}
+            ${{ env.DOCKER_IMAGE }}:${{ steps.set_tags.outputs.tag_sha }}
           build-args: |
             GIT_BRANCH=${{ steps.meta.outputs.branch }}
             GIT_SHA=${{ github.sha }}
