@@ -54,6 +54,9 @@ After setup completes, you'll be taken to the dashboard.
 - **Cancel jobs** — stop running jobs
 - **Job history** — view completed/failed jobs
 
+> [!NOTE]
+> Only one job runs at a time. If a job is triggered (manually, by a schedule, or by a webhook) while another is already running, the incoming job is immediately marked **Cancelled** and a warning is logged. This prevents concurrent FFmpeg workloads and temp-folder conflicts.
+
 **Scheduling:**
 
 - **Cron schedules** — set up recurring processing
@@ -158,7 +161,11 @@ RATELIMIT_STORAGE_URL=redis://localhost:6379
 To skip the web interface and run one-time processing:
 
 ```bash
+# Docker
 docker run ... stevezzau/plex_generate_vid_previews:latest --cli
+
+# Local
+plex-generate-previews --cli --plex-url ... --plex-token ...
 ```
 
 ### Real-Time Updates
@@ -184,7 +191,9 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 1. Radarr/Sonarr imports a file and sends a webhook POST to this app
 2. The app waits for the configured delay (default 60s) to let Plex index the file
 3. If multiple imports arrive for the same library, they are **debounced** — only one scan runs
-4. A job is created and appears on the dashboard, sorted by newest items first
+4. When the delay expires, the app checks whether a job is already running
+   - **No job running** — a new job is created and starts immediately, sorted by newest items first
+   - **Job already running** — the incoming job is marked **Cancelled** (visible in job history) and a warning is logged; the running job is not interrupted
 5. Items that already have preview thumbnails are skipped automatically
 
 ### Prerequisites
@@ -284,7 +293,7 @@ Yes! Windows supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD
 
 **Can I use this without a GPU?**
 
-Yes! In the web UI go to **Settings** and set **GPU Workers** to `0` and **CPU Workers** to `4` (or higher) for CPU-only processing.
+Yes! Set `--gpu-threads 0` and `--cpu-threads 4` (or higher) for CPU-only processing.
 
 **What's the difference between web mode and CLI mode?**
 
@@ -295,11 +304,13 @@ Yes! In the web UI go to **Settings** and set **GPU Workers** to `0` and **CPU W
 
 **How do I know which GPUs are detected?**
 
-Open the web UI and go to **Settings** or **Setup**. Detected GPUs are shown there.
+```bash
+plex-generate-previews --list-gpus
+```
 
 **Can I use multiple GPUs?**
 
-Yes! The tool detects all available GPUs. Use **Settings** to configure worker counts; for CLI or env overrides, set `GPU_SELECTION` to `0,1,2` (or `all`) to choose which GPUs to use.
+Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-selection "0,1,2"` to select specific ones.
 
 **Which GPU should I use?**
 
@@ -387,6 +398,7 @@ Use this table to diagnose common failures quickly.
 | `GPU permission denied` | Container user cannot access GPU device files | Set `PUID`/`PGID` to a user with GPU access; on Unraid use `PUID=99`, `PGID=100`. |
 | `PLEX_CONFIG_FOLDER does not exist` | Incorrect mount or Plex config path | Confirm mounted path contains `Cache`, `Media`, and `Metadata`. |
 | `Connection failed to Plex` | Bad Plex URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify Plex is running, and test token with curl. |
+| Webhook job shows as **Cancelled** in history | Another job was already running when the webhook delay expired | Wait for the active job to finish; webhooks fired while idle will run normally. To avoid this, increase the webhook delay so imports do not fire during long processing runs. |
 | Webhook returns `401` | Invalid or missing authentication token in webhook headers | Set `X-Auth-Token` to your API token or configured webhook secret. |
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and verify `webhook_enabled=true`. |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
