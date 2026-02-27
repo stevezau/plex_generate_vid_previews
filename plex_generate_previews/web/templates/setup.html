@@ -311,18 +311,35 @@
                 <h4 class="card-title mb-4">Processing Options</h4>
 
                 <div class="row mb-4">
-                    <div class="col-md-6 mb-3">
+                    <div class="col-md-4 mb-3">
                         <label for="gpuThreads" class="form-label">GPU Workers</label>
                         <input type="number" class="form-control" id="gpuThreads"
                                value="1" min="0" max="16">
                         <div class="form-text">Parallel GPU jobs (0 to disable)</div>
                     </div>
-                    <div class="col-md-6 mb-3">
+                    <div class="col-md-4 mb-3">
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control" id="cpuThreads"
                                value="1" min="0" max="32">
-                        <div class="form-text">Parallel CPU jobs (fallback)</div>
+                        <div class="form-text">Parallel CPU jobs from main queue</div>
                     </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="cpuFallbackThreads" class="form-label">
+                            CPU Fallback Workers
+                        </label>
+                        <input type="number" class="form-control" id="cpuFallbackThreads"
+                               value="0" min="0" max="32">
+                        <div class="form-text">
+                            GPU-failed items only (used when CPU Workers is 0)
+                        </div>
+                    </div>
+                </div>
+                <div class="alert alert-secondary py-2 mb-4">
+                    <small>
+                        Recommended hybrid mode: <strong>CPU Workers = 0</strong> and
+                        <strong>CPU Fallback Workers &gt; 0</strong>.
+                        This keeps main processing on GPU while retrying GPU failures on CPU.
+                    </small>
                 </div>
 
                 <div class="row">
@@ -797,6 +814,7 @@ document.addEventListener('DOMContentLoaded', function() {
             await settingsManager.save({
                 gpu_threads: parseInt(document.getElementById('gpuThreads').value),
                 cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+                cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
                 thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
                 thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value)
             });

@@ -28,7 +28,7 @@ When you first access the web interface, you'll be guided through a **Setup Wiza
 1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
 2. **Select Server** — choose which Plex server to connect to
 3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, thumbnail quality, etc.
+4. **Processing Options** — configure GPU threads, CPU threads, CPU fallback workers, thumbnail quality, etc.
 5. **Security** — view or customize your access token (optional)
 
 After setup completes, you'll be taken to the dashboard.
@@ -70,7 +70,20 @@ Access settings at `/settings` to manage:
 - **Plex Connection** — re-authenticate, test connection
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
-- **Processing Options** — GPU/CPU threads, thumbnail interval and quality
+- **Processing Options** — GPU/CPU threads, CPU fallback workers, thumbnail interval and quality
+
+### CPU Fallback Workers (GPU Safety Net)
+
+Use this when you want GPU-only main processing but still want CPU recovery for unsupported GPU files.
+
+- Set **CPU Workers** to `0`
+- Set **CPU Fallback Workers** to `1` or more
+
+Behavior:
+
+- Main queue runs on GPU workers only
+- If a GPU worker hits an unsupported codec/runtime decode failure, the item is queued to CPU fallback workers
+- If **CPU Workers > 0**, fallback-only workers are not used (regular CPU workers already handle fallback work)
 
 Settings are saved to `/config/settings.json` and persist across restarts.
 

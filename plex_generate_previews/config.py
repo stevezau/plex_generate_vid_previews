@@ -38,7 +38,14 @@ def get_config_value(
     Returns:
         The configuration value converted to the specified type
     """
-    cli_value = getattr(cli_args, field_name, None) if cli_args else None
+    cli_value = None
+    if cli_args is not None:
+        try:
+            cli_vars = vars(cli_args)
+        except TypeError:
+            cli_vars = {}
+        if field_name in cli_vars:
+            cli_value = cli_vars[field_name]
     if cli_value is not None:
         return cli_value
 
@@ -116,6 +123,9 @@ class Config:
 
     # Logging
     log_level: str
+
+    # Optional GPU->CPU fallback worker count (used when cpu_threads=0)
+    fallback_cpu_threads: int = 0
 
     # Runtime state (set after construction)
     working_tmp_folder: str = ""
@@ -487,7 +497,11 @@ def _validate_processing_config(
 
 
 def _validate_thread_config(
-    gpu_threads: int, cpu_threads: int, gpu_selection: str, validation_errors: list
+    gpu_threads: int,
+    cpu_threads: int,
+    fallback_cpu_threads: int,
+    gpu_selection: str,
+    validation_errors: list,
 ) -> tuple[bool, str]:
     """
     Validate thread configuration parameters.
@@ -495,6 +509,7 @@ def _validate_thread_config(
     Args:
         gpu_threads: Number of GPU worker threads
         cpu_threads: Number of CPU worker threads
+        fallback_cpu_threads: Number of CPU fallback worker threads
         gpu_selection: GPU selection string
         validation_errors: List to append validation errors
 
@@ -510,6 +525,11 @@ def _validate_thread_config(
     if cpu_threads < 0 or cpu_threads > 32:
         validation_errors.append(
             f"CPU_THREADS must be between 0-32 (got: {cpu_threads})"
+        )
+
+    if fallback_cpu_threads < 0 or fallback_cpu_threads > 32:
+        validation_errors.append(
+            f"FALLBACK_CPU_THREADS must be between 0-32 (got: {fallback_cpu_threads})"
         )
 
     # Validate gpu_selection format
@@ -621,7 +641,14 @@ def load_config(cli_args=None) -> Config:
     # Helper to get value with precedence: CLI > settings.json > env > default
     def get_value(cli_args, field_name, settings_key, env_key, default, value_type=str):
         # 1. CLI args (highest precedence)
-        cli_value = getattr(cli_args, field_name, None) if cli_args else None
+        cli_value = None
+        if cli_args is not None:
+            try:
+                cli_vars = vars(cli_args)
+            except TypeError:
+                cli_vars = {}
+            if field_name in cli_vars:
+                cli_value = cli_vars[field_name]
         if cli_value is not None:
             return cli_value
 
@@ -736,6 +763,14 @@ def load_config(cli_args=None) -> Config:
     cpu_threads = get_value(
         cli_args, "cpu_threads", "cpu_threads", "CPU_THREADS", 1, int
     )
+    fallback_cpu_threads = get_value(
+        cli_args,
+        "fallback_cpu_threads",
+        "cpu_fallback_threads",
+        "FALLBACK_CPU_THREADS",
+        0,
+        int,
+    )
     gpu_selection = get_value(
         cli_args, "gpu_selection", "gpu_selection", "GPU_SELECTION", "all", str
     )
@@ -811,7 +846,7 @@ def load_config(cli_args=None) -> Config:
         plex_bif_frame_interval, thumbnail_quality, plex_timeout, validation_errors
     )
     should_exit, thread_error = _validate_thread_config(
-        gpu_threads, cpu_threads, gpu_selection, validation_errors
+        gpu_threads, cpu_threads, fallback_cpu_threads, gpu_selection, validation_errors
     )
     tmp_folder_created_by_us, _ = _validate_paths(tmp_folder, validation_errors)
 
@@ -873,6 +908,7 @@ def load_config(cli_args=None) -> Config:
         sort_by=sort_by,
         gpu_threads=gpu_threads,
         cpu_threads=cpu_threads,
+        fallback_cpu_threads=fallback_cpu_threads,
         gpu_selection=gpu_selection,
         tmp_folder=tmp_folder,
         tmp_folder_created_by_us=tmp_folder_created_by_us,
@@ -897,6 +933,7 @@ def load_config(cli_args=None) -> Config:
     logger.debug(f"PLEX_VIDEOS_PATH_MAPPING = {config.plex_videos_path_mapping}")
     logger.debug(f"GPU_THREADS = {config.gpu_threads}")
     logger.debug(f"CPU_THREADS = {config.cpu_threads}")
+    logger.debug(f"FALLBACK_CPU_THREADS = {config.fallback_cpu_threads}")
     logger.debug(f"GPU_SELECTION = {config.gpu_selection}")
     logger.debug(f"REGENERATE_THUMBNAILS = {config.regenerate_thumbnails}")
     logger.debug(f"SORT_BY = {config.sort_by}")

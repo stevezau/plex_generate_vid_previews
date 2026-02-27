@@ -57,6 +57,10 @@
                         <span>CPU Workers:</span>
                         <span id="cpuWorkers" class="badge bg-secondary">-</span>
                     </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>CPU Fallback Workers:</span>
+                        <span id="cpuFallbackWorkers" class="badge bg-info">-</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -525,8 +529,10 @@
 
                 const gpuEl = document.getElementById('gpuWorkers');
                 const cpuEl = document.getElementById('cpuWorkers');
-                if (gpuEl) gpuEl.textContent = config.gpu_threads || 0;
-                if (cpuEl) cpuEl.textContent = config.cpu_threads || 1;
+                const cpuFallbackEl = document.getElementById('cpuFallbackWorkers');
+                if (gpuEl) gpuEl.textContent = config.gpu_threads ?? 0;
+                if (cpuEl) cpuEl.textContent = config.cpu_threads ?? 1;
+                if (cpuFallbackEl) cpuFallbackEl.textContent = config.cpu_fallback_threads ?? 0;
             } catch (e) {
                 console.warn('Failed to load config:', e);
             }

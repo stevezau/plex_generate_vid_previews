@@ -196,7 +196,10 @@ class SettingsManager:
 
     @property
     def gpu_threads(self) -> int:
-        return int(self.get("gpu_threads") or os.environ.get("GPU_THREADS", "1"))
+        val = self.get("gpu_threads")
+        if val is None or val == "":
+            return int(os.environ.get("GPU_THREADS", "1"))
+        return int(val)
 
     @gpu_threads.setter
     def gpu_threads(self, value: int) -> None:
@@ -204,11 +207,25 @@ class SettingsManager:
 
     @property
     def cpu_threads(self) -> int:
-        return int(self.get("cpu_threads") or os.environ.get("CPU_THREADS", "1"))
+        val = self.get("cpu_threads")
+        if val is None or val == "":
+            return int(os.environ.get("CPU_THREADS", "1"))
+        return int(val)
 
     @cpu_threads.setter
     def cpu_threads(self, value: int) -> None:
         self.set("cpu_threads", value)
+
+    @property
+    def cpu_fallback_threads(self) -> int:
+        val = self.get("cpu_fallback_threads")
+        if val is None or val == "":
+            return int(os.environ.get("FALLBACK_CPU_THREADS", "0"))
+        return int(val)
+
+    @cpu_fallback_threads.setter
+    def cpu_fallback_threads(self, value: int) -> None:
+        self.set("cpu_fallback_threads", value)
 
     @property
     def thumbnail_quality(self) -> int:

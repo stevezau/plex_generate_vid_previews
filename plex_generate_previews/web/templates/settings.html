@@ -162,18 +162,38 @@
             </div>
             <div class="card-body">
                 <div class="row mb-4">
-                    <div class="col-md-6 mb-3">
+                    <div class="col-md-4 mb-3">
                         <label for="gpuThreads" class="form-label">GPU Workers</label>
                         <input type="number" class="form-control" id="gpuThreads"
                                min="0" max="16" value="1">
                         <div class="form-text">Parallel GPU jobs (0 to disable)</div>
                     </div>
-                    <div class="col-md-6 mb-3">
+                    <div class="col-md-4 mb-3">
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control" id="cpuThreads"
                                min="0" max="32" value="1">
-                        <div class="form-text">Parallel CPU jobs</div>
+                        <div class="form-text">Parallel CPU jobs from main queue</div>
                     </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="cpuFallbackThreads" class="form-label">
+                            CPU Fallback Workers
+                        </label>
+                        <input type="number" class="form-control" id="cpuFallbackThreads"
+                               min="0" max="32" value="0">
+                        <div class="form-text">
+                            Handles GPU-failed items when CPU Workers is 0
+                        </div>
+                    </div>
+                </div>
+                <div class="alert alert-secondary py-2 mb-4">
+                    <small>
+                        Use <strong>CPU Workers = 0</strong> and
+                        <strong>CPU Fallback Workers &gt; 0</strong> to run GPU-only main processing
+                        while still recovering unsupported GPU files on CPU.
+                        If CPU Workers is greater than 0, fallback workers are not used.
+                        <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md#cpu-fallback-workers"
+                           target="_blank" rel="noopener noreferrer">Learn more</a>.
+                    </small>
                 </div>
 
                 <div class="row">
@@ -324,8 +344,9 @@ async function loadSettings() {
         document.getElementById('plexConfigFolder').value = settings.plex_config_folder || '/plex';
         document.getElementById('plexVideosPathMapping').value = settings.plex_videos_path_mapping || '';
         document.getElementById('plexLocalVideosPathMapping').value = settings.plex_local_videos_path_mapping || '';
-        document.getElementById('gpuThreads').value = settings.gpu_threads || 1;
-        document.getElementById('cpuThreads').value = settings.cpu_threads || 1;
+        document.getElementById('gpuThreads').value = settings.gpu_threads ?? 1;
+        document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
+        document.getElementById('cpuFallbackThreads').value = settings.cpu_fallback_threads ?? 0;
         document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
@@ -435,6 +456,7 @@ async function saveAllSettings() {
             plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value,
             gpu_threads: parseInt(document.getElementById('gpuThreads').value),
             cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+            cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
             thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
             thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
             selected_libraries: libraries,

@@ -689,6 +689,9 @@ def get_config():
                     "config_error": "Configuration incomplete. Check required environment variables.",
                     "gpu_threads": int(os.environ.get("GPU_THREADS", 1)),
                     "cpu_threads": int(os.environ.get("CPU_THREADS", 1)),
+                    "cpu_fallback_threads": int(
+                        os.environ.get("FALLBACK_CPU_THREADS", 0)
+                    ),
                 }
             )
 
@@ -705,6 +708,7 @@ def get_config():
                 "regenerate_thumbnails": config.regenerate_thumbnails,
                 "gpu_threads": config.gpu_threads,
                 "cpu_threads": config.cpu_threads,
+                "cpu_fallback_threads": config.fallback_cpu_threads,
                 "log_level": config.log_level,
             }
         )
@@ -975,6 +979,7 @@ def get_settings():
             or "",
             "gpu_threads": settings.gpu_threads,
             "cpu_threads": settings.cpu_threads,
+            "cpu_fallback_threads": settings.cpu_fallback_threads,
             "thumbnail_interval": settings.thumbnail_interval,
             "thumbnail_quality": settings.thumbnail_quality,
             "log_level": settings.get("log_level", "INFO"),
@@ -1010,6 +1015,7 @@ def save_settings():
         "plex_local_videos_path_mapping",
         "gpu_threads",
         "cpu_threads",
+        "cpu_fallback_threads",
         "thumbnail_interval",
         "thumbnail_quality",
         "log_level",

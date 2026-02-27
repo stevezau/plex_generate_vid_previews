@@ -319,12 +319,14 @@ async function refreshStatus() {
     try {
         const gpuEl = document.getElementById('gpuWorkers');
         const cpuEl = document.getElementById('cpuWorkers');
-        if (gpuEl || cpuEl) {
+        const cpuFallbackEl = document.getElementById('cpuFallbackWorkers');
+        if (gpuEl || cpuEl || cpuFallbackEl) {
             const resp = await fetch('/api/system/config');
             if (resp.ok) {
                 const config = await resp.json();
-                if (gpuEl) gpuEl.textContent = config.gpu_threads || 0;
-                if (cpuEl) cpuEl.textContent = config.cpu_threads || 1;
+                if (gpuEl) gpuEl.textContent = config.gpu_threads ?? 0;
+                if (cpuEl) cpuEl.textContent = config.cpu_threads ?? 1;
+                if (cpuFallbackEl) cpuFallbackEl.textContent = config.cpu_fallback_threads ?? 0;
             }
         }
     } catch (e) {

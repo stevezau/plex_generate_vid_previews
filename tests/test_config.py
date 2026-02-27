@@ -7,7 +7,7 @@ FFmpeg detection, and environment-specific behavior.
 
 import pytest
 from unittest.mock import MagicMock, patch
-from plex_generate_previews.config import get_config_value, load_config
+from plex_generate_previews.config import get_config_value, load_config, show_docker_help
 
 
 class TestGetConfigValue:
@@ -69,6 +69,16 @@ class TestGetConfigValue:
         with patch.dict("os.environ", {"INT_FIELD": "42"}):
             result = get_config_value(cli_args, "int_field", "INT_FIELD", 0, int)
             assert result == 42
+
+    def test_get_config_value_handles_non_vars_cli_object(self):
+        """Fallback to env/default when vars(cli_args) is unsupported."""
+
+        class NoVarsObject:
+            __slots__ = ()
+
+        with patch.dict("os.environ", {"TEST_FIELD": "env_value"}, clear=True):
+            result = get_config_value(NoVarsObject(), "test_field", "TEST_FIELD", "default")
+            assert result == "env_value"
 
 
 class TestLoadConfig:
@@ -886,3 +896,16 @@ class TestLoadConfig:
         assert "movies" in config.plex_libraries
         assert "tv shows" in config.plex_libraries
         assert "anime" in config.plex_libraries
+
+
+class TestDockerHelp:
+    """Test docker help rendering."""
+
+    @patch("plex_generate_previews.config.logger.info")
+    def test_show_docker_help_logs_key_sections(self, mock_info):
+        """Ensure Docker help prints required guidance lines."""
+        show_docker_help()
+        logged_lines = [call.args[0] for call in mock_info.call_args_list]
+        assert any("Docker Environment Detected" in line for line in logged_lines)
+        assert any("Required Environment Variables" in line for line in logged_lines)
+        assert any("Example Docker Run Command" in line for line in logged_lines)

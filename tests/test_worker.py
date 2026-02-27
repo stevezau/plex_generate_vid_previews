@@ -254,6 +254,7 @@ class TestWorker:
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
         config = MagicMock()
         config.cpu_threads = 0  # CPU threads disabled
+        config.cpu_fallback_threads = 0
         plex = MagicMock()
         fallback_queue = queue.Queue()
 
@@ -281,6 +282,37 @@ class TestWorker:
 
         # Fallback queue should be empty
         assert fallback_queue.empty()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_worker_gpu_codec_error_uses_fallback_cpu_threads(self, mock_process):
+        """Test GPU worker re-queues when fallback CPU threads are enabled."""
+        worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
+        config = MagicMock()
+        config.cpu_threads = 0
+        config.fallback_cpu_threads = 2
+        plex = MagicMock()
+        fallback_queue = queue.Queue()
+
+        def mock_process_fn(*args, **kwargs):
+            raise CodecNotSupportedError("Codec not supported by GPU")
+
+        mock_process.side_effect = mock_process_fn
+
+        worker.assign_task(
+            "test_key",
+            config,
+            plex,
+            media_title="AV1 Video",
+            media_type="episode",
+            cpu_fallback_queue=fallback_queue,
+        )
+
+        time.sleep(0.2)
+
+        assert worker.completed == 0
+        assert worker.failed == 0
+        assert worker.requeued_to_cpu is True
+        assert not fallback_queue.empty()
 
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_cpu_handles_codec_error_as_failure(self, mock_process):
@@ -332,6 +364,21 @@ class TestWorkerPool:
         # Should have fallback queue
         assert hasattr(pool, "cpu_fallback_queue")
         assert isinstance(pool.cpu_fallback_queue, queue.Queue)
+
+    def test_worker_pool_fallback_workers_initialization(self):
+        """Test worker pool creates fallback-only CPU workers."""
+        selected_gpus = [("NVIDIA", "cuda", {"name": "RTX 3080"})]
+        pool = WorkerPool(
+            gpu_workers=1,
+            cpu_workers=0,
+            selected_gpus=selected_gpus,
+            fallback_cpu_workers=2,
+        )
+
+        assert len(pool.workers) == 3
+        assert pool.workers[0].worker_type == "GPU"
+        assert pool.workers[1].worker_type == "CPU_FALLBACK"
+        assert pool.workers[2].worker_type == "CPU_FALLBACK"
 
     def test_worker_pool_gpu_assignment(self):
         """Test round-robin GPU assignment."""

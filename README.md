@@ -104,6 +104,7 @@ flowchart LR
 |---------|-------------|
 | 🚀 **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
 | ⚡ **Parallel Processing** | Configurable GPU and CPU worker threads |
+| 🔁 **GPU→CPU Fallback** | Optional fallback-only CPU workers for GPU decode failures |
 | 🎮 **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
 | 📚 **Library Filtering** | Process specific Plex libraries |
 | 🎨 **Quality Control** | Adjustable thumbnail quality (1-10) |
@@ -180,6 +181,19 @@ For complete GPU setup, tuning, and troubleshooting:
 - [Guides & Troubleshooting](docs/guides.md#troubleshooting)
 
 **Check detected GPUs:** Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup** — detected GPUs are shown there.
+
+### GPU + CPU Fallback Mode
+
+If you want GPU-only main processing but still want CPU recovery for unsupported files:
+
+- Set **CPU Workers** to `0`
+- Set **CPU Fallback Workers** to `1` (or higher)
+
+This keeps normal jobs on GPU workers and only uses CPU when a GPU worker reports an unsupported codec/runtime decode failure.
+
+> [!NOTE]
+> `CPU Fallback Workers` is only used when `CPU Workers=0`.
+> If `CPU Workers>0`, regular CPU workers already handle fallback work.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

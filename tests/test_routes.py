@@ -404,12 +404,13 @@ class TestSettingsAPI:
         data = resp.get_json()
         assert "gpu_threads" in data
         assert "cpu_threads" in data
+        assert "cpu_fallback_threads" in data
 
     def test_save_settings(self, client):
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
-            json={"gpu_threads": 2, "cpu_threads": 4},
+            json={"gpu_threads": 2, "cpu_threads": 4, "cpu_fallback_threads": 1},
         )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
@@ -419,6 +420,7 @@ class TestSettingsAPI:
         data = resp2.get_json()
         assert data["gpu_threads"] == 2
         assert data["cpu_threads"] == 4
+        assert data["cpu_fallback_threads"] == 1
 
     def test_save_settings_ignores_unknown_fields(self, client):
         resp = client.post(

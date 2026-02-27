@@ -272,6 +272,11 @@ def parse_arguments() -> argparse.Namespace:
         "--cpu-threads", type=int, help="Number of CPU worker threads (default: 1)"
     )
     parser.add_argument(
+        "--fallback-cpu-threads",
+        type=int,
+        help="Number of CPU fallback worker threads when --cpu-threads=0 (default: 0)",
+    )
+    parser.add_argument(
         "--gpu-selection",
         help='GPU selection: "all" or comma-separated indices like "0,1,2" (default: all)',
     )
@@ -544,11 +549,18 @@ def run_processing(
         # Calculate title width for display formatting
         title_max_width = calculate_title_width()
 
+        fallback_cpu_workers = (
+            config.fallback_cpu_threads
+            if config.cpu_threads == 0 and config.fallback_cpu_threads > 0
+            else 0
+        )
+
         # Create worker pool
         worker_pool = WorkerPool(
             gpu_workers=config.gpu_threads,
             cpu_workers=config.cpu_threads,
             selected_gpus=selected_gpus,
+            fallback_cpu_workers=fallback_cpu_workers,
         )
         app_state.worker_pool = worker_pool
 

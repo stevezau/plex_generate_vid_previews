@@ -46,11 +46,13 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 ---
 
 ## Processing Options
+<a id="cpu-fallback-workers"></a>
 
 | Variable | CLI Argument | Web UI | Default | Description |
 |----------|--------------|--------|---------|-------------|
 | `GPU_THREADS` | `--gpu-threads` | Yes | `1` | Number of GPU worker threads (0–32) |
 | `CPU_THREADS` | `--cpu-threads` | Yes | `1` | Number of CPU worker threads (0–32) |
+| `FALLBACK_CPU_THREADS` | `--fallback-cpu-threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `CPU_THREADS=0`) |
 | `GPU_SELECTION` | `--gpu-selection` | No | `all` | GPU selection: `all` or `0,1,2` |
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Yes | `5` | Interval between preview images (1–60 s) |
@@ -58,6 +60,11 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 | `PLEX_LIBRARIES` | `--plex-libraries` | Yes | All | Comma-separated library names or IDs |
 | `SORT_BY` | `--sort-by` | No | `newest` | Sort order: `newest` or `oldest` |
 | `NICE_LEVEL` | N/A | No | `15` | Process priority (0–19) |
+
+> [!TIP]
+> For GPU-first processing with CPU safety net:
+> set `CPU_THREADS=0` and `FALLBACK_CPU_THREADS>0`.
+> This prevents regular CPU main-queue work while still allowing GPU-failed items to be retried on CPU.
 
 ---
 
@@ -285,6 +292,7 @@ Get current settings.
   "plex_local_videos_path_mapping": "",
   "gpu_threads": 4,
   "cpu_threads": 2,
+  "cpu_fallback_threads": 0,
   "thumbnail_interval": 5,
   "thumbnail_quality": 4
 }
@@ -297,6 +305,7 @@ Update settings. Send only the fields to change.
 ```json
 {
   "gpu_threads": 4,
+  "cpu_fallback_threads": 1,
   "thumbnail_interval": 5,
   "plex_url": "http://192.168.1.100:32400"
 }
