@@ -441,10 +441,10 @@ def parse_ffmpeg_progress_line(
             current_time = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
             time_str = f"{hours}:{minutes}:{seconds}"
 
-            # Update progress
+            # Update progress (1 decimal place for UI; Issue #144)
             progress_percent = 0
             if total_duration and total_duration > 0:
-                progress_percent = min(100, int((current_time / total_duration) * 100))
+                progress_percent = min(100.0, round((current_time / total_duration) * 100, 1))
 
             # Calculate remaining time from FFmpeg data
             remaining_time = 0

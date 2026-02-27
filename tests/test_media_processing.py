@@ -209,6 +209,20 @@ class TestFFmpegProgressParsing:
         parse_ffmpeg_progress_line(line, 100.0, callback)
         assert callback_called
 
+    def test_parse_ffmpeg_progress_line_progress_decimal_precision(self):
+        """Progress percent uses one decimal place for UI (Issue #144)."""
+        line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:33.33 bitrate= 800.0kbits/s speed=1.0x"
+        progress_seen = []
+
+        def callback(progress, current, total, speed, remaining=None, frame=0, fps=0, q=0, size=0, time_str="", bitrate=0):
+            progress_seen.append(progress)
+
+        parse_ffmpeg_progress_line(line, 100.0, callback)
+        assert len(progress_seen) == 1
+        # 33.33/100*100 = 33.33 -> round(33.33, 1) = 33.3
+        assert progress_seen[0] == 33.3
+        assert isinstance(progress_seen[0], float)
+
     def test_parse_ffmpeg_progress_line_no_callback(self):
         """Test parsing without callback doesn't crash."""
         line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=1.0x"
