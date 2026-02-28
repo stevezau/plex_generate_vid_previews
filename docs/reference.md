@@ -111,8 +111,6 @@ Settings for automatic preview generation when media is imported via Radarr or S
 | `webhook_enabled` | `true` | Yes | Master enable/disable for webhook processing |
 | `webhook_delay` | `60` | Yes | Seconds to wait after import before triggering (10–300 s) |
 | `webhook_secret` | *(empty)* | Yes | Dedicated secret for webhook auth (falls back to API token) |
-| `webhook_radarr_library` | *(empty)* | Yes | Library to scan for Radarr imports (empty = all) |
-| `webhook_sonarr_library` | *(empty)* | Yes | Library to scan for Sonarr imports (empty = all) |
 
 > [!TIP]
 > Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.

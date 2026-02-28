@@ -22,7 +22,7 @@ from .settings_manager import get_settings_manager
 
 webhooks_bp = Blueprint("webhooks_bp", __name__, url_prefix="/api/webhooks")
 
-# Debounce timers and payload batches keyed by source+library.
+# Debounce timers and payload batches keyed by source (radarr / sonarr).
 _pending_timers: dict[str, threading.Timer] = {}
 _pending_batches: dict[str, dict[str, object]] = {}
 _pending_lock = threading.Lock()
@@ -75,10 +75,9 @@ def _add_history_entry(source: str, event_type: str, title: str, status: str) ->
     )
 
 
-def _debounce_key(library_name: str, source: str) -> str:
-    """Build a stable debounce key for source+library batch processing."""
-    normalized_library = library_name.strip().lower() if library_name else "__all__"
-    return f"{source}:{normalized_library}"
+def _debounce_key(source: str) -> str:
+    """Build a stable debounce key for source (Radarr vs Sonarr)."""
+    return source
 
 
 def _combine_path(base_path: str, relative_path: str) -> str:
@@ -114,10 +113,8 @@ def _extract_sonarr_file_path(payload: dict) -> str:
     return combined.strip()
 
 
-def _schedule_webhook_job(
-    library_name: str, source: str, title: str, file_path: str
-) -> bool:
-    """Schedule a debounced single-file webhook job and batch paths per debounce key."""
+def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
+    """Schedule a debounced single-file webhook job and batch paths per source."""
     if not file_path:
         logger.warning(
             f"Webhook: {source} Download for '{title}' ignored (missing file path)"
@@ -126,7 +123,7 @@ def _schedule_webhook_job(
 
     settings = get_settings_manager()
     delay = int(settings.get("webhook_delay", 60))
-    debounce_key = _debounce_key(library_name, source)
+    debounce_key = _debounce_key(source)
     normalized_path = os.path.normpath(file_path)
 
     with _pending_lock:
@@ -137,7 +134,6 @@ def _schedule_webhook_job(
         batch = _pending_batches.get(debounce_key)
         if not batch:
             batch = {
-                "library_name": library_name,
                 "source": source,
                 "file_paths": set(),
             }
@@ -150,11 +146,11 @@ def _schedule_webhook_job(
         timer.daemon = True
         _pending_timers[debounce_key] = timer
         timer.start()
+        path_count = len(batch["file_paths"])
 
-    path_count = len(batch["file_paths"])
     logger.info(
-        f"Webhook: {source} imported '{title}' — scheduling job for "
-        f"'{library_name}' with {path_count} path(s) in {delay}s"
+        f"Webhook: {source} imported '{title}' — scheduling job with "
+        f"{path_count} path(s) in {delay}s"
     )
     return True
 
@@ -171,7 +167,6 @@ def _execute_webhook_job(debounce_key: str) -> None:
         logger.warning(f"Webhook: no pending batch found for key '{debounce_key}'")
         return
 
-    library_name = str(batch.get("library_name", ""))
     source = str(batch.get("source", "unknown"))
     webhook_paths = sorted(
         path for path in batch.get("file_paths", set()) if isinstance(path, str) and path
@@ -180,25 +175,24 @@ def _execute_webhook_job(debounce_key: str) -> None:
         logger.warning(
             f"Webhook: debounced batch for source '{source}' had no valid paths"
         )
-        _add_history_entry(source, "Download", library_name, "ignored_no_paths")
+        _add_history_entry(source, "Download", "", "ignored_no_paths")
         return
 
     job_manager = get_job_manager()
     job = job_manager.create_job(
-        library_name=f"Webhook: {library_name}",
+        library_name=f"Webhook: {source.title()}",
         config={"source": source, "path_count": len(webhook_paths)},
     )
 
-    selected = [library_name] if library_name else []
     _start_job_async(
         job.id,
         {
-            "selected_libraries": selected,
+            "selected_libraries": [],
             "sort_by": "newest",
             "webhook_paths": webhook_paths,
         },
     )
-    _add_history_entry(source, "Download", library_name, "triggered")
+    _add_history_entry(source, "Download", source, "triggered")
 
 
 # ---------------------------------------------------------------------------
@@ -235,10 +229,7 @@ def radarr_webhook():
     movie_title = movie.get("title", "Unknown")
     movie_file_path = _extract_radarr_file_path(data)
 
-    library_name = settings.get("webhook_radarr_library", "")
-    was_queued = _schedule_webhook_job(
-        library_name, "radarr", movie_title, movie_file_path
-    )
+    was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
     if not was_queued:
         _add_history_entry("radarr", "Download", movie_title, "ignored_no_path")
         return (
@@ -288,10 +279,7 @@ def sonarr_webhook():
     series_title = series.get("title", "Unknown")
     episode_file_path = _extract_sonarr_file_path(data)
 
-    library_name = settings.get("webhook_sonarr_library", "")
-    was_queued = _schedule_webhook_job(
-        library_name, "sonarr", series_title, episode_file_path
-    )
+    was_queued = _schedule_webhook_job("sonarr", series_title, episode_file_path)
     if not was_queued:
         _add_history_entry("sonarr", "Download", series_title, "ignored_no_path")
         return (

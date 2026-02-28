@@ -121,7 +121,7 @@ def test_radarr_webhook_download_event(mock_schedule, client):
     assert data["success"] is True
     assert "Inception" in data["message"]
     mock_schedule.assert_called_once_with(
-        "", "radarr", "Inception", "/movies/Inception (2010)/Inception.mkv"
+        "radarr", "Inception", "/movies/Inception (2010)/Inception.mkv"
     )
 
 
@@ -139,7 +139,7 @@ def test_sonarr_webhook_download_event(mock_schedule, client):
     assert data["success"] is True
     assert "Breaking Bad" in data["message"]
     mock_schedule.assert_called_once_with(
-        "", "sonarr", "Breaking Bad", "/tv/Breaking Bad/Season 01/S01E01.mkv"
+        "sonarr", "Breaking Bad", "/tv/Breaking Bad/Season 01/S01E01.mkv"
     )
 
 
@@ -303,7 +303,7 @@ def test_webhook_clear_history(authed_client):
 
 @patch("plex_generate_previews.web.webhooks.threading.Timer")
 def test_webhook_debounce(mock_timer_cls, client):
-    """Two rapid webhooks for same library should cancel the first timer."""
+    """Two rapid webhooks for same source should cancel the first timer."""
     mock_timer = MagicMock()
     mock_timer.daemon = True
     mock_timer_cls.return_value = mock_timer
@@ -316,7 +316,7 @@ def test_webhook_debounce(mock_timer_cls, client):
 
     # First webhook
     client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
-    # Second webhook (same library — should debounce)
+    # Second webhook (same source — should debounce)
     payload["movie"]["title"] = "Movie B"
     payload["movieFile"]["path"] = "/movies/Movie B/Movie B.mkv"
     client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
@@ -352,9 +352,9 @@ def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_
     mock_job.id = "test-job-id"
     mock_job_mgr.return_value.create_job.return_value = mock_job
 
-    wh._schedule_webhook_job("Movies", "radarr", "Movie A", "/movies/A.mkv")
-    wh._schedule_webhook_job("Movies", "radarr", "Movie B", "/movies/B.mkv")
-    key = wh._debounce_key("Movies", "radarr")
+    wh._schedule_webhook_job("radarr", "Movie A", "/movies/A.mkv")
+    wh._schedule_webhook_job("radarr", "Movie B", "/movies/B.mkv")
+    key = wh._debounce_key("radarr")
 
     wh._execute_webhook_job(key)
 

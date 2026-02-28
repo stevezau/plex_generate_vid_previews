@@ -545,6 +545,7 @@ class TestGetMediaItemsByPaths:
         assert result[0][0] == "/library/metadata/100"
         assert result[0][1] == "Test Movie"
         assert result[0][2] == "movie"
+        mock_section.search.assert_called_once_with(sort="addedAt:desc", maxresults=200)
 
     def test_get_media_items_by_paths_no_match(self, mock_config):
         """Paths that match no Plex item return empty list."""
@@ -589,3 +590,39 @@ class TestGetMediaItemsByPaths:
         assert "Test Show" in result[0][1]
         assert "S01E01" in result[0][1]
         assert result[0][2] == "episode"
+        mock_section.search.assert_called_once_with(
+            libtype="episode", sort="addedAt:desc", maxresults=200
+        )
+
+    @patch.dict(
+        "os.environ",
+        {"WEBHOOK_RECENT_LIMIT": "1", "WEBHOOK_FALLBACK_LIMIT": "5"},
+        clear=False,
+    )
+    def test_get_media_items_by_paths_fallback_window(self, mock_config):
+        """Unresolved paths should trigger one bounded fallback scan."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/999"
+        mock_movie.title = "Late Match"
+        mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.side_effect = [[], [mock_movie]]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"]
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/999"
+        assert mock_section.search.call_count == 2
+        first_call = mock_section.search.call_args_list[0].kwargs
+        second_call = mock_section.search.call_args_list[1].kwargs
+        assert first_call == {"sort": "addedAt:desc", "maxresults": 1}
+        assert second_call == {"sort": "addedAt:desc", "maxresults": 5}

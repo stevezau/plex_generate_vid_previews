@@ -344,6 +344,13 @@ def _resolve_item_media_type(section_type: str) -> Optional[str]:
 def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     """Resolve webhook file paths into Plex media tuples.
 
+    We need Plex because preview BIF files must be written to a path derived from
+    the item's bundle hash (from Plex). The webhook only gives us the file path;
+    we look up the Plex item to get its key and then /tree to get the hash.
+
+    For webhooks the file was just imported, so we search recently-added items
+    per library first, then run one bounded fallback pass for unresolved paths.
+
     Args:
         plex: Plex server instance.
         config: Runtime configuration (includes optional library filtering).
@@ -352,6 +359,21 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     Returns:
         list[tuple]: Matching (key, title, media_type) tuples for worker processing.
     """
+    # Only fetch recently-added items when resolving webhook paths (avoids full-library scan).
+    # Limits can be tuned via environment variables for larger/busier servers.
+    try:
+        webhook_recent_limit = max(1, int(os.environ.get("WEBHOOK_RECENT_LIMIT", "200")))
+    except ValueError:
+        webhook_recent_limit = 200
+
+    try:
+        webhook_fallback_limit = max(
+            webhook_recent_limit,
+            int(os.environ.get("WEBHOOK_FALLBACK_LIMIT", "1200")),
+        )
+    except ValueError:
+        webhook_fallback_limit = max(webhook_recent_limit, 1200)
+
     normalized_targets = {
         _normalize_path_for_match(path) for path in file_paths if str(path).strip()
     }
@@ -372,57 +394,81 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     seen_keys = set()
     matched_targets = set()
 
-    for section in sections:
-        if getattr(config, "plex_library_ids", None):
-            if str(section.key) not in config.plex_library_ids:
-                continue
-        elif config.plex_libraries and section.title.lower() not in config.plex_libraries:
-            continue
+    def _scan_sections(target_paths: set[str], max_results: int) -> set[str]:
+        """Scan sections and return matched target paths for this pass."""
+        pass_matches = set()
 
-        media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
-        if not media_type:
-            continue
-
-        search_kwargs = {"libtype": "episode"} if media_type == "episode" else {}
-        try:
-            items = retry_plex_call(section.search, **search_kwargs)
-        except (
-            requests.exceptions.RequestException,
-            http.client.BadStatusLine,
-            xml.etree.ElementTree.ParseError,
-        ) as e:
-            logger.warning(
-                f"Skipping library '{section.title}' while resolving webhook paths: {e}"
-            )
-            continue
-
-        for item in items:
-            locations = _extract_item_locations(item)
-            if not locations:
+        for section in sections:
+            if getattr(config, "plex_library_ids", None):
+                if str(section.key) not in config.plex_library_ids:
+                    continue
+            elif (
+                config.plex_libraries
+                and section.title.lower() not in config.plex_libraries
+            ):
                 continue
 
-            item_targets = set()
-            for location in locations:
-                item_targets.add(_normalize_path_for_match(location))
-                mapped_location = _map_plex_path_to_local(location, config)
-                item_targets.add(_normalize_path_for_match(mapped_location))
-
-            matched_for_item = normalized_targets.intersection(item_targets)
-            if not matched_for_item:
+            media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
+            if not media_type:
                 continue
 
-            matched_targets.update(matched_for_item)
-            if item.key in seen_keys:
+            search_kwargs = {"libtype": "episode"} if media_type == "episode" else {}
+            search_kwargs["sort"] = "addedAt:desc"
+            search_kwargs["maxresults"] = max_results
+            try:
+                items = retry_plex_call(section.search, **search_kwargs)
+            except (
+                requests.exceptions.RequestException,
+                http.client.BadStatusLine,
+                xml.etree.ElementTree.ParseError,
+            ) as e:
+                logger.warning(
+                    f"Skipping library '{section.title}' while resolving webhook paths: {e}"
+                )
                 continue
 
-            seen_keys.add(item.key)
-            title = item.title if media_type == "movie" else _build_episode_title(item)
-            matched_items.append((item.key, title, media_type))
+            for item in items:
+                locations = _extract_item_locations(item)
+                if not locations:
+                    continue
 
-    unresolved_targets = sorted(normalized_targets - matched_targets)
+                item_targets = set()
+                for location in locations:
+                    item_targets.add(_normalize_path_for_match(location))
+                    mapped_location = _map_plex_path_to_local(location, config)
+                    item_targets.add(_normalize_path_for_match(mapped_location))
+
+                matched_for_item = target_paths.intersection(item_targets)
+                if not matched_for_item:
+                    continue
+
+                pass_matches.update(matched_for_item)
+                if item.key in seen_keys:
+                    continue
+
+                seen_keys.add(item.key)
+                title = item.title if media_type == "movie" else _build_episode_title(item)
+                matched_items.append((item.key, title, media_type))
+
+        return pass_matches
+
+    matched_targets.update(_scan_sections(normalized_targets, webhook_recent_limit))
+    unresolved_targets = normalized_targets - matched_targets
+    if unresolved_targets and webhook_fallback_limit > webhook_recent_limit:
+        logger.info(
+            f"Retrying unresolved webhook paths with expanded search window "
+            f"({webhook_fallback_limit} per library, {len(unresolved_targets)} unresolved)"
+        )
+        matched_targets.update(
+            _scan_sections(unresolved_targets, webhook_fallback_limit)
+        )
+        unresolved_targets = normalized_targets - matched_targets
+
+    unresolved_targets = sorted(unresolved_targets)
     if unresolved_targets:
         logger.warning(
-            f"Webhook path resolution did not find Plex items for {len(unresolved_targets)} path(s)"
+            f"Webhook path resolution did not find Plex items for {len(unresolved_targets)} path(s). "
+            f"Searched up to {webhook_fallback_limit} recently-added items per library."
         )
     logger.info(
         f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"

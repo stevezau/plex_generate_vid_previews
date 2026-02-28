@@ -94,7 +94,6 @@ Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
 - **Enable/Disable** — master toggle for webhook processing
 - **Webhook URLs** — copy-ready URLs for Radarr and Sonarr
 - **Delay** — seconds to wait after import (gives Plex time to index)
-- **Library Mapping** — which library to scan for each source
 - **Webhook Secret** — optional dedicated authentication token
 - **Setup Instructions** — step-by-step guide for Radarr/Sonarr configuration
 - **Activity Log** — recent webhook events with status badges
@@ -197,16 +196,14 @@ The dashboard uses WebSocket connections (via Flask-SocketIO + simple-websocket)
 
 ## Webhook Integration
 
-Automatically generate preview thumbnails when Radarr or Sonarr imports new media. Webhooks trigger a library scan after a configurable delay, giving Plex time to detect and index the new files.
+Automatically generate preview thumbnails when Radarr or Sonarr imports new media. Webhooks trigger processing of **only the imported file(s)** after a configurable delay, giving Plex time to detect and index the new files.
 
 ### How It Works
 
 1. Radarr/Sonarr imports a file and sends a webhook POST to this app
 2. The app waits for the configured delay (default 60s) to let Plex index the file
-3. If multiple imports arrive for the same library, they are **debounced** — only one scan runs
-4. When the delay expires, the app checks whether a job is already running
-   - **No job running** — a new job is created and starts immediately, sorted by newest items first
-   - **Job already running** — the incoming job is marked **Cancelled** (visible in job history) and a warning is logged; the running job is not interrupted
+3. If multiple imports arrive from the same source (Radarr or Sonarr), they are **debounced** — one job runs with all collected file paths
+4. When the delay expires, the app resolves each file path to a Plex item and processes only those items (no full-library scan)
 5. Items that already have preview thumbnails are skipped automatically
 
 ### Prerequisites
@@ -248,9 +245,7 @@ All settings are configurable from the **Webhooks** page in the web UI.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Enable Webhooks** | On | Master toggle |
-| **Delay** | 60s | Wait time before scanning (10–300 s) |
-| **Radarr Library** | All | Which Plex library to scan for movie imports |
-| **Sonarr Library** | All | Which Plex library to scan for TV imports |
+| **Delay** | 60s | Wait time before processing (10–300 s) |
 | **Webhook Secret** | *(empty)* | Dedicated authentication token for webhooks |
 
 ### Webhook Secret
@@ -263,9 +258,9 @@ By default, webhooks authenticate using your main API token. You can optionally 
 
 ### Debouncing
 
-When multiple files are imported in quick succession (e.g., a season pack), the app **debounces** the webhook triggers. Each new import for the same library resets the delay timer, so only one scan runs after all imports complete.
+When multiple files are imported in quick succession (e.g., a season pack), the app **debounces** webhook triggers by source (Radarr or Sonarr). Each new import from the same source resets the delay timer; when the timer fires, one job runs and processes only the collected file paths.
 
-Example: Sonarr imports 10 episodes over 30 seconds with a 60s delay configured. The scan starts 60 seconds after the *last* episode is imported, not after each one.
+Example: Sonarr imports 10 episodes over 30 seconds with a 60s delay configured. One job starts 60 seconds after the *last* episode is imported and processes only those 10 files.
 
 ---
 

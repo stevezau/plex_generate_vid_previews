@@ -1092,8 +1092,6 @@ def get_settings():
             "webhook_enabled": settings.get("webhook_enabled", True),
             "webhook_delay": settings.get("webhook_delay", 60),
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
-            "webhook_radarr_library": settings.get("webhook_radarr_library", ""),
-            "webhook_sonarr_library": settings.get("webhook_sonarr_library", ""),
         }
     )
 
@@ -1128,8 +1126,6 @@ def save_settings():
         "webhook_enabled",
         "webhook_delay",
         "webhook_secret",
-        "webhook_radarr_library",
-        "webhook_sonarr_library",
     ]
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}

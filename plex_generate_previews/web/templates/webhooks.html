@@ -79,22 +79,6 @@
         </div>
 
         <div class="mb-3">
-            <label for="webhookRadarrLibrary" class="form-label">Radarr Library</label>
-            <select class="form-select" id="webhookRadarrLibrary">
-                <option value="">All Libraries</option>
-            </select>
-            <div class="form-text">Library to scan when Radarr reports a new import.</div>
-        </div>
-
-        <div class="mb-3">
-            <label for="webhookSonarrLibrary" class="form-label">Sonarr Library</label>
-            <select class="form-select" id="webhookSonarrLibrary">
-                <option value="">All Libraries</option>
-            </select>
-            <div class="form-text">Library to scan when Sonarr reports a new import.</div>
-        </div>
-
-        <div class="mb-3">
             <label for="webhookSecret" class="form-label">Webhook Secret</label>
             <div class="input-group">
                 <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
@@ -183,10 +167,9 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
 
     loadWebhookSettings();
-    loadLibraries();
     loadHistory();
 
-    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRadarrLibrary, #webhookSonarrLibrary, #webhookSecret').forEach(function(el) {
+    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookSecret').forEach(function(el) {
         el.addEventListener('change', markDirty);
         el.addEventListener('input', markDirty);
     });
@@ -213,42 +196,11 @@ async function loadWebhookSettings() {
         document.getElementById('delayValue').textContent = data.webhook_delay || 60;
         if (data.webhook_secret && data.webhook_secret !== '****') {
             document.getElementById('webhookSecret').value = data.webhook_secret;
-        } else if (data.webhook_secret === '****') {
+        } else         if (data.webhook_secret === '****') {
             document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
         }
-        // Library selects populated after loadLibraries
-        window._savedRadarrLibrary = data.webhook_radarr_library || '';
-        window._savedSonarrLibrary = data.webhook_sonarr_library || '';
     } catch (e) {
         console.error('Failed to load webhook settings:', e);
-    }
-}
-
-async function loadLibraries() {
-    try {
-        const data = await apiGet('/api/libraries');
-        const libs = data.libraries || data || [];
-        ['webhookRadarrLibrary', 'webhookSonarrLibrary'].forEach(function(selectId) {
-            const sel = document.getElementById(selectId);
-            // Keep the "All Libraries" default
-            while (sel.options.length > 1) sel.remove(1);
-            libs.forEach(function(lib) {
-                const name = lib.title || lib.name || lib;
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                sel.appendChild(opt);
-            });
-        });
-        // Apply saved values after populating
-        if (window._savedRadarrLibrary) {
-            document.getElementById('webhookRadarrLibrary').value = window._savedRadarrLibrary;
-        }
-        if (window._savedSonarrLibrary) {
-            document.getElementById('webhookSonarrLibrary').value = window._savedSonarrLibrary;
-        }
-    } catch (e) {
-        console.error('Failed to load libraries:', e);
     }
 }
 
@@ -260,8 +212,6 @@ async function saveWebhookSettings() {
     const payload = {
         webhook_enabled: document.getElementById('webhookEnabled').checked,
         webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
-        webhook_radarr_library: document.getElementById('webhookRadarrLibrary').value,
-        webhook_sonarr_library: document.getElementById('webhookSonarrLibrary').value,
     };
 
     const secretVal = document.getElementById('webhookSecret').value;
