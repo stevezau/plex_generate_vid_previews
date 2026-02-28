@@ -639,6 +639,9 @@ function updateCurrentJob(job) {
                     <i class="bi bi-dash-lg me-1"></i>Remove
                 </button>
             </div>
+            <div class="w-100 small text-muted">
+                Remove only affects idle workers; busy workers are kept until they finish.
+            </div>
         </div>
     `;
 }
