@@ -136,6 +136,9 @@ class Config:
     # When set, filter libraries by Plex section key (ID) instead of plex_libraries (names)
     plex_library_ids: Optional[List[str]] = None
 
+    # Runtime-only file targets for webhook-triggered single-file processing.
+    webhook_paths: Optional[List[str]] = None
+
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
         fields = []

@@ -29,7 +29,7 @@ from .config import load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
 from .logging_config import setup_logging
 from .media_processing import clear_failures, log_failure_summary
-from .plex_client import get_library_sections, plex_server
+from .plex_client import get_library_sections, get_media_items_by_paths, plex_server
 from .utils import (
     calculate_title_width,
     is_windows,
@@ -580,54 +580,86 @@ def run_processing(
             # Headless mode - no Rich console display
             logger.info("Running in headless mode (no console display)")
 
-            # Get the generator for library sections
-            library_sections = get_library_sections(plex, config)
+            if getattr(config, "webhook_paths", None):
+                webhook_media_items = get_media_items_by_paths(
+                    plex, config, config.webhook_paths
+                )
+                if not webhook_media_items:
+                    logger.warning(
+                        "No Plex items matched webhook file paths; skipping processing"
+                    )
+                else:
+                    if progress_callback:
+                        progress_callback(
+                            0,
+                            len(webhook_media_items),
+                            "Processing webhook-targeted media",
+                        )
 
-            # Process all library sections
-            for section, media_items in library_sections:
-                # Check cancellation between libraries
-                if cancel_check and cancel_check():
-                    logger.info("Cancellation requested — skipping remaining libraries")
-                    cancellation_requested = True
-                    break
+                    result = worker_pool.process_items_headless(
+                        webhook_media_items,
+                        config,
+                        plex,
+                        title_max_width,
+                        library_name="Webhook Targets",
+                        progress_callback=progress_callback,
+                        worker_callback=worker_callback,
+                        cancel_check=cancel_check,
+                        pause_check=pause_check,
+                    )
+                    total_successful += result["completed"]
+                    total_failed += result["failed"]
+                    total_processed += result["completed"] + result["failed"]
+                    cancellation_requested = cancellation_requested or result["cancelled"]
+            else:
+                # Get the generator for library sections
+                library_sections = get_library_sections(plex, config)
 
-                if not media_items:
+                # Process all library sections
+                for section, media_items in library_sections:
+                    # Check cancellation between libraries
+                    if cancel_check and cancel_check():
+                        logger.info("Cancellation requested — skipping remaining libraries")
+                        cancellation_requested = True
+                        break
+
+                    if not media_items:
+                        logger.info(
+                            f"No media items found in library '{section.title}', skipping"
+                        )
+                        continue
+
                     logger.info(
-                        f"No media items found in library '{section.title}', skipping"
-                    )
-                    continue
-
-                logger.info(
-                    f"Processing library '{section.title}' with {len(media_items)} items"
-                )
-
-                if progress_callback:
-                    progress_callback(
-                        0, len(media_items), f"Processing {section.title}"
+                        f"Processing library '{section.title}' with {len(media_items)} items"
                     )
 
-                # Process items without Rich progress displays
-                result = worker_pool.process_items_headless(
-                    media_items,
-                    config,
-                    plex,
-                    title_max_width,
-                    library_name=section.title,
-                    progress_callback=progress_callback,
-                    worker_callback=worker_callback,
-                    cancel_check=cancel_check,
-                    pause_check=pause_check,
-                )
-                total_successful += result["completed"]
-                total_failed += result["failed"]
-                total_processed += result["completed"] + result["failed"]
-                cancellation_requested = cancellation_requested or result["cancelled"]
+                    if progress_callback:
+                        progress_callback(
+                            0, len(media_items), f"Processing {section.title}"
+                        )
 
-                logger.info(f"Completed processing library '{section.title}'")
+                    # Process items without Rich progress displays
+                    result = worker_pool.process_items_headless(
+                        media_items,
+                        config,
+                        plex,
+                        title_max_width,
+                        library_name=section.title,
+                        progress_callback=progress_callback,
+                        worker_callback=worker_callback,
+                        cancel_check=cancel_check,
+                        pause_check=pause_check,
+                    )
+                    total_successful += result["completed"]
+                    total_failed += result["failed"]
+                    total_processed += result["completed"] + result["failed"]
+                    cancellation_requested = cancellation_requested or result["cancelled"]
 
-                if result["cancelled"]:
-                    logger.info("Cancellation requested — skipping remaining libraries")
-                    break
+                    logger.info(f"Completed processing library '{section.title}'")
+
+                    if result["cancelled"]:
+                        logger.info("Cancellation requested — skipping remaining libraries")
+                        break
         else:
             # Interactive mode with Rich console display
             # Create progress displays
@@ -651,66 +683,97 @@ def run_processing(
             dynamic_group = DynamicGroup()
 
             with Live(dynamic_group, console=console, refresh_per_second=20):
-                # Start in query mode
-                dynamic_group.set_query_mode()
-                query_task = query_progress.add_task(
-                    "Querying library...", total=1, completed=0
-                )
-
-                # Get the generator for library sections
-                library_sections = get_library_sections(plex, config)
-
-                # Process all library sections
-                for section, media_items in library_sections:
-                    if not media_items:
-                        logger.info(
-                            f"No media items found in library '{section.title}', skipping"
+                if getattr(config, "webhook_paths", None):
+                    webhook_media_items = get_media_items_by_paths(
+                        plex, config, config.webhook_paths
+                    )
+                    if not webhook_media_items:
+                        logger.warning(
+                            "No Plex items matched webhook file paths; skipping processing"
                         )
-                        continue
-
-                    # Switch to processing mode
-                    dynamic_group.set_processing_mode()
-                    query_progress.remove_task(query_task)
-
-                    main_task = main_progress.add_task(
-                        f"Processing {section.title}", total=len(media_items)
-                    )
-
-                    # Process items in this section with worker progress
-                    result = worker_pool.process_items(
-                        media_items,
-                        config,
-                        plex,
-                        worker_progress,
-                        main_progress,
-                        main_task,
-                        title_max_width,
-                        library_name=section.title,
-                    )
-                    total_successful += result["completed"]
-                    total_failed += result["failed"]
-                    total_processed += result["completed"] + result["failed"]
-                    cancellation_requested = (
-                        cancellation_requested or result["cancelled"]
-                    )
-
-                    # Remove completed task
-                    main_progress.remove_task(main_task)
-
-                    if result["cancelled"]:
-                        logger.info(
-                            "Cancellation requested — skipping remaining libraries"
+                    else:
+                        dynamic_group.set_processing_mode()
+                        main_task = main_progress.add_task(
+                            "Processing Webhook Targets", total=len(webhook_media_items)
                         )
-                        break
-
-                    # Switch back to query mode for next library
+                        result = worker_pool.process_items(
+                            webhook_media_items,
+                            config,
+                            plex,
+                            worker_progress,
+                            main_progress,
+                            main_task,
+                            title_max_width,
+                            library_name="Webhook Targets",
+                        )
+                        total_successful += result["completed"]
+                        total_failed += result["failed"]
+                        total_processed += result["completed"] + result["failed"]
+                        cancellation_requested = (
+                            cancellation_requested or result["cancelled"]
+                        )
+                        main_progress.remove_task(main_task)
+                else:
+                    # Start in query mode
                     dynamic_group.set_query_mode()
                     query_task = query_progress.add_task(
                         "Querying library...", total=1, completed=0
                     )
 
-                # Remove final query task
-                query_progress.remove_task(query_task)
+                    # Get the generator for library sections
+                    library_sections = get_library_sections(plex, config)
+
+                    # Process all library sections
+                    for section, media_items in library_sections:
+                        if not media_items:
+                            logger.info(
+                                f"No media items found in library '{section.title}', skipping"
+                            )
+                            continue
+
+                        # Switch to processing mode
+                        dynamic_group.set_processing_mode()
+                        query_progress.remove_task(query_task)
+
+                        main_task = main_progress.add_task(
+                            f"Processing {section.title}", total=len(media_items)
+                        )
+
+                        # Process items in this section with worker progress
+                        result = worker_pool.process_items(
+                            media_items,
+                            config,
+                            plex,
+                            worker_progress,
+                            main_progress,
+                            main_task,
+                            title_max_width,
+                            library_name=section.title,
+                        )
+                        total_successful += result["completed"]
+                        total_failed += result["failed"]
+                        total_processed += result["completed"] + result["failed"]
+                        cancellation_requested = (
+                            cancellation_requested or result["cancelled"]
+                        )
+
+                        # Remove completed task
+                        main_progress.remove_task(main_task)
+
+                        if result["cancelled"]:
+                            logger.info(
+                                "Cancellation requested — skipping remaining libraries"
+                            )
+                            break
+
+                        # Switch back to query mode for next library
+                        dynamic_group.set_query_mode()
+                        query_task = query_progress.add_task(
+                            "Querying library...", total=1, completed=0
+                        )
+
+                    # Remove final query task
+                    query_progress.remove_task(query_task)
 
         if cancellation_requested:
             logger.info(

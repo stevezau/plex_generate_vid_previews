@@ -1565,6 +1565,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     elif key == "force_generate":
                         # Web UI sends "force_generate"; Config uses "regenerate_thumbnails"
                         config.regenerate_thumbnails = bool(value)
+                    elif key == "webhook_paths":
+                        # Webhook batching passes explicit file targets to avoid full-library scans.
+                        config.webhook_paths = [
+                            str(path).strip() for path in value if str(path).strip()
+                        ]
                     elif hasattr(config, key):
                         setattr(config, key, value)
 

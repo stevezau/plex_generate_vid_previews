@@ -42,6 +42,7 @@ def _reset_singletons():
         for t in wh._pending_timers.values():
             t.cancel()
         wh._pending_timers.clear()
+        wh._pending_batches.clear()
     yield
     reset_settings_manager()
     with jobs_mod._job_lock:
@@ -54,6 +55,7 @@ def _reset_singletons():
         for t in wh._pending_timers.values():
             t.cancel()
         wh._pending_timers.clear()
+        wh._pending_batches.clear()
 
 
 @pytest.fixture()
@@ -107,33 +109,38 @@ def _auth_headers(token: str = "test-token-12345678") -> dict:
 
 @patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
 def test_radarr_webhook_download_event(mock_schedule, client):
-    """POST valid Radarr Download payload → 202."""
+    """POST valid Radarr Download payload → 202 and schedules job with file path."""
     payload = {
         "eventType": "Download",
         "movie": {"title": "Inception", "folderPath": "/movies/Inception (2010)"},
+        "movieFile": {"path": "/movies/Inception (2010)/Inception.mkv"},
     }
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 202
     data = resp.get_json()
     assert data["success"] is True
     assert "Inception" in data["message"]
-    mock_schedule.assert_called_once()
+    mock_schedule.assert_called_once_with(
+        "", "radarr", "Inception", "/movies/Inception (2010)/Inception.mkv"
+    )
 
 
 @patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
 def test_sonarr_webhook_download_event(mock_schedule, client):
-    """POST valid Sonarr Download payload → 202."""
+    """POST valid Sonarr Download payload → 202 and schedules job with file path."""
     payload = {
         "eventType": "Download",
         "series": {"title": "Breaking Bad"},
-        "episodeFile": {"relativePath": "Season 01/S01E01.mkv"},
+        "episodeFile": {"path": "/tv/Breaking Bad/Season 01/S01E01.mkv"},
     }
     resp = client.post("/api/webhooks/sonarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 202
     data = resp.get_json()
     assert data["success"] is True
     assert "Breaking Bad" in data["message"]
-    mock_schedule.assert_called_once()
+    mock_schedule.assert_called_once_with(
+        "", "sonarr", "Breaking Bad", "/tv/Breaking Bad/Season 01/S01E01.mkv"
+    )
 
 
 def test_radarr_webhook_test_event(client):
@@ -229,7 +236,11 @@ def test_webhook_disabled(mock_schedule, client, app):
         sm = get_settings_manager()
         sm.set("webhook_enabled", False)
 
-    payload = {"eventType": "Download", "movie": {"title": "Test"}}
+    payload = {
+        "eventType": "Download",
+        "movie": {"title": "Test"},
+        "movieFile": {"path": "/movies/Test/Test.mkv"},
+    }
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
     assert "disabled" in resp.get_json()["message"].lower()
@@ -300,18 +311,56 @@ def test_webhook_debounce(mock_timer_cls, client):
     payload = {
         "eventType": "Download",
         "movie": {"title": "Movie A"},
+        "movieFile": {"path": "/movies/Movie A/Movie A.mkv"},
     }
 
     # First webhook
     client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     # Second webhook (same library — should debounce)
     payload["movie"]["title"] = "Movie B"
+    payload["movieFile"]["path"] = "/movies/Movie B/Movie B.mkv"
     client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
 
     # The first timer should have been cancelled
     assert mock_timer.cancel.called
     # Timer should have been created twice
     assert mock_timer_cls.call_count == 2
+
+
+def test_radarr_download_missing_file_path_is_ignored(client):
+    """Radarr Download payload without file path should not queue a job."""
+    payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
+    resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "no file path" in data["message"].lower()
+
+
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_job_mgr):
+    """Debounced execution should pass batched webhook paths in one job."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer = MagicMock()
+    mock_timer.daemon = True
+    mock_timer_cls.return_value = mock_timer
+
+    mock_job = MagicMock()
+    mock_job.id = "test-job-id"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    wh._schedule_webhook_job("Movies", "radarr", "Movie A", "/movies/A.mkv")
+    wh._schedule_webhook_job("Movies", "radarr", "Movie B", "/movies/B.mkv")
+    key = wh._debounce_key("Movies", "radarr")
+
+    wh._execute_webhook_job(key)
+
+    mock_start_job.assert_called_once()
+    config_overrides = mock_start_job.call_args[0][1]
+    assert sorted(config_overrides["webhook_paths"]) == ["/movies/A.mkv", "/movies/B.mkv"]
 
 
 # ---------------------------------------------------------------------------

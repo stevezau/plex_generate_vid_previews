@@ -15,6 +15,7 @@ from plex_generate_previews.plex_client import (
     retry_plex_call,
     filter_duplicate_locations,
     get_library_sections,
+    get_media_items_by_paths,
 )
 
 
@@ -510,3 +511,81 @@ class TestGetLibrarySectionsExtended:
         assert len(sections) == 1
         section, media = sections[0]
         assert len(media) == 1
+
+
+class TestGetMediaItemsByPaths:
+    """Test webhook path-to-Plex-item resolution."""
+
+    def test_get_media_items_by_paths_empty(self, mock_config):
+        """Empty path list returns empty list."""
+        mock_plex = MagicMock()
+        result = get_media_items_by_paths(mock_plex, mock_config, [])
+        assert result == []
+
+    def test_get_media_items_by_paths_movie_match(self, mock_config):
+        """Path matching a movie location returns (key, title, media_type)."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/100"
+        mock_movie.title = "Test Movie"
+        mock_movie.locations = ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/100"
+        assert result[0][1] == "Test Movie"
+        assert result[0][2] == "movie"
+
+    def test_get_media_items_by_paths_no_match(self, mock_config):
+        """Paths that match no Plex item return empty list."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+        mock_section.search.return_value = []
+
+        mock_plex.library.sections.return_value = [mock_section]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/nonexistent/path.mkv"]
+        )
+        assert result == []
+
+    def test_get_media_items_by_paths_episode_match(self, mock_config):
+        """Path matching an episode location returns episode tuple."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "2"
+        mock_section.title = "TV Shows"
+        mock_section.METADATA_TYPE = "episode"
+
+        mock_episode = MagicMock()
+        mock_episode.key = "/library/metadata/200"
+        mock_episode.grandparentTitle = "Test Show"
+        mock_episode.seasonEpisode = "s01e01"
+        mock_episode.locations = ["/data/tv/Test Show/Season 01/S01E01.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_episode]
+
+        result = get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data/tv/Test Show/Season 01/S01E01.mkv"],
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/200"
+        assert "Test Show" in result[0][1]
+        assert "S01E01" in result[0][1]
+        assert result[0][2] == "episode"
