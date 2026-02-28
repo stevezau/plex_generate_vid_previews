@@ -1650,6 +1650,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     worker_key = (
                         f"{worker_data['worker_type']}_{worker_data['worker_id']}"
                     )
+                    remaining_time = worker_data.get("remaining_time")
+                    worker_eta = ""
+                    if isinstance(remaining_time, (int, float)) and remaining_time > 0:
+                        worker_eta = _format_eta(float(remaining_time))
                     status = WorkerStatus(
                         worker_id=worker_data["worker_id"],
                         worker_type=worker_data["worker_type"],
@@ -1658,6 +1662,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         current_title=worker_data.get("current_title", ""),
                         progress_percent=worker_data.get("progress_percent", 0),
                         speed=worker_data.get("speed", "0.0x"),
+                        eta=worker_eta,
                     )
                     job_manager.update_worker_status(worker_key, status)
 

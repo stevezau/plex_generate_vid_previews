@@ -765,6 +765,9 @@ class WorkerPool:
                             if is_busy
                             else 0,
                             "speed": progress_data["speed"] if is_busy else "0.0x",
+                            "remaining_time": progress_data["remaining_time"]
+                            if is_busy
+                            else 0.0,
                         }
                     )
                 worker_callback(worker_statuses)

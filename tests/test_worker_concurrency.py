@@ -36,6 +36,21 @@ def _slow_process_item(item_key, gpu, gpu_device, config, plex, progress_callbac
     time.sleep(0.5)
 
 
+def _very_slow_process_item(
+    item_key, gpu, gpu_device, config, plex, progress_callback=None
+):
+    """Simulate long processing so headless polling emits worker updates."""
+    if progress_callback:
+        progress_callback(
+            progress_percent=50.0,
+            speed="1.2x",
+            current_duration=30.0,
+            total_duration=60.0,
+            remaining_time=30.0,
+        )
+    time.sleep(2.3)
+
+
 def _failing_process_item(
     item_key, gpu, gpu_device, config, plex, progress_callback=None
 ):
@@ -418,3 +433,35 @@ class TestWorkerCallback:
             for ws in update:
                 assert "worker_id" in ws
                 assert "status" in ws
+
+    def test_worker_callback_includes_remaining_time(self, mock_config, mock_plex):
+        """Worker callback payload should include remaining_time while processing."""
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        items = [("/key/1", "CB ETA Test", "movie")]
+        worker_updates = []
+
+        def worker_cb(statuses):
+            worker_updates.append(statuses)
+
+        with patch(
+            "plex_generate_previews.worker.process_item", _very_slow_process_item
+        ):
+            pool.process_items_headless(
+                items,
+                mock_config,
+                mock_plex,
+                worker_callback=worker_cb,
+            )
+
+        assert worker_updates, "Expected at least one worker status callback"
+        flat_updates = [ws for update in worker_updates for ws in update]
+        processing_updates = [
+            ws for ws in flat_updates if ws.get("status") == "processing"
+        ]
+        assert processing_updates, "Expected at least one processing worker update"
+        assert any("remaining_time" in ws for ws in processing_updates)
+        assert any(
+            isinstance(ws.get("remaining_time"), (int, float))
+            and ws.get("remaining_time", 0) > 0
+            for ws in processing_updates
+        )
