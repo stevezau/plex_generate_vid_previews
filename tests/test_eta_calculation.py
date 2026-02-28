@@ -21,7 +21,9 @@ class _ETAHarness:
     _SKIP_THRESHOLD = 2.0
     _STALL_THRESHOLD = 5.0
     _SIMPLE_MIN_ELAPSED = 20.0
-    _SIMPLE_MIN_ITEMS = 2
+    _SIMPLE_MIN_ITEMS = 10
+    _REAL_MIN_ELAPSED = 30.0
+    _REAL_MIN_ITEMS = 3
 
     def __init__(self):
         self._last_total = 0
@@ -57,8 +59,9 @@ class _ETAHarness:
 
         percent = (current / total * 100) if total > 0 else 0
 
-        # Reset on library change
-        if total != self._last_total:
+        # Reset on library change, including same-size libraries where current
+        # drops back to zero for the next library.
+        if total != self._last_total or current < self._last_completed:
             self._last_total = total
             self._last_completed = 0
             self._last_completion_time = 0.0
@@ -105,7 +108,13 @@ class _ETAHarness:
             if self._burst_resolved and self._real_work_start_time > 0:
                 real_elapsed = now - self._real_work_start_time
                 real_items = current - self._real_work_start_count
-                if real_elapsed > 0 and real_items >= 1:
+                min_real_items = (
+                    1 if self._real_work_start_count > 0 else self._REAL_MIN_ITEMS
+                )
+                if (
+                    real_elapsed >= self._REAL_MIN_ELAPSED
+                    and real_items >= min_real_items
+                ):
                     rate = real_items / real_elapsed
                     eta = self._format_eta(remaining / rate)
 
@@ -179,7 +188,7 @@ class TestBurstDetection:
         assert h._burst_resolved
 
     def test_eta_shown_after_burst_resolved(self):
-        """Once burst resolves, ETA is computed immediately."""
+        """After burst resolves, ETA appears once minimum signal is present."""
         h = _ETAHarness()
         t0 = 1_000_000.0
         total = 100
@@ -187,8 +196,9 @@ class TestBurstDetection:
         h.progress_callback(1, total, now=t0 + 5)
         h.progress_callback(2, total, now=t0 + 10)
         assert h._burst_resolved
-        eta = h.last_eta
-        assert eta != "", "ETA should be shown once burst resolves"
+        assert h.last_eta == "", "ETA should wait for enough real-work signal"
+        h.progress_callback(3, total, now=t0 + 35)
+        assert h.last_eta != "", "ETA should appear after minimum signal is met"
 
 
 class TestParallelWorkerBatching:
@@ -302,6 +312,22 @@ class TestLibraryReset:
         assert h._burst_resolved
         assert h.last_eta != ""
 
+    def test_reset_on_same_total_library_boundary(self):
+        """A new library with the same total should still reset ETA state."""
+        h = _ETAHarness()
+        t0 = 1_000_000.0
+
+        # Library 1: establish a known ETA
+        h.progress_callback(0, 50, now=t0)
+        h.progress_callback(10, 50, now=t0 + 50)
+        h.progress_callback(20, 50, now=t0 + 100)
+        assert h.last_eta != ""
+
+        # Library 2 starts with same total but current drops to 0
+        h.progress_callback(0, 50, now=t0 + 110)
+        assert h.last_eta == "", "ETA should reset on same-total library boundary"
+        assert h._last_completed == 0
+
 
 class TestEdgeCases:
     """Edge cases and boundary conditions."""
@@ -342,6 +368,23 @@ class TestEdgeCases:
         for j in range(1, 11):
             h.progress_callback(100 + j, total, now=t0 + 2 + j * 180)
         assert h._burst_resolved
+        assert h.last_eta != ""
+
+    def test_startup_skew_does_not_show_premature_high_eta(self):
+        """Slow startup should not immediately publish inflated ETA."""
+        h = _ETAHarness()
+        t0 = 1_000_000.0
+        total = 80
+
+        h.progress_callback(0, total, now=t0)
+        # Two slow startup completions (would formerly yield ~39m ETA)
+        h.progress_callback(1, total, now=t0 + 30)
+        h.progress_callback(2, total, now=t0 + 60)
+        assert h.last_eta == "", "ETA should wait for enough real signal"
+
+        # Throughput improves; once minimum signal is met ETA should appear
+        for i in range(3, 23):
+            h.progress_callback(i, total, now=t0 + 60 + (i - 2) * 3)
         assert h.last_eta != ""
 
 

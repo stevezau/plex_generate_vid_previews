@@ -1630,7 +1630,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             _STALL_THRESHOLD: float = 5.0  # seconds without completions → stall
             # Warmup thresholds for simple-rate fallback
             _SIMPLE_MIN_ELAPSED: float = 20.0
-            _SIMPLE_MIN_ITEMS: int = 2
+            _SIMPLE_MIN_ITEMS: int = 10
+            # Minimum signal before trusting burst-filtered estimates.
+            # This prevents startup skew (slow first item(s)) from producing
+            # a wildly inflated ETA that lingers in the UI.
+            _REAL_MIN_ELAPSED: float = 30.0
+            _REAL_MIN_ITEMS: int = 3
 
             def _format_eta(seconds: float) -> str:
                 """Format seconds into human-readable ETA string."""
@@ -1652,8 +1657,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 now = _time.time()
                 percent = (current / total * 100) if total > 0 else 0
 
-                # Reset tracking when a new library starts (total changes)
-                if total != _last_total:
+                # Reset tracking on library boundaries.
+                # A new library may reuse the same total; detect that via
+                # monotonicity break (current drops compared to last callback).
+                is_new_library = total != _last_total or current < _last_completed
+                if is_new_library:
                     _last_total = total
                     _last_completed = 0
                     _last_completion_time = 0.0
@@ -1703,7 +1711,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     if _burst_resolved and _real_work_start_time > 0:
                         real_elapsed = now - _real_work_start_time
                         real_items = current - _real_work_start_count
-                        if real_elapsed > 0 and real_items >= 1:
+                        min_real_items = (
+                            1 if _real_work_start_count > 0 else _REAL_MIN_ITEMS
+                        )
+                        if (
+                            real_elapsed >= _REAL_MIN_ELAPSED
+                            and real_items >= min_real_items
+                        ):
                             rate = real_items / real_elapsed
                             eta = _format_eta(remaining / rate)
 
