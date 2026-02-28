@@ -376,7 +376,7 @@ class TestStallDetection:
         h.progress_callback(1103, total, now=t0 + 30 + 3)
         eta_before_stall = h.last_eta
         assert eta_before_stall != ""
-        # After stall threshold: ETA should be empty (Calculating...)
+        # After stall threshold: keep showing the last known ETA
         h.progress_callback(1103, total, now=t0 + 30 + 6)
         assert h.last_eta == eta_before_stall
 
