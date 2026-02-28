@@ -310,6 +310,17 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
+                # Cancellation is terminal; do not overwrite with completed/failed.
+                if job.status == JobStatus.CANCELLED:
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._save_jobs()
+                    logger.info(
+                        f"Job {job_id} already cancelled; skipping completion update"
+                    )
+                    return job
+
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 if error:
                     job.status = JobStatus.FAILED
@@ -337,13 +348,16 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                was_running = job.status == JobStatus.RUNNING
                 job.status = JobStatus.CANCELLED
                 job.paused = False
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 if self._current_job_id == job_id:
                     self._current_job_id = None
                 self.clear_pause_flag(job_id)
-                self.clear_cancellation_flag(job_id)
+                # Keep cancellation flag for running jobs so the worker loop sees it.
+                if not was_running:
+                    self.clear_cancellation_flag(job_id)
                 self.clear_active_worker_pool(job_id)
                 self._save_jobs()
                 self._emit_event("job_cancelled", job.to_dict())

@@ -322,6 +322,26 @@ class TestJobsAPI:
         job_id = create_resp.get_json()["id"]
         resp = client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
         assert resp.status_code == 200
+        logs_resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
+        logs = logs_resp.get_json()["logs"]
+        assert any("Cancellation requested by user" in line for line in logs)
+
+    def test_complete_job_does_not_override_cancelled_status(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.request_cancellation(job_id)
+        jm.cancel_job(job_id)
+        jm.complete_job(job_id)
+
+        resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "cancelled"
 
     def test_delete_job(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):

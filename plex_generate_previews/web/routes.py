@@ -299,12 +299,15 @@ def create_job():
 def cancel_job(job_id):
     """Cancel a job."""
     job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
     # Request cancellation (for running jobs)
     job_manager.request_cancellation(job_id)
-    job = job_manager.cancel_job(job_id)
-    if job:
-        return jsonify(job.to_dict())
-    return jsonify({"error": "Job not found"}), 404
+    job_manager.add_log(job_id, "WARNING - Cancellation requested by user")
+    updated = job_manager.cancel_job(job_id)
+    return jsonify((updated or job).to_dict())
 
 
 @api.route("/jobs/<job_id>/pause", methods=["POST"])
@@ -1784,7 +1787,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             try:
                 clear_failures()
                 # Run in headless mode with progress and worker callbacks
-                run_processing(
+                result = run_processing(
                     config,
                     selected_gpus,
                     headless=True,
@@ -1802,7 +1805,16 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                 # Surface per-item failures into the job log and status
                 failures = get_failures()
-                if failures:
+                current_job = job_manager.get_job(job_id)
+                status_value = (
+                    getattr(current_job.status, "value", current_job.status)
+                    if current_job
+                    else None
+                )
+                if result.get("cancelled") or status_value == "cancelled":
+                    job_manager.add_log(job_id, "WARNING - Job cancelled by user")
+                    job_manager.cancel_job(job_id)
+                elif failures:
                     job_manager.add_log(
                         job_id,
                         f"WARNING - {len(failures)} file(s) failed during processing",
@@ -1823,6 +1835,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 # Clear worker statuses when job ends
                 job_manager.clear_worker_statuses()
                 job_manager.clear_pause_flag(job_id)
+                job_manager.clear_cancellation_flag(job_id)
                 job_manager.clear_active_worker_pool(job_id)
 
                 # Cleanup working folder
