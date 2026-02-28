@@ -528,6 +528,8 @@ def run_processing(
     progress_callback=None,
     worker_callback=None,
     cancel_check=None,
+    pause_check=None,
+    worker_pool_callback=None,
 ):
     """Run the main processing workflow.
 
@@ -538,6 +540,8 @@ def run_processing(
         progress_callback: Optional callback function(current, total, message) for progress updates
         worker_callback: Optional callback function(workers_list) for worker status updates
         cancel_check: Optional callable returning True when processing should stop
+        pause_check: Optional callable returning True when processing should pause dispatch
+        worker_pool_callback: Optional callable receiving WorkerPool on create/cleanup
     """
     try:
         # Get Plex server
@@ -562,6 +566,8 @@ def run_processing(
             selected_gpus=selected_gpus,
             fallback_cpu_workers=fallback_cpu_workers,
         )
+        if worker_pool_callback:
+            worker_pool_callback(worker_pool)
         app_state.worker_pool = worker_pool
 
         # Process all library sections
@@ -610,6 +616,7 @@ def run_processing(
                     progress_callback=progress_callback,
                     worker_callback=worker_callback,
                     cancel_check=cancel_check,
+                    pause_check=pause_check,
                 )
                 total_successful += result["completed"]
                 total_failed += result["failed"]
@@ -736,6 +743,8 @@ def run_processing(
             logger.warning(f"Failed to shutdown worker pool: {worker_error}")
         finally:
             app_state.worker_pool = None
+            if worker_pool_callback:
+                worker_pool_callback(None)
 
         # Clean up our working temp folder
         try:

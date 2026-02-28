@@ -408,31 +408,17 @@ class WorkerPool:
             fallback_cpu_workers: Number of fallback-only CPU workers to create
         """
         self.workers = []
+        self._workers_lock = threading.RLock()
         self._progress_lock = threading.Lock()  # Thread-safe progress updates
+        self.selected_gpus = selected_gpus
+        self._next_gpu_assignment_index = 0
+        self._next_worker_id = 0
         self.cpu_fallback_queue = (
             queue.Queue()
         )  # Thread-safe queue for CPU-only tasks (codec fallback)
-
-        # Add GPU workers first (prioritized) with round-robin GPU assignment
-        for i in range(gpu_workers):
-            # selected_gpus is guaranteed to be non-empty if gpu_workers > 0
-            # because detect_and_select_gpus() exits with error if no GPUs detected
-            gpu_index = i % len(selected_gpus)
-            gpu_type, gpu_device, gpu_info = selected_gpus[gpu_index]
-            gpu_name = gpu_info.get("name", f"{gpu_type} GPU")
-
-            worker = Worker(i, "GPU", gpu_type, gpu_device, gpu_index, gpu_name)
-            self.workers.append(worker)
-
-            logger.info(f"GPU Worker {i} assigned to GPU {gpu_index} ({gpu_name})")
-
-        # Add CPU workers
-        for i in range(cpu_workers):
-            self.workers.append(Worker(i + gpu_workers, "CPU"))
-
-        # Add fallback-only CPU workers (only consume CPU fallback queue)
-        for i in range(fallback_cpu_workers):
-            self.workers.append(Worker(i + gpu_workers + cpu_workers, "CPU_FALLBACK"))
+        self.add_workers("GPU", gpu_workers)
+        self.add_workers("CPU", cpu_workers)
+        self.add_workers("CPU_FALLBACK", fallback_cpu_workers)
 
         logger.info(
             "Initialized "
@@ -446,11 +432,88 @@ class WorkerPool:
 
     def has_busy_workers(self) -> bool:
         """Check if any workers are currently busy."""
-        return any(worker.is_busy for worker in self.workers)
+        with self._workers_lock:
+            return any(worker.is_busy for worker in self.workers)
 
     def has_available_workers(self) -> bool:
         """Check if any workers are available for new tasks."""
-        return any(worker.is_available() for worker in self.workers)
+        with self._workers_lock:
+            return any(worker.is_available() for worker in self.workers)
+
+    def _snapshot_workers(self) -> List["Worker"]:
+        """Return a stable snapshot of workers for safe iteration."""
+        with self._workers_lock:
+            return list(self.workers)
+
+    def _create_worker(self, worker_type: str) -> "Worker":
+        """Create a worker instance with a unique ID."""
+        worker_id = self._next_worker_id
+        self._next_worker_id += 1
+        normalized_type = worker_type.upper()
+
+        if normalized_type == "GPU":
+            if not self.selected_gpus:
+                raise ValueError("Cannot create GPU worker: no GPUs available")
+            gpu_index = self._next_gpu_assignment_index % len(self.selected_gpus)
+            self._next_gpu_assignment_index += 1
+            gpu_type, gpu_device, gpu_info = self.selected_gpus[gpu_index]
+            gpu_name = gpu_info.get("name", f"{gpu_type} GPU")
+            return Worker(
+                worker_id,
+                "GPU",
+                gpu_type,
+                gpu_device,
+                gpu_index,
+                gpu_name,
+            )
+
+        if normalized_type == "CPU":
+            return Worker(worker_id, "CPU")
+        if normalized_type == "CPU_FALLBACK":
+            return Worker(worker_id, "CPU_FALLBACK")
+        raise ValueError(f"Unsupported worker type: {worker_type}")
+
+    def add_workers(self, worker_type: str, count: int) -> int:
+        """Add workers of a specific type and return added count."""
+        if count <= 0:
+            return 0
+
+        added = 0
+        with self._workers_lock:
+            for _ in range(count):
+                self.workers.append(self._create_worker(worker_type))
+                added += 1
+        if added > 0:
+            logger.info(f"Added {added} {worker_type.upper()} worker(s)")
+        return added
+
+    def remove_workers(self, worker_type: str, count: int) -> dict:
+        """Remove idle workers of a type.
+
+        Returns:
+            {"removed": int, "unavailable": int}
+        """
+        if count <= 0:
+            return {"removed": 0, "unavailable": 0}
+
+        normalized_type = worker_type.upper()
+        removed = 0
+        unavailable = 0
+        with self._workers_lock:
+            matches = [w for w in self.workers if w.worker_type == normalized_type]
+            unavailable = max(0, count - len(matches))
+            for worker in matches:
+                if removed >= count:
+                    break
+                if worker.is_busy:
+                    unavailable += 1
+                    continue
+                self.workers.remove(worker)
+                removed += 1
+
+        if removed > 0:
+            logger.info(f"Removed {removed} idle {normalized_type} worker(s)")
+        return {"removed": removed, "unavailable": unavailable}
 
     def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
         """
@@ -462,16 +525,20 @@ class WorkerPool:
         Returns:
             First available worker matching criteria, or None
         """
-        if cpu_only:
+        with self._workers_lock:
+            if cpu_only:
+                for worker in self.workers:
+                    if worker.worker_type in (
+                        "CPU",
+                        "CPU_FALLBACK",
+                    ) and worker.is_available():
+                        return worker
+                return None
+            # Fallback-only workers should never consume main-queue tasks.
             for worker in self.workers:
-                if worker.worker_type in ("CPU", "CPU_FALLBACK") and worker.is_available():
+                if worker.worker_type != "CPU_FALLBACK" and worker.is_available():
                     return worker
             return None
-        # Fallback-only workers should never consume main-queue tasks.
-        for worker in self.workers:
-            if worker.worker_type != "CPU_FALLBACK" and worker.is_available():
-                return worker
-        return None
 
     def _get_plex_media_info(self, plex, item_key: str) -> Tuple[str, str]:
         """
@@ -601,7 +668,7 @@ class WorkerPool:
             library_name: Name of the library section being processed
         """
         # Create progress tasks for each worker in the worker progress instance
-        for worker in self.workers:
+        for worker in self._snapshot_workers():
             worker.progress_task_id = worker_progress.add_task(
                 worker._format_idle_description(),
                 total=100,
@@ -617,7 +684,7 @@ class WorkerPool:
 
         def on_poll(completed_tasks: int, total_items: int) -> None:
             """Update Rich worker progress display each poll cycle."""
-            for worker in self.workers:
+            for worker in self._snapshot_workers():
                 current_time = time.time()
                 with self._progress_lock:
                     progress_data = worker.get_progress_data()
@@ -663,7 +730,7 @@ class WorkerPool:
             total_completed: int, total_failed: int, total_items: int
         ) -> None:
             """Clean up Rich progress tasks."""
-            for worker in self.workers:
+            for worker in self._snapshot_workers():
                 if (
                     hasattr(worker, "progress_task_id")
                     and worker.progress_task_id is not None
@@ -692,6 +759,7 @@ class WorkerPool:
         progress_callback=None,
         worker_callback=None,
         cancel_check=None,
+        pause_check=None,
     ) -> dict:
         """
         Process all media items using available workers in headless mode (no Rich display).
@@ -708,6 +776,7 @@ class WorkerPool:
             progress_callback: Optional callback function(current, total, message) for progress updates
             worker_callback: Optional callback function(workers_list) for worker status updates
             cancel_check: Optional callable returning True when processing should stop
+            pause_check: Optional callable returning True when dispatch should pause
         """
         last_worker_update = time.time()
         last_progress_update = time.time()
@@ -741,7 +810,7 @@ class WorkerPool:
 
             if worker_callback and current_time - last_worker_update >= 2.0:
                 worker_statuses = []
-                for worker in self.workers:
+                for worker in self._snapshot_workers():
                     with self._progress_lock:
                         progress_data = worker.get_progress_data()
                         is_busy = worker.is_busy
@@ -794,6 +863,7 @@ class WorkerPool:
             on_poll=on_poll,
             on_finish=on_finish,
             cancel_check=cancel_check,
+            pause_check=pause_check,
         )
 
     def _process_items_loop(
@@ -807,6 +877,7 @@ class WorkerPool:
         on_poll: Optional[Any] = None,
         on_finish: Optional[Any] = None,
         cancel_check: Optional[Any] = None,
+        pause_check: Optional[Any] = None,
     ) -> dict:
         """
         Core processing loop shared by process_items and process_items_headless.
@@ -829,13 +900,15 @@ class WorkerPool:
         completed_tasks = 0
         total_items = len(media_items)
         last_overall_progress_log = time.time()
-        start_completed = sum(worker.completed for worker in self.workers)
-        start_failed = sum(worker.failed for worker in self.workers)
+        start_completed = sum(worker.completed for worker in self._snapshot_workers())
+        start_failed = sum(worker.failed for worker in self._snapshot_workers())
         cancellation_requested = False
 
         library_prefix = f"[{library_name}] " if library_name else ""
 
-        logger.info(f"Processing {total_items} items with {len(self.workers)} workers")
+        logger.info(
+            f"Processing {total_items} items with {len(self._snapshot_workers())} workers"
+        )
 
         # Main processing loop
         while True:
@@ -846,7 +919,7 @@ class WorkerPool:
                 break
 
             # Check for completed tasks
-            for worker in self.workers:
+            for worker in self._snapshot_workers():
                 if worker.check_completion():
                     # Don't count GPU→CPU re-queued items — the CPU worker
                     # will increment completed_tasks when it actually finishes.
@@ -858,6 +931,24 @@ class WorkerPool:
             # Delegate UI/progress updates to caller
             if on_poll:
                 on_poll(completed_tasks, total_items)
+
+            # Pause between dispatch cycles without interrupting active tasks.
+            while pause_check and pause_check():
+                if cancel_check and cancel_check():
+                    logger.info(f"{library_prefix}Cancellation requested while paused")
+                    cancellation_requested = True
+                    break
+                for worker in self._snapshot_workers():
+                    if worker.check_completion():
+                        if not worker.requeued_to_cpu:
+                            completed_tasks += 1
+                            if on_task_complete:
+                                on_task_complete(completed_tasks, total_items)
+                if on_poll:
+                    on_poll(completed_tasks, total_items)
+                time.sleep(0.2)
+            if cancellation_requested:
+                break
 
             # Log overall progress every 5 seconds
             current_time = time.time()
@@ -895,16 +986,17 @@ class WorkerPool:
 
             # Check exit condition
             if not media_queue:
-                for worker in self.workers:
+                for worker in self._snapshot_workers():
                     if worker.check_completion():
                         if not worker.requeued_to_cpu:
                             completed_tasks += 1
 
                 actual_completed = (
-                    sum(worker.completed for worker in self.workers) - start_completed
+                    sum(worker.completed for worker in self._snapshot_workers())
+                    - start_completed
                 )
                 actual_failed = (
-                    sum(worker.failed for worker in self.workers) - start_failed
+                    sum(worker.failed for worker in self._snapshot_workers()) - start_failed
                 )
                 actual_processed = actual_completed + actual_failed
 
@@ -913,16 +1005,17 @@ class WorkerPool:
                     max_busy_retries = 20
                     while self.has_busy_workers() and busy_retries < max_busy_retries:
                         time.sleep(0.001)
-                        for worker in self.workers:
+                        for worker in self._snapshot_workers():
                             worker.check_completion()
                         busy_retries += 1
 
                     actual_completed = (
-                        sum(worker.completed for worker in self.workers)
+                        sum(worker.completed for worker in self._snapshot_workers())
                         - start_completed
                     )
                     actual_failed = (
-                        sum(worker.failed for worker in self.workers) - start_failed
+                        sum(worker.failed for worker in self._snapshot_workers())
+                        - start_failed
                     )
                     actual_processed = actual_completed + actual_failed
 
@@ -944,9 +1037,11 @@ class WorkerPool:
 
         # Final statistics
         total_completed = (
-            sum(worker.completed for worker in self.workers) - start_completed
+            sum(worker.completed for worker in self._snapshot_workers()) - start_completed
         )
-        total_failed = sum(worker.failed for worker in self.workers) - start_failed
+        total_failed = (
+            sum(worker.failed for worker in self._snapshot_workers()) - start_failed
+        )
 
         if on_finish:
             on_finish(total_completed, total_failed, total_items)
@@ -1033,6 +1128,6 @@ class WorkerPool:
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""
         logger.debug("Shutting down worker pool...")
-        for worker in self.workers:
+        for worker in self._snapshot_workers():
             worker.shutdown()
         logger.debug("Worker pool shutdown complete")

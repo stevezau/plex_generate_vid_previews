@@ -8,7 +8,7 @@ Uses Flask's test client with an in-memory config dir.
 
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -388,6 +388,58 @@ class TestJobsAPI:
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
         assert resp.status_code == 200
         assert "logs" in resp.get_json()
+
+    def test_pause_resume_job(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        pause_resp = client.post(f"/api/jobs/{job_id}/pause", headers=_api_headers())
+        assert pause_resp.status_code == 200
+        assert pause_resp.get_json().get("paused") is True
+
+        resume_resp = client.post(f"/api/jobs/{job_id}/resume", headers=_api_headers())
+        assert resume_resp.status_code == 200
+        assert resume_resp.get_json().get("paused") is False
+
+    def test_scale_workers_add_remove(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.add_workers.return_value = 2
+        pool.remove_workers.return_value = {"removed": 1, "unavailable": 1}
+        jm.set_active_worker_pool(job_id, pool)
+
+        add_resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 2},
+        )
+        assert add_resp.status_code == 200
+        assert add_resp.get_json()["added"] == 2
+        pool.add_workers.assert_called_once_with("CPU", 2)
+
+        remove_resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 2},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["removed"] == 1
+        assert data["unavailable"] == 1
+        pool.remove_workers.assert_called_once_with("CPU", 2)
 
 
 # ---------------------------------------------------------------------------

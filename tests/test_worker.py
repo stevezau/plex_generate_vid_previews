@@ -450,6 +450,53 @@ class TestWorkerPool:
         # Should not crash
         pool.shutdown()
 
+    def test_worker_pool_add_and_remove_workers(self):
+        """Test dynamic worker add/remove behavior."""
+        selected_gpus = [("NVIDIA", "cuda", {"name": "RTX 3080"})]
+        pool = WorkerPool(gpu_workers=1, cpu_workers=1, selected_gpus=selected_gpus)
+
+        added_cpu = pool.add_workers("CPU", 2)
+        added_fallback = pool.add_workers("CPU_FALLBACK", 1)
+        assert added_cpu == 2
+        assert added_fallback == 1
+        assert len(pool.workers) == 5
+
+        cpu_workers = [w for w in pool.workers if w.worker_type == "CPU"]
+        cpu_workers[0].is_busy = True
+        result = pool.remove_workers("CPU", 3)
+        assert result["removed"] == 2
+        assert result["unavailable"] == 1
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):
+        """Pause check should delay task dispatch until resumed."""
+        mock_process.return_value = None
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        config = MagicMock()
+        plex = MagicMock()
+        items = [("key1", "Movie 1", "movie"), ("key2", "Movie 2", "movie")]
+
+        pause_state = {"paused": True}
+
+        def unpause_later():
+            time.sleep(0.25)
+            pause_state["paused"] = False
+
+        import threading
+
+        threading.Thread(target=unpause_later, daemon=True).start()
+        start = time.time()
+        result = pool.process_items_headless(
+            items,
+            config,
+            plex,
+            pause_check=lambda: pause_state["paused"],
+        )
+        elapsed = time.time() - start
+
+        assert result["completed"] == 2
+        assert elapsed >= 0.2
+
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_stats_are_per_library(self, mock_process):
         """Returned processing stats should be scoped to one library call."""

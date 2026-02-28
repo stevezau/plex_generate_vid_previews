@@ -160,6 +160,16 @@ function connectSocket() {
         showToast('Job Cancelled', `Job ${job.id.substring(0, 8)} cancelled`, 'warning');
     });
 
+    socket.on('job_paused', function(data) {
+        console.log('Job paused:', data);
+        loadJobs();
+    });
+
+    socket.on('job_resumed', function(data) {
+        console.log('Job resumed:', data);
+        loadJobs();
+    });
+
 }
 
 // API Helpers
@@ -523,9 +533,32 @@ function updateJobQueue() {
     });
 
     for (const job of sortedJobs) {
-        const statusBadge = getStatusBadge(job.status);
+        const statusBadge = getStatusBadge(job.status, job.paused);
         const progress = job.progress.percent.toFixed(1);
         const created = formatDate(job.created_at);
+        let actionButtons = '';
+
+        if (job.status === 'running' || job.status === 'pending') {
+            if (job.status === 'running') {
+                actionButtons += job.paused
+                    ? `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeJob('${escapeHtml(job.id)}')" title="Resume">
+                            <i class="bi bi-play-fill"></i>
+                       </button>`
+                    : `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${escapeHtml(job.id)}')" title="Pause">
+                            <i class="bi bi-pause-fill"></i>
+                       </button>`;
+            }
+            actionButtons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel">
+                                <i class="bi bi-x"></i>
+                              </button>`;
+        } else {
+            actionButtons = `<button class="btn btn-sm btn-outline-info me-1" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View Logs">
+                                <i class="bi bi-file-text"></i>
+                             </button>
+                             <button class="btn btn-sm btn-outline-secondary" onclick="deleteJob('${escapeHtml(job.id)}')" title="Delete">
+                                <i class="bi bi-trash"></i>
+                             </button>`;
+        }
 
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
@@ -540,17 +573,7 @@ function updateJobQueue() {
                 </td>
                 <td>${created}</td>
                 <td class="text-nowrap">
-                    ${job.status === 'running' || job.status === 'pending' ?
-                        `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel">
-                            <i class="bi bi-x"></i>
-                        </button>` :
-                        `<button class="btn btn-sm btn-outline-info me-1" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View Logs">
-                            <i class="bi bi-file-text"></i>
-                        </button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="deleteJob('${escapeHtml(job.id)}')" title="Delete">
-                            <i class="bi bi-trash"></i>
-                        </button>`
-                    }
+                    ${actionButtons}
                 </td>
             </tr>
         `;
@@ -563,8 +586,9 @@ function updateCurrentJob(job) {
     const card = document.getElementById('currentJobCard');
     const statusBadge = document.getElementById('currentJobStatus');
 
-    statusBadge.textContent = 'Running';
-    statusBadge.className = 'badge bg-primary pulse';
+    const isPaused = !!job.paused;
+    statusBadge.textContent = isPaused ? 'Paused' : 'Running';
+    statusBadge.className = `badge ${isPaused ? 'bg-warning text-dark' : 'bg-primary pulse'}`;
 
     const progress = job.progress.percent.toFixed(1);
 
@@ -587,6 +611,34 @@ function updateCurrentJob(job) {
         <div class="mt-2 text-muted small">
             <span id="currentJobItems">Items: ${escapeHtml(job.progress.processed_items) || 0} / ${escapeHtml(job.progress.total_items) || '?'}</span>
             <span class="ms-3" id="currentJobEta">ETA: ${escapeHtml(job.progress.eta) || 'Calculating...'}</span>
+        </div>
+        <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
+            ${isPaused
+                ? `<button class="btn btn-sm btn-outline-success" onclick="resumeJob('${escapeHtml(job.id)}')">
+                        <i class="bi bi-play-fill me-1"></i>Resume
+                   </button>`
+                : `<button class="btn btn-sm btn-outline-warning" onclick="pauseJob('${escapeHtml(job.id)}')">
+                        <i class="bi bi-pause-fill me-1"></i>Pause
+                   </button>`
+            }
+            <button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')">
+                <i class="bi bi-x me-1"></i>Cancel
+            </button>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <label class="small text-muted mb-0" for="workerScaleType">Workers</label>
+                <select id="workerScaleType" class="form-select form-select-sm" style="width: 150px;">
+                    <option value="GPU">GPU</option>
+                    <option value="CPU" selected>CPU</option>
+                    <option value="CPU_FALLBACK">CPU Fallback</option>
+                </select>
+                <input id="workerScaleCount" class="form-control form-control-sm" type="number" min="1" step="1" value="1" style="width: 78px;" />
+                <button class="btn btn-sm btn-outline-success" onclick="scaleWorkersFromControls('${escapeHtml(job.id)}', 1)">
+                    <i class="bi bi-plus-lg me-1"></i>Add
+                </button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="scaleWorkersFromControls('${escapeHtml(job.id)}', -1)">
+                    <i class="bi bi-dash-lg me-1"></i>Remove
+                </button>
+            </div>
         </div>
     `;
 }
@@ -657,6 +709,9 @@ let logsRefreshInterval = null;
 
 function updateWorkerStatuses(workers) {
     const container = document.getElementById('workerStatusContainer');
+    const gpuWorkersEl = document.getElementById('gpuWorkers');
+    const cpuWorkersEl = document.getElementById('cpuWorkers');
+    const cpuFallbackWorkersEl = document.getElementById('cpuFallbackWorkers');
 
     if (!workers || workers.length === 0) {
         container.innerHTML = `
@@ -666,6 +721,13 @@ function updateWorkerStatuses(workers) {
         `;
         return;
     }
+
+    const gpuCount = workers.filter(w => w.worker_type === 'GPU').length;
+    const cpuCount = workers.filter(w => w.worker_type === 'CPU').length;
+    const cpuFallbackCount = workers.filter(w => w.worker_type === 'CPU_FALLBACK').length;
+    if (gpuWorkersEl) gpuWorkersEl.textContent = String(gpuCount);
+    if (cpuWorkersEl) cpuWorkersEl.textContent = String(cpuCount);
+    if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(cpuFallbackCount);
 
     let html = '<div class="row g-3">';
 
@@ -1043,6 +1105,66 @@ async function cancelJob(jobId) {
     }
 }
 
+async function pauseJob(jobId) {
+    try {
+        await apiPost(`/api/jobs/${jobId}/pause`);
+        await loadJobs();
+        showToast('Paused', 'Job paused. Running tasks will finish before dispatch continues.', 'warning');
+    } catch (error) {
+        showToast('Error', 'Failed to pause job: ' + error.message, 'danger');
+    }
+}
+
+async function resumeJob(jobId) {
+    try {
+        await apiPost(`/api/jobs/${jobId}/resume`);
+        await loadJobs();
+        showToast('Resumed', 'Job resumed', 'success');
+    } catch (error) {
+        showToast('Error', 'Failed to resume job: ' + error.message, 'danger');
+    }
+}
+
+async function scaleWorkers(jobId, workerType, delta) {
+    const endpoint = delta > 0 ? 'add' : 'remove';
+    const count = Math.abs(delta);
+
+    try {
+        const result = await apiPost(`/api/jobs/${jobId}/workers/${endpoint}`, {
+            worker_type: workerType,
+            count
+        });
+        await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
+        if (endpoint === 'add') {
+            showToast('Workers Updated', `Added ${result.added} ${workerType} worker(s)`, 'success');
+        } else {
+            const unavailable = result.unavailable || 0;
+            if (unavailable > 0) {
+                showToast('Workers Updated', `Removed ${result.removed} ${workerType}; ${unavailable} unavailable/busy`, 'warning');
+            } else {
+                showToast('Workers Updated', `Removed ${result.removed} ${workerType} worker(s)`, 'info');
+            }
+        }
+    } catch (error) {
+        showToast('Error', `Failed to ${endpoint} ${workerType} worker(s): ${error.message}`, 'danger');
+    }
+}
+
+function getWorkerScaleSelection() {
+    const typeInput = document.getElementById('workerScaleType');
+    const countInput = document.getElementById('workerScaleCount');
+    const workerType = typeInput ? typeInput.value : 'CPU';
+    const parsedCount = countInput ? parseInt(countInput.value, 10) : 1;
+    const count = Number.isNaN(parsedCount) ? 1 : Math.max(1, parsedCount);
+    return { workerType, count };
+}
+
+async function scaleWorkersFromControls(jobId, direction) {
+    const { workerType, count } = getWorkerScaleSelection();
+    const delta = direction > 0 ? count : -count;
+    await scaleWorkers(jobId, workerType, delta);
+}
+
 async function deleteJob(jobId) {
     if (!confirm('Are you sure you want to delete this job?')) return;
 
@@ -1182,7 +1304,10 @@ async function deleteSchedule(scheduleId) {
 }
 
 // Helper Functions
-function getStatusBadge(status) {
+function getStatusBadge(status, paused = false) {
+    if (status === 'running' && paused) {
+        return '<span class="badge bg-warning text-dark">Paused</span>';
+    }
     const badges = {
         'pending': '<span class="badge bg-secondary">Pending</span>',
         'running': '<span class="badge bg-primary pulse">Running</span>',

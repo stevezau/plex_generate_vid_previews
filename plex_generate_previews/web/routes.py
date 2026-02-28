@@ -307,6 +307,107 @@ def cancel_job(job_id):
     return jsonify({"error": "Job not found"}), 404
 
 
+@api.route("/jobs/<job_id>/pause", methods=["POST"])
+@api_token_required
+def pause_job(job_id):
+    """Pause an active job."""
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if getattr(job.status, "value", job.status) != "running":
+        return jsonify({"error": "Only running jobs can be paused"}), 400
+    if job_manager.request_pause(job_id):
+        updated_job = job_manager.get_job(job_id)
+        return jsonify(updated_job.to_dict() if updated_job else {"success": True})
+    return jsonify({"error": "Failed to pause job"}), 400
+
+
+@api.route("/jobs/<job_id>/resume", methods=["POST"])
+@api_token_required
+def resume_job(job_id):
+    """Resume a paused job."""
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if getattr(job.status, "value", job.status) != "running":
+        return jsonify({"error": "Only running jobs can be resumed"}), 400
+    if job_manager.request_resume(job_id):
+        updated_job = job_manager.get_job(job_id)
+        return jsonify(updated_job.to_dict() if updated_job else {"success": True})
+    return jsonify({"error": "Failed to resume job"}), 400
+
+
+@api.route("/jobs/<job_id>/workers/add", methods=["POST"])
+@api_token_required
+def add_job_workers(job_id):
+    """Add workers to a running job."""
+    job_manager = get_job_manager()
+    running_job = job_manager.get_running_job()
+    if not running_job or running_job.id != job_id:
+        return jsonify({"error": "Job is not running"}), 400
+
+    data = request.get_json(silent=True) or {}
+    worker_type = str(data.get("worker_type", "CPU")).upper()
+    count = int(data.get("count", 1))
+    if count <= 0:
+        return jsonify({"error": "count must be greater than 0"}), 400
+    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+        return jsonify({"error": "Invalid worker_type"}), 400
+
+    worker_pool = job_manager.get_active_worker_pool(job_id)
+    if worker_pool is None:
+        return jsonify({"error": "Worker pool is not available"}), 409
+
+    try:
+        added = worker_pool.add_workers(worker_type, count)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "worker_type": worker_type,
+            "requested": count,
+            "added": added,
+        }
+    )
+
+
+@api.route("/jobs/<job_id>/workers/remove", methods=["POST"])
+@api_token_required
+def remove_job_workers(job_id):
+    """Remove idle workers from a running job."""
+    job_manager = get_job_manager()
+    running_job = job_manager.get_running_job()
+    if not running_job or running_job.id != job_id:
+        return jsonify({"error": "Job is not running"}), 400
+
+    data = request.get_json(silent=True) or {}
+    worker_type = str(data.get("worker_type", "CPU")).upper()
+    count = int(data.get("count", 1))
+    if count <= 0:
+        return jsonify({"error": "count must be greater than 0"}), 400
+    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+        return jsonify({"error": "Invalid worker_type"}), 400
+
+    worker_pool = job_manager.get_active_worker_pool(job_id)
+    if worker_pool is None:
+        return jsonify({"error": "Worker pool is not available"}), 409
+
+    result = worker_pool.remove_workers(worker_type, count)
+    return jsonify(
+        {
+            "success": True,
+            "worker_type": worker_type,
+            "requested": count,
+            "removed": result.get("removed", 0),
+            "unavailable": result.get("unavailable", 0),
+        }
+    )
+
+
 @api.route("/jobs/<job_id>/logs", methods=["GET"])
 @api_token_required
 def get_job_logs(job_id):
@@ -1676,6 +1777,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     progress_callback=progress_callback,
                     worker_callback=worker_callback,
                     cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                    pause_check=lambda: job_manager.is_pause_requested(job_id),
+                    worker_pool_callback=lambda pool: job_manager.set_active_worker_pool(
+                        job_id, pool
+                    )
+                    if pool is not None
+                    else job_manager.clear_active_worker_pool(job_id),
                 )
                 log_failure_summary()
 
@@ -1701,6 +1808,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             finally:
                 # Clear worker statuses when job ends
                 job_manager.clear_worker_statuses()
+                job_manager.clear_pause_flag(job_id)
+                job_manager.clear_active_worker_pool(job_id)
 
                 # Cleanup working folder
                 import shutil
