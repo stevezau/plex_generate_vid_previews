@@ -1524,6 +1524,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             _real_work_start_time: float = 0.0
             _real_work_start_count: int = 0
             _burst_resolved: bool = False
+            _last_eta: str = ""
             _SKIP_THRESHOLD: float = 2.0  # avg secs/item below this → burst
             _STALL_THRESHOLD: float = 5.0  # seconds without completions → stall
             # Warmup thresholds for simple-rate fallback
@@ -1545,6 +1546,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 nonlocal _last_total, _last_completed, _processing_start_time
                 nonlocal _last_completion_time
                 nonlocal _burst_resolved, _real_work_start_time, _real_work_start_count
+                nonlocal _last_eta
 
                 now = _time.time()
                 percent = (current / total * 100) if total > 0 else 0
@@ -1558,6 +1560,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     _burst_resolved = False
                     _real_work_start_time = 0.0
                     _real_work_start_count = 0
+                    _last_eta = ""
 
                 new_items = current - _last_completed
                 if new_items > 0:
@@ -1617,6 +1620,17 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             rate = current / elapsed
                             if rate > 0:
                                 eta = _format_eta(remaining / rate)
+
+                # Preserve the last known ETA during temporary estimation gaps
+                # so the UI does not oscillate back to "Calculating..." between
+                # long-running completion updates.
+                if remaining <= 0:
+                    eta = ""
+                    _last_eta = ""
+                elif eta:
+                    _last_eta = eta
+                elif _last_eta:
+                    eta = _last_eta
 
                 job_manager.update_progress(
                     job_id,

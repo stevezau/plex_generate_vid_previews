@@ -31,6 +31,7 @@ class _ETAHarness:
         self._burst_resolved = False
         self._real_work_start_time = 0.0
         self._real_work_start_count = 0
+        self._last_eta = ""
         self.last_eta = ""
         self.last_percent = 0.0
 
@@ -65,6 +66,7 @@ class _ETAHarness:
             self._burst_resolved = False
             self._real_work_start_time = 0.0
             self._real_work_start_count = 0
+            self._last_eta = ""
 
         new_items = current - self._last_completed
         if new_items > 0:
@@ -118,6 +120,14 @@ class _ETAHarness:
                     rate = current / elapsed
                     if rate > 0:
                         eta = self._format_eta(remaining / rate)
+
+        if remaining <= 0:
+            eta = ""
+            self._last_eta = ""
+        elif eta:
+            self._last_eta = eta
+        elif self._last_eta:
+            eta = self._last_eta
 
         self.last_eta = eta
         self.last_percent = percent
@@ -353,8 +363,8 @@ class TestStallDetection:
         assert h._burst_resolved, "Stall should resolve burst"
         assert h._real_work_start_count == 1103
 
-    def test_stall_suppresses_misleading_simple_eta(self):
-        """During stall the simple-rate fallback must be suppressed."""
+    def test_stall_keeps_last_known_eta(self):
+        """During stall, ETA should keep the last known value."""
         h = _ETAHarness()
         t0 = 1_000_000.0
         total = 1107
@@ -364,11 +374,11 @@ class TestStallDetection:
 
         # Before stall threshold: simple fallback gives near-zero ETA
         h.progress_callback(1103, total, now=t0 + 30 + 3)
+        eta_before_stall = h.last_eta
+        assert eta_before_stall != ""
         # After stall threshold: ETA should be empty (Calculating...)
         h.progress_callback(1103, total, now=t0 + 30 + 6)
-        assert h.last_eta == "", (
-            "No ETA should show during stall until a real item completes"
-        )
+        assert h.last_eta == eta_before_stall
 
     def test_eta_recovers_after_real_item_completes(self):
         """Once a real item completes after stall, ETA is based on real rate."""
