@@ -42,7 +42,7 @@ from .auth import (
     setup_or_auth_required,
     validate_token,
 )
-from .jobs import get_job_manager
+from .jobs import get_job_manager, JobStatus
 from .scheduler import get_schedule_manager
 
 # Define safe root directories for user-provided paths. All user-supplied
@@ -494,6 +494,30 @@ def delete_job(job_id):
     if job_manager.delete_job(job_id):
         return jsonify({"success": True})
     return jsonify({"error": "Job not found or is running"}), 404
+
+
+@api.route("/jobs/<job_id>/reprocess", methods=["POST"])
+@api_token_required
+def reprocess_job(job_id):
+    """Create and start a new job with the same parameters as the given job."""
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status in (JobStatus.RUNNING, JobStatus.PENDING):
+        return (
+            jsonify(
+                {"error": "Cannot reprocess job that is running or pending"}
+            ),
+            409,
+        )
+    new_job = job_manager.create_job(
+        library_id=job.library_id,
+        library_name=job.library_name,
+        config=dict(job.config or {}),
+    )
+    _start_job_async(new_job.id, new_job.config)
+    return jsonify(new_job.to_dict()), 201
 
 
 @api.route("/jobs/clear", methods=["POST"])
@@ -1507,12 +1531,14 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 return
 
             if get_settings_manager().processing_paused:
-                job_manager.update_job_config(job_id, config_overrides)
+                merged = {**(job.config or {}), **(config_overrides or {})}
+                job_manager.update_job_config(job_id, merged)
                 logger.info(f"Job {job_id} not started — global processing paused; job remains pending")
                 return
 
             if not _job_execution_lock.acquire(blocking=False):
-                job_manager.update_job_config(job_id, config_overrides)
+                merged = {**(job.config or {}), **(config_overrides or {})}
+                job_manager.update_job_config(job_id, merged)
                 logger.info(
                     f"Job {job_id} not started — another job is already running; remains in queue"
                 )
@@ -1543,6 +1569,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             )
 
             job_manager.start_job(job_id)
+            # Persist full run parameters (e.g. webhook_paths) so job can be reprocessed later.
+            job = job_manager.get_job(job_id)
+            if job and config_overrides:
+                merged = {**(job.config or {}), **(config_overrides or {})}
+                job_manager.update_job_config(job_id, merged)
             job_manager.add_log(job_id, "INFO - Job started")
 
             # Send initial progress update to show job is initializing

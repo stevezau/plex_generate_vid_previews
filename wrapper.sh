@@ -83,7 +83,6 @@ else
         --timeout 300 \
         --graceful-timeout 30 \
         --keep-alive 65 \
-        --access-logfile - \
         --error-logfile - \
         --log-level info \
         "plex_generate_previews.web.wsgi:app"

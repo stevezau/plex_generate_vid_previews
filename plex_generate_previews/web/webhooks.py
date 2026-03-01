@@ -194,10 +194,21 @@ def _execute_webhook_job(debounce_key: str) -> None:
         _add_history_entry(source, "Download", "", "ignored_no_paths")
         return
 
+    # Display label: one path → "Sonarr: Show S01E01.mkv"; multiple → "Sonarr: 3 files"
+    basenames = [os.path.basename(p) for p in webhook_paths]
+    if len(webhook_paths) == 1:
+        library_display = f"{source.title()}: {basenames[0]}"
+    else:
+        library_display = f"{source.title()}: {len(webhook_paths)} files"
+
     job_manager = get_job_manager()
     job = job_manager.create_job(
-        library_name=f"Webhook: {source.title()}",
-        config={"source": source, "path_count": len(webhook_paths)},
+        library_name=library_display,
+        config={
+            "source": source,
+            "path_count": len(webhook_paths),
+            "webhook_basenames": basenames[:20],  # First 20 for UI; avoid huge payloads
+        },
     )
 
     _start_job_async(

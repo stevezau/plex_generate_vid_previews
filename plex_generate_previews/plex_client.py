@@ -492,6 +492,17 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
             f"Webhook path resolution did not find Plex items for {len(unresolved_targets)} path(s). "
             f"Searched up to {webhook_fallback_limit} recently-added items per library."
         )
+        cap = 10
+        paths_to_log = unresolved_targets[:cap]
+        if len(unresolved_targets) > cap:
+            logger.warning(
+                f"Unresolved path(s) (first {cap} of {len(unresolved_targets)}): "
+                + ", ".join(repr(p) for p in paths_to_log)
+            )
+        else:
+            logger.warning(
+                "Unresolved path(s): " + ", ".join(repr(p) for p in paths_to_log)
+            )
     logger.info(
         f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"
     )

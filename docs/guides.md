@@ -228,8 +228,8 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
    - On Import
    - On Upgrade
 7. **Authentication** (use one):
-   - **Custom headers**: In the webhook form, add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret
-   - **Username/Password**: Leave **Username** empty, set **Password** to your API token or webhook secret
+   - **Username/Password** (works in all versions): Leave **Username** empty and set **Password** to your API token (see [Authentication Token](getting-started.md#authentication-token)) or webhook secret. The app treats the password as the token.
+   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
 8. Click **Test** to verify the connection
 9. Click **Save**
 
@@ -241,8 +241,8 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 4. Set **URL**: paste the Sonarr Webhook URL
 5. Under **Events**, enable **On File Import** and **On File Upgrade**
 6. **Authentication** (use one):
-   - **Option A — Custom headers** (Sonarr v4.2+): In the webhook form, find the **Headers** section. Add a row: **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
-   - **Option B — Username/Password** (any version): Leave **Username** empty and set **Password** to your API token or webhook secret. The app treats the Basic-auth password as the token.
+   - **Username/Password** (works in all versions): Leave **Username** empty and set **Password** to your API token or webhook secret. The app treats the password as the token.
+   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
 7. Click **Test** then **Save**
 
 ### Configuration
@@ -260,7 +260,7 @@ By default, webhooks authenticate using your main API token. You can optionally 
 
 1. On the Webhooks page, click **Generate** next to the secret field
 2. Click **Save Changes**
-3. Use the generated secret as the `X-Auth-Token` value in Radarr/Sonarr
+3. Use the generated secret as the token: in Radarr/Sonarr, either put it in **Password** (leave Username empty) or in the **X-Auth-Token** header if your form has a Headers section.
 
 ### Debouncing
 
@@ -413,7 +413,7 @@ Use this table to diagnose common failures quickly.
 | `PLEX_CONFIG_FOLDER does not exist` | Incorrect mount or Plex config path | Confirm mounted path contains `Cache`, `Media`, and `Metadata`. |
 | `Connection failed to Plex` | Bad Plex URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify Plex is running, and test token with curl. |
 | Webhook job shows as **Cancelled** in history | Another job was already running when the webhook delay expired | Wait for the active job to finish; webhooks fired while idle will run normally. To avoid this, increase the webhook delay so imports do not fire during long processing runs. |
-| Webhook returns `401` | Invalid or missing authentication token in webhook headers | Set `X-Auth-Token` to your API token or configured webhook secret. |
+| Webhook returns `401` | Invalid or missing authentication | In Sonarr/Radarr webhook settings, leave **Username** empty and set **Password** to your API token or webhook secret. |
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and verify `webhook_enabled=true`. |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |

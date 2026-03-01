@@ -603,15 +603,21 @@ function updateJobQueue() {
             actionButtons = `<button class="btn btn-sm btn-outline-info me-1" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View Logs">
                                 <i class="bi bi-file-text"></i>
                              </button>
+                             <button class="btn btn-sm btn-outline-primary me-1" onclick="reprocessJob('${escapeHtml(job.id)}')" title="Reprocess">
+                                <i class="bi bi-arrow-repeat"></i>
+                             </button>
                              <button class="btn btn-sm btn-outline-secondary" onclick="deleteJob('${escapeHtml(job.id)}')" title="Delete">
                                 <i class="bi bi-trash"></i>
                              </button>`;
         }
 
+        const libraryTitle = (job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0)
+            ? ` title="${escapeHtml(job.config.webhook_basenames.join(', '))}"`
+            : '';
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
                 <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
-                <td>${escapeHtml(job.library_name) || 'All Libraries'}</td>
+                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}</td>
                 <td>${statusBadge}</td>
                 <td>
                     <div class="progress" style="height: 20px;">
@@ -640,11 +646,18 @@ function updateCurrentJob(job) {
 
     const progress = job.progress.percent.toFixed(1);
 
+    const webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
+        ? job.config.webhook_basenames
+        : null;
+    const webhookFilesLine = webhookFiles
+        ? `<br><strong>Files:</strong> <span class="text-muted small">${escapeHtml(webhookFiles.slice(0, 8).join(', '))}${webhookFiles.length > 8 ? ` (+${webhookFiles.length - 8} more)` : ''}</span>`
+        : '';
+
     card.innerHTML = `
         <div class="mb-3">
             <strong>Job ID:</strong> <code>${escapeHtml(job.id)}</code>
             <br>
-            <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}
+            <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${webhookFilesLine}
         </div>
         <div class="progress" style="height: 30px;">
             <div class="progress-bar progress-bar-striped progress-bar-animated"
@@ -1217,6 +1230,22 @@ async function deleteJob(jobId) {
         loadJobStats();
     } catch (error) {
         showToast('Error', 'Failed to delete job: ' + error.message, 'danger');
+    }
+}
+
+async function reprocessJob(jobId) {
+    try {
+        const job = await apiPost(`/api/jobs/${jobId}/reprocess`);
+        loadJobs();
+        loadJobStats();
+        showToast('Reprocess Started', `Job ${job.id.substring(0, 8)} created`, 'success');
+    } catch (error) {
+        const msg = error.message || '';
+        if (msg.includes('409') || msg.includes('running or pending')) {
+            showToast('Cannot reprocess', 'Job is still running or pending', 'warning');
+        } else {
+            showToast('Error', 'Failed to reprocess job: ' + msg, 'danger');
+        }
     }
 }
 
