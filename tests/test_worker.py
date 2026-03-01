@@ -465,7 +465,52 @@ class TestWorkerPool:
         cpu_workers[0].is_busy = True
         result = pool.remove_workers("CPU", 3)
         assert result["removed"] == 2
-        assert result["unavailable"] == 1
+        assert result["scheduled"] == 1
+        assert result["unavailable"] == 0
+
+    def test_remove_workers_schedules_busy_and_retires_when_idle(self):
+        """Busy workers should be scheduled and retired after task completion."""
+        pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
+        cpu_workers = [w for w in pool.workers if w.worker_type == "CPU"]
+        cpu_workers[0].is_busy = True
+
+        result = pool.remove_workers("CPU", 2)
+        assert result == {"removed": 1, "scheduled": 1, "unavailable": 0}
+        assert len([w for w in pool.workers if w.worker_type == "CPU"]) == 1
+
+        cpu_workers[0].is_busy = False
+        retired = pool._apply_deferred_removals()
+        assert retired == 1
+        assert len([w for w in pool.workers if w.worker_type == "CPU"]) == 0
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_dynamic_remove_does_not_stall_completion(self, mock_process):
+        """Dynamic worker removal should not trap processing at 100%."""
+        mock_process.side_effect = lambda *args, **kwargs: time.sleep(0.01)
+        pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
+        config = MagicMock()
+        plex = MagicMock()
+        items = [(f"key{i}", f"Movie {i}", "movie") for i in range(8)]
+
+        original_assign = pool._assign_main_queue_task
+        assigned_count = {"value": 0, "removed": False}
+
+        def assign_and_remove(*args, **kwargs):
+            assigned = original_assign(*args, **kwargs)
+            if assigned:
+                assigned_count["value"] += 1
+                if assigned_count["value"] >= 3 and not assigned_count["removed"]:
+                    pool.remove_workers("CPU", 1)
+                    assigned_count["removed"] = True
+            return assigned
+
+        with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove):
+            start = time.time()
+            result = pool.process_items_headless(items, config, plex)
+            elapsed = time.time() - start
+
+        assert elapsed < 2.0
+        assert result["completed"] + result["failed"] == len(items)
 
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):

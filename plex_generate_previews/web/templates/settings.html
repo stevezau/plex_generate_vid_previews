@@ -130,28 +130,26 @@
             </div>
             <div class="card-body">
                 <div class="mb-3">
-                    <label for="plexConfigFolder" class="form-label">Plex Data Path</label>
+                    <label for="plexConfigFolder" class="form-label">Plex Media Server data folder</label>
                     <input type="text" class="form-control" id="plexConfigFolder"
                            placeholder="/plex">
-                    <div class="form-text">Container path to Plex Media Server data folder</div>
+                    <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
                 </div>
 
                 <hr class="my-4">
-                <h6 class="mb-3">Path Mapping (Optional)</h6>
-
-                <div class="mb-3">
-                    <label for="plexVideosPathMapping" class="form-label">Plex Media Path</label>
-                    <input type="text" class="form-control" id="plexVideosPathMapping"
-                           placeholder="/data/media">
-                    <div class="form-text">Path as Plex sees media files</div>
+                <h6 class="mb-2">Media path mapping</h6>
+                <p class="text-muted small mb-2">Use this only if Plex and this app use <strong>different folder paths</strong> for the same media (e.g. Plex shows <code>/data</code> but this app has the files at <code>/mnt/data</code>). If they’re the same, leave the list empty.</p>
+                <div class="alert alert-info py-2 mb-3 small" role="alert">
+                    <strong>Example:</strong> Plex shows <code>/data</code>, this app has files at <code>/mnt/data</code> → add one row: Path in Plex = <code>/data</code>, Path in this app = <code>/mnt/data</code>. If you use Sonarr/Radarr and they report a different path (e.g. <code>/data</code> when Plex uses <code>/data_disk1</code>), add that in the third column so imports still match.
                 </div>
 
-                <div class="mb-3">
-                    <label for="plexLocalVideosPathMapping" class="form-label">Local Media Path</label>
-                    <input type="text" class="form-control" id="plexLocalVideosPathMapping"
-                           placeholder="/media">
-                    <div class="form-text">Path as this container sees media files</div>
+                <div id="pathMappingsContainer">
+                    <div class="path-mapping-rows mb-2"></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="addPathMappingBtn">
+                        <i class="bi bi-plus-lg me-1"></i>Add another mapping
+                    </button>
                 </div>
+                <div class="form-text">Each row links one Plex path to the path this app uses. Add the “Path from Sonarr/Radarr” only when they use a different path than Plex.</div>
             </div>
         </div>
 
@@ -326,6 +324,12 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('thumbnailQuality').addEventListener('input', function() {
         document.getElementById('qualityValue').textContent = this.value;
     });
+
+    document.getElementById('addPathMappingBtn').addEventListener('click', function() {
+        const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
+        if (container) container.appendChild(createPathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+        markDirty();
+    });
 });
 
 let isDirty = false;
@@ -342,8 +346,7 @@ async function loadSettings() {
         // Populate form
         document.getElementById('plexUrl').value = settings.plex_url || '';
         document.getElementById('plexConfigFolder').value = settings.plex_config_folder || '/plex';
-        document.getElementById('plexVideosPathMapping').value = settings.plex_videos_path_mapping || '';
-        document.getElementById('plexLocalVideosPathMapping').value = settings.plex_local_videos_path_mapping || '';
+        renderPathMappingRows(settings.path_mappings || legacyToPathMappings(settings));
         document.getElementById('gpuThreads').value = settings.gpu_threads ?? 1;
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
         document.getElementById('cpuFallbackThreads').value = settings.cpu_fallback_threads ?? 0;
@@ -372,6 +375,83 @@ async function loadSettings() {
         console.error('Failed to load settings:', error);
         showToast('Failed to load settings', 'danger');
     }
+}
+
+function legacyToPathMappings(settings) {
+    const plex = (settings.plex_videos_path_mapping || '').trim();
+    const local = (settings.plex_local_videos_path_mapping || '').trim();
+    if (!plex || !local) return [];
+    const plexList = plex.split(';').map(s => s.trim()).filter(Boolean);
+    const localList = local.split(';').map(s => s.trim()).filter(Boolean);
+    if (localList.length === 1) {
+        return plexList.map(p => ({ plex_prefix: p, local_prefix: localList[0], webhook_prefixes: [] }));
+    }
+    if (plexList.length === localList.length) {
+        return plexList.map((p, i) => ({ plex_prefix: p, local_prefix: localList[i], webhook_prefixes: [] }));
+    }
+    return plexList.length ? [{ plex_prefix: plexList[0], local_prefix: localList[0] || local, webhook_prefixes: [] }] : [];
+}
+
+function renderPathMappingRows(rows) {
+    const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!rows || rows.length === 0) {
+        container.appendChild(createPathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+        return;
+    }
+    rows.forEach(r => container.appendChild(createPathMappingRow(r)));
+}
+
+function createPathMappingRow(row) {
+    const div = document.createElement('div');
+    div.className = 'path-mapping-row d-flex flex-wrap align-items-end gap-2 mb-2';
+    const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
+    div.innerHTML = `
+        <div class="flex-grow-1" style="min-width: 140px;">
+            <label class="form-label small mb-0">Path in Plex</label>
+            <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${escapeHtml(row.plex_prefix || '')}">
+        </div>
+        <div class="flex-grow-1" style="min-width: 140px;">
+            <label class="form-label small mb-0">Path in this app</label>
+            <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${escapeHtml(row.local_prefix || '')}">
+        </div>
+        <div class="flex-grow-1" style="min-width: 140px;">
+            <label class="form-label small mb-0 text-muted">Path from Sonarr/Radarr (if different)</label>
+            <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${escapeHtml(webhookVal)}">
+        </div>
+        <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
+    `;
+    div.querySelector('.path-mapping-remove').addEventListener('click', function() {
+        const parent = div.closest('.path-mapping-rows');
+        const rows = parent ? parent.querySelectorAll('.path-mapping-row') : [];
+        if (rows.length > 1) div.remove();
+        markDirty();
+    });
+    div.querySelectorAll('input').forEach(inp => inp.addEventListener('input', markDirty));
+    return div;
+}
+
+function collectPathMappingRows() {
+    const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
+    if (!container) return [];
+    const rows = [];
+    container.querySelectorAll('.path-mapping-row').forEach(rowEl => {
+        const plex = (rowEl.querySelector('.path-mapping-plex')?.value || '').trim();
+        const local = (rowEl.querySelector('.path-mapping-local')?.value || '').trim();
+        if (!plex || !local) return;
+        const webRaw = (rowEl.querySelector('.path-mapping-webhook')?.value || '').trim();
+        const webhook_prefixes = webRaw ? webRaw.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
+        rows.push({ plex_prefix: plex, local_prefix: local, webhook_prefixes });
+    });
+    return rows;
+}
+
+function escapeHtml(str) {
+    if (str == null) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
 
 async function loadLibraries() {
@@ -452,8 +532,7 @@ async function saveAllSettings() {
         const settings = {
             plex_url: document.getElementById('plexUrl').value,
             plex_config_folder: document.getElementById('plexConfigFolder').value,
-            plex_videos_path_mapping: document.getElementById('plexVideosPathMapping').value,
-            plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value,
+            path_mappings: collectPathMappingRows(),
             gpu_threads: parseInt(document.getElementById('gpuThreads').value),
             cpu_threads: parseInt(document.getElementById('cpuThreads').value),
             cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),

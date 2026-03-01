@@ -1243,8 +1243,9 @@ class TestProcessItem:
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
 
         # Configure path mapping
-        mock_config.plex_videos_path_mapping = "/data"
-        mock_config.plex_local_videos_path_mapping = "/mnt/videos"
+        mock_config.path_mappings = [
+            {"plex_prefix": "/data", "local_prefix": "/mnt/videos", "webhook_prefixes": []}
+        ]
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.regenerate_thumbnails = False

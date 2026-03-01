@@ -16,7 +16,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from loguru import logger
 
-from .config import Config
+from .config import (
+    Config,
+    local_path_to_webhook_aliases,
+    path_to_canonical_local,
+    plex_path_to_local,
+)
 
 
 def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
@@ -311,12 +316,9 @@ def _normalize_path_for_match(path: str) -> str:
 
 
 def _map_plex_path_to_local(path: str, config: Config) -> str:
-    """Map a Plex-reported path to local path when mapping is configured."""
-    plex_root = (getattr(config, "plex_videos_path_mapping", "") or "").strip()
-    local_root = (getattr(config, "plex_local_videos_path_mapping", "") or "").strip()
-    if plex_root and local_root and path.startswith(plex_root):
-        return path.replace(plex_root, local_root, 1)
-    return path
+    """Map a Plex-reported path to local path using config.path_mappings."""
+    mappings = getattr(config, "path_mappings", None) or []
+    return plex_path_to_local(path, mappings) if mappings else path
 
 
 def _build_episode_title(item) -> str:
@@ -374,6 +376,7 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     except ValueError:
         webhook_fallback_limit = max(webhook_recent_limit, 1200)
 
+    mappings = getattr(config, "path_mappings", None) or []
     normalized_targets = set()
     for path in file_paths or []:
         if path is None:
@@ -386,7 +389,10 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
         cleaned_path = path.strip()
         if not cleaned_path:
             continue
+        # Normalize to canonical local so webhook paths (e.g. /data) match Plex paths (e.g. /data_disk1) via mapping
+        canonical = path_to_canonical_local(cleaned_path, mappings) if mappings else cleaned_path
         normalized_targets.add(_normalize_path_for_match(cleaned_path))
+        normalized_targets.add(_normalize_path_for_match(canonical))
     if not normalized_targets:
         logger.info("Webhook path resolution skipped (no valid file paths provided)")
         return []
@@ -448,6 +454,10 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
                     item_targets.add(_normalize_path_for_match(location))
                     mapped_location = _map_plex_path_to_local(location, config)
                     item_targets.add(_normalize_path_for_match(mapped_location))
+                    for alias in local_path_to_webhook_aliases(
+                        mapped_location, mappings
+                    ):
+                        item_targets.add(_normalize_path_for_match(alias))
 
                 matched_for_item = target_paths.intersection(item_targets)
                 if not matched_for_item:

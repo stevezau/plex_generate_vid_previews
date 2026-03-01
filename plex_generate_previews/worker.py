@@ -9,7 +9,7 @@ import queue
 import re
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from functools import partial
 from typing import Any, List, Optional, Tuple
 
@@ -416,6 +416,9 @@ class WorkerPool:
         self.cpu_fallback_queue = (
             queue.Queue()
         )  # Thread-safe queue for CPU-only tasks (codec fallback)
+        # Deferred scale-down requests by worker type; busy workers are retired
+        # when they finish their current task.
+        self._pending_removals = defaultdict(int)
         self.add_workers("GPU", gpu_workers)
         self.add_workers("CPU", cpu_workers)
         self.add_workers("CPU_FALLBACK", fallback_cpu_workers)
@@ -488,32 +491,76 @@ class WorkerPool:
         return added
 
     def remove_workers(self, worker_type: str, count: int) -> dict:
-        """Remove idle workers of a type.
+        """Remove workers of a type.
+
+        Idle workers are removed immediately. Busy workers are scheduled for
+        deferred removal and retired when they become idle.
 
         Returns:
-            {"removed": int, "unavailable": int}
+            {"removed": int, "scheduled": int, "unavailable": int}
         """
         if count <= 0:
-            return {"removed": 0, "unavailable": 0}
+            return {"removed": 0, "scheduled": 0, "unavailable": 0}
 
         normalized_type = worker_type.upper()
+        if normalized_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+            raise ValueError(f"Unsupported worker type: {worker_type}")
+
         removed = 0
+        scheduled = 0
         unavailable = 0
         with self._workers_lock:
             matches = [w for w in self.workers if w.worker_type == normalized_type]
             unavailable = max(0, count - len(matches))
-            for worker in matches:
+            idle_matches = [w for w in matches if not w.is_busy]
+            busy_matches = [w for w in matches if w.is_busy]
+
+            for worker in idle_matches:
                 if removed >= count:
                     break
-                if worker.is_busy:
-                    unavailable += 1
-                    continue
                 self.workers.remove(worker)
                 removed += 1
 
+            remaining = count - removed
+            if remaining > 0 and busy_matches:
+                scheduled = min(remaining, len(busy_matches))
+                self._pending_removals[normalized_type] += scheduled
+
         if removed > 0:
             logger.info(f"Removed {removed} idle {normalized_type} worker(s)")
-        return {"removed": removed, "unavailable": unavailable}
+        if scheduled > 0:
+            logger.info(
+                f"Scheduled {scheduled} busy {normalized_type} worker(s) for removal when idle"
+            )
+        return {"removed": removed, "scheduled": scheduled, "unavailable": unavailable}
+
+    def _retire_idle_worker_if_scheduled(self, worker: "Worker") -> bool:
+        """Retire an idle worker if deferred removal was requested for its type."""
+        if worker.is_busy:
+            return False
+
+        with self._workers_lock:
+            pending = int(self._pending_removals.get(worker.worker_type, 0))
+            if pending <= 0:
+                return False
+            if worker not in self.workers:
+                return False
+            self.workers.remove(worker)
+            self._pending_removals[worker.worker_type] = pending - 1
+
+        logger.info(
+            f"Retired {worker.worker_type} worker {worker.worker_id} after deferred removal request"
+        )
+        return True
+
+    def _apply_deferred_removals(self) -> int:
+        """Remove currently idle workers that are pending deferred retirement."""
+        retired = 0
+        # Work on a snapshot to avoid mutating the list while iterating.
+        for worker in self._snapshot_workers():
+            if self._retire_idle_worker_if_scheduled(worker):
+                retired += 1
+        return retired
 
     def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
         """
@@ -906,15 +953,46 @@ class WorkerPool:
         completed_tasks = 0
         total_items = len(media_items)
         last_overall_progress_log = time.time()
-        start_completed = sum(worker.completed for worker in self._snapshot_workers())
-        start_failed = sum(worker.failed for worker in self._snapshot_workers())
+        run_successful = 0
+        run_failed = 0
         cancellation_requested = False
+        per_worker_totals = {}
 
         library_prefix = f"[{library_name}] " if library_name else ""
 
         logger.info(
             f"Processing {total_items} items with {len(self._snapshot_workers())} workers"
         )
+
+        def _record_worker_delta(worker: "Worker") -> None:
+            """Track per-worker success/failure deltas for this run."""
+            nonlocal run_successful, run_failed
+            prev_completed, prev_failed = per_worker_totals.get(worker.worker_id, (0, 0))
+            completed_delta = max(0, worker.completed - prev_completed)
+            failed_delta = max(0, worker.failed - prev_failed)
+            if completed_delta or failed_delta:
+                run_successful += completed_delta
+                run_failed += failed_delta
+                per_worker_totals[worker.worker_id] = (worker.completed, worker.failed)
+
+        def _handle_completions(workers: List["Worker"]) -> None:
+            """Check completions, update counters, and retire deferred workers."""
+            nonlocal completed_tasks
+            for worker in workers:
+                if not worker.check_completion():
+                    continue
+                _record_worker_delta(worker)
+                # Don't count GPU→CPU re-queued items — the CPU worker
+                # will increment completed_tasks when it actually finishes.
+                if not worker.requeued_to_cpu:
+                    completed_tasks += 1
+                    if on_task_complete:
+                        on_task_complete(completed_tasks, total_items)
+                self._retire_idle_worker_if_scheduled(worker)
+
+        # Initialize per-worker accounting baseline.
+        for worker in self._snapshot_workers():
+            per_worker_totals[worker.worker_id] = (worker.completed, worker.failed)
 
         paused_gate_logged = False  # Log pause entry/exit once per pause period
         # Main processing loop
@@ -925,15 +1003,8 @@ class WorkerPool:
                 cancellation_requested = True
                 break
 
-            # Check for completed tasks
-            for worker in self._snapshot_workers():
-                if worker.check_completion():
-                    # Don't count GPU→CPU re-queued items — the CPU worker
-                    # will increment completed_tasks when it actually finishes.
-                    if not worker.requeued_to_cpu:
-                        completed_tasks += 1
-                        if on_task_complete:
-                            on_task_complete(completed_tasks, total_items)
+            # Check for completed tasks and apply deferred retirements.
+            _handle_completions(self._snapshot_workers())
 
             # Delegate UI/progress updates to caller
             if on_poll:
@@ -952,12 +1023,7 @@ class WorkerPool:
                     logger.info(f"{library_prefix}Cancellation requested while paused")
                     cancellation_requested = True
                     break
-                for worker in self._snapshot_workers():
-                    if worker.check_completion():
-                        if not worker.requeued_to_cpu:
-                            completed_tasks += 1
-                            if on_task_complete:
-                                on_task_complete(completed_tasks, total_items)
+                _handle_completions(self._snapshot_workers())
                 if on_poll:
                     on_poll(completed_tasks, total_items)
                 time.sleep(0.2)
@@ -984,6 +1050,7 @@ class WorkerPool:
 
             # Assign new tasks to available workers
             while True:
+                self._apply_deferred_removals()
                 cpu_only = not media_queue
                 available_worker = self._find_available_worker(cpu_only=cpu_only)
                 if not available_worker:
@@ -1010,18 +1077,11 @@ class WorkerPool:
 
             # Check exit condition
             if not media_queue:
-                for worker in self._snapshot_workers():
-                    if worker.check_completion():
-                        if not worker.requeued_to_cpu:
-                            completed_tasks += 1
+                _handle_completions(self._snapshot_workers())
+                self._apply_deferred_removals()
 
-                actual_completed = (
-                    sum(worker.completed for worker in self._snapshot_workers())
-                    - start_completed
-                )
-                actual_failed = (
-                    sum(worker.failed for worker in self._snapshot_workers()) - start_failed
-                )
+                actual_completed = run_successful
+                actual_failed = run_failed
                 actual_processed = actual_completed + actual_failed
 
                 if actual_processed >= total_items:
@@ -1029,18 +1089,12 @@ class WorkerPool:
                     max_busy_retries = 20
                     while self.has_busy_workers() and busy_retries < max_busy_retries:
                         time.sleep(0.001)
-                        for worker in self._snapshot_workers():
-                            worker.check_completion()
+                        _handle_completions(self._snapshot_workers())
+                        self._apply_deferred_removals()
                         busy_retries += 1
 
-                    actual_completed = (
-                        sum(worker.completed for worker in self._snapshot_workers())
-                        - start_completed
-                    )
-                    actual_failed = (
-                        sum(worker.failed for worker in self._snapshot_workers())
-                        - start_failed
-                    )
+                    actual_completed = run_successful
+                    actual_failed = run_failed
                     actual_processed = actual_completed + actual_failed
 
                     if (
@@ -1059,13 +1113,9 @@ class WorkerPool:
             elif not media_queue:
                 time.sleep(0.001)
 
-        # Final statistics
-        total_completed = (
-            sum(worker.completed for worker in self._snapshot_workers()) - start_completed
-        )
-        total_failed = (
-            sum(worker.failed for worker in self._snapshot_workers()) - start_failed
-        )
+        # Final statistics from run-local accounting (robust to dynamic worker removal).
+        total_completed = run_successful
+        total_failed = run_failed
 
         if on_finish:
             on_finish(total_completed, total_failed, total_items)

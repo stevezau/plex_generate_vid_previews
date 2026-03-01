@@ -106,7 +106,7 @@ except Exception as e:
     print(f"WARNING: Could not validate MediaInfo library: {e}")
     print("Proceeding anyway, but errors may occur during processing")
 
-from .config import Config  # noqa: E402
+from .config import Config, plex_path_to_local  # noqa: E402
 from .plex_client import retry_plex_call  # noqa: E402
 
 
@@ -1497,20 +1497,13 @@ def process_item(
     for media_part in data.findall(".//MediaPart"):
         if "hash" in media_part.attrib:
             bundle_hash = media_part.attrib["hash"]
-            # Apply path mapping if both mapping parameters are provided (for remote generation)
-            if (
-                config.plex_videos_path_mapping
-                and config.plex_local_videos_path_mapping
-            ):
-                media_file = sanitize_path(
-                    media_part.attrib["file"].replace(
-                        config.plex_videos_path_mapping,
-                        config.plex_local_videos_path_mapping,
-                    )
-                )
+            # Apply path mapping if configured (path_mappings: plex_prefix → local_prefix)
+            plex_path = media_part.attrib["file"]
+            mappings = getattr(config, "path_mappings", None) or []
+            if mappings:
+                media_file = sanitize_path(plex_path_to_local(plex_path, mappings))
             else:
-                # Use file path directly (for local generation)
-                media_file = sanitize_path(media_part.attrib["file"])
+                media_file = sanitize_path(plex_path)
 
             # Validate bundle_hash has sufficient length (at least 2 characters)
             if not bundle_hash or len(bundle_hash) < 2:

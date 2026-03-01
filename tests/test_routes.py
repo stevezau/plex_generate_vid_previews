@@ -481,7 +481,11 @@ class TestJobsAPI:
         jm.start_job(job_id)
         pool = MagicMock()
         pool.add_workers.return_value = 2
-        pool.remove_workers.return_value = {"removed": 1, "unavailable": 1}
+        pool.remove_workers.return_value = {
+            "removed": 1,
+            "scheduled": 1,
+            "unavailable": 0,
+        }
         jm.set_active_worker_pool(job_id, pool)
 
         add_resp = client.post(
@@ -501,7 +505,8 @@ class TestJobsAPI:
         assert remove_resp.status_code == 200
         data = remove_resp.get_json()
         assert data["removed"] == 1
-        assert data["unavailable"] == 1
+        assert data["scheduled_removal"] == 1
+        assert data["unavailable"] == 0
         pool.remove_workers.assert_called_once_with("CPU", 2)
 
 

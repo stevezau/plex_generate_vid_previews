@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -83,6 +83,178 @@ def get_config_value_int(
     return get_config_value(cli_args, field_name, env_key, default, int)
 
 
+def get_path_mapping_pairs(
+    plex_mapping: str, local_mapping: str
+) -> List[Tuple[str, str]]:
+    """Parse path mapping config into (plex_root, local_root) pairs.
+
+    Supports: (1) single pair when both are single values; (2) mergefs: multiple
+    Plex roots (semicolon-separated) with one local path — all map to that path;
+    (3) same count both sides — pair by index.
+
+    Args:
+        plex_mapping: Plex path(s), semicolon-separated for multiple.
+        local_mapping: Local path(s), semicolon-separated or single.
+
+    Returns:
+        List of (plex_root, local_root) tuples to try in order.
+    """
+    plex_list = [s.strip() for s in (plex_mapping or "").split(";") if s.strip()]
+    local_list = [s.strip() for s in (local_mapping or "").split(";") if s.strip()]
+    if not plex_list or not local_list:
+        return []
+    if len(local_list) == 1:
+        return [(plex_root, local_list[0]) for plex_root in plex_list]
+    if len(plex_list) == len(local_list):
+        return list(zip(plex_list, local_list))
+    # Mismatched lengths: use first of each (backward compat)
+    return [(plex_list[0], local_list[0])]
+
+
+# -----------------------------------------------------------------------------
+# Path mappings (plex_prefix, local_prefix, optional webhook_prefixes)
+# -----------------------------------------------------------------------------
+
+def _normalize_prefix(p: str) -> str:
+    """Return path with consistent trailing slash for prefix matching."""
+    if not p:
+        return p
+    return p.rstrip("/") or "/"
+
+
+def _legacy_settings_to_path_mappings(
+    plex_mapping: str, local_mapping: str
+) -> List[Dict[str, Any]]:
+    """Convert legacy semicolon pair config into path_mappings list."""
+    pairs = get_path_mapping_pairs(plex_mapping or "", local_mapping or "")
+    return [
+        {"plex_prefix": plex_root, "local_prefix": local_root, "webhook_prefixes": []}
+        for plex_root, local_root in pairs
+    ]
+
+
+def normalize_path_mappings(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build path_mappings list from settings (new format or legacy).
+
+    New format: settings["path_mappings"] is a list of dicts with keys
+    plex_prefix, local_prefix, and optionally webhook_prefixes (list of strings).
+    Legacy: settings has plex_videos_path_mapping and plex_local_videos_path_mapping
+    (semicolon-separated); converted to mapping rows with empty webhook_prefixes.
+
+    Args:
+        settings: Dict from settings.json or equivalent (e.g. ui_settings).
+
+    Returns:
+        List of mapping dicts: {"plex_prefix", "local_prefix", "webhook_prefixes"}.
+    """
+    raw = settings.get("path_mappings")
+    if isinstance(raw, list) and len(raw) > 0:
+        out = []
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            plex = (row.get("plex_prefix") or "").strip()
+            local = (row.get("local_prefix") or "").strip()
+            if not plex or not local:
+                continue
+            web = row.get("webhook_prefixes")
+            if isinstance(web, list):
+                web = [s.strip() for s in web if s and str(s).strip()]
+            else:
+                web = []
+            out.append(
+                {"plex_prefix": plex, "local_prefix": local, "webhook_prefixes": web}
+            )
+        if out:
+            return out
+    # Legacy
+    plex_str = (settings.get("plex_videos_path_mapping") or "").strip()
+    local_str = (settings.get("plex_local_videos_path_mapping") or "").strip()
+    if plex_str and local_str:
+        return _legacy_settings_to_path_mappings(plex_str, local_str)
+    return []
+
+
+def _path_matches_prefix(path: str, prefix: str) -> bool:
+    """Return True if path equals prefix or has prefix as a path prefix (no partial segment)."""
+    norm = _normalize_prefix(prefix)
+    if not norm:
+        return False
+    path = (path or "").strip()
+    return path == norm or path.startswith(norm + "/")
+
+
+def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
+    """Map any path (Plex, webhook, or local) to canonical local path.
+
+    Uses the first matching mapping: plex_prefix or any webhook_prefix is
+    replaced by local_prefix. If no mapping matches, the path is returned
+    unchanged (treated as already local).
+
+    Args:
+        path: Absolute path as seen by Plex, webhook, or this app.
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        Path in the form this app can use for file access / comparison.
+    """
+    if not path or not path_mappings:
+        return path or ""
+    path = (path or "").strip()
+    for m in path_mappings:
+        plex_prefix = _normalize_prefix(m.get("plex_prefix") or "")
+        local_prefix = _normalize_prefix(m.get("local_prefix") or "")
+        if plex_prefix and _path_matches_prefix(path, plex_prefix):
+            rest = path[len(plex_prefix) :].lstrip("/")
+            return f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
+        for wp in m.get("webhook_prefixes") or []:
+            wp = _normalize_prefix(wp)
+            if wp and _path_matches_prefix(path, wp):
+                rest = path[len(wp) :].lstrip("/")
+                return f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
+    return path
+
+
+def plex_path_to_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
+    """Map a Plex-reported path to local path (for file access)."""
+    return path_to_canonical_local(path, path_mappings)
+
+
+def local_path_to_webhook_aliases(
+    path: str, path_mappings: List[Dict[str, Any]]
+) -> List[str]:
+    """Return webhook-style paths that could refer to the same file as the given local path.
+
+    Used when matching webhook payloads (e.g. /data/...) to Plex items whose
+    location is a specific disk (e.g. /data_16tb1/...). For each mapping where
+    path starts with local_prefix and webhook_prefixes is set, returns path with
+    local_prefix replaced by that webhook prefix.
+
+    Args:
+        path: Local path (e.g. /data_16tb1/Movies/foo.mkv).
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        List of paths in webhook form (e.g. [/data/Movies/foo.mkv]).
+    """
+    if not path or not path_mappings:
+        return []
+    path = (path or "").strip()
+    out = []
+    for m in path_mappings:
+        local_prefix = _normalize_prefix(m.get("local_prefix") or "")
+        if not local_prefix or not _path_matches_prefix(path, local_prefix):
+            continue
+        for wp in m.get("webhook_prefixes") or []:
+            wp = _normalize_prefix(wp)
+            if not wp or wp == local_prefix:
+                continue
+            rest = path[len(local_prefix) :].lstrip("/")
+            alias = f"{wp.rstrip('/')}/{rest}" if rest else (wp or "/")
+            out.append(alias)
+    return out
+
+
 def get_config_value_bool(
     cli_args, field_name: str, env_key: str, default: bool = False
 ) -> bool:
@@ -104,6 +276,8 @@ class Config:
     plex_config_folder: str
     plex_local_videos_path_mapping: str
     plex_videos_path_mapping: str
+    # Resolved path mapping rows: [{"plex_prefix", "local_prefix", "webhook_prefixes"}]
+    path_mappings: List[Dict[str, Any]]
 
     # Processing configuration
     plex_bif_frame_interval: int
@@ -736,6 +910,12 @@ def load_config(cli_args=None) -> Config:
         str,
     )
 
+    path_mappings = normalize_path_mappings(ui_settings)
+    if not path_mappings and (plex_videos_path_mapping or plex_local_videos_path_mapping):
+        path_mappings = _legacy_settings_to_path_mappings(
+            plex_videos_path_mapping, plex_local_videos_path_mapping
+        )
+
     plex_bif_frame_interval = get_value(
         cli_args,
         "plex_bif_frame_interval",
@@ -905,6 +1085,7 @@ def load_config(cli_args=None) -> Config:
         plex_config_folder=plex_config_folder,
         plex_local_videos_path_mapping=plex_local_videos_path_mapping,
         plex_videos_path_mapping=plex_videos_path_mapping,
+        path_mappings=path_mappings,
         plex_bif_frame_interval=plex_bif_frame_interval,
         thumbnail_quality=thumbnail_quality,
         regenerate_thumbnails=regenerate_thumbnails,
@@ -934,6 +1115,7 @@ def load_config(cli_args=None) -> Config:
         f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}"
     )
     logger.debug(f"PLEX_VIDEOS_PATH_MAPPING = {config.plex_videos_path_mapping}")
+    logger.debug(f"path_mappings = {len(config.path_mappings)} row(s)")
     logger.debug(f"GPU_THREADS = {config.gpu_threads}")
     logger.debug(f"CPU_THREADS = {config.cpu_threads}")
     logger.debug(f"FALLBACK_CPU_THREADS = {config.fallback_cpu_threads}")

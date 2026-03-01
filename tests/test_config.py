@@ -7,7 +7,15 @@ FFmpeg detection, and environment-specific behavior.
 
 import pytest
 from unittest.mock import MagicMock, patch
-from plex_generate_previews.config import get_config_value, load_config, show_docker_help
+from plex_generate_previews.config import (
+    get_config_value,
+    get_path_mapping_pairs,
+    load_config,
+    normalize_path_mappings,
+    path_to_canonical_local,
+    plex_path_to_local,
+    show_docker_help,
+)
 
 
 class TestGetConfigValue:
@@ -79,6 +87,120 @@ class TestGetConfigValue:
         with patch.dict("os.environ", {"TEST_FIELD": "env_value"}, clear=True):
             result = get_config_value(NoVarsObject(), "test_field", "TEST_FIELD", "default")
             assert result == "env_value"
+
+
+class TestGetPathMappingPairs:
+    """Test path mapping pair parsing (single, mergefs, explicit pairs)."""
+
+    def test_get_path_mapping_pairs_single(self):
+        """Single Plex and single local returns one pair."""
+        assert get_path_mapping_pairs("/data/media", "/media") == [
+            ("/data/media", "/media")
+        ]
+
+    def test_get_path_mapping_pairs_mergefs(self):
+        """Multiple Plex roots and one local returns all Plex mapped to that local."""
+        assert get_path_mapping_pairs(
+            "/data_disk1;/data_disk2;/data_disk3", "/data"
+        ) == [
+            ("/data_disk1", "/data"),
+            ("/data_disk2", "/data"),
+            ("/data_disk3", "/data"),
+        ]
+
+    def test_get_path_mapping_pairs_same_count(self):
+        """Same number of Plex and local pairs by index."""
+        assert get_path_mapping_pairs("/a;/b", "/x;/y") == [
+            ("/a", "/x"),
+            ("/b", "/y"),
+        ]
+
+    def test_get_path_mapping_pairs_empty(self):
+        """Empty or missing mapping returns empty list."""
+        assert get_path_mapping_pairs("", "/media") == []
+        assert get_path_mapping_pairs("/data", "") == []
+        assert get_path_mapping_pairs("", "") == []
+        assert get_path_mapping_pairs(None, "/media") == []
+        assert get_path_mapping_pairs("/data", None) == []
+
+    def test_get_path_mapping_pairs_strips_whitespace(self):
+        """Semicolon-separated values are stripped."""
+        assert get_path_mapping_pairs("  /a  ;  /b  ", "  /x  ") == [
+            ("/a", "/x"),
+            ("/b", "/x"),
+        ]
+
+
+class TestNormalizePathMappings:
+    """Test path_mappings normalization from settings (new format and legacy)."""
+
+    def test_normalize_path_mappings_new_format(self):
+        """New path_mappings list is validated and returned."""
+        settings = {
+            "path_mappings": [
+                {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []},
+                {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": ["/data"]},
+            ]
+        }
+        result = normalize_path_mappings(settings)
+        assert len(result) == 2
+        assert result[0]["plex_prefix"] == "/data"
+        assert result[0]["local_prefix"] == "/mnt/data"
+        assert result[0]["webhook_prefixes"] == []
+        assert result[1]["webhook_prefixes"] == ["/data"]
+
+    def test_normalize_path_mappings_legacy(self):
+        """Legacy semicolon pair is converted to path_mappings."""
+        settings = {
+            "plex_videos_path_mapping": "/data_disk1;/data_disk2",
+            "plex_local_videos_path_mapping": "/data",
+        }
+        result = normalize_path_mappings(settings)
+        assert len(result) == 2
+        assert result[0] == {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []}
+        assert result[1] == {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": []}
+
+    def test_normalize_path_mappings_empty(self):
+        """Empty or missing settings returns empty list."""
+        assert normalize_path_mappings({}) == []
+        assert normalize_path_mappings({"path_mappings": []}) == []
+        assert normalize_path_mappings({"plex_videos_path_mapping": ""}) == []
+
+
+class TestPathToCanonicalLocal:
+    """Test path_to_canonical_local and plex_path_to_local."""
+
+    def test_plex_to_local_single(self):
+        """Plex path is mapped to local."""
+        mappings = [{"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}]
+        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
+        assert plex_path_to_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
+
+    def test_webhook_to_local(self):
+        """Webhook path (webhook_prefixes) maps to same local as plex."""
+        mappings = [
+            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": ["/data"]}
+        ]
+        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
+        assert path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
+
+    def test_no_partial_match(self):
+        """Prefix /data does not match /database."""
+        mappings = [{"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}]
+        assert path_to_canonical_local("/database/x.mkv", mappings) == "/database/x.mkv"
+
+    def test_empty_mappings_returns_unchanged(self):
+        """Empty mappings returns path unchanged."""
+        assert path_to_canonical_local("/data/foo.mkv", []) == "/data/foo.mkv"
+
+    def test_mergerfs_multiple_plex_roots(self):
+        """Multiple Plex roots map to one local (mergerfs)."""
+        mappings = [
+            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []},
+            {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": []},
+        ]
+        assert path_to_canonical_local("/data_disk1/Movies/a.mkv", mappings) == "/data/Movies/a.mkv"
+        assert path_to_canonical_local("/data_disk2/TV/b.mkv", mappings) == "/data/TV/b.mkv"
 
 
 class TestLoadConfig:

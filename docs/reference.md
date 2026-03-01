@@ -144,20 +144,39 @@ To see detected GPUs, use the web UI: open **Settings** or **Setup**.
 
 Without mapping, you'll see "Skipping as file not found" errors.
 
-### Configuration
+### Configuration (Web UI)
+
+In **Settings** and **Setup**, you add mapping rows. Each row has:
+
+- **Path in Plex** — The folder path Plex uses for the media (e.g. `/data`).
+- **Path in this app** — The folder path this app uses for the same files (e.g. `/mnt/data`).
+- **Path from Sonarr/Radarr (if different)** — Only if Sonarr/Radarr report a different path than Plex (e.g. they use `/data` while Plex uses `/data_disk1`). You can leave this blank if they match.
+
+Add as many rows as you need (e.g. one per disk when Plex uses multiple roots).
+
+### Legacy env/CLI (semicolon pair)
 
 | Variable | CLI Argument | Description |
 |----------|--------------|-------------|
-| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Path as Plex sees it |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Path as container sees it |
+| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Path(s) as Plex sees it; semicolon-separated for multiple roots |
+| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Path as this app sees it (one value, or semicolon-separated to pair by index) |
 
-### Common Examples
+If you use the Web UI, the saved **path_mappings** take precedence. Existing semicolon-based values are converted to mapping rows when loading.
 
-| Setup | PLEX_VIDEOS_PATH_MAPPING | PLEX_LOCAL_VIDEOS_PATH_MAPPING |
-|-------|--------------------------|--------------------------------|
-| linuxserver/plex | `/data/media` | `/media` |
-| Unraid share | `/mnt/user/media` | `/media` |
-| Windows share | `\\\\server\\media` | `/media` |
+### When Plex uses multiple roots (e.g. mergerfs)
+
+If Plex has several roots (e.g. `/data_disk1`, `/data_disk2`) but Sonarr/Radarr see one path (`/data`):
+
+- Add one row per Plex root, each with the same **Path in this app** (e.g. `/data`).
+- In **Path from Sonarr/Radarr**, enter `/data` on one of the rows so imports from Sonarr/Radarr still match.
+
+### Examples
+
+| Situation | Path in Plex | Path in this app | Path from Sonarr/Radarr |
+|-----------|--------------|------------------|--------------------------|
+| Different paths in Docker | `/data` | `/mnt/data` | *(blank)* |
+| Multiple disks, Sonarr sees one path | `/data_disk1` | `/data` | `/data` |
+| Same (second disk) | `/data_disk2` | `/data` | *(blank)* |
 
 ### How to Find Your Paths
 
@@ -288,6 +307,9 @@ Get current settings.
   "media_path": "/media",
   "plex_videos_path_mapping": "",
   "plex_local_videos_path_mapping": "",
+  "path_mappings": [
+    {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+  ],
   "gpu_threads": 4,
   "cpu_threads": 2,
   "cpu_fallback_threads": 0,

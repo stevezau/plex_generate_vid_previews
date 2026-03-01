@@ -477,6 +477,13 @@ class JobManager:
         with self._lock:
             self._worker_statuses.clear()
 
+    def prune_worker_statuses(self, valid_keys: set[str]) -> None:
+        """Remove stale worker statuses not present in the latest snapshot."""
+        with self._lock:
+            for key in list(self._worker_statuses.keys()):
+                if key not in valid_keys:
+                    del self._worker_statuses[key]
+
     # ========================================================================
     # Cancellation Management
     # ========================================================================

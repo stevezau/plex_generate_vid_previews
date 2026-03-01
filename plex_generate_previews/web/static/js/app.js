@@ -652,6 +652,23 @@ function updateCurrentJob(job) {
     const webhookFilesLine = webhookFiles
         ? `<br><strong>Files:</strong> <span class="text-muted small">${escapeHtml(webhookFiles.slice(0, 8).join(', '))}${webhookFiles.length > 8 ? ` (+${webhookFiles.length - 8} more)` : ''}</span>`
         : '';
+    const existingTypeInput = document.getElementById('workerScaleType');
+    const existingCountInput = document.getElementById('workerScaleCount');
+    if (existingTypeInput) {
+        workerScaleState.workerType = existingTypeInput.value || workerScaleState.workerType;
+    }
+    if (existingCountInput) {
+        const parsedCount = parseInt(existingCountInput.value, 10);
+        if (!Number.isNaN(parsedCount) && parsedCount > 0) {
+            workerScaleState.count = parsedCount;
+        }
+    }
+    const selectedWorkerType = ['GPU', 'CPU', 'CPU_FALLBACK'].includes(workerScaleState.workerType)
+        ? workerScaleState.workerType
+        : 'CPU';
+    const selectedWorkerCount = Number.isInteger(workerScaleState.count) && workerScaleState.count > 0
+        ? workerScaleState.count
+        : 1;
 
     card.innerHTML = `
         <div class="mb-3">
@@ -680,11 +697,11 @@ function updateCurrentJob(job) {
             <div class="d-flex flex-wrap gap-2 align-items-center">
                 <label class="small text-muted mb-0" for="workerScaleType">Workers</label>
                 <select id="workerScaleType" class="form-select form-select-sm" style="width: 150px;">
-                    <option value="GPU">GPU</option>
-                    <option value="CPU" selected>CPU</option>
-                    <option value="CPU_FALLBACK">CPU Fallback</option>
+                    <option value="GPU" ${selectedWorkerType === 'GPU' ? 'selected' : ''}>GPU</option>
+                    <option value="CPU" ${selectedWorkerType === 'CPU' ? 'selected' : ''}>CPU</option>
+                    <option value="CPU_FALLBACK" ${selectedWorkerType === 'CPU_FALLBACK' ? 'selected' : ''}>CPU Fallback</option>
                 </select>
-                <input id="workerScaleCount" class="form-control form-control-sm" type="number" min="1" step="1" value="1" style="width: 78px;" />
+                <input id="workerScaleCount" class="form-control form-control-sm" type="number" min="1" step="1" value="${selectedWorkerCount}" style="width: 78px;" />
                 <button class="btn btn-sm btn-outline-success" onclick="scaleWorkersFromControls('${escapeHtml(job.id)}', 1)">
                     <i class="bi bi-plus-lg me-1"></i>Add
                 </button>
@@ -693,10 +710,25 @@ function updateCurrentJob(job) {
                 </button>
             </div>
             <div class="w-100 small text-muted">
-                Remove only affects idle workers; busy workers are kept until they finish.
+                Remove retires idle workers now and schedules busy workers to retire when they finish.
             </div>
         </div>
     `;
+    const typeInput = document.getElementById('workerScaleType');
+    const countInput = document.getElementById('workerScaleCount');
+    if (typeInput) {
+        typeInput.addEventListener('change', () => {
+            workerScaleState.workerType = typeInput.value || 'CPU';
+        });
+    }
+    if (countInput) {
+        countInput.addEventListener('input', () => {
+            const parsedCount = parseInt(countInput.value, 10);
+            if (!Number.isNaN(parsedCount) && parsedCount > 0) {
+                workerScaleState.count = parsedCount;
+            }
+        });
+    }
 }
 
 function updateJobProgress(jobId, progress) {
@@ -762,6 +794,7 @@ function clearCurrentJob() {
 // Worker Status Functions
 let currentJobId = null;
 let logsRefreshInterval = null;
+let workerScaleState = { workerType: 'CPU', count: 1 };
 
 function updateWorkerStatuses(workers) {
     const container = document.getElementById('workerStatusContainer');
@@ -1194,9 +1227,14 @@ async function scaleWorkers(jobId, workerType, delta) {
         if (endpoint === 'add') {
             showToast('Workers Updated', `Added ${result.added} ${workerType} worker(s)`, 'success');
         } else {
+            const scheduledRemoval = result.scheduled_removal || 0;
             const unavailable = result.unavailable || 0;
-            if (unavailable > 0) {
-                showToast('Workers Updated', `Removed ${result.removed} ${workerType}; ${unavailable} unavailable/busy`, 'warning');
+            if (scheduledRemoval > 0 || unavailable > 0) {
+                showToast(
+                    'Workers Updated',
+                    `Removed ${result.removed} ${workerType}; ${scheduledRemoval} scheduled after current tasks; ${unavailable} unavailable`,
+                    'warning'
+                );
             } else {
                 showToast('Workers Updated', `Removed ${result.removed} ${workerType} worker(s)`, 'info');
             }
@@ -1212,6 +1250,7 @@ function getWorkerScaleSelection() {
     const workerType = typeInput ? typeInput.value : 'CPU';
     const parsedCount = countInput ? parseInt(countInput.value, 10) : 1;
     const count = Number.isNaN(parsedCount) ? 1 : Math.max(1, parsedCount);
+    workerScaleState = { workerType, count };
     return { workerType, count };
 }
 

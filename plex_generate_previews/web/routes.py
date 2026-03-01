@@ -423,7 +423,7 @@ def add_job_workers(job_id):
 @api.route("/jobs/<job_id>/workers/remove", methods=["POST"])
 @api_token_required
 def remove_job_workers(job_id):
-    """Remove idle workers from a running job."""
+    """Remove workers from a running job (idle now, busy when idle)."""
     job_manager = get_job_manager()
     running_job = job_manager.get_running_job()
     if not running_job or running_job.id != job_id:
@@ -448,6 +448,7 @@ def remove_job_workers(job_id):
             "worker_type": worker_type,
             "requested": count,
             "removed": result.get("removed", 0),
+            "scheduled_removal": result.get("scheduled", 0),
             "unavailable": result.get("unavailable", 0),
         }
     )
@@ -1147,6 +1148,7 @@ def get_settings():
             "plex_videos_path_mapping": settings.plex_videos_path_mapping or "",
             "plex_local_videos_path_mapping": settings.plex_local_videos_path_mapping
             or "",
+            "path_mappings": settings.get("path_mappings", []),
             "gpu_threads": settings.gpu_threads,
             "cpu_threads": settings.cpu_threads,
             "cpu_fallback_threads": settings.cpu_fallback_threads,
@@ -1181,6 +1183,7 @@ def save_settings():
         "media_path",
         "plex_videos_path_mapping",
         "plex_local_videos_path_mapping",
+        "path_mappings",
         "gpu_threads",
         "cpu_threads",
         "cpu_fallback_threads",
@@ -1343,11 +1346,14 @@ def set_setup_token():
 @api.route("/setup/validate-paths", methods=["POST"])
 @setup_or_auth_required
 def validate_paths():
-    """Validate path configuration."""
+    """Validate path configuration (path_mappings or legacy plex/local pair)."""
     import os
+
+    from ..config import normalize_path_mappings
 
     data = request.get_json() or {}
     plex_data_path = data.get("plex_config_folder", "/plex")
+    path_mappings = normalize_path_mappings(data)
     plex_media_path = data.get("plex_videos_path_mapping", "")
     local_media_path = data.get("plex_local_videos_path_mapping", "")
 
@@ -1425,8 +1431,41 @@ def validate_paths():
                 )
                 result["valid"] = False
 
-    # Validate Path Mapping (if provided)
-    if plex_media_path or local_media_path:
+    # Validate Path Mapping (path_mappings rows or legacy pair)
+    if path_mappings:
+        for i, row in enumerate(path_mappings):
+            local_prefix = (row.get("local_prefix") or "").strip()
+            row_label = f"Row {i + 1}"
+            if "\x00" in local_prefix:
+                result["errors"].append(f"{row_label}: Invalid path.")
+                result["valid"] = False
+                continue
+            if not local_prefix:
+                continue
+            resolved = _safe_resolve_within(local_prefix, MEDIA_ROOT)
+            if resolved is None:
+                result["errors"].append(
+                    f"{row_label}: “Path in this app” must be inside the allowed media folder."
+                )
+                result["valid"] = False
+            elif not os.path.exists(resolved):
+                result["errors"].append(
+                    f"{row_label}: Folder not found: {resolved}"
+                )
+                result["valid"] = False
+            else:
+                try:
+                    contents = os.listdir(resolved)
+                    result["info"].append(
+                        f"✓ {row_label}: Path in this app is accessible ({len(contents)} items)"
+                    )
+                except Exception as e:
+                    logger.error(f"Cannot read mapping local path: {e}")
+                    result["errors"].append(
+                        f"{row_label}: Cannot read this folder."
+                    )
+                    result["valid"] = False
+    elif plex_media_path or local_media_path:
         if plex_media_path and not local_media_path:
             result["errors"].append(
                 "Local Media Path is required when Plex Media Path is set"
@@ -1438,29 +1477,23 @@ def validate_paths():
             )
             result["valid"] = False
         elif local_media_path:
-            # Reject null bytes explicitly (for a clear error message)
             if "\x00" in local_media_path:
                 result["errors"].append("Invalid Local Media Path")
                 result["valid"] = False
                 return jsonify(result)
-
-            # Resolve and confine the path within MEDIA_ROOT.
             resolved_local_media = _safe_resolve_within(local_media_path, MEDIA_ROOT)
-
             if resolved_local_media is None:
                 result["errors"].append(
                     "Invalid Local Media Path (must be within the configured media root)"
                 )
                 result["valid"] = False
                 return jsonify(result)
-
             if not os.path.exists(resolved_local_media):
                 result["errors"].append(
                     f"Local Media Path does not exist: {resolved_local_media}"
                 )
                 result["valid"] = False
             else:
-                # Check if it contains media files/folders
                 try:
                     contents = os.listdir(resolved_local_media)
                     if len(contents) == 0:
@@ -1620,7 +1653,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if selected_libs:
                 config.plex_libraries = [lib.lower() for lib in selected_libs]
 
-            # Apply path mappings
+            # Apply path mappings (new format or legacy)
+            from ..config import normalize_path_mappings
+
+            path_mappings = normalize_path_mappings(settings)
+            if path_mappings:
+                config.path_mappings = path_mappings
             if settings.get("plex_videos_path_mapping"):
                 config.plex_videos_path_mapping = settings.get(
                     "plex_videos_path_mapping"
@@ -1845,10 +1883,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 """Update worker statuses from processing."""
                 from .jobs import WorkerStatus
 
+                active_worker_keys = set()
                 for worker_data in workers_list:
                     worker_key = (
                         f"{worker_data['worker_type']}_{worker_data['worker_id']}"
                     )
+                    active_worker_keys.add(worker_key)
                     remaining_time = worker_data.get("remaining_time")
                     worker_eta = ""
                     if isinstance(remaining_time, (int, float)) and remaining_time > 0:
@@ -1864,6 +1904,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         eta=worker_eta,
                     )
                     job_manager.update_worker_status(worker_key, status)
+                job_manager.prune_worker_statuses(active_worker_keys)
 
             try:
                 clear_failures()

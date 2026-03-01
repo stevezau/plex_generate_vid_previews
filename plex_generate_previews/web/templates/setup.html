@@ -253,34 +253,31 @@
 
                 <div class="mb-3">
                     <label for="plexConfigFolder" class="form-label">
-                        Plex Data Path
+                        Plex Media Server data folder
                         <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip"
-                           title="Path to Plex Media Server data folder (where previews will be saved)"></i>
+                           title="Path inside this container to Plex&#39;s data folder (where previews are written)"></i>
                     </label>
                     <input type="text" class="form-control" id="plexConfigFolder"
                            value="/plex" placeholder="/plex">
-                    <div class="form-text">Container path to Plex appdata (e.g., /plex)</div>
+                    <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
                 </div>
 
                 <hr class="my-4">
-                <h5 class="mb-3">Path Mapping (Optional)</h5>
-                <p class="text-muted small mb-3">
-                    Only needed if this container mounts media to a different path than Plex.
+                <h5 class="mb-2">Media path mapping (optional)</h5>
+                <p class="text-muted small mb-2">
+                    Only if Plex and this app use <strong>different folder paths</strong> for the same media. If they’re the same, leave the list empty.
                 </p>
-
-                <div class="mb-3">
-                    <label for="plexVideosPathMapping" class="form-label">Plex Media Path</label>
-                    <input type="text" class="form-control" id="plexVideosPathMapping"
-                           placeholder="/data/media">
-                    <div class="form-text">Path as Plex sees media files (e.g., /data/media)</div>
+                <div class="alert alert-info py-2 mb-3 small" role="alert">
+                    <strong>Example:</strong> Plex shows <code>/data</code>, this app has files at <code>/mnt/data</code> → add one row: Path in Plex = <code>/data</code>, Path in this app = <code>/mnt/data</code>. If Sonarr/Radarr use a different path, add it in the third column.
                 </div>
 
-                <div class="mb-3">
-                    <label for="plexLocalVideosPathMapping" class="form-label">Local Media Path</label>
-                    <input type="text" class="form-control" id="plexLocalVideosPathMapping"
-                           placeholder="/media">
-                    <div class="form-text">Path as this container sees media files (e.g., /media)</div>
+                <div id="setupPathMappingsContainer">
+                    <div class="path-mapping-rows mb-2"></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddPathMappingBtn">
+                        <i class="bi bi-plus-lg me-1"></i>Add another mapping
+                    </button>
                 </div>
+                <div class="form-text">Each row links one Plex path to the path this app uses. Add “Path from Sonarr/Radarr” only when it’s different from Plex.</div>
 
                 <!-- Validation Results -->
                 <div id="pathValidation" class="mt-4 d-none">
@@ -519,6 +516,12 @@ document.addEventListener('DOMContentLoaded', function() {
         // Step-specific actions
         if (step === 2 && isAuthenticated) {
             loadServers();
+        } else if (step === 3) {
+            settingsManager.get().then(settings => {
+                setupRenderPathMappingRows(settings.path_mappings || setupLegacyToPathMappings(settings));
+            }).catch(() => {
+                setupRenderPathMappingRows([]);
+            });
         } else if (step === 4) {
             loadGpuInfo();
         } else if (step === 5) {
@@ -690,7 +693,80 @@ document.addEventListener('DOMContentLoaded', function() {
     // Step 3: Path Configuration
     // =========================================================================
 
+    function setupLegacyToPathMappings(settings) {
+        const plex = (settings.plex_videos_path_mapping || '').trim();
+        const local = (settings.plex_local_videos_path_mapping || '').trim();
+        if (!plex || !local) return [];
+        const plexList = plex.split(';').map(s => s.trim()).filter(Boolean);
+        const localList = local.split(';').map(s => s.trim()).filter(Boolean);
+        if (localList.length === 1) {
+            return plexList.map(p => ({ plex_prefix: p, local_prefix: localList[0], webhook_prefixes: [] }));
+        }
+        if (plexList.length === localList.length) {
+            return plexList.map((p, i) => ({ plex_prefix: p, local_prefix: localList[i], webhook_prefixes: [] }));
+        }
+        return plexList.length ? [{ plex_prefix: plexList[0], local_prefix: localList[0] || local, webhook_prefixes: [] }] : [];
+    }
+
+    function setupCollectPathMappingRows() {
+        const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
+        if (!container) return [];
+        const rows = [];
+        container.querySelectorAll('.path-mapping-row').forEach(rowEl => {
+            const plex = (rowEl.querySelector('.path-mapping-plex')?.value || '').trim();
+            const local = (rowEl.querySelector('.path-mapping-local')?.value || '').trim();
+            if (!plex || !local) return;
+            const webRaw = (rowEl.querySelector('.path-mapping-webhook')?.value || '').trim();
+            const webhook_prefixes = webRaw ? webRaw.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
+            rows.push({ plex_prefix: plex, local_prefix: local, webhook_prefixes });
+        });
+        return rows;
+    }
+
+    function setupCreatePathMappingRow(row) {
+        const div = document.createElement('div');
+        div.className = 'path-mapping-row d-flex flex-wrap align-items-end gap-2 mb-2';
+        const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
+        div.innerHTML = `
+            <div class="flex-grow-1" style="min-width: 140px;">
+                <label class="form-label small mb-0">Path in Plex</label>
+                <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${(row.plex_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="flex-grow-1" style="min-width: 140px;">
+                <label class="form-label small mb-0">Path in this app</label>
+                <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${(row.local_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="flex-grow-1" style="min-width: 140px;">
+                <label class="form-label small mb-0 text-muted">Path from Sonarr/Radarr (if different)</label>
+                <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${(webhookVal || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
+            </div>
+            <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
+        `;
+        div.querySelector('.path-mapping-remove').addEventListener('click', function() {
+            const parent = div.closest('.path-mapping-rows');
+            const rows = parent ? parent.querySelectorAll('.path-mapping-row') : [];
+            if (rows.length > 1) div.remove();
+        });
+        return div;
+    }
+
+    function setupRenderPathMappingRows(rows) {
+        const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            container.appendChild(setupCreatePathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+            return;
+        }
+        rows.forEach(r => container.appendChild(setupCreatePathMappingRow(r)));
+    }
+
     document.getElementById('step3Back').addEventListener('click', () => goToStep(2));
+
+    document.getElementById('setupAddPathMappingBtn').addEventListener('click', function() {
+        const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
+        if (container) container.appendChild(setupCreatePathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+    });
 
     // Validate Paths button
     document.getElementById('validatePathsBtn').addEventListener('click', validatePaths);
@@ -704,17 +780,17 @@ document.addEventListener('DOMContentLoaded', function() {
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Validating...';
 
         try {
+            const payload = {
+                plex_config_folder: document.getElementById('plexConfigFolder').value,
+                path_mappings: setupCollectPathMappingRows()
+            };
             const response = await fetch('/api/setup/validate-paths', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : ''
                 },
-                body: JSON.stringify({
-                    plex_config_folder: document.getElementById('plexConfigFolder').value,
-                    plex_videos_path_mapping: document.getElementById('plexVideosPathMapping').value,
-                    plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value
-                })
+                body: JSON.stringify(payload)
             });
 
             const data = await response.json();
@@ -765,11 +841,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     document.getElementById('step3Next').addEventListener('click', async () => {
-        // Save path settings
         await settingsManager.save({
             plex_config_folder: document.getElementById('plexConfigFolder').value,
-            plex_videos_path_mapping: document.getElementById('plexVideosPathMapping').value,
-            plex_local_videos_path_mapping: document.getElementById('plexLocalVideosPathMapping').value
+            path_mappings: setupCollectPathMappingRows()
         });
         goToStep(4);
     });
