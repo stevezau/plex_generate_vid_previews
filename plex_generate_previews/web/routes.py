@@ -317,12 +317,17 @@ def pause_job(job_id):
     job_manager = get_job_manager()
     job = job_manager.get_job(job_id)
     if not job:
+        logger.warning(f"Pause failed: job_id={job_id}, reason=job not found")
         return jsonify({"error": "Job not found"}), 404
     if getattr(job.status, "value", job.status) != "running":
+        logger.warning(
+            f"Pause failed: job_id={job_id}, reason=job not running, status={getattr(job.status, 'value', job.status)}"
+        )
         return jsonify({"error": "Only running jobs can be paused"}), 400
     if job_manager.request_pause(job_id):
         updated_job = job_manager.get_job(job_id)
         return jsonify(updated_job.to_dict() if updated_job else {"success": True})
+    logger.warning(f"Pause failed: job_id={job_id}, reason=request_pause returned False")
     return jsonify({"error": "Failed to pause job"}), 400
 
 
@@ -333,12 +338,19 @@ def resume_job(job_id):
     job_manager = get_job_manager()
     job = job_manager.get_job(job_id)
     if not job:
+        logger.warning(f"Resume failed: job_id={job_id}, reason=job not found")
         return jsonify({"error": "Job not found"}), 404
     if getattr(job.status, "value", job.status) != "running":
+        logger.warning(
+            f"Resume failed: job_id={job_id}, reason=job not running, status={getattr(job.status, 'value', job.status)}"
+        )
         return jsonify({"error": "Only running jobs can be resumed"}), 400
     if job_manager.request_resume(job_id):
         updated_job = job_manager.get_job(job_id)
         return jsonify(updated_job.to_dict() if updated_job else {"success": True})
+    logger.warning(
+        f"Resume failed: job_id={job_id}, reason=request_resume returned False"
+    )
     return jsonify({"error": "Failed to resume job"}), 400
 
 

@@ -522,6 +522,16 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, [])
         assert result == []
 
+    @patch("plex_generate_previews.plex_client.logger.warning")
+    def test_get_media_items_by_paths_non_string_path_skipped(
+        self, mock_warning, mock_config
+    ):
+        """Non-string webhook paths are skipped without raising."""
+        mock_plex = MagicMock()
+        result = get_media_items_by_paths(mock_plex, mock_config, [123, None, "   "])
+        assert result == []
+        assert mock_warning.call_count == 1
+
     def test_get_media_items_by_paths_movie_match(self, mock_config):
         """Path matching a movie location returns (key, title, media_type)."""
         mock_plex = MagicMock()
@@ -626,3 +636,28 @@ class TestGetMediaItemsByPaths:
         second_call = mock_section.search.call_args_list[1].kwargs
         assert first_call == {"sort": "addedAt:desc", "maxresults": 1}
         assert second_call == {"sort": "addedAt:desc", "maxresults": 5}
+
+    @patch("plex_generate_previews.plex_client.logger.warning")
+    def test_get_media_items_by_paths_item_without_key_is_skipped(
+        self, mock_warning, mock_config
+    ):
+        """Matched items missing a Plex key are ignored safely."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = None
+        mock_movie.title = "No Key Movie"
+        mock_movie.locations = ["/data/movies/No Key Movie/No Key Movie.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/No Key Movie/No Key Movie.mkv"]
+        )
+        assert result == []
+        assert mock_warning.call_count == 1

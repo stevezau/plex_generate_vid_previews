@@ -80,6 +80,11 @@ def _debounce_key(source: str) -> str:
     return source
 
 
+def _as_dict(value: object) -> dict:
+    """Return value if dict-like, otherwise an empty dict."""
+    return value if isinstance(value, dict) else {}
+
+
 def _combine_path(base_path: str, relative_path: str) -> str:
     """Combine base and relative paths into a normalized absolute-ish path."""
     if not base_path or not relative_path:
@@ -89,12 +94,12 @@ def _combine_path(base_path: str, relative_path: str) -> str:
 
 def _extract_radarr_file_path(payload: dict) -> str:
     """Extract a target file path from a Radarr Download webhook payload."""
-    movie_file = payload.get("movieFile") or {}
+    movie_file = _as_dict(payload.get("movieFile"))
     if movie_file.get("path"):
         return str(movie_file.get("path")).strip()
 
     combined = _combine_path(
-        str((payload.get("movie") or {}).get("folderPath", "")).strip(),
+        str(_as_dict(payload.get("movie")).get("folderPath", "")).strip(),
         str(movie_file.get("relativePath", "")).strip(),
     )
     return combined.strip()
@@ -102,12 +107,12 @@ def _extract_radarr_file_path(payload: dict) -> str:
 
 def _extract_sonarr_file_path(payload: dict) -> str:
     """Extract a target file path from a Sonarr Download webhook payload."""
-    episode_file = payload.get("episodeFile") or {}
+    episode_file = _as_dict(payload.get("episodeFile"))
     if episode_file.get("path"):
         return str(episode_file.get("path")).strip()
 
     combined = _combine_path(
-        str((payload.get("series") or {}).get("path", "")).strip(),
+        str(_as_dict(payload.get("series")).get("path", "")).strip(),
         str(episode_file.get("relativePath", "")).strip(),
     )
     return combined.strip()
@@ -115,16 +120,19 @@ def _extract_sonarr_file_path(payload: dict) -> str:
 
 def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     """Schedule a debounced single-file webhook job and batch paths per source."""
-    if not file_path:
+    safe_source = str(source or "unknown")
+    safe_title = str(title or "Unknown")
+    normalized_input_path = str(file_path or "").strip()
+    if not normalized_input_path:
         logger.warning(
-            f"Webhook: {source} Download for '{title}' ignored (missing file path)"
+            f"Webhook: {safe_source} Download for '{safe_title}' ignored (missing file path)"
         )
         return False
 
     settings = get_settings_manager()
     delay = int(settings.get("webhook_delay", 60))
-    debounce_key = _debounce_key(source)
-    normalized_path = os.path.normpath(file_path)
+    debounce_key = _debounce_key(safe_source)
+    normalized_path = os.path.normpath(normalized_input_path)
 
     with _pending_lock:
         existing = _pending_timers.get(debounce_key)
@@ -149,7 +157,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         path_count = len(batch["file_paths"])
 
     logger.info(
-        f"Webhook: {source} imported '{title}' — scheduling job with "
+        f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with "
         f"{path_count} path(s) in {delay}s"
     )
     return True
@@ -206,9 +214,10 @@ def radarr_webhook():
     """Receive Radarr webhook payloads."""
     data = request.get_json(silent=True)
     if not data:
+        logger.warning("Webhook: Radarr request ignored (invalid or missing JSON body)")
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
-    event_type = data.get("eventType", "")
+    event_type = str(data.get("eventType", "")).strip()
 
     if event_type == "Test":
         _add_history_entry("radarr", "Test", "", "test")
@@ -219,14 +228,16 @@ def radarr_webhook():
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry("radarr", event_type, "", "disabled")
+        logger.info(f"Webhook: Radarr event '{event_type}' ignored (webhooks disabled)")
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type != "Download":
         _add_history_entry("radarr", event_type, "", "ignored")
+        logger.info(f"Webhook: Radarr event '{event_type}' ignored")
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
-    movie = data.get("movie", {})
-    movie_title = movie.get("title", "Unknown")
+    movie = _as_dict(data.get("movie"))
+    movie_title = str(movie.get("title", "Unknown")).strip() or "Unknown"
     movie_file_path = _extract_radarr_file_path(data)
 
     was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
@@ -256,9 +267,10 @@ def sonarr_webhook():
     """Receive Sonarr webhook payloads."""
     data = request.get_json(silent=True)
     if not data:
+        logger.warning("Webhook: Sonarr request ignored (invalid or missing JSON body)")
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
-    event_type = data.get("eventType", "")
+    event_type = str(data.get("eventType", "")).strip()
 
     if event_type == "Test":
         _add_history_entry("sonarr", "Test", "", "test")
@@ -269,14 +281,16 @@ def sonarr_webhook():
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry("sonarr", event_type, "", "disabled")
+        logger.info(f"Webhook: Sonarr event '{event_type}' ignored (webhooks disabled)")
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type != "Download":
         _add_history_entry("sonarr", event_type, "", "ignored")
+        logger.info(f"Webhook: Sonarr event '{event_type}' ignored")
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
-    series = data.get("series", {})
-    series_title = series.get("title", "Unknown")
+    series = _as_dict(data.get("series"))
+    series_title = str(series.get("title", "Unknown")).strip() or "Unknown"
     episode_file_path = _extract_sonarr_file_path(data)
 
     was_queued = _schedule_webhook_job("sonarr", series_title, episode_file_path)

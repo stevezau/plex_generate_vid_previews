@@ -590,6 +590,9 @@ class WorkerPool:
                 title_max_width=title_max_width,
                 cpu_fallback_queue=None,
             )
+            logger.info(
+                f"Dispatch: assigned fallback item to {worker.worker_type} worker {worker.worker_id}"
+            )
             return True
         except queue.Empty:
             return False
@@ -626,6 +629,9 @@ class WorkerPool:
             media_type=media_type,
             title_max_width=title_max_width,
             cpu_fallback_queue=cpu_fallback_queue,
+        )
+        logger.info(
+            f"Dispatch: assigned main queue item to {worker.worker_type} worker {worker.worker_id} (title={media_title!r})"
         )
         return True
 
@@ -910,6 +916,7 @@ class WorkerPool:
             f"Processing {total_items} items with {len(self._snapshot_workers())} workers"
         )
 
+        paused_gate_logged = False  # Log pause entry/exit once per pause period
         # Main processing loop
         while True:
             # Check cancellation before doing more work
@@ -934,6 +941,13 @@ class WorkerPool:
 
             # Pause between dispatch cycles without interrupting active tasks.
             while pause_check and pause_check():
+                if not paused_gate_logged:
+                    workers_snap = self._snapshot_workers()
+                    busy = sum(1 for w in workers_snap if w.is_busy)
+                    logger.info(
+                        f"{library_prefix}Pause gate entered; queue_length={len(media_queue)}, busy_workers={busy}, idle_workers={len(workers_snap) - busy}"
+                    )
+                    paused_gate_logged = True
                 if cancel_check and cancel_check():
                     logger.info(f"{library_prefix}Cancellation requested while paused")
                     cancellation_requested = True
@@ -947,6 +961,13 @@ class WorkerPool:
                 if on_poll:
                     on_poll(completed_tasks, total_items)
                 time.sleep(0.2)
+            if paused_gate_logged:
+                workers_snap = self._snapshot_workers()
+                busy = sum(1 for w in workers_snap if w.is_busy)
+                logger.info(
+                    f"{library_prefix}Pause gate exited; queue_length={len(media_queue)}, busy_workers={busy}, idle_workers={len(workers_snap) - busy}"
+                )
+                paused_gate_logged = False
             if cancellation_requested:
                 break
 
@@ -966,6 +987,9 @@ class WorkerPool:
                 cpu_only = not media_queue
                 available_worker = self._find_available_worker(cpu_only=cpu_only)
                 if not available_worker:
+                    logger.debug(
+                        f"{library_prefix}Dispatch: no worker available (cpu_only={cpu_only})"
+                    )
                     break
 
                 if available_worker.worker_type in ("CPU", "CPU_FALLBACK"):

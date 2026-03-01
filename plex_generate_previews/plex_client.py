@@ -374,10 +374,21 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     except ValueError:
         webhook_fallback_limit = max(webhook_recent_limit, 1200)
 
-    normalized_targets = {
-        _normalize_path_for_match(path) for path in file_paths if str(path).strip()
-    }
+    normalized_targets = set()
+    for path in file_paths or []:
+        if path is None:
+            continue
+        if not isinstance(path, str):
+            logger.warning(
+                "Webhook path resolution received non-string path value; skipping invalid entry"
+            )
+            continue
+        cleaned_path = path.strip()
+        if not cleaned_path:
+            continue
+        normalized_targets.add(_normalize_path_for_match(cleaned_path))
     if not normalized_targets:
+        logger.info("Webhook path resolution skipped (no valid file paths provided)")
         return []
 
     try:
@@ -443,12 +454,23 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
                     continue
 
                 pass_matches.update(matched_for_item)
-                if item.key in seen_keys:
+                item_key = getattr(item, "key", None)
+                if not item_key:
+                    logger.warning(
+                        "Skipping matched Plex item without metadata key during webhook path resolution"
+                    )
                     continue
 
-                seen_keys.add(item.key)
-                title = item.title if media_type == "movie" else _build_episode_title(item)
-                matched_items.append((item.key, title, media_type))
+                if item_key in seen_keys:
+                    continue
+
+                seen_keys.add(item_key)
+                title = (
+                    str(getattr(item, "title", "Unknown")).strip() or "Unknown"
+                    if media_type == "movie"
+                    else _build_episode_title(item)
+                )
+                matched_items.append((item_key, title, media_type))
 
         return pass_matches
 

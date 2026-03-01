@@ -498,6 +498,50 @@ class TestWorkerPool:
         assert elapsed >= 0.2
 
     @patch("plex_generate_previews.worker.process_item")
+    def test_no_dispatch_while_paused(self, mock_process):
+        """No new task is assigned while pause_check returns True; first assignment after unpause."""
+        mock_process.return_value = None
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        config = MagicMock()
+        plex = MagicMock()
+        items = [("key1", "Movie 1", "movie"), ("key2", "Movie 2", "movie")]
+
+        pause_duration = 0.3
+        start_time = time.time()
+        pause_state = {"paused": True}
+        first_assign_time = {}
+
+        def unpause_later():
+            time.sleep(pause_duration)
+            pause_state["paused"] = False
+
+        original_assign = pool._assign_main_queue_task
+
+        def record_assign(*args, **kwargs):
+            if "first_assign_time" not in first_assign_time:
+                first_assign_time["first_assign_time"] = time.time() - start_time
+            return original_assign(*args, **kwargs)
+
+        with patch.object(pool, "_assign_main_queue_task", side_effect=record_assign):
+            import threading
+
+            threading.Thread(target=unpause_later, daemon=True).start()
+            result = pool.process_items_headless(
+                items,
+                config,
+                plex,
+                pause_check=lambda: pause_state["paused"],
+            )
+
+        assert result["completed"] == 2
+        assert "first_assign_time" in first_assign_time
+        assert first_assign_time["first_assign_time"] >= pause_duration * 0.9, (
+            "First assignment must occur after pause window; got "
+            f"first_assign_time={first_assign_time['first_assign_time']:.3f}s, "
+            f"pause_duration={pause_duration}s"
+        )
+
+    @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_stats_are_per_library(self, mock_process):
         """Returned processing stats should be scoped to one library call."""
         mock_process.return_value = None

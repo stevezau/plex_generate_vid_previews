@@ -258,6 +258,19 @@ def test_webhook_malformed_payload(client):
     assert resp.status_code == 400
 
 
+@patch("plex_generate_previews.web.webhooks.logger.warning")
+def test_webhook_malformed_payload_logs_warning(mock_warning, client):
+    """Malformed webhook JSON should be rejected and logged."""
+    resp = client.post(
+        "/api/webhooks/sonarr",
+        data="",
+        content_type="application/json",
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 400
+    mock_warning.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # History Tests
 # ---------------------------------------------------------------------------
@@ -331,6 +344,53 @@ def test_radarr_download_missing_file_path_is_ignored(client):
     """Radarr Download payload without file path should not queue a job."""
     payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "no file path" in data["message"].lower()
+
+
+@patch("plex_generate_previews.web.webhooks.logger.warning")
+def test_radarr_download_missing_file_path_logs_warning(mock_warning, client):
+    """Missing Radarr file path should emit a warning log."""
+    payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
+    resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    assert any("missing file path" in str(call) for call in mock_warning.call_args_list)
+
+
+def test_sonarr_download_missing_file_path_is_ignored(client):
+    """Sonarr Download payload without file path should not queue a job."""
+    payload = {"eventType": "Download", "series": {"title": "No Path Show"}}
+    resp = client.post("/api/webhooks/sonarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "no file path" in data["message"].lower()
+
+
+def test_radarr_download_malformed_movie_file_payload_is_ignored(client):
+    """Malformed movieFile payload should not crash and should be ignored."""
+    payload = {
+        "eventType": "Download",
+        "movie": {"title": "Bad Payload", "folderPath": "/movies/Bad Payload"},
+        "movieFile": ["not-a-dict"],
+    }
+    resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "no file path" in data["message"].lower()
+
+
+def test_sonarr_download_malformed_episode_file_payload_is_ignored(client):
+    """Malformed episodeFile payload should not crash and should be ignored."""
+    payload = {
+        "eventType": "Download",
+        "series": {"title": "Bad Show", "path": "/tv/Bad Show"},
+        "episodeFile": ["not-a-dict"],
+    }
+    resp = client.post("/api/webhooks/sonarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["success"] is True

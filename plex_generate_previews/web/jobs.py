@@ -507,7 +507,13 @@ class JobManager:
             job.paused = True
             self._save_jobs()
             self._emit_event("job_paused", {"job_id": job_id, "paused": True})
-            logger.info(f"Pause requested for job {job_id}")
+            logger.info(
+                f"Pause audit: job_id={job_id}, status={job.status.value}, paused=True"
+            )
+            self.add_log(
+                job_id,
+                "INFO - Pause requested; no new tasks will be dispatched until resume.",
+            )
             return True
 
     def request_resume(self, job_id: str) -> bool:
@@ -525,7 +531,10 @@ class JobManager:
             job.paused = False
             self._save_jobs()
             self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
-            logger.info(f"Resume requested for job {job_id}")
+            logger.info(
+                f"Resume audit: job_id={job_id}, status={job.status.value}, paused=False"
+            )
+            self.add_log(job_id, "INFO - Resume requested; dispatch will continue.")
             return True
 
     def is_pause_requested(self, job_id: str) -> bool:
