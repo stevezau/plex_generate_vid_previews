@@ -541,10 +541,10 @@ function updateJobQueue() {
         if (job.status === 'running' || job.status === 'pending') {
             if (job.status === 'running') {
                 actionButtons += job.paused
-                    ? `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeJob('${escapeHtml(job.id)}')" title="Resume">
+                    ? `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeJob('${escapeHtml(job.id)}')" title="Resume dispatch for queued items.">
                             <i class="bi bi-play-fill"></i>
                        </button>`
-                    : `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${escapeHtml(job.id)}')" title="Pause">
+                    : `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${escapeHtml(job.id)}')" title="Pause dispatch (active workers will finish current items).">
                             <i class="bi bi-pause-fill"></i>
                        </button>`;
             }
@@ -614,10 +614,10 @@ function updateCurrentJob(job) {
         </div>
         <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
             ${isPaused
-                ? `<button class="btn btn-sm btn-outline-success" onclick="resumeJob('${escapeHtml(job.id)}')">
+                ? `<button class="btn btn-sm btn-outline-success" onclick="resumeJob('${escapeHtml(job.id)}')" title="Resume dispatch for queued items.">
                         <i class="bi bi-play-fill me-1"></i>Resume
                    </button>`
-                : `<button class="btn btn-sm btn-outline-warning" onclick="pauseJob('${escapeHtml(job.id)}')">
+                : `<button class="btn btn-sm btn-outline-warning" onclick="pauseJob('${escapeHtml(job.id)}')" title="Pause dispatch (active workers will finish current items).">
                         <i class="bi bi-pause-fill me-1"></i>Pause
                    </button>`
             }
