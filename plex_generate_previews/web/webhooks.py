@@ -6,6 +6,7 @@ debounces rapid imports, then triggers a job that processes only the
 file path(s) from the payload(s) — no full-library scan.
 """
 
+import base64
 import os
 import secrets
 import threading
@@ -32,7 +33,7 @@ _webhook_history: deque = deque(maxlen=100)
 
 
 def _authenticate_webhook(f):
-    """Check X-Auth-Token / Authorization: Bearer against webhook_secret or app token."""
+    """Check X-Auth-Token, Authorization Bearer, or Basic auth password as token."""
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -41,6 +42,13 @@ def _authenticate_webhook(f):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
+        elif auth_header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth_header[6:].encode()).decode("utf-8", errors="replace")
+                if ":" in decoded:
+                    _, token = decoded.split(":", 1)
+            except Exception:
+                pass
 
         if not token:
             token = request.headers.get("X-Auth-Token", "")

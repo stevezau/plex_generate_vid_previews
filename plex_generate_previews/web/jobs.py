@@ -192,6 +192,10 @@ class JobManager:
         if self.socketio:
             self.socketio.emit(event, data, namespace="/jobs")
 
+    def emit_processing_paused_changed(self, paused: bool) -> None:
+        """Emit event when global processing pause state changes."""
+        self._emit_event("processing_paused_changed", {"paused": paused})
+
     # Maximum number of terminal-state jobs to keep on disk
     _MAX_TERMINAL_JOBS = 50
 
@@ -250,6 +254,14 @@ class JobManager:
         if self._current_job_id:
             return self._jobs.get(self._current_job_id)
         return None
+
+    def update_job_config(self, job_id: str, config: Dict[str, Any]) -> None:
+        """Update stored config for a job (e.g. when start is deferred due to pause)."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.config = dict(config)
+                self._save_jobs()
 
     def start_job(self, job_id: str) -> Optional[Job]:
         """Mark a job as started."""

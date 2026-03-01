@@ -256,6 +256,15 @@ class SettingsManager:
     def plex_name(self, value: str) -> None:
         self.set("plex_name", value)
 
+    @property
+    def processing_paused(self) -> bool:
+        """Global processing pause: when True, no new jobs start and dispatch stops (soft)."""
+        return bool(self.get("processing_paused", False))
+
+    @processing_paused.setter
+    def processing_paused(self, value: bool) -> None:
+        self.set("processing_paused", bool(value))
+
     # =========================================================================
     # Configuration Status Methods
     # =========================================================================

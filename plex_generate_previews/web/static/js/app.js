@@ -8,6 +8,7 @@ let libraries = [];
 let jobs = [];
 let schedules = [];
 let _lastNotifiedJobId = null;
+let processingPaused = false;
 
 
 /**
@@ -76,6 +77,7 @@ function initDashboard() {
     loadSchedules();
     loadJobStats();
     loadWorkerStatuses();
+    loadProcessingState();
     // Request notification permission
     requestNotificationPermission();
 
@@ -170,6 +172,11 @@ function connectSocket() {
         loadJobs();
     });
 
+    socket.on('processing_paused_changed', function(data) {
+        processingPaused = !!data.paused;
+        renderGlobalPauseResume();
+        loadJobs();
+    });
 }
 
 // API Helpers
@@ -427,6 +434,56 @@ async function loadJobStats() {
     }
 }
 
+async function loadProcessingState() {
+    try {
+        const data = await apiGet('/api/processing/state');
+        processingPaused = !!data.paused;
+        renderGlobalPauseResume();
+    } catch (error) {
+        console.error('Failed to load processing state:', error);
+    }
+}
+
+function renderGlobalPauseResume() {
+    const pauseTitle = 'Pause all processing. No new jobs will start; active job will stop dispatching new tasks after current ones finish.';
+    const resumeTitle = 'Resume processing. New jobs can start and dispatch will continue.';
+    const pauseBtn = `<button class="btn btn-sm btn-outline-warning" onclick="pauseProcessing()" title="${escapeHtml(pauseTitle)}">
+        <i class="bi bi-pause-fill me-1"></i>Pause Processing
+    </button>`;
+    const resumeBtn = `<button class="btn btn-sm btn-outline-success" onclick="resumeProcessing()" title="${escapeHtml(resumeTitle)}">
+        <i class="bi bi-play-fill me-1"></i>Resume Processing
+    </button>`;
+    const html = processingPaused ? resumeBtn : pauseBtn;
+    const elCurrent = document.getElementById('globalPauseResumeCurrentJob');
+    const elQueue = document.getElementById('globalPauseResumeQueue');
+    if (elCurrent) elCurrent.innerHTML = html;
+    if (elQueue) elQueue.innerHTML = html;
+}
+
+async function pauseProcessing() {
+    try {
+        await apiPost('/api/processing/pause');
+        processingPaused = true;
+        renderGlobalPauseResume();
+        await loadJobs();
+        showToast('Processing Paused', 'No new jobs will start; active job will finish current tasks then idle.', 'warning');
+    } catch (error) {
+        showToast('Error', 'Failed to pause processing: ' + error.message, 'danger');
+    }
+}
+
+async function resumeProcessing() {
+    try {
+        await apiPost('/api/processing/resume');
+        processingPaused = false;
+        renderGlobalPauseResume();
+        await loadJobs();
+        showToast('Processing Resumed', 'New jobs can start and dispatch will continue.', 'success');
+    } catch (error) {
+        showToast('Error', 'Failed to resume processing: ' + error.message, 'danger');
+    }
+}
+
 // Update Functions
 function updateSystemStatus(status) {
     let html = '';
@@ -539,15 +596,6 @@ function updateJobQueue() {
         let actionButtons = '';
 
         if (job.status === 'running' || job.status === 'pending') {
-            if (job.status === 'running') {
-                actionButtons += job.paused
-                    ? `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeJob('${escapeHtml(job.id)}')" title="Resume dispatch for queued items.">
-                            <i class="bi bi-play-fill"></i>
-                       </button>`
-                    : `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${escapeHtml(job.id)}')" title="Pause dispatch (active workers will finish current items).">
-                            <i class="bi bi-pause-fill"></i>
-                       </button>`;
-            }
             actionButtons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel">
                                 <i class="bi bi-x"></i>
                               </button>`;
@@ -613,14 +661,6 @@ function updateCurrentJob(job) {
             <span class="ms-3" id="currentJobEta">ETA: ${escapeHtml(job.progress.eta) || 'Calculating...'}</span>
         </div>
         <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
-            ${isPaused
-                ? `<button class="btn btn-sm btn-outline-success" onclick="resumeJob('${escapeHtml(job.id)}')" title="Resume dispatch for queued items.">
-                        <i class="bi bi-play-fill me-1"></i>Resume
-                   </button>`
-                : `<button class="btn btn-sm btn-outline-warning" onclick="pauseJob('${escapeHtml(job.id)}')" title="Pause dispatch (active workers will finish current items).">
-                        <i class="bi bi-pause-fill me-1"></i>Pause
-                   </button>`
-            }
             <button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')">
                 <i class="bi bi-x me-1"></i>Cancel
             </button>

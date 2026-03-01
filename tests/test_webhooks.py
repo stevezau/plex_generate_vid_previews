@@ -222,6 +222,23 @@ def test_webhook_bearer_token_auth(client, app):
     assert resp.get_json()["success"] is True
 
 
+def test_webhook_basic_auth_password_as_token(client):
+    """Webhook accepts Basic auth with token in password (for Sonarr/Radarr Username/Password field)."""
+    import base64
+
+    creds = base64.b64encode(b":test-token-12345678").decode("ascii")
+    resp = client.post(
+        "/api/webhooks/radarr",
+        json={"eventType": "Test"},
+        headers={
+            "Authorization": f"Basic {creds}",
+            "Content-Type": "application/json",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["success"] is True
+
+
 # ---------------------------------------------------------------------------
 # Disabled / Malformed Tests
 # ---------------------------------------------------------------------------

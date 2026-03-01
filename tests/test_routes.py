@@ -410,6 +410,7 @@ class TestJobsAPI:
         assert "logs" in resp.get_json()
 
     def test_pause_resume_job(self, client):
+        """Per-job pause/resume routes delegate to global processing pause/resume."""
         with patch("plex_generate_previews.web.routes._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
@@ -426,6 +427,48 @@ class TestJobsAPI:
         resume_resp = client.post(f"/api/jobs/{job_id}/resume", headers=_api_headers())
         assert resume_resp.status_code == 200
         assert resume_resp.get_json().get("paused") is False
+
+    def test_processing_state_get(self, client):
+        """GET /api/processing/state returns global pause state."""
+        resp = client.get("/api/processing/state", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "paused" in data
+        assert isinstance(data["paused"], bool)
+
+    def test_processing_pause_resume(self, client):
+        """POST /api/processing/pause and resume set and return global state."""
+        pause_resp = client.post("/api/processing/pause", headers=_api_headers())
+        assert pause_resp.status_code == 200
+        assert pause_resp.get_json()["paused"] is True
+
+        state_resp = client.get("/api/processing/state", headers=_api_headers())
+        assert state_resp.get_json()["paused"] is True
+
+        resume_resp = client.post("/api/processing/resume", headers=_api_headers())
+        assert resume_resp.status_code == 200
+        assert resume_resp.get_json()["paused"] is False
+
+        state_resp2 = client.get("/api/processing/state", headers=_api_headers())
+        assert state_resp2.get_json()["paused"] is False
+
+    def test_job_not_started_when_processing_paused(self, client):
+        """When global processing is paused, new job remains pending (not started)."""
+        import time
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().processing_paused = True
+        try:
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+            assert create_resp.status_code == 201
+            job_id = create_resp.get_json()["id"]
+            time.sleep(0.3)
+            job_resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
+            assert job_resp.status_code == 200
+            assert job_resp.get_json()["status"] == "pending"
+        finally:
+            get_settings_manager().processing_paused = False
 
     def test_scale_workers_add_remove(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):

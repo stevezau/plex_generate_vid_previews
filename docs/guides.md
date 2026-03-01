@@ -57,6 +57,12 @@ After setup completes, you'll be taken to the dashboard.
 > [!NOTE]
 > Only one job runs at a time. If a job is triggered (manually, by a schedule, or by a webhook) while another is already running, the incoming job is immediately marked **Cancelled** and a warning is logged. This prevents concurrent FFmpeg workloads and temp-folder conflicts.
 
+**Pause / Resume (global):**
+
+- **Pause Processing** — Stops all processing system-wide: no new jobs will start (manual, scheduled, or webhook), and the current job stops dispatching new tasks. Already-running FFmpeg tasks finish their current file (soft pause), then workers idle. Use this to cap bandwidth or pause overnight.
+- **Resume Processing** — Clears the global pause; new jobs can start and the current job resumes dispatching.
+- Controls appear in the **Current Job** header and to the left of **Clear Jobs** in the Job Queue. State is persisted and survives restarts.
+
 **Scheduling:**
 
 - **Cron schedules** — set up recurring processing
@@ -221,9 +227,9 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 6. Under **Events**, enable:
    - On Import
    - On Upgrade
-7. Add a header for authentication:
-   - **Key**: `X-Auth-Token`
-   - **Value**: your API token (see [Authentication Token](getting-started.md#authentication-token)) or webhook secret (if configured)
+7. **Authentication** (use one):
+   - **Custom headers**: In the webhook form, add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret
+   - **Username/Password**: Leave **Username** empty, set **Password** to your API token or webhook secret
 8. Click **Test** to verify the connection
 9. Click **Save**
 
@@ -233,10 +239,10 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 2. In Sonarr, go to **Settings → Connect → + → Webhook**
 3. Set **Name**: `Plex Previews`
 4. Set **URL**: paste the Sonarr Webhook URL
-5. Under **Events**, enable:
-   - On Import
-   - On Upgrade
-6. Add authentication header: **Key**: `X-Auth-Token`, **Value**: your API token or webhook secret
+5. Under **Events**, enable **On File Import** and **On File Upgrade**
+6. **Authentication** (use one):
+   - **Option A — Custom headers** (Sonarr v4.2+): In the webhook form, find the **Headers** section. Add a row: **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
+   - **Option B — Username/Password** (any version): Leave **Username** empty and set **Password** to your API token or webhook secret. The app treats the Basic-auth password as the token.
 7. Click **Test** then **Save**
 
 ### Configuration
@@ -411,6 +417,7 @@ Use this table to diagnose common failures quickly.
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and verify `webhook_enabled=true`. |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |
+| New job starts after I paused | Global pause not set or UI not refreshed | Use **Pause Processing** (Current Job or Job Queue header). Pause is global and persisted; in-flight files finish before workers idle. |
 
 ### Validate Plex Config Path
 

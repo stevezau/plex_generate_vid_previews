@@ -313,45 +313,75 @@ def cancel_job(job_id):
 @api.route("/jobs/<job_id>/pause", methods=["POST"])
 @api_token_required
 def pause_job(job_id):
-    """Pause an active job."""
+    """Pause processing (global). Kept for backward compatibility; delegates to global pause."""
     job_manager = get_job_manager()
-    job = job_manager.get_job(job_id)
-    if not job:
-        logger.warning(f"Pause failed: job_id={job_id}, reason=job not found")
+    if not job_manager.get_job(job_id):
         return jsonify({"error": "Job not found"}), 404
-    if getattr(job.status, "value", job.status) != "running":
-        logger.warning(
-            f"Pause failed: job_id={job_id}, reason=job not running, status={getattr(job.status, 'value', job.status)}"
-        )
-        return jsonify({"error": "Only running jobs can be paused"}), 400
-    if job_manager.request_pause(job_id):
-        updated_job = job_manager.get_job(job_id)
-        return jsonify(updated_job.to_dict() if updated_job else {"success": True})
-    logger.warning(f"Pause failed: job_id={job_id}, reason=request_pause returned False")
-    return jsonify({"error": "Failed to pause job"}), 400
+    return pause_processing()
 
 
 @api.route("/jobs/<job_id>/resume", methods=["POST"])
 @api_token_required
 def resume_job(job_id):
-    """Resume a paused job."""
+    """Resume processing (global). Kept for backward compatibility; delegates to global resume."""
     job_manager = get_job_manager()
-    job = job_manager.get_job(job_id)
-    if not job:
-        logger.warning(f"Resume failed: job_id={job_id}, reason=job not found")
+    if not job_manager.get_job(job_id):
         return jsonify({"error": "Job not found"}), 404
-    if getattr(job.status, "value", job.status) != "running":
-        logger.warning(
-            f"Resume failed: job_id={job_id}, reason=job not running, status={getattr(job.status, 'value', job.status)}"
+    return resume_processing()
+
+
+@api.route("/processing/state", methods=["GET"])
+@api_token_required
+def get_processing_state():
+    """Return global processing pause state."""
+    from .settings_manager import get_settings_manager
+
+    sm = get_settings_manager()
+    return jsonify({"paused": sm.processing_paused})
+
+
+@api.route("/processing/pause", methods=["POST"])
+@api_token_required
+def pause_processing():
+    """Set global processing pause (no new jobs start; active job stops dispatch after current tasks)."""
+    from .settings_manager import get_settings_manager
+
+    sm = get_settings_manager()
+    job_manager = get_job_manager()
+    sm.processing_paused = True
+    running = job_manager.get_running_job()
+    if running:
+        job_manager.request_pause(running.id)
+    job_manager.emit_processing_paused_changed(True)
+    logger.info("Global processing paused")
+    return jsonify({"paused": True})
+
+
+@api.route("/processing/resume", methods=["POST"])
+@api_token_required
+def resume_processing():
+    """Clear global processing pause and start the next pending job if none is running."""
+    from .settings_manager import get_settings_manager
+
+    sm = get_settings_manager()
+    job_manager = get_job_manager()
+    sm.processing_paused = False
+    running = job_manager.get_running_job()
+    if running:
+        job_manager.request_resume(running.id)
+    job_manager.emit_processing_paused_changed(False)
+    logger.info("Global processing resumed")
+    # If no job is running, start the next pending job (e.g. one that was queued while paused)
+    if not job_manager.get_running_job():
+        pending = sorted(
+            job_manager.get_pending_jobs(),
+            key=lambda j: j.created_at or "",
         )
-        return jsonify({"error": "Only running jobs can be resumed"}), 400
-    if job_manager.request_resume(job_id):
-        updated_job = job_manager.get_job(job_id)
-        return jsonify(updated_job.to_dict() if updated_job else {"success": True})
-    logger.warning(
-        f"Resume failed: job_id={job_id}, reason=request_resume returned False"
-    )
-    return jsonify({"error": "Failed to resume job"}), 400
+        if pending:
+            next_job = pending[0]
+            _start_job_async(next_job.id, next_job.config or {})
+            logger.info(f"Started next pending job {next_job.id} after resume")
+    return jsonify({"paused": False})
 
 
 @api.route("/jobs/<job_id>/workers/add", methods=["POST"])
@@ -1476,9 +1506,16 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if not job:
                 return
 
+            if get_settings_manager().processing_paused:
+                job_manager.update_job_config(job_id, config_overrides)
+                logger.info(f"Job {job_id} not started — global processing paused; job remains pending")
+                return
+
             if not _job_execution_lock.acquire(blocking=False):
-                logger.warning(f"Job {job_id} skipped — another job is already running")
-                job_manager.cancel_job(job_id)
+                job_manager.update_job_config(job_id, config_overrides)
+                logger.info(
+                    f"Job {job_id} not started — another job is already running; remains in queue"
+                )
                 return
 
             _acquired_execution_lock = True
@@ -1807,7 +1844,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     progress_callback=progress_callback,
                     worker_callback=worker_callback,
                     cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
-                    pause_check=lambda: job_manager.is_pause_requested(job_id),
+                    pause_check=lambda: job_manager.is_pause_requested(job_id)
+                    or get_settings_manager().processing_paused,
                     worker_pool_callback=lambda pool: job_manager.set_active_worker_pool(
                         job_id, pool
                     )
@@ -1817,6 +1855,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 log_failure_summary()
 
                 # Surface per-item failures into the job log and status
+                # run_processing may return None (no explicit return in cli), so guard before .get
+                result = result or {}
                 failures = get_failures()
                 current_job = job_manager.get_job(job_id)
                 status_value = (
@@ -1889,6 +1929,17 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     pass
             if _acquired_execution_lock:
                 _job_execution_lock.release()
+                # Start next pending job so queued jobs run in order
+                _job_manager = get_job_manager()
+                if not _job_manager.get_running_job() and not get_settings_manager().processing_paused:
+                    pending = sorted(
+                        _job_manager.get_pending_jobs(),
+                        key=lambda j: j.created_at or "",
+                    )
+                    if pending:
+                        next_job = pending[0]
+                        _start_job_async(next_job.id, next_job.config or {})
+                        logger.info(f"Started next queued job {next_job.id}")
 
     thread = threading.Thread(target=run_job, daemon=True)
     thread.start()

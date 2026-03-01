@@ -108,7 +108,7 @@
                 <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
                 <li>Set <strong>URL</strong>: copy the Radarr Webhook URL above</li>
                 <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
-                <li>Add header <code>X-Auth-Token</code> with your API token (or webhook secret if configured)</li>
+                <li><strong>Authentication</strong>: Add header <code>X-Auth-Token</code> with your token, or leave Username blank and put the token in Password.</li>
                 <li>Click <strong>Test</strong> then <strong>Save</strong></li>
             </ol>
 
@@ -117,8 +117,13 @@
                 <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
                 <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
                 <li>Set <strong>URL</strong>: copy the Sonarr Webhook URL above</li>
-                <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
-                <li>Add header <code>X-Auth-Token</code> with your API token (or webhook secret if configured)</li>
+                <li>Under <strong>Events</strong>, enable <em>On File Import</em> and <em>On File Upgrade</em></li>
+                <li><strong>Authentication</strong> — use one:
+                    <ul class="mb-0">
+                        <li><strong>Headers</strong> (v4.2+): In the webhook form, find the <strong>Headers</strong> section and add <code>X-Auth-Token</code> = your API token or webhook secret.</li>
+                        <li><strong>Username/Password</strong>: Leave <strong>Username</strong> blank and put your API token (or webhook secret) in <strong>Password</strong>.</li>
+                    </ul>
+                </li>
                 <li>Click <strong>Test</strong> then <strong>Save</strong></li>
             </ol>
         </div>

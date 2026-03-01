@@ -159,7 +159,8 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-activity me-2"></i>Current Job</span>
-                <div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="globalPauseResumeCurrentJob"></span>
                     <button class="btn btn-sm btn-outline-info me-2" id="viewLogsBtn" onclick="showLogsModal()" style="display: none;">
                         <i class="bi bi-file-text me-1"></i>View Logs
                     </button>
@@ -182,7 +183,8 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-list-task me-2"></i>Job Queue</span>
-                <div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="globalPauseResumeQueue"></span>
                     <div class="dropdown d-inline-block">
                         <button class="btn btn-sm btn-outline-danger dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                             <i class="bi bi-trash me-1"></i>Clear Jobs

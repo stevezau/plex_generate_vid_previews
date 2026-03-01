@@ -364,6 +364,20 @@ Get libraries from connected Plex server. Optional query parameters: `url`, `tok
 
 Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"success": true, "server_name": "...", "version": "..."}`.
 
+## Processing state (global pause)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/processing/state` | Get global processing pause state |
+| POST | `/api/processing/pause` | Set global pause (no new jobs start; active job stops dispatch after current tasks) |
+| POST | `/api/processing/resume` | Clear global pause |
+
+**GET /api/processing/state** — Response: `{"paused": true}` or `{"paused": false}`. State is persisted and survives restarts.
+
+**POST /api/processing/pause** — Response: `{"paused": true}`.
+
+**POST /api/processing/resume** — Response: `{"paused": false}`.
+
 ## Jobs Endpoints
 
 | Method | Endpoint | Description |
@@ -372,6 +386,8 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | POST | `/api/jobs` | Create new job |
 | GET | `/api/jobs/{id}` | Get job details |
 | POST | `/api/jobs/{id}/cancel` | Cancel job |
+| POST | `/api/jobs/{id}/pause` | Global pause (delegates to `/api/processing/pause`) |
+| POST | `/api/jobs/{id}/resume` | Global resume (delegates to `/api/processing/resume`) |
 | DELETE | `/api/jobs/{id}` | Delete job |
 
 ### GET /api/jobs
