@@ -8,9 +8,12 @@ Uses Flask's test client with an in-memory config dir.
 
 import json
 import os
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from plex_generate_previews.config import normalize_path_mappings
 
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.settings_manager import reset_settings_manager
@@ -526,6 +529,24 @@ class TestSettingsAPI:
         assert "cpu_threads" in data
         assert "cpu_fallback_threads" in data
 
+    def test_get_settings_returns_path_mappings(self, client):
+        """GET /api/settings includes path_mappings when present."""
+        path_mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"path_mappings": path_mappings},
+        )
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json().get("path_mappings") == path_mappings
+
     def test_save_settings(self, client):
         resp = client.post(
             "/api/settings",
@@ -589,6 +610,147 @@ class TestSettingsAPI:
 
 
 # ---------------------------------------------------------------------------
+# Job config / path_mappings (settings vs config_overrides)
+# ---------------------------------------------------------------------------
+
+
+class TestJobConfigPathMappings:
+    """Test _start_job_async applies settings path_mappings and config_overrides correctly."""
+
+    def test_start_job_applies_settings_path_mappings(self, client, tmp_path):
+        """Settings-provided path_mappings are applied to config when starting a job."""
+        settings_path_mappings = [
+            {
+                "plex_prefix": "/plex",
+                "local_prefix": "/local",
+                "webhook_prefixes": ["/webhook"],
+            }
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"path_mappings": settings_path_mappings},
+        )
+
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+
+        with (
+            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
+            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
+            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
+            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        expected = normalize_path_mappings({"path_mappings": settings_path_mappings})
+        assert captured_configs[0].path_mappings == expected
+
+    def test_start_job_config_overrides_path_mappings(self, client, tmp_path):
+        """config_overrides.path_mappings overrides settings path_mappings."""
+        override_mappings = [
+            {"plex_prefix": "/override", "local_prefix": "/local_override", "webhook_prefixes": []}
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "path_mappings": [
+                    {"plex_prefix": "/from_settings", "local_prefix": "/local", "webhook_prefixes": []}
+                ]
+            },
+        )
+
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+
+        with (
+            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
+            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
+            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
+            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"config": {"path_mappings": override_mappings}},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        assert captured_configs[0].path_mappings == override_mappings
+
+    def test_webhook_job_retains_path_mappings_and_webhook_paths(self, client, tmp_path):
+        """Webhook job with config_overrides has webhook_paths and path_mappings from settings."""
+        settings_path_mappings = [
+            {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": ["/data"]}
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"path_mappings": settings_path_mappings},
+        )
+
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.webhook_paths = None
+
+        with (
+            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
+            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
+            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
+            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"config": {"webhook_paths": ["/data/Movies/foo.mkv"]}},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        cfg = captured_configs[0]
+        assert cfg.webhook_paths == ["/data/Movies/foo.mkv"]
+        expected_mappings = normalize_path_mappings({"path_mappings": settings_path_mappings})
+        assert cfg.path_mappings == expected_mappings
+
+
+# ---------------------------------------------------------------------------
 # Setup Wizard API
 # ---------------------------------------------------------------------------
 
@@ -622,6 +784,29 @@ class TestSetupWizardAPI:
         # Verify persistence
         resp2 = client.get("/api/setup/state", headers=_api_headers())
         assert resp2.get_json()["step"] == 2
+
+    def test_setup_state_save_and_load_path_mappings(self, client):
+        """Setup wizard state persists path_mappings in step data."""
+        path_mappings = [
+            {
+                "plex_prefix": "/plex",
+                "local_prefix": "/local",
+                "webhook_prefixes": ["/webhook"],
+            }
+        ]
+        resp = client.post(
+            "/api/setup/state",
+            headers=_api_headers(),
+            json={"step": 3, "data": {"path_mappings": path_mappings}},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+        resp2 = client.get("/api/setup/state", headers=_api_headers())
+        assert resp2.status_code == 200
+        state = resp2.get_json()
+        assert state["step"] == 3
+        assert state.get("data", {}).get("path_mappings") == path_mappings
 
     def test_complete_setup(self, client):
         resp = client.post("/api/setup/complete", headers=_api_headers())
@@ -735,6 +920,108 @@ class TestPathValidation:
             json={"plex_config_folder": "/plex"},
         )
         assert resp.status_code == 401
+
+    def test_validate_paths_path_mappings_new_format_local_not_found(
+        self, client, tmp_path, monkeypatch
+    ):
+        """New-format path_mappings: invalid local_prefix returns validation error."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "path_mappings": [
+                    {
+                        "plex_prefix": "/plex",
+                        "local_prefix": "/nonexistent_xyz_path_123",
+                        "webhook_prefixes": [],
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        # Path mapping row validation: either folder not found or outside allowed root
+        assert any(
+            "Folder not found" in e or "Path in this app" in e or "Row 1" in e
+            for e in data["errors"]
+        )
+
+    def test_validate_paths_path_mappings_null_byte_in_local(
+        self, client, tmp_path, monkeypatch
+    ):
+        """path_mappings row with null byte in local_prefix returns invalid path error."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "path_mappings": [
+                    {
+                        "plex_prefix": "/p",
+                        "local_prefix": "/local\x00evil",
+                        "webhook_prefixes": [],
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Invalid" in e for e in data["errors"])
+
+    def test_validate_paths_legacy_plex_only_returns_error(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Legacy: only plex_videos_path_mapping set returns Local Media Path required."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "plex_videos_path_mapping": "/plex",
+                "plex_local_videos_path_mapping": "",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Local Media Path is required" in e for e in data["errors"])
+
+    def test_validate_paths_legacy_local_only_returns_error(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Legacy: only plex_local_videos_path_mapping set returns Plex Media Path required."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "plex_videos_path_mapping": "",
+                "plex_local_videos_path_mapping": "/local",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Plex Media Path is required" in e for e in data["errors"])
 
 
 # ---------------------------------------------------------------------------

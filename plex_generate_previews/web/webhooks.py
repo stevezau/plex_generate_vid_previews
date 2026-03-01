@@ -70,17 +70,39 @@ def _authenticate_webhook(f):
     return decorated_function
 
 
-def _add_history_entry(source: str, event_type: str, title: str, status: str) -> None:
-    """Append an event to the in-memory webhook history."""
-    _webhook_history.append(
-        {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": source,
-            "event_type": event_type,
-            "title": title,
-            "status": status,
-        }
-    )
+# Max basenames to store per history entry (matches job config cap for UI consistency)
+_HISTORY_FILES_PREVIEW_CAP = 20
+
+
+def _add_history_entry(
+    source: str,
+    event_type: str,
+    title: str,
+    status: str,
+    *,
+    job_id: str | None = None,
+    path_count: int | None = None,
+    files_preview: list[str] | None = None,
+) -> None:
+    """Append an event to the in-memory webhook history.
+
+    Optional batch metadata (job_id, path_count, files_preview) is included
+    for triggered debounced batches so the UI can show which files were in the batch.
+    """
+    entry: dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "event_type": event_type,
+        "title": title,
+        "status": status,
+    }
+    if job_id is not None:
+        entry["job_id"] = job_id
+    if path_count is not None:
+        entry["path_count"] = path_count
+    if files_preview is not None:
+        entry["files_preview"] = files_preview[:_HISTORY_FILES_PREVIEW_CAP]
+    _webhook_history.append(entry)
 
 
 def _debounce_key(source: str) -> str:
@@ -210,16 +232,31 @@ def _execute_webhook_job(debounce_key: str) -> None:
             "webhook_basenames": basenames[:20],  # First 20 for UI; avoid huge payloads
         },
     )
+    settings = get_settings_manager()
+    selected_libraries = settings.get("selected_libraries", [])
+    if not isinstance(selected_libraries, list):
+        selected_libraries = []
+    selected_libraries = [
+        str(name).strip() for name in selected_libraries if str(name).strip()
+    ]
 
     _start_job_async(
         job.id,
         {
-            "selected_libraries": [],
+            "selected_libraries": selected_libraries,
             "sort_by": "newest",
             "webhook_paths": webhook_paths,
         },
     )
-    _add_history_entry(source, "Download", source, "triggered")
+    _add_history_entry(
+        source,
+        "Download",
+        source,
+        "triggered",
+        job_id=job.id,
+        path_count=len(webhook_paths),
+        files_preview=basenames,
+    )
 
 
 # ---------------------------------------------------------------------------

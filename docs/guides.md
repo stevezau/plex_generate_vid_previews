@@ -206,11 +206,11 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### How It Works
 
-1. Radarr/Sonarr imports a file and sends a webhook POST to this app
-2. The app waits for the configured delay (default 60s) to let Plex index the file
-3. If multiple imports arrive from the same source (Radarr or Sonarr), they are **debounced** — one job runs with all collected file paths
-4. When the delay expires, the app resolves each file path to a Plex item and processes only those items (no full-library scan)
-5. Items that already have preview thumbnails are skipped automatically
+1. Radarr/Sonarr imports a file and sends a webhook POST to this app.
+2. The app **queues** the file and starts (or resets) a timer. Imports from the same source (Radarr or Sonarr) are batched together.
+3. A batch is processed only after the **delay** (e.g. 60s) has passed with **no new** imports from that source. So if another file arrives 1 second before the batch would run, it is added to the queue and the timer resets — the batch runs 60 seconds after that file. Every file gets at least 60 seconds before we process it.
+4. This delay is important because **Plex needs time to add the new file to its library**. If we process too soon, Plex may not have indexed the file yet and the job can fail or skip the item.
+5. When the timer fires, the app resolves each queued path to a Plex item and processes only those items (no full-library scan), limited to libraries selected in Settings. Items that already have preview thumbnails are skipped automatically.
 
 ### Prerequisites
 
@@ -251,8 +251,10 @@ All settings are configurable from the **Webhooks** page in the web UI.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Enable Webhooks** | On | Master toggle |
-| **Delay** | 60s | Wait time before processing (10–300 s) |
+| **Delay before processing** | 60s | How long to wait with no new imports before running a batch (10–300 s). Incoming files are queued; a batch runs only after this many seconds of “quiet” from that source. Each new import resets the timer so every file gets at least this long for Plex to add it to the library before we process. |
 | **Webhook Secret** | *(empty)* | Dedicated authentication token for webhooks |
+
+Webhook processing uses your Settings library selection. If a webhook path belongs to an unchecked library, it is skipped.
 
 ### Webhook Secret
 
@@ -262,11 +264,13 @@ By default, webhooks authenticate using your main API token. You can optionally 
 2. Click **Save Changes**
 3. Use the generated secret as the token: in Radarr/Sonarr, either put it in **Password** (leave Username empty) or in the **X-Auth-Token** header if your form has a Headers section.
 
-### Debouncing
+### Batching and the delay
 
-When multiple files are imported in quick succession (e.g., a season pack), the app **debounces** webhook triggers by source (Radarr or Sonarr). Each new import from the same source resets the delay timer; when the timer fires, one job runs and processes only the collected file paths.
+When multiple files are imported in quick succession (e.g., a season pack), the app **queues** them per source (Radarr or Sonarr). Each new import **resets** the delay timer for that source. A batch runs only when the timer finally fires — i.e. when that many seconds have passed with no new imports. So every file in the batch has had at least that long for Plex to add it to the library before we process.
 
-Example: Sonarr imports 10 episodes over 30 seconds with a 60s delay configured. One job starts 60 seconds after the *last* episode is imported and processes only those 10 files.
+**Example:** Sonarr imports 10 episodes over 30 seconds with a 60s delay. The timer keeps resetting as each episode arrives. One job runs 60 seconds after the *last* episode and processes all 10 files. A file that arrived at 59 seconds is not processed in an earlier batch — it goes in this batch, and the batch runs 60 seconds after it, so Plex has time to index it.
+
+**Viewing files in a batch:** On the **Dashboard**, jobs from webhooks show a label like "Sonarr: 3 files". Click the **+** (chevron) next to the label to expand and see the list of files. On the **Webhooks** page, **Recent Activity** rows for triggered batches include a chevron; click it to expand and see the files in that batch.
 
 ---
 

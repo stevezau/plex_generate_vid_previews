@@ -75,7 +75,9 @@
                 Delay before processing: <strong><span id="delayValue">60</span>s</strong>
             </label>
             <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
-            <div class="form-text">Seconds to wait after import before triggering. Gives Plex time to detect and index new files.</div>
+            <div class="form-text">
+                Imports are queued and processed in batches. A batch runs only after this many seconds pass with <em>no new</em> imports from that source — so if a file arrives just before the batch would run, it goes into the queue and the timer resets; that file is processed in the next batch, after the delay has passed again. The delay gives Plex time to add the new file to its library; processing too soon can fail because Plex may not have indexed it yet. Webhook runs only process items from the libraries selected on the Settings page.
+            </div>
         </div>
 
         <div class="mb-3">
@@ -265,8 +267,9 @@ async function loadHistory() {
         table.classList.remove('d-none');
         tbody.innerHTML = '';
 
-        events.forEach(function(evt) {
+        events.forEach(function(evt, idx) {
             const tr = document.createElement('tr');
+            tr.id = 'history-row-' + idx;
             const time = new Date(evt.timestamp);
             const relative = timeAgo(time);
 
@@ -275,18 +278,51 @@ async function loadHistory() {
                 : '<span class="badge source-badge sonarr">Sonarr</span>';
 
             const statusClass = evt.status || 'ignored';
+            const hasFiles = evt.status === 'triggered' && evt.files_preview && evt.files_preview.length > 0;
+            const pathCount = typeof evt.path_count === 'number' ? evt.path_count : (evt.files_preview ? evt.files_preview.length : 0);
+            let titleCell = escapeHtml(evt.title || '-');
+            if (hasFiles) {
+                const moreCount = pathCount > evt.files_preview.length ? pathCount - evt.files_preview.length : 0;
+                titleCell += ' <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="history-files-toggle-' + idx + '" onclick="toggleHistoryFiles(' + idx + ')" aria-expanded="false" aria-controls="history-detail-' + idx + '" title="Show files"><i class="bi bi-chevron-down"></i></button>';
+            }
 
             tr.innerHTML =
                 '<td title="' + escapeHtml(time.toLocaleString()) + '">' + escapeHtml(relative) + '</td>' +
                 '<td>' + sourceBadge + '</td>' +
-                '<td>' + escapeHtml(evt.title || '-') + '</td>' +
+                '<td>' + titleCell + '</td>' +
                 '<td><span class="badge status-badge ' + escapeHtml(statusClass) + '">' + escapeHtml(evt.status) + '</span></td>';
             tbody.appendChild(tr);
+
+            if (hasFiles) {
+                const filesList = evt.files_preview.map(function(f) { return escapeHtml(f); }).join(', ');
+                const overflow = pathCount > evt.files_preview.length ? ' <span class="text-muted">(+' + (pathCount - evt.files_preview.length) + ' more)</span>' : '';
+                const detailTr = document.createElement('tr');
+                detailTr.id = 'history-detail-' + idx;
+                detailTr.className = 'd-none history-files-detail';
+                detailTr.setAttribute('aria-hidden', 'true');
+                detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong> <span class="text-muted">' + filesList + overflow + '</span></td>';
+                tbody.appendChild(detailTr);
+            }
         });
     } catch (e) {
         console.error('Failed to load history:', e);
         document.getElementById('historyLoading').classList.add('d-none');
     }
+}
+
+function toggleHistoryFiles(index) {
+    const detailRow = document.getElementById('history-detail-' + index);
+    const btn = document.getElementById('history-files-toggle-' + index);
+    if (!detailRow || !btn) return;
+    const isExpanded = !detailRow.classList.contains('d-none');
+    detailRow.classList.toggle('d-none');
+    detailRow.setAttribute('aria-hidden', isExpanded ? 'true' : 'false');
+    const icon = btn.querySelector('i');
+    if (icon) {
+        icon.classList.toggle('bi-chevron-down', isExpanded);
+        icon.classList.toggle('bi-chevron-up', !isExpanded);
+    }
+    btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
 }
 
 async function clearHistory() {

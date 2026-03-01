@@ -109,8 +109,10 @@ Settings for automatic preview generation when media is imported via Radarr or S
 | Setting | Default | Web UI | Description |
 |---------|---------|--------|-------------|
 | `webhook_enabled` | `true` | Yes | Master enable/disable for webhook processing |
-| `webhook_delay` | `60` | Yes | Seconds to wait after import before triggering (10–300 s) |
+| `webhook_delay` | `60` | Yes | Delay before processing (10–300 s). Incoming webhooks are queued per source; a batch runs only after this many seconds with no new imports, so every file gets at least this long for Plex to add it before we process. |
 | `webhook_secret` | *(empty)* | Yes | Dedicated secret for webhook auth (falls back to API token) |
+
+Webhook processing respects `selected_libraries`; paths outside unchecked libraries are ignored.
 
 > [!TIP]
 > Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.
@@ -546,17 +548,20 @@ Same authentication and response patterns as Radarr.
 
 ### GET /api/webhooks/history
 
-Get recent webhook events (newest first, max 100).
+Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files") and on the Webhooks page Recent Activity (expand triggered rows).
 
 ```json
 {
   "events": [
     {
       "timestamp": "2026-02-12T10:30:00+00:00",
-      "source": "radarr",
+      "source": "sonarr",
       "event_type": "Download",
-      "title": "Inception",
-      "status": "triggered"
+      "title": "sonarr",
+      "status": "triggered",
+      "job_id": "abc-123",
+      "path_count": 3,
+      "files_preview": ["S01E01.mkv", "S01E02.mkv", "S01E03.mkv"]
     }
   ]
 }

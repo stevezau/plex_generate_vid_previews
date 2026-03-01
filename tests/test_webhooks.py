@@ -440,6 +440,115 @@ def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_
     assert sorted(config_overrides["webhook_paths"]) == ["/movies/A.mkv", "/movies/B.mkv"]
 
 
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_execute_webhook_job_uses_selected_libraries(
+    mock_start_job,
+    mock_timer_cls,
+    mock_job_mgr,
+    mock_settings_mgr,
+):
+    """Webhook jobs should respect selected libraries from settings."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer = MagicMock()
+    mock_timer.daemon = True
+    mock_timer_cls.return_value = mock_timer
+
+    mock_job = MagicMock()
+    mock_job.id = "test-job-id"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    mock_settings = MagicMock()
+    mock_settings.get.side_effect = (
+        lambda key, default=None: ["Movies"] if key == "selected_libraries" else default
+    )
+    mock_settings_mgr.return_value = mock_settings
+
+    wh._schedule_webhook_job("radarr", "Movie A", "/movies/A.mkv")
+    wh._execute_webhook_job(wh._debounce_key("radarr"))
+
+    config_overrides = mock_start_job.call_args[0][1]
+    assert config_overrides["selected_libraries"] == ["Movies"]
+
+
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_timer_cls, mock_job_mgr, client):
+    """Path extracted from Radarr payload is passed in job config for mapping-aware resolution."""
+    from plex_generate_previews.web import webhooks as wh
+
+    # Timer: do not start so we can run _execute_webhook_job ourselves after POST
+    mock_timer = MagicMock()
+    mock_timer.daemon = True
+    mock_timer_cls.return_value = mock_timer
+
+    mock_job = MagicMock()
+    mock_job.id = "webhook-job-id"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    payload_path = "/data/Movies/Test Movie (2024)/Test Movie.mkv"
+    payload = {
+        "eventType": "Download",
+        "movie": {"title": "Test Movie", "folderPath": "/data/Movies/Test Movie (2024)"},
+        "movieFile": {"path": payload_path},
+    }
+    resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 202
+
+    wh._execute_webhook_job(wh._debounce_key("radarr"))
+
+    mock_start_job.assert_called_once()
+    config_overrides = mock_start_job.call_args[0][1]
+    assert "webhook_paths" in config_overrides
+    expected_path = os.path.normpath(payload_path)
+    assert expected_path in config_overrides["webhook_paths"], (
+        f"Payload path should be in job config for mapping; got webhook_paths={config_overrides['webhook_paths']}"
+    )
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_triggered_history_entry_includes_batch_metadata(
+    mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, authed_client
+):
+    """Triggered webhook batch adds history entry with job_id, path_count, and files_preview."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer = MagicMock()
+    mock_timer.daemon = True
+    mock_timer_cls.return_value = mock_timer
+
+    mock_job = MagicMock()
+    mock_job.id = "batch-job-123"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    mock_settings = MagicMock()
+    mock_settings.get.side_effect = lambda key, default=None: (
+        [] if key == "selected_libraries" else default
+    )
+    mock_settings_mgr.return_value = mock_settings
+
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E02.mkv")
+    wh._execute_webhook_job(wh._debounce_key("sonarr"))
+
+    resp = authed_client.get("/api/webhooks/history", headers=_auth_headers())
+    assert resp.status_code == 200
+    events = resp.get_json()["events"]
+    triggered = [e for e in events if e.get("status") == "triggered"]
+    assert len(triggered) >= 1
+    evt = triggered[0]
+    assert evt.get("job_id") == "batch-job-123"
+    assert evt.get("path_count") == 2
+    assert evt.get("files_preview") == ["S01E01.mkv", "S01E02.mkv"]
+
+
 # ---------------------------------------------------------------------------
 # Page Route Test
 # ---------------------------------------------------------------------------

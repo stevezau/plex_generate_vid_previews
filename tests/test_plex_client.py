@@ -661,3 +661,202 @@ class TestGetMediaItemsByPaths:
         )
         assert result == []
         assert mock_warning.call_count == 1
+
+    def test_get_media_items_by_paths_webhook_path_matches_plex_via_mapping(
+        self, mock_config
+    ):
+        """Webhook sends /data/...; Plex item at /data_16tb1/...; mapping links them."""
+        mock_config.path_mappings = [
+            {
+                "plex_prefix": "/data_16tb1",
+                "local_prefix": "/data_16tb1",
+                "webhook_prefixes": ["/data"],
+            }
+        ]
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/100"
+        mock_movie.title = "Test Movie"
+        mock_movie.locations = ["/data_16tb1/movies/Test Movie (2024)/Test Movie.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data/movies/Test Movie (2024)/Test Movie.mkv"],
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/100"
+        assert result[0][2] == "movie"
+
+    def test_get_media_items_by_paths_plex_form_path_matches_with_mapping(
+        self, mock_config
+    ):
+        """Webhook path in Plex form (/data_16tb1/...) canonicalized and matched."""
+        mock_config.path_mappings = [
+            {
+                "plex_prefix": "/data_16tb1",
+                "local_prefix": "/data",
+                "webhook_prefixes": ["/data"],
+            }
+        ]
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/101"
+        mock_movie.title = "Other Movie"
+        mock_movie.locations = ["/data_16tb1/Movies/Other Movie.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data_16tb1/Movies/Other Movie.mkv"],
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/101"
+
+    def test_get_media_items_by_paths_no_mapping_path_unchanged(self, mock_config):
+        """With path_mappings empty, raw webhook path used for matching only."""
+        assert getattr(mock_config, "path_mappings", None) in (None, [])
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/102"
+        mock_movie.title = "Direct Match"
+        mock_movie.locations = ["/data/movies/Direct Match.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/Direct Match.mkv"]
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/102"
+
+    def test_get_media_items_by_paths_multi_row_same_webhook_alias(self, mock_config):
+        """Two rows with same webhook_prefix; webhook path /data/... matches item on either plex root."""
+        mock_config.path_mappings = [
+            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": ["/data"]},
+            {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": ["/data"]},
+        ]
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/200"
+        mock_movie.title = "Multi Disk Movie"
+        mock_movie.locations = ["/data_disk2/movies/Multi Disk Movie.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        # Webhook sends merged path /data/...; item is on /data_disk2; alias /data/... is in item_targets
+        result = get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data/movies/Multi Disk Movie.mkv"],
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/200"
+
+    @patch("plex_generate_previews.plex_client.logger.warning")
+    def test_get_media_items_by_paths_logs_skipped_unselected_library(
+        self, mock_warning, mock_config
+    ):
+        """Log a clear reason when webhook path matches only excluded libraries."""
+        mock_config.plex_libraries = ["movies"]
+
+        mock_plex = MagicMock()
+
+        movies_section = MagicMock()
+        movies_section.key = "1"
+        movies_section.title = "Movies"
+        movies_section.METADATA_TYPE = "movie"
+        movies_section.search.return_value = []
+
+        anime_section = MagicMock()
+        anime_section.key = "2"
+        anime_section.title = "Anime"
+        anime_section.METADATA_TYPE = "movie"
+
+        anime_movie = MagicMock()
+        anime_movie.key = "/library/metadata/555"
+        anime_movie.title = "Anime Movie"
+        anime_movie.locations = ["/data/anime/Anime Movie.mkv"]
+        anime_section.search.return_value = [anime_movie]
+
+        mock_plex.library.sections.return_value = [movies_section, anime_section]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"]
+        )
+        assert result == []
+        assert any(
+            "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
+
+    @patch.dict(
+        "os.environ",
+        {"WEBHOOK_RECENT_LIMIT": "1", "WEBHOOK_FALLBACK_LIMIT": "5"},
+        clear=False,
+    )
+    @patch("plex_generate_previews.plex_client.logger.warning")
+    def test_get_media_items_by_paths_logs_unselected_library_after_fallback_scan(
+        self, mock_warning, mock_config
+    ):
+        """Excluded-library diagnostics should also use fallback search window."""
+        mock_config.plex_libraries = ["movies"]
+        mock_plex = MagicMock()
+
+        movies_section = MagicMock()
+        movies_section.key = "1"
+        movies_section.title = "Movies"
+        movies_section.METADATA_TYPE = "movie"
+        movies_section.search.side_effect = [[], []]
+
+        anime_section = MagicMock()
+        anime_section.key = "2"
+        anime_section.title = "Anime"
+        anime_section.METADATA_TYPE = "movie"
+
+        anime_movie = MagicMock()
+        anime_movie.key = "/library/metadata/777"
+        anime_movie.title = "Fallback Anime Movie"
+        anime_movie.locations = ["/data/anime/Fallback Anime Movie.mkv"]
+        anime_section.search.side_effect = [[], [anime_movie]]
+
+        mock_plex.library.sections.return_value = [movies_section, anime_section]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"]
+        )
+
+        assert result == []
+        assert anime_section.search.call_count == 2
+        assert any(
+            "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )

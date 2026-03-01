@@ -564,6 +564,32 @@ function updateLibrarySelects() {
     }
 }
 
+function toggleJobFiles(jobId) {
+    const detailRow = document.getElementById('job-detail-' + jobId);
+    const btn = document.getElementById('job-files-toggle-' + jobId);
+    if (!detailRow || !btn) return;
+    const isExpanded = !detailRow.classList.contains('d-none');
+    detailRow.classList.toggle('d-none');
+    const icon = btn.querySelector('i');
+    if (icon) {
+        icon.classList.toggle('bi-chevron-down', isExpanded);
+        icon.classList.toggle('bi-chevron-up', !isExpanded);
+    }
+    btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
+}
+
+function toggleCurrentJobFiles() {
+    const listEl = document.getElementById('currentJobFilesList');
+    const iconEl = document.getElementById('currentJobFilesIcon');
+    const btn = document.getElementById('currentJobFilesToggle');
+    if (!listEl || !iconEl || !btn) return;
+    const isExpanded = !listEl.classList.contains('d-none');
+    listEl.classList.toggle('d-none');
+    iconEl.classList.toggle('bi-chevron-down', isExpanded);
+    iconEl.classList.toggle('bi-chevron-up', !isExpanded);
+    btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
+}
+
 function updateJobQueue() {
     const tbody = document.getElementById('jobQueue');
 
@@ -611,13 +637,23 @@ function updateJobQueue() {
                              </button>`;
         }
 
-        const libraryTitle = (job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0)
-            ? ` title="${escapeHtml(job.config.webhook_basenames.join(', '))}"`
+        const webhookBasenames = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
+            ? job.config.webhook_basenames
+            : [];
+        const hasMultiFile = webhookBasenames.length > 1;
+        const libraryTitle = webhookBasenames.length > 0
+            ? ` title="${escapeHtml(webhookBasenames.join(', '))}"`
+            : '';
+        const filesToggleBtn = hasMultiFile
+            ? ` <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="job-files-toggle-${escapeHtml(job.id)}"
+                        onclick="toggleJobFiles('${escapeHtml(job.id)}')" aria-expanded="false" aria-controls="job-detail-${escapeHtml(job.id)}" title="Show files">
+                   <i class="bi bi-chevron-down"></i>
+                 </button>`
             : '';
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
                 <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
-                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}</td>
+                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${filesToggleBtn}</td>
                 <td>${statusBadge}</td>
                 <td>
                     <div class="progress" style="height: 20px;">
@@ -631,6 +667,19 @@ function updateJobQueue() {
                 </td>
             </tr>
         `;
+        if (hasMultiFile) {
+            const filesList = webhookBasenames.map(function (b) { return escapeHtml(b); }).join(', ');
+            const overflow = job.config.path_count > webhookBasenames.length
+                ? ` <span class="text-muted">(+${job.config.path_count - webhookBasenames.length} more)</span>`
+                : '';
+            html += `
+            <tr id="job-detail-${escapeHtml(job.id)}" class="d-none job-files-detail" aria-hidden="true">
+                <td colspan="6" class="bg-dark bg-opacity-10 small py-2 ps-4">
+                    <strong>Files:</strong> <span class="text-muted">${filesList}${overflow}</span>
+                </td>
+            </tr>
+            `;
+        }
     }
 
     tbody.innerHTML = html;
@@ -649,9 +698,24 @@ function updateCurrentJob(job) {
     const webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
         ? job.config.webhook_basenames
         : null;
-    const webhookFilesLine = webhookFiles
-        ? `<br><strong>Files:</strong> <span class="text-muted small">${escapeHtml(webhookFiles.slice(0, 8).join(', '))}${webhookFiles.length > 8 ? ` (+${webhookFiles.length - 8} more)` : ''}</span>`
-        : '';
+    const fileCount = webhookFiles ? webhookFiles.length : 0;
+    const pathCount = (job.config && typeof job.config.path_count === 'number') ? job.config.path_count : fileCount;
+    const showExpandableFiles = fileCount > 8;
+    const previewCount = 8;
+    let webhookFilesLine = '';
+    if (webhookFiles && webhookFiles.length > 0) {
+        if (showExpandableFiles) {
+            const preview = webhookFiles.slice(0, previewCount).map(function (b) { return escapeHtml(b); }).join(', ');
+            const overflowCount = pathCount > previewCount ? pathCount - previewCount : fileCount - previewCount;
+            webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${preview} (+${overflowCount} more)</span>
+                <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" onclick="toggleCurrentJobFiles()" id="currentJobFilesToggle" title="Show all files">
+                    <i class="bi bi-chevron-down" id="currentJobFilesIcon"></i>
+                </button>
+                <div id="currentJobFilesList" class="d-none small text-muted mt-1 ms-3" style="max-height: 12rem; overflow-y: auto;">${webhookFiles.map(function (b) { return escapeHtml(b); }).join('<br>')}</div>`;
+        } else {
+            webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${webhookFiles.map(function (b) { return escapeHtml(b); }).join(', ')}</span>`;
+        }
+    }
     const existingTypeInput = document.getElementById('workerScaleType');
     const existingCountInput = document.getElementById('workerScaleCount');
     if (existingTypeInput) {

@@ -1271,6 +1271,109 @@ class TestProcessItem:
         expected_prefix = _os.path.normpath("/mnt/videos")
         assert called_path.startswith(expected_prefix)
 
+    @patch("plex_generate_previews.media_processing.generate_bif")
+    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("os.path.isfile")
+    @patch("os.path.isdir")
+    @patch("os.makedirs")
+    @patch("shutil.rmtree")
+    def test_process_item_mergerfs_multiple_plex_roots(
+        self,
+        mock_rmtree,
+        mock_makedirs,
+        mock_isdir,
+        mock_isfile,
+        mock_gen_images,
+        mock_gen_bif,
+        mock_config,
+        plex_xml_movie_tree,
+    ):
+        """Multiple Plex roots map to one local path in process_item."""
+        mock_plex = MagicMock()
+        import xml.etree.ElementTree as ET
+
+        # Fixture has /data/movies/...; use XML with /data_disk1/ so we map to /data
+        tree_xml = plex_xml_movie_tree.replace(
+            'file="/data/movies/',
+            'file="/data_disk1/movies/',
+        )
+        mock_plex.query.return_value = ET.fromstring(tree_xml)
+
+        mock_config.path_mappings = [
+            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []},
+            {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": []},
+        ]
+        mock_config.plex_config_folder = "/config/plex"
+        mock_config.tmp_folder = "/tmp"
+        mock_config.regenerate_thumbnails = False
+
+        def isfile_side_effect(path):
+            return ".bif" not in path
+
+        mock_isfile.side_effect = isfile_side_effect
+        mock_isdir.return_value = False
+        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
+
+        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+
+        assert mock_gen_images.called
+        called_path = mock_gen_images.call_args[0][0]
+        import os as _os
+
+        expected_prefix = _os.path.normpath("/data")
+        assert called_path.startswith(expected_prefix), f"Expected path under /data, got {called_path}"
+
+    @patch("plex_generate_previews.media_processing.generate_bif")
+    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("os.path.isfile")
+    @patch("os.path.isdir")
+    @patch("os.makedirs")
+    @patch("shutil.rmtree")
+    def test_process_item_no_partial_prefix_match(
+        self,
+        mock_rmtree,
+        mock_makedirs,
+        mock_isdir,
+        mock_isfile,
+        mock_gen_images,
+        mock_gen_bif,
+        mock_config,
+        plex_xml_movie_tree,
+    ):
+        """Path /database/... is not remapped when mapping is /data -> /mnt/data."""
+        mock_plex = MagicMock()
+        import xml.etree.ElementTree as ET
+
+        tree_xml = plex_xml_movie_tree.replace(
+            'file="/data/movies/',
+            'file="/database/movies/',
+        )
+        mock_plex.query.return_value = ET.fromstring(tree_xml)
+
+        mock_config.path_mappings = [
+            {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+        ]
+        mock_config.plex_config_folder = "/config/plex"
+        mock_config.tmp_folder = "/tmp"
+        mock_config.regenerate_thumbnails = False
+
+        def isfile_side_effect(path):
+            return ".bif" not in path
+
+        mock_isfile.side_effect = isfile_side_effect
+        mock_isdir.return_value = False
+        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
+
+        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+
+        assert mock_gen_images.called
+        called_path = mock_gen_images.call_args[0][0]
+        import os as _os
+
+        # Should still be /database/... (no mapping applied)
+        expected_prefix = _os.path.normpath("/database")
+        assert called_path.startswith(expected_prefix), f"Expected path under /database, got {called_path}"
+
     @patch("os.path.isfile")
     def test_process_item_missing_file(
         self, mock_isfile, mock_config, plex_xml_movie_tree

@@ -410,19 +410,42 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     matched_items = []
     seen_keys = set()
     matched_targets = set()
+    selected_library_ids = {
+        str(section_id).strip()
+        for section_id in (getattr(config, "plex_library_ids", None) or [])
+        if str(section_id).strip()
+    }
+    selected_library_titles = {
+        str(name).strip().lower()
+        for name in (getattr(config, "plex_libraries", None) or [])
+        if str(name).strip()
+    }
+
+    def _is_selected_section(section) -> bool:
+        """Return whether section is in the configured library scope."""
+        if selected_library_ids:
+            return str(getattr(section, "key", "")).strip() in selected_library_ids
+        if selected_library_titles:
+            return str(getattr(section, "title", "")).strip().lower() in selected_library_titles
+        return True
+
+    def _collect_item_targets(item) -> set[str]:
+        """Build normalized path aliases used for webhook path matching."""
+        item_targets = set()
+        for location in _extract_item_locations(item):
+            item_targets.add(_normalize_path_for_match(location))
+            mapped_location = _map_plex_path_to_local(location, config)
+            item_targets.add(_normalize_path_for_match(mapped_location))
+            for alias in local_path_to_webhook_aliases(mapped_location, mappings):
+                item_targets.add(_normalize_path_for_match(alias))
+        return item_targets
 
     def _scan_sections(target_paths: set[str], max_results: int) -> set[str]:
         """Scan sections and return matched target paths for this pass."""
         pass_matches = set()
 
         for section in sections:
-            if getattr(config, "plex_library_ids", None):
-                if str(section.key) not in config.plex_library_ids:
-                    continue
-            elif (
-                config.plex_libraries
-                and section.title.lower() not in config.plex_libraries
-            ):
+            if not _is_selected_section(section):
                 continue
 
             media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
@@ -445,19 +468,9 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
                 continue
 
             for item in items:
-                locations = _extract_item_locations(item)
-                if not locations:
+                item_targets = _collect_item_targets(item)
+                if not item_targets:
                     continue
-
-                item_targets = set()
-                for location in locations:
-                    item_targets.add(_normalize_path_for_match(location))
-                    mapped_location = _map_plex_path_to_local(location, config)
-                    item_targets.add(_normalize_path_for_match(mapped_location))
-                    for alias in local_path_to_webhook_aliases(
-                        mapped_location, mappings
-                    ):
-                        item_targets.add(_normalize_path_for_match(alias))
 
                 matched_for_item = target_paths.intersection(item_targets)
                 if not matched_for_item:
@@ -484,6 +497,43 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
 
         return pass_matches
 
+    def _scan_excluded_sections(target_paths: set[str], max_results: int):
+        """Return target paths that match Plex items in excluded libraries."""
+        excluded_matches = set()
+        excluded_sections = set()
+
+        for section in sections:
+            if _is_selected_section(section):
+                continue
+
+            media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
+            if not media_type:
+                continue
+
+            search_kwargs = {"libtype": "episode"} if media_type == "episode" else {}
+            search_kwargs["sort"] = "addedAt:desc"
+            search_kwargs["maxresults"] = max_results
+            try:
+                items = retry_plex_call(section.search, **search_kwargs)
+            except (
+                requests.exceptions.RequestException,
+                http.client.BadStatusLine,
+                xml.etree.ElementTree.ParseError,
+            ):
+                continue
+
+            for item in items:
+                item_targets = _collect_item_targets(item)
+                if not item_targets:
+                    continue
+
+                matched_for_item = target_paths.intersection(item_targets)
+                if matched_for_item:
+                    excluded_matches.update(matched_for_item)
+                    excluded_sections.add(str(getattr(section, "title", "Unknown")).strip())
+
+        return excluded_matches, excluded_sections
+
     matched_targets.update(_scan_sections(normalized_targets, webhook_recent_limit))
     unresolved_targets = normalized_targets - matched_targets
     if unresolved_targets and webhook_fallback_limit > webhook_recent_limit:
@@ -495,6 +545,34 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
             _scan_sections(unresolved_targets, webhook_fallback_limit)
         )
         unresolved_targets = normalized_targets - matched_targets
+
+    skipped_by_library_targets = set()
+    skipped_library_names = set()
+    if unresolved_targets and (selected_library_ids or selected_library_titles):
+        skipped_by_library_targets, skipped_library_names = _scan_excluded_sections(
+            unresolved_targets, webhook_recent_limit
+        )
+        remaining_for_excluded_scan = unresolved_targets - skipped_by_library_targets
+        if remaining_for_excluded_scan and webhook_fallback_limit > webhook_recent_limit:
+            fallback_skipped_targets, fallback_skipped_libraries = _scan_excluded_sections(
+                remaining_for_excluded_scan, webhook_fallback_limit
+            )
+            skipped_by_library_targets.update(fallback_skipped_targets)
+            skipped_library_names.update(fallback_skipped_libraries)
+        if skipped_by_library_targets:
+            unresolved_targets = unresolved_targets - skipped_by_library_targets
+            selected_scope = (
+                ", ".join(sorted(selected_library_titles))
+                if selected_library_titles
+                else ", ".join(sorted(selected_library_ids))
+            )
+            logger.warning(
+                f"Webhook path resolution skipped {len(skipped_by_library_targets)} path(s) "
+                f"because they matched Plex items in unselected libraries: "
+                f"{', '.join(sorted(skipped_library_names))}"
+            )
+            if selected_scope:
+                logger.info(f"Current selected library scope: {selected_scope}")
 
     unresolved_targets = sorted(unresolved_targets)
     if unresolved_targets:
@@ -513,6 +591,10 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
             logger.warning(
                 "Unresolved path(s): " + ", ".join(repr(p) for p in paths_to_log)
             )
+        logger.info(
+            "If this app, Plex, or Sonarr/Radarr see different paths for the same files, "
+            "configure Path mapping in Settings."
+        )
     logger.info(
         f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"
     )
