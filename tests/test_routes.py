@@ -512,6 +512,66 @@ class TestJobsAPI:
         assert data["unavailable"] == 0
         pool.remove_workers.assert_called_once_with("CPU", 2)
 
+    def test_scale_workers_remove_busy_workers_returns_scheduled_removal(self, client):
+        """Remove endpoint returns scheduled_removal when workers are busy (deferred removal)."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.remove_workers.return_value = {
+            "removed": 0,
+            "scheduled": 2,
+            "unavailable": 0,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        remove_resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "GPU", "count": 2},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["success"] is True
+        assert data["removed"] == 0
+        assert data["scheduled_removal"] == 2
+        assert data["unavailable"] == 0
+        pool.remove_workers.assert_called_once_with("GPU", 2)
+
+    def test_scale_workers_remove_returns_unavailable_when_fewer_workers_exist(self, client):
+        """Remove endpoint returns unavailable when requesting more than existing workers."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.remove_workers.return_value = {
+            "removed": 1,
+            "scheduled": 0,
+            "unavailable": 1,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        remove_resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU_FALLBACK", "count": 2},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["removed"] == 1
+        assert data["scheduled_removal"] == 0
+        assert data["unavailable"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Settings API

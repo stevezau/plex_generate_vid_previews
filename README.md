@@ -50,6 +50,7 @@
   <ol>
     <li><a href="#-about">About</a></li>
     <li><a href="#-features">Features</a></li>
+    <li><a href="#-screenshots">Screenshots</a></li>
     <li><a href="#-quick-start">Quick Start</a></li>
     <li><a href="#-installation">Installation</a></li>
     <li><a href="#-gpu-support">GPU Support</a></li>
@@ -112,6 +113,18 @@ flowchart LR
 | 🌐 **Web Dashboard** | Manage jobs, schedules, and status |
 | ⏱️ **Scheduling** | Cron and interval-based automation |
 | 📡 **Radarr/Sonarr** | Webhook integration for auto-processing on import |
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## 📸 Screenshots
+
+| Home | Settings | Webhooks |
+|:----:|:--------:|:--------:|
+| [![Home](docs/images/home.png)](docs/images/home.png) | [![Settings](docs/images/settings.png)](docs/images/settings.png) | [![Webhooks](docs/images/webhooks.png)](docs/images/webhooks.png) |
+
+*Web UI: dashboard and job management, configuration and GPU detection, Radarr/Sonarr webhook setup.*
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

@@ -513,6 +513,42 @@ class TestWorkerPool:
         assert result["completed"] + result["failed"] == len(items)
 
     @patch("plex_generate_previews.worker.process_item")
+    def test_dynamic_gpu_removal_does_not_stall_completion(self, mock_process):
+        """Dynamic GPU worker removal during active processing must not stall at 100%."""
+        mock_process.side_effect = lambda *args, **kwargs: time.sleep(0.01)
+        selected_gpus = [
+            ("NVIDIA", "cuda", {"name": "GPU0"}),
+            ("NVIDIA", "cuda", {"name": "GPU1"}),
+        ]
+        pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
+        config = MagicMock()
+        plex = MagicMock()
+        items = [(f"key{i}", f"Movie {i}", "movie") for i in range(8)]
+
+        original_assign = pool._assign_main_queue_task
+        assign_count = {"value": 0, "removed": False}
+
+        def assign_and_remove_gpu(*args, **kwargs):
+            assigned = original_assign(*args, **kwargs)
+            if assigned:
+                assign_count["value"] += 1
+                if assign_count["value"] >= 3 and not assign_count["removed"]:
+                    pool.remove_workers("GPU", 1)
+                    assign_count["removed"] = True
+            return assigned
+
+        with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu):
+            start = time.time()
+            result = pool.process_items_headless(items, config, plex)
+            elapsed = time.time() - start
+
+        assert elapsed < 2.0, "Run must not stall after GPU removal"
+        assert result["completed"] + result["failed"] == len(items), (
+            f"All items must be accounted for; got completed={result['completed']}, "
+            f"failed={result['failed']}, total={len(items)}"
+        )
+
+    @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):
         """Pause check should delay task dispatch until resumed."""
         mock_process.return_value = None
