@@ -276,6 +276,8 @@ def _execute_webhook_job(debounce_key: str) -> None:
     selected_libraries = [
         str(name).strip() for name in selected_libraries if str(name).strip()
     ]
+    retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
+    retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
     _start_job_async(
         job.id,
@@ -283,6 +285,8 @@ def _execute_webhook_job(debounce_key: str) -> None:
             "selected_libraries": selected_libraries,
             "sort_by": "newest",
             "webhook_paths": webhook_paths,
+            "webhook_retry_count": retry_count,
+            "webhook_retry_delay": retry_delay,
         },
     )
     _add_history_entry(

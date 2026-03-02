@@ -876,12 +876,16 @@ class WorkerPool:
                         progress_data = worker.get_progress_data()
                         is_busy = worker.is_busy
 
+                    gpu_worker_name = (
+                        (worker.gpu_name or "").strip() or f"GPU {worker.gpu_index}"
+                    )
+
                     worker_statuses.append(
                         {
                             "worker_id": worker.worker_id,
                             "worker_type": worker.worker_type,
                             "worker_name": (
-                                f"GPU {worker.gpu_index}"
+                                gpu_worker_name
                                 if worker.worker_type == "GPU"
                                 else (
                                     f"CPU Fallback {worker.worker_id}"

@@ -81,6 +81,24 @@
         </div>
 
         <div class="mb-3">
+            <label for="webhookRetryCount" class="form-label">Retry count</label>
+            <input type="number" class="form-control" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 6rem;">
+            <div class="form-text">
+                When an item from a webhook cannot be found in Plex (e.g. Plex has not indexed it yet), how many times to retry. Each retry runs as a separate job after the configured delay. Set to 0 to disable retries.
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label for="webhookRetryDelay" class="form-label">
+                Delay between retries: <strong><span id="retryDelayValue">30</span>s</strong>
+            </label>
+            <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
+            <div class="form-text">
+                Seconds to wait before each retry when an item could not be found in Plex. Gives Plex time to finish indexing.
+            </div>
+        </div>
+
+        <div class="mb-3">
             <label for="webhookSecret" class="form-label">Webhook Secret</label>
             <div class="input-group">
                 <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
@@ -181,13 +199,16 @@ document.addEventListener('DOMContentLoaded', function() {
     loadWebhookSettings();
     loadHistory();
 
-    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookSecret').forEach(function(el) {
+    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRetryCount, #webhookRetryDelay, #webhookSecret').forEach(function(el) {
         el.addEventListener('change', markDirty);
         el.addEventListener('input', markDirty);
     });
 
     document.getElementById('webhookDelay').addEventListener('input', function() {
         document.getElementById('delayValue').textContent = this.value;
+    });
+    document.getElementById('webhookRetryDelay').addEventListener('input', function() {
+        document.getElementById('retryDelayValue').textContent = this.value;
     });
 
     setInterval(loadHistory, 10000);
@@ -206,6 +227,9 @@ async function loadWebhookSettings() {
         document.getElementById('webhookEnabled').checked = data.webhook_enabled !== false;
         document.getElementById('webhookDelay').value = data.webhook_delay || 60;
         document.getElementById('delayValue').textContent = data.webhook_delay || 60;
+        document.getElementById('webhookRetryCount').value = Math.min(10, Math.max(0, parseInt(data.webhook_retry_count, 10) || 3));
+        document.getElementById('webhookRetryDelay').value = data.webhook_retry_delay || 30;
+        document.getElementById('retryDelayValue').textContent = data.webhook_retry_delay || 30;
         if (data.webhook_secret && data.webhook_secret !== '****') {
             document.getElementById('webhookSecret').value = data.webhook_secret;
         } else         if (data.webhook_secret === '****') {
@@ -221,9 +245,12 @@ async function saveWebhookSettings() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
 
+    const retryCount = Math.min(10, Math.max(0, parseInt(document.getElementById('webhookRetryCount').value, 10) || 0));
     const payload = {
         webhook_enabled: document.getElementById('webhookEnabled').checked,
         webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
+        webhook_retry_count: retryCount,
+        webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
     };
 
     const secretVal = document.getElementById('webhookSecret').value;

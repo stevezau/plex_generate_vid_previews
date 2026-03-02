@@ -229,7 +229,6 @@ class TestJobEvents:
             processed_items=5,
             total_items=10,
             current_item="Episode 5",
-            eta="2m 30s",
         )
 
         received = authed_socketio_client.get_received(namespace="/jobs")

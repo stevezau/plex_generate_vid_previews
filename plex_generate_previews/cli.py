@@ -545,6 +545,7 @@ def run_processing(
         pause_check: Optional callable returning True when processing should pause dispatch
         worker_pool_callback: Optional callable receiving WorkerPool on create/cleanup
     """
+    return_data = None
     try:
         # Get Plex server
         plex = plex_server(config)
@@ -561,16 +562,19 @@ def run_processing(
             else 0
         )
 
-        # Create worker pool
-        worker_pool = WorkerPool(
-            gpu_workers=config.gpu_threads,
-            cpu_workers=config.cpu_threads,
-            selected_gpus=selected_gpus,
-            fallback_cpu_workers=fallback_cpu_workers,
-        )
-        if worker_pool_callback:
-            worker_pool_callback(worker_pool)
-        app_state.worker_pool = worker_pool
+        def _create_worker_pool():
+            pool = WorkerPool(
+                gpu_workers=config.gpu_threads,
+                cpu_workers=config.cpu_threads,
+                selected_gpus=selected_gpus,
+                fallback_cpu_workers=fallback_cpu_workers,
+            )
+            if worker_pool_callback:
+                worker_pool_callback(pool)
+            app_state.worker_pool = pool
+            return pool
+
+        worker_pool = None
 
         # Process all library sections
         total_processed = 0
@@ -583,23 +587,32 @@ def run_processing(
             logger.info("Running in headless mode (no console display)")
 
             if getattr(config, "webhook_paths", None):
-                webhook_media_items = get_media_items_by_paths(
+                webhook_resolution = get_media_items_by_paths(
                     plex, config, config.webhook_paths
                 )
-                if not webhook_media_items:
+                return_data = {
+                    "webhook_resolution": {
+                        "unresolved_paths": list(webhook_resolution.unresolved_paths),
+                        "skipped_paths": list(webhook_resolution.skipped_paths),
+                        "resolved_count": len(webhook_resolution.items),
+                        "total_paths": len(config.webhook_paths),
+                    }
+                }
+                if not webhook_resolution.items:
                     logger.warning(
                         "No Plex items matched webhook file paths; skipping processing"
                     )
                 else:
+                    worker_pool = _create_worker_pool()
                     if progress_callback:
                         progress_callback(
                             0,
-                            len(webhook_media_items),
+                            len(webhook_resolution.items),
                             "Processing webhook-targeted media",
                         )
 
                     result = worker_pool.process_items_headless(
-                        webhook_media_items,
+                        webhook_resolution.items,
                         config,
                         plex,
                         title_max_width,
@@ -615,11 +628,20 @@ def run_processing(
                     total_processed += result["completed"] + result["failed"]
                     cancellation_requested = cancellation_requested or result["cancelled"]
             else:
+                worker_pool = _create_worker_pool()
                 # Build a single queue across libraries so idle workers can
                 # continue with remaining items from subsequent libraries.
                 all_media_items = []
                 library_item_counts = []
-                for section, media_items in get_library_sections(plex, config):
+                for section, media_items in get_library_sections(
+                    plex, config, cancel_check=cancel_check
+                ):
+                    if cancel_check and cancel_check():
+                        logger.info(
+                            "Cancellation requested during library enumeration — skipping remaining libraries"
+                        )
+                        cancellation_requested = True
+                        break
                     count = len(media_items)
                     if count <= 0:
                         logger.info(
@@ -695,20 +717,21 @@ def run_processing(
 
             with Live(dynamic_group, console=console, refresh_per_second=20):
                 if getattr(config, "webhook_paths", None):
-                    webhook_media_items = get_media_items_by_paths(
+                    webhook_resolution = get_media_items_by_paths(
                         plex, config, config.webhook_paths
                     )
-                    if not webhook_media_items:
+                    if not webhook_resolution.items:
                         logger.warning(
                             "No Plex items matched webhook file paths; skipping processing"
                         )
                     else:
+                        worker_pool = _create_worker_pool()
                         dynamic_group.set_processing_mode()
                         main_task = main_progress.add_task(
-                            "Processing Webhook Targets", total=len(webhook_media_items)
+                            "Processing Webhook Targets", total=len(webhook_resolution.items)
                         )
                         result = worker_pool.process_items(
-                            webhook_media_items,
+                            webhook_resolution.items,
                             config,
                             plex,
                             worker_progress,
@@ -725,6 +748,7 @@ def run_processing(
                         )
                         main_progress.remove_task(main_task)
                 else:
+                    worker_pool = _create_worker_pool()
                     # Start in query mode
                     dynamic_group.set_query_mode()
                     query_task = query_progress.add_task(
@@ -799,6 +823,8 @@ def run_processing(
         # Print failure summary at end of run
         log_failure_summary()
 
+        return return_data
+
     except KeyboardInterrupt:
         logger.info("Received interrupt signal, shutting down gracefully...")
     except ConnectionError as e:
@@ -811,7 +837,7 @@ def run_processing(
     finally:
         # Clean up worker pool
         try:
-            if "worker_pool" in locals():
+            if "worker_pool" in locals() and worker_pool is not None:
                 worker_pool.shutdown()
         except Exception as worker_error:
             logger.warning(f"Failed to shutdown worker pool: {worker_error}")

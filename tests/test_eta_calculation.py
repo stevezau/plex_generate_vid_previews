@@ -1,480 +1,62 @@
 """
-Tests for the ETA calculation algorithm in web/routes.py.
+Tests for ETA-related behavior after removal of job-level ETA.
 
-The ETA logic lives inside the progress_callback closure created by
-_start_job_async.  These tests extract the same dual-track algorithm
-into a helper and exercise it with simulated completion sequences.
+Job-level ETA was removed; worker ETA (from ffmpeg) is still exposed via WorkerStatus.eta.
+This module tests the data model and formatting contract for worker ETA.
 """
 
-import time
+from plex_generate_previews.web.jobs import JobProgress, WorkerStatus
 
 
-# ---------------------------------------------------------------------------
-# Minimal harness that mirrors the closure variables + progress_callback
-# from _start_job_async in web/routes.py.
-# ---------------------------------------------------------------------------
+def _format_eta(seconds: float) -> str:
+    """Mirror of the _format_eta used in routes for worker ETA (ffmpeg remaining_time)."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+    else:
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
 
-class _ETAHarness:
-    """Standalone replica of the ETA closure for unit testing."""
+class TestJobProgressNoEta:
+    """JobProgress no longer has an eta field (job-level ETA removed)."""
 
-    _SKIP_THRESHOLD = 2.0
-    _STALL_THRESHOLD = 5.0
-    _SIMPLE_MIN_ELAPSED = 10.0
-    _SIMPLE_MIN_ITEMS = 5
-    _FAST_MIN_ELAPSED = 8.0
-    _FAST_MIN_ITEMS = 5
-    _REAL_MIN_ELAPSED = 30.0
-    _REAL_MIN_ITEMS = 3
+    def test_job_progress_default_has_no_eta(self):
+        p = JobProgress()
+        assert not hasattr(p, "eta")
+        d = p.to_dict()
+        assert "eta" not in d
 
-    def __init__(self):
-        self._last_total = 0
-        self._processing_start_time = 0.0
-        self._last_completed = 0
-        self._last_completion_time = 0.0
-        self._burst_resolved = False
-        self._real_work_start_time = 0.0
-        self._real_work_start_count = 0
-        self._last_eta = ""
-        self.last_eta = ""
-        self.last_percent = 0.0
-
-    @staticmethod
-    def _format_eta(seconds: float) -> str:
-        if seconds < 60:
-            return f"{int(seconds)}s"
-        elif seconds < 3600:
-            return f"{int(seconds // 60)}m {int(seconds % 60)}s"
-        else:
-            return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
-
-    def progress_callback(
-        self, current: int, total: int, message: str = "", *, now: float = None
-    ):
-        """Simulate the progress_callback from routes.py.
-
-        Accepts an explicit *now* timestamp so tests can drive time
-        deterministically without sleeping.
-        """
-        if now is None:
-            now = time.time()
-
-        percent = (current / total * 100) if total > 0 else 0
-
-        # Reset on library change, including same-size libraries where current
-        # drops back to zero for the next library.
-        if total != self._last_total or current < self._last_completed:
-            self._last_total = total
-            self._last_completed = 0
-            self._last_completion_time = 0.0
-            self._processing_start_time = now
-            self._burst_resolved = False
-            self._real_work_start_time = 0.0
-            self._real_work_start_count = 0
-            self._last_eta = ""
-
-        new_items = current - self._last_completed
-        if new_items > 0:
-            self._last_completed = current
-            self._last_completion_time = now
-
-        remaining = total - current
-
-        # Stall detection
-        stall_time = 0.0
-        if self._last_completion_time > 0 and remaining > 0:
-            stall_time = now - self._last_completion_time
-
-        # Track 1: burst-filtered
-        if (
-            not self._burst_resolved
-            and self._processing_start_time > 0
-            and current >= 2
-        ):
-            overall_elapsed = now - self._processing_start_time
-            avg_per_item = overall_elapsed / current
-            if avg_per_item >= self._SKIP_THRESHOLD:
-                self._burst_resolved = True
-                self._real_work_start_time = self._processing_start_time
-                self._real_work_start_count = 0
-
-        # Stall-based burst resolution
-        if not self._burst_resolved and stall_time >= self._STALL_THRESHOLD:
-            self._burst_resolved = True
-            self._real_work_start_time = self._last_completion_time
-            self._real_work_start_count = self._last_completed
-
-        # Compute ETA
-        eta = ""
-        if remaining > 0:
-            elapsed = (
-                now - self._processing_start_time if self._processing_start_time > 0 else 0.0
-            )
-            if self._burst_resolved and self._real_work_start_time > 0:
-                real_elapsed = now - self._real_work_start_time
-                real_items = current - self._real_work_start_count
-                min_real_items = (
-                    1 if self._real_work_start_count > 0 else self._REAL_MIN_ITEMS
-                )
-                if (
-                    real_elapsed >= self._REAL_MIN_ELAPSED
-                    and real_items >= min_real_items
-                ):
-                    rate = real_items / real_elapsed
-                    eta = self._format_eta(remaining / rate)
-
-            if (
-                not eta
-                and self._processing_start_time > 0
-                and current >= self._FAST_MIN_ITEMS
-                and elapsed >= self._FAST_MIN_ELAPSED
-            ):
-                rate = current / elapsed
-                if rate > 0:
-                    eta = self._format_eta(remaining / rate)
-
-            if (
-                not eta
-                and self._processing_start_time > 0
-                and current >= self._SIMPLE_MIN_ITEMS
-                and (stall_time < self._STALL_THRESHOLD or bool(self._last_eta))
-            ):
-                if elapsed >= self._SIMPLE_MIN_ELAPSED:
-                    rate = current / elapsed
-                    if rate > 0:
-                        eta = self._format_eta(remaining / rate)
-
-        if remaining <= 0:
-            eta = ""
-            self._last_eta = ""
-        elif eta:
-            self._last_eta = eta
-        elif self._last_eta:
-            eta = self._last_eta
-
-        self.last_eta = eta
-        self.last_percent = percent
-        return eta
+    def test_job_progress_to_dict_omits_eta(self):
+        p = JobProgress(percent=50.0, processed_items=10, total_items=20)
+        d = p.to_dict()
+        assert "eta" not in d
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+class TestWorkerStatusEta:
+    """WorkerStatus retains eta for ffmpeg-based per-worker ETA."""
+
+    def test_worker_status_has_eta(self):
+        w = WorkerStatus(eta="2m 5s")
+        assert w.eta == "2m 5s"
+        assert w.to_dict()["eta"] == "2m 5s"
+
+    def test_worker_status_eta_default_empty(self):
+        w = WorkerStatus()
+        assert w.eta == ""
 
 
-class TestFormatEta:
-    """Test the _format_eta helper."""
+class TestFormatEtaWorkerDisplay:
+    """Format used for worker ETA display (seconds -> human-readable)."""
 
     def test_seconds_only(self):
-        assert _ETAHarness._format_eta(45) == "45s"
+        assert _format_eta(45) == "45s"
 
     def test_minutes_and_seconds(self):
-        assert _ETAHarness._format_eta(125) == "2m 5s"
+        assert _format_eta(125) == "2m 5s"
 
     def test_hours_and_minutes(self):
-        assert _ETAHarness._format_eta(3700) == "1h 1m"
+        assert _format_eta(3700) == "1h 1m"
 
     def test_zero(self):
-        assert _ETAHarness._format_eta(0) == "0s"
-
-
-class TestBurstDetection:
-    """Test that burst mode detects fast-skip vs real-work items."""
-
-    def test_pure_burst_stays_in_burst(self):
-        """100 items completing in 1 second each → avg < 2 s → burst not resolved."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        # Simulate 100 items completing 1 per second
-        for i in range(1, 101):
-            h.progress_callback(i, 200, now=t0 + i)
-        assert not h._burst_resolved
-        # Fallback ETA kicks in (100 items, ~100 s elapsed > 20 s warmup)
-        assert h.last_eta != "", "Fallback ETA should be shown even during burst"
-
-    def test_slow_items_exit_burst(self):
-        """Items averaging ≥2 s each → burst resolved."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        # 4 items over 20 seconds → 5 s/item on average
-        for i in range(1, 5):
-            h.progress_callback(i, 100, now=t0 + i * 5)
-        assert h._burst_resolved
-
-    def test_eta_shown_after_burst_resolved(self):
-        """After burst resolves, ETA appears once minimum signal is present."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 100
-        # 2 items at 5 s each → avg = 5 s → resolved
-        h.progress_callback(1, total, now=t0 + 5)
-        h.progress_callback(2, total, now=t0 + 10)
-        assert h._burst_resolved
-        assert h.last_eta == "", "ETA should wait for enough real-work signal"
-        h.progress_callback(3, total, now=t0 + 35)
-        assert h.last_eta != "", "ETA should appear after minimum signal is met"
-
-
-class TestParallelWorkerBatching:
-    """Verify ETA works when items complete in batches (multi-worker)."""
-
-    def test_batch_completion_resolves_burst(self):
-        """4 workers, 3-minute items.  Batch 1 at T=180, items 1-4.
-        avg = 180/4 = 45 s/item → burst resolved at first batch."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 100
-        # Processing starts at T=0 (initial callback sets _processing_start_time)
-        h.progress_callback(0, total, now=t0)
-        # Batch 1: items 1-4 complete at T=180 (within same poll cycle)
-        for i in range(1, 5):
-            h.progress_callback(i, total, now=t0 + 180 + i * 0.001)
-        assert h._burst_resolved, "Burst should resolve with avg 45 s/item"
-        assert h.last_eta != "", "ETA should appear after batch 1"
-
-    def test_poll_between_batches_updates_eta(self):
-        """on_poll calls between batches should keep updating ETA."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 100
-
-        # Processing starts at T=0
-        h.progress_callback(0, total, now=t0)
-
-        # Batch 1 at T=180
-        for i in range(1, 5):
-            h.progress_callback(i, total, now=t0 + 180 + i * 0.001)
-
-        eta1 = h.last_eta
-        assert eta1 != ""
-
-        # Simulate poll 30 seconds later (no new items)
-        h.progress_callback(4, total, now=t0 + 210)
-        eta2 = h.last_eta
-        assert eta2 != "", "ETA should still be shown on poll"
-
-
-class TestSimpleFallback:
-    """Test the simple-rate fallback for when burst detection doesn't fire."""
-
-    def test_fallback_after_warmup(self):
-        """All items fast (burst), but after 10 s + 5 items → fallback ETA.
-
-        The simple-rate fallback only fires when NOT stalling (stall_time
-        < _STALL_THRESHOLD).  So the poll must happen soon after a
-        completion (within 5 s) to pass the stall guard.
-        """
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 1000
-        # 20 items in 0.5 s each → avg = 0.5 s → burst NOT resolved
-        # Total elapsed = 10 s → meets _SIMPLE_MIN_ELAPSED (10 s)
-        for i in range(1, 21):
-            h.progress_callback(i, total, now=t0 + i * 0.5)
-        assert not h._burst_resolved
-        # Last completion at t0 + 10, poll immediately → stall < 5 s
-        assert h.last_eta != "", "Fallback ETA should kick in after 10 s elapsed"
-
-    def test_fallback_not_premature(self):
-        """Fallback should NOT fire before _FAST_MIN_ELAPSED."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 100
-        # 5 items in 2 s each = 10 s total → avg 2 s → burst resolved
-        # But let's test the fallback path: force burst unresolved
-        for i in range(1, 4):
-            h.progress_callback(i, total, now=t0 + i * 0.5)
-        assert not h._burst_resolved  # avg = 0.5 s < 2
-        # Only 1.5 s elapsed, 3 items → SIMPLE_MIN_ELAPSED not met
-        assert h.last_eta == ""
-
-    def test_fast_path_shows_eta_before_simple_warmup(self):
-        """High-throughput runs should show ETA before 10s simple warmup."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 200
-        # Initial callback sets start time; then 5 items over 8 seconds
-        # reaches the fast-path threshold.
-        h.progress_callback(0, total, now=t0)
-        for i in range(1, 6):
-            h.progress_callback(i, total, now=t0 + (i * 1.6))
-        assert h.last_eta != ""
-
-
-class TestLibraryReset:
-    """Test that state resets when a new library starts (total changes)."""
-
-    def test_reset_on_total_change(self):
-        """Switching libraries resets all ETA state."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-
-        # Library 1: 50 items, get ETA working
-        for i in range(1, 11):
-            h.progress_callback(i, 50, now=t0 + i * 5)
-        assert h._burst_resolved
-        assert h.last_eta != ""
-
-        # Library 2 starts (different total)
-        h.progress_callback(0, 30, now=t0 + 100)
-        assert not h._burst_resolved, "State should reset for new library"
-        assert h._last_completion_time == 0.0, "Completion time should reset"
-        assert h.last_eta == "", "ETA should reset to empty"
-
-    def test_eta_recovers_after_reset(self):
-        """After reset, ETA reappears once enough data accumulates."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-
-        # Library 1
-        for i in range(1, 6):
-            h.progress_callback(i, 50, now=t0 + i * 5)
-
-        # Library 2 starts
-        h.progress_callback(0, 30, now=t0 + 50)
-        # Process a few items in library 2
-        for i in range(1, 5):
-            h.progress_callback(i, 30, now=t0 + 50 + i * 10)
-        assert h._burst_resolved
-        assert h.last_eta != ""
-
-    def test_reset_on_same_total_library_boundary(self):
-        """A new library with the same total should still reset ETA state."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-
-        # Library 1: establish a known ETA
-        h.progress_callback(0, 50, now=t0)
-        h.progress_callback(10, 50, now=t0 + 50)
-        h.progress_callback(20, 50, now=t0 + 100)
-        assert h.last_eta != ""
-
-        # Library 2 starts with same total but current drops to 0
-        h.progress_callback(0, 50, now=t0 + 110)
-        assert h.last_eta == "", "ETA should reset on same-total library boundary"
-        assert h._last_completed == 0
-
-
-class TestEdgeCases:
-    """Edge cases and boundary conditions."""
-
-    def test_zero_total(self):
-        """total=0 should not crash."""
-        h = _ETAHarness()
-        eta = h.progress_callback(0, 0, now=1_000_000.0)
-        assert eta == ""
-
-    def test_current_equals_total(self):
-        """When job is done, remaining=0, no ETA needed."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        for i in range(1, 11):
-            h.progress_callback(i, 10, now=t0 + i * 5)
-        assert h.last_eta == "", "No ETA when remaining=0"
-
-    def test_single_item(self):
-        """Only 1 item in library — ETA should not crash."""
-        h = _ETAHarness()
-        h.progress_callback(0, 1, now=1_000_000.0)
-        h.progress_callback(1, 1, now=1_000_005.0)
-        assert h.last_eta == ""  # remaining=0
-
-    def test_mixed_burst_then_slow(self):
-        """Burst of fast items, then slow items → ETA appears."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 500
-        # 100 fast items in 2 seconds total
-        for i in range(1, 101):
-            h.progress_callback(i, total, now=t0 + i * 0.02)
-        assert not h._burst_resolved  # avg 0.02 s < 2 s
-
-        # Now 10 slow items (3 min each, but wall-clock accumulates)
-        # After 100 fast + 10 slow: avg = (2 + 1800) / 110 = 16.4 s → resolved
-        for j in range(1, 11):
-            h.progress_callback(100 + j, total, now=t0 + 2 + j * 180)
-        assert h._burst_resolved
-        assert h.last_eta != ""
-
-    def test_startup_skew_does_not_show_premature_high_eta(self):
-        """Slow startup should not immediately publish inflated ETA."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 80
-
-        h.progress_callback(0, total, now=t0)
-        # Two slow startup completions (would formerly yield ~39m ETA)
-        h.progress_callback(1, total, now=t0 + 30)
-        h.progress_callback(2, total, now=t0 + 60)
-        assert h.last_eta == "", "ETA should wait for enough real signal"
-
-        # Throughput improves; once minimum signal is met ETA should appear
-        for i in range(3, 23):
-            h.progress_callback(i, total, now=t0 + 60 + (i - 2) * 3)
-        assert h.last_eta != ""
-
-
-class TestStallDetection:
-    """Test stall-based burst resolution for the skip-then-process pattern."""
-
-    def test_stall_resolves_burst(self):
-        """1103 items skipped fast, then 5 s stall → burst resolved via stall."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 1107
-        # Skip 1103 items in 30 seconds
-        for i in range(1, 1104):
-            h.progress_callback(i, total, now=t0 + i * (30.0 / 1103))
-        assert not h._burst_resolved, "avg still < 2 s"
-
-        # Stall: poll at +6 s with no new completions
-        h.progress_callback(1103, total, now=t0 + 30 + 6)
-        assert h._burst_resolved, "Stall should resolve burst"
-        assert h._real_work_start_count == 1103
-
-    def test_stall_keeps_last_known_eta(self):
-        """During stall, ETA should keep the last known value."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 1107
-        # Skip 1103 items in 30 seconds (well past 20 s warmup)
-        for i in range(1, 1104):
-            h.progress_callback(i, total, now=t0 + i * (30.0 / 1103))
-
-        # Before stall threshold: simple fallback gives near-zero ETA
-        h.progress_callback(1103, total, now=t0 + 30 + 3)
-        eta_before_stall = h.last_eta
-        assert eta_before_stall != ""
-        # After stall threshold: keep showing the last known ETA
-        h.progress_callback(1103, total, now=t0 + 30 + 6)
-        assert h.last_eta == eta_before_stall
-
-    def test_eta_recovers_after_real_item_completes(self):
-        """Once a real item completes after stall, ETA is based on real rate."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 1107
-        # Skip 1103 items in 30 seconds
-        for i in range(1, 1104):
-            h.progress_callback(i, total, now=t0 + i * (30.0 / 1103))
-
-        # Stall for 6 s → burst resolves, real_work_start_count = 1103
-        h.progress_callback(1103, total, now=t0 + 36)
-        assert h._burst_resolved
-
-        # Item 1104 completes after 180 s of real work
-        h.progress_callback(1104, total, now=t0 + 30 + 180)
-        assert h.last_eta != "", "ETA should appear after real item completes"
-        # rate = 1 item / 180 s, remaining = 3, ETA ≈ 540 s = 9m 0s
-        assert "m" in h.last_eta, f"ETA should be in minutes, got {h.last_eta}"
-
-    def test_stall_does_not_trigger_during_normal_processing(self):
-        """Items completing every 3 s should NOT trigger stall detection."""
-        h = _ETAHarness()
-        t0 = 1_000_000.0
-        total = 100
-        # Items every 3 seconds (avg = 3 s > 2 s → burst resolves via avg)
-        for i in range(1, 21):
-            h.progress_callback(i, total, now=t0 + i * 3)
-        assert h._burst_resolved, "Should resolve via avg_per_item, not stall"
-        assert h.last_eta != ""
+        assert _format_eta(0) == "0s"

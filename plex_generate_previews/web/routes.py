@@ -384,6 +384,76 @@ def resume_processing():
     return jsonify({"paused": False})
 
 
+@api.route("/workers/add", methods=["POST"])
+@api_token_required
+def add_workers_global():
+    """Add workers to the currently running job (global scaling)."""
+    job_manager = get_job_manager()
+    running_job = job_manager.get_running_job()
+    if not running_job:
+        return jsonify({"error": "No job is currently running"}), 400
+
+    data = request.get_json(silent=True) or {}
+    worker_type = str(data.get("worker_type", "CPU")).upper()
+    count = int(data.get("count", 1))
+    if count <= 0:
+        return jsonify({"error": "count must be greater than 0"}), 400
+    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+        return jsonify({"error": "Invalid worker_type"}), 400
+
+    worker_pool = job_manager.get_active_worker_pool(running_job.id)
+    if worker_pool is None:
+        return jsonify({"error": "Worker pool is not available"}), 409
+
+    try:
+        added = worker_pool.add_workers(worker_type, count)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "worker_type": worker_type,
+            "requested": count,
+            "added": added,
+        }
+    )
+
+
+@api.route("/workers/remove", methods=["POST"])
+@api_token_required
+def remove_workers_global():
+    """Remove workers from the currently running job (global scaling)."""
+    job_manager = get_job_manager()
+    running_job = job_manager.get_running_job()
+    if not running_job:
+        return jsonify({"error": "No job is currently running"}), 400
+
+    data = request.get_json(silent=True) or {}
+    worker_type = str(data.get("worker_type", "CPU")).upper()
+    count = int(data.get("count", 1))
+    if count <= 0:
+        return jsonify({"error": "count must be greater than 0"}), 400
+    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+        return jsonify({"error": "Invalid worker_type"}), 400
+
+    worker_pool = job_manager.get_active_worker_pool(running_job.id)
+    if worker_pool is None:
+        return jsonify({"error": "Worker pool is not available"}), 409
+
+    result = worker_pool.remove_workers(worker_type, count)
+    return jsonify(
+        {
+            "success": True,
+            "worker_type": worker_type,
+            "requested": count,
+            "removed": result.get("removed", 0),
+            "scheduled_removal": result.get("scheduled", 0),
+            "unavailable": result.get("unavailable", 0),
+        }
+    )
+
+
 @api.route("/jobs/<job_id>/workers/add", methods=["POST"])
 @api_token_required
 def add_job_workers(job_id):
@@ -458,6 +528,8 @@ def remove_job_workers(job_id):
 @api_token_required
 def get_job_logs(job_id):
     """Get logs for a specific job."""
+    from .jobs import LOG_RETENTION_CLEARED_MESSAGE
+
     job_manager = get_job_manager()
     job = job_manager.get_job(job_id)
     if not job:
@@ -465,8 +537,16 @@ def get_job_logs(job_id):
 
     last_n = request.args.get("last", type=int)
     logs = job_manager.get_logs(job_id, last_n)
+    log_cleared_by_retention = (
+        len(logs) == 1 and logs[0] == LOG_RETENTION_CLEARED_MESSAGE
+    )
 
-    return jsonify({"job_id": job_id, "logs": logs, "count": len(logs)})
+    return jsonify({
+        "job_id": job_id,
+        "logs": logs,
+        "count": len(logs),
+        "log_cleared_by_retention": log_cleared_by_retention,
+    })
 
 
 @api.route("/jobs/workers", methods=["GET"])
@@ -1157,8 +1237,11 @@ def get_settings():
             "log_level": settings.get("log_level", "INFO"),
             "log_rotation_size": settings.get("log_rotation_size", "10 MB"),
             "log_retention_count": settings.get("log_retention_count", 5),
+            "job_history_days": settings.get("job_history_days", 30),
             "webhook_enabled": settings.get("webhook_enabled", True),
             "webhook_delay": settings.get("webhook_delay", 60),
+            "webhook_retry_count": settings.get("webhook_retry_count", 3),
+            "webhook_retry_delay": settings.get("webhook_retry_delay", 30),
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
         }
     )
@@ -1192,8 +1275,11 @@ def save_settings():
         "log_level",
         "log_rotation_size",
         "log_retention_count",
+        "job_history_days",
         "webhook_enabled",
         "webhook_delay",
+        "webhook_retry_count",
+        "webhook_retry_delay",
         "webhook_secret",
     ]
 
@@ -1572,8 +1658,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if not _job_execution_lock.acquire(blocking=False):
                 merged = {**(job.config or {}), **(config_overrides or {})}
                 job_manager.update_job_config(job_id, merged)
+                running = job_manager.get_running_job()
+                if running:
+                    reason = f"another job ({running.id[:8]}) is currently running"
+                else:
+                    reason = "a cancelled job is still winding down"
                 logger.info(
-                    f"Job {job_id} not started — another job is already running; remains in queue"
+                    f"Job {job_id} not started — {reason}; remains in queue"
                 )
                 return
 
@@ -1616,7 +1707,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 processed_items=0,
                 total_items=0,
                 current_item="Querying Plex libraries...",
-                eta="",
             )
 
             # Push UI settings into environment so load_config() sees them.
@@ -1717,59 +1807,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                 selected_gpus = detect_all_gpus()
 
-            # ===================================================================
-            # ETA Calculation — Dual-Track Algorithm
-            # ===================================================================
-            # Problem: Items that already have BIF files complete in
-            # milliseconds, which corrupts any simple rate average.
-            #
-            # Solution: Two complementary rate estimators run in parallel.
-            #
-            # Track 1 — Burst-filtered rate (most accurate when available)
-            #   Uses the average wall-clock rate *since the first item that
-            #   actually took real work*.  A "real work" transition is
-            #   detected when the overall average time per item (wall-clock
-            #   elapsed / completed) exceeds _SKIP_THRESHOLD.  This avoids
-            #   the old inter-call per_item metric that broke with parallel
-            #   workers completing in the same poll cycle.
-            #
-            # Track 2 — Simple elapsed rate (fallback)
-            #   After a short warmup (≥10 s elapsed, ≥5 items), uses
-            #   completed / elapsed as a fallback.  This guarantees the
-            #   user sees *some* ETA even if burst detection has not yet
-            #   resolved (e.g. many tiny libraries).
-            #
-            # The burst-filtered rate is preferred when available; the
-            # simple rate is used otherwise.
-
-            import time as _time  # local alias (time also imported at module level)
-
-            _last_total: int = 0
-            _processing_start_time: float = 0.0  # wall-clock of first callback
-            _last_completed: int = 0
-            _last_completion_time: float = 0.0  # wall-clock when last item completed
-            # Burst-filtered tracking
-            _real_work_start_time: float = 0.0
-            _real_work_start_count: int = 0
-            _burst_resolved: bool = False
-            _last_eta: str = ""
-            _SKIP_THRESHOLD: float = 2.0  # avg secs/item below this → burst
-            _STALL_THRESHOLD: float = 5.0  # seconds without completions → stall
-            # Warmup thresholds for simple-rate fallback
-            _SIMPLE_MIN_ELAPSED: float = 10.0
-            _SIMPLE_MIN_ITEMS: int = 5
-            # Fast-path warmup for high-throughput runs where burst detection
-            # may not resolve but the overall rate is already stable enough.
-            _FAST_MIN_ELAPSED: float = 8.0
-            _FAST_MIN_ITEMS: int = 5
-            # Minimum signal before trusting burst-filtered estimates.
-            # This prevents startup skew (slow first item(s)) from producing
-            # a wildly inflated ETA that lingers in the UI.
-            _REAL_MIN_ELAPSED: float = 30.0
-            _REAL_MIN_ITEMS: int = 3
-
             def _format_eta(seconds: float) -> str:
-                """Format seconds into human-readable ETA string."""
+                """Format seconds into human-readable ETA string (used for worker ETA from ffmpeg)."""
                 if seconds < 60:
                     return f"{int(seconds)}s"
                 elif seconds < 3600:
@@ -1777,129 +1816,15 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 else:
                     return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
-            # Create progress callback
             def progress_callback(current: int, total: int, message: str):
-                """Update job progress from processing."""
-                nonlocal _last_total, _last_completed, _processing_start_time
-                nonlocal _last_completion_time
-                nonlocal _burst_resolved, _real_work_start_time, _real_work_start_count
-                nonlocal _last_eta
-
-                now = _time.time()
+                """Update job progress from processing (no job-level ETA)."""
                 percent = (current / total * 100) if total > 0 else 0
-
-                # Reset tracking on library boundaries.
-                # A new library may reuse the same total; detect that via
-                # monotonicity break (current drops compared to last callback).
-                is_new_library = total != _last_total or current < _last_completed
-                if is_new_library:
-                    _last_total = total
-                    _last_completed = 0
-                    _last_completion_time = 0.0
-                    _processing_start_time = now
-                    _burst_resolved = False
-                    _real_work_start_time = 0.0
-                    _real_work_start_count = 0
-                    _last_eta = ""
-
-                new_items = current - _last_completed
-                if new_items > 0:
-                    _last_completed = current
-                    _last_completion_time = now
-
-                remaining = total - current
-
-                # Stall detection: seconds since last item completed
-                stall_time = 0.0
-                if _last_completion_time > 0 and remaining > 0:
-                    stall_time = now - _last_completion_time
-
-                # ----- Track 1: burst-filtered rate --------------------------
-                # Detect burst→real transition using the *overall* average
-                # time per completed item.  This is immune to the parallel-
-                # worker batching problem because it divides total elapsed by
-                # total completed, not inter-call gaps.
-                if not _burst_resolved and _processing_start_time > 0 and current >= 2:
-                    overall_elapsed = now - _processing_start_time
-                    avg_per_item = overall_elapsed / current
-                    if avg_per_item >= _SKIP_THRESHOLD:
-                        _burst_resolved = True
-                        _real_work_start_time = _processing_start_time
-                        _real_work_start_count = 0
-
-                # Stall-based burst resolution: if many items were skipped
-                # instantly the overall average stays low forever, but a
-                # stall proves the remaining items need real work.
-                if not _burst_resolved and stall_time >= _STALL_THRESHOLD:
-                    _burst_resolved = True
-                    _real_work_start_time = _last_completion_time
-                    _real_work_start_count = _last_completed
-
-                # ----- Compute ETA -------------------------------------------
-                eta = ""
-                if remaining > 0:
-                    elapsed = (
-                        now - _processing_start_time if _processing_start_time > 0 else 0.0
-                    )
-
-                    # Prefer burst-filtered rate when available
-                    if _burst_resolved and _real_work_start_time > 0:
-                        real_elapsed = now - _real_work_start_time
-                        real_items = current - _real_work_start_count
-                        min_real_items = (
-                            1 if _real_work_start_count > 0 else _REAL_MIN_ITEMS
-                        )
-                        if (
-                            real_elapsed >= _REAL_MIN_ELAPSED
-                            and real_items >= min_real_items
-                        ):
-                            rate = real_items / real_elapsed
-                            eta = _format_eta(remaining / rate)
-
-                    # Fast path for high-speed batches: provide an ETA early
-                    # before full warmup thresholds are reached.
-                    if (
-                        not eta
-                        and _processing_start_time > 0
-                        and current >= _FAST_MIN_ITEMS
-                        and elapsed >= _FAST_MIN_ELAPSED
-                    ):
-                        rate = current / elapsed
-                        if rate > 0:
-                            eta = _format_eta(remaining / rate)
-
-                    # Fallback: simple elapsed rate after warmup.
-                    # Suppress when stalling — the fast-skip rate is
-                    # misleading for items that need real processing.
-                    if (
-                        not eta
-                        and _processing_start_time > 0
-                        and current >= _SIMPLE_MIN_ITEMS
-                        and (stall_time < _STALL_THRESHOLD or bool(_last_eta))
-                    ):
-                        if elapsed >= _SIMPLE_MIN_ELAPSED:
-                            rate = current / elapsed
-                            if rate > 0:
-                                eta = _format_eta(remaining / rate)
-
-                # Preserve the last known ETA during temporary estimation gaps
-                # so the UI does not oscillate back to "Calculating..." between
-                # long-running completion updates.
-                if remaining <= 0:
-                    eta = ""
-                    _last_eta = ""
-                elif eta:
-                    _last_eta = eta
-                elif _last_eta:
-                    eta = _last_eta
-
                 job_manager.update_progress(
                     job_id,
                     percent=percent,
                     processed_items=current,
                     total_items=total,
                     current_item=message,
-                    eta=eta,
                 )
 
             # Create worker status callback
@@ -1930,65 +1855,204 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     job_manager.update_worker_status(worker_key, status)
                 job_manager.prune_worker_statuses(active_worker_keys)
 
+            # If this is a retry job, wait before re-resolving so Plex has time to index
+            _retry_cancelled = False
+            run_job_config = job_manager.get_job(job_id)
+            if run_job_config and run_job_config.config.get("is_retry"):
+                import time as _time
+                delay_sec = max(1, int(run_job_config.config.get("retry_delay", 30)))
+                job_manager.add_log(job_id, f"INFO - Waiting {delay_sec}s before retry (Plex may still be indexing)")
+                job_manager.update_progress(
+                    job_id,
+                    percent=0,
+                    processed_items=0,
+                    total_items=0,
+                    current_item=f"Waiting {delay_sec}s before retry...",
+                )
+                elapsed = 0
+                while elapsed < delay_sec:
+                    if job_manager.is_cancellation_requested(job_id):
+                        _retry_cancelled = True
+                        break
+                    if get_settings_manager().processing_paused:
+                        _time.sleep(0.5)
+                        continue
+                    sleep_chunk = min(2, delay_sec - elapsed)
+                    _time.sleep(sleep_chunk)
+                    elapsed += sleep_chunk
+
             try:
-                clear_failures()
-                # Run in headless mode with progress and worker callbacks
-                def _on_item_complete(worker_id, worker_type, title, success):
-                    outcome = "success" if success else "failed"
-                    msg = (
-                        f"Worker {worker_type} {worker_id} completed: {title!r} ({outcome})"
-                    )
-                    job_manager.add_log(job_id, f"INFO - {msg}")
-                    logger.info(msg)
-
-                result = run_processing(
-                    config,
-                    selected_gpus,
-                    headless=True,
-                    progress_callback=progress_callback,
-                    worker_callback=worker_callback,
-                    item_complete_callback=_on_item_complete,
-                    cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
-                    pause_check=lambda: job_manager.is_pause_requested(job_id)
-                    or get_settings_manager().processing_paused,
-                    worker_pool_callback=lambda pool: job_manager.set_active_worker_pool(
-                        job_id, pool
-                    )
-                    if pool is not None
-                    else job_manager.clear_active_worker_pool(job_id),
-                )
-                log_failure_summary()
-
-                # Surface per-item failures into the job log and status
-                # run_processing may return None (no explicit return in cli), so guard before .get
-                result = result or {}
-                failures = get_failures()
-                current_job = job_manager.get_job(job_id)
-                status_value = (
-                    getattr(current_job.status, "value", current_job.status)
-                    if current_job
-                    else None
-                )
-                if result.get("cancelled") or status_value == "cancelled":
-                    job_manager.add_log(job_id, "WARNING - Job cancelled by user")
+                if _retry_cancelled:
+                    job_manager.add_log(job_id, "WARNING - Retry cancelled by user during wait")
                     job_manager.cancel_job(job_id)
-                elif failures:
-                    job_manager.add_log(
-                        job_id,
-                        f"WARNING - {len(failures)} file(s) failed during processing",
-                    )
-                    for i, f in enumerate(failures, 1):
-                        wt = f"[{f['worker_type']}] " if f.get("worker_type") else ""
-                        job_manager.add_log(
-                            job_id,
-                            f"ERROR - {i}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}",
-                        )
-                    error_msg = f"Completed with {len(failures)} failed file(s)"
-                    job_manager.add_log(job_id, f"WARNING - {error_msg}")
-                    job_manager.complete_job(job_id, error=error_msg)
                 else:
-                    job_manager.add_log(job_id, "INFO - Job completed successfully")
-                    job_manager.complete_job(job_id)
+                    clear_failures()
+
+                    def _on_item_complete(worker_id, worker_type, title, success):
+                        outcome = "success" if success else "failed"
+                        msg = (
+                            f"Worker {worker_type} {worker_id} completed: {title!r} ({outcome})"
+                        )
+                        job_manager.add_log(job_id, f"INFO - {msg}")
+                        logger.info(msg)
+
+                    result = run_processing(
+                        config,
+                        selected_gpus,
+                        headless=True,
+                        progress_callback=progress_callback,
+                        worker_callback=worker_callback,
+                        item_complete_callback=_on_item_complete,
+                        cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                        pause_check=lambda: job_manager.is_pause_requested(job_id)
+                        or get_settings_manager().processing_paused,
+                        worker_pool_callback=lambda pool: job_manager.set_active_worker_pool(
+                            job_id, pool
+                        )
+                        if pool is not None
+                        else job_manager.clear_active_worker_pool(job_id),
+                    )
+                    log_failure_summary()
+
+                    result = result or {}
+                    failures = get_failures()
+                    current_job = job_manager.get_job(job_id)
+                    status_value = (
+                        getattr(current_job.status, "value", current_job.status)
+                        if current_job
+                        else None
+                    )
+                    job_config = (current_job.config or {}) if current_job else {}
+
+                    # Extract webhook resolution data (only present for webhook jobs)
+                    resolution = result.get("webhook_resolution", {})
+                    unresolved_paths = resolution.get("unresolved_paths") or []
+                    total_paths = resolution.get("total_paths", 0)
+                    resolved_count = resolution.get("resolved_count", 0)
+                    is_retry = job_config.get("is_retry", False)
+                    retry_attempt = int(job_config.get("retry_attempt", 0))
+                    max_retries = int(job_config.get("max_retries", 0))
+                    retry_count = max(0, int(job_config.get("webhook_retry_count", 0)))
+                    retry_delay_sec = max(10, min(300, int(job_config.get("webhook_retry_delay", 30))))
+                    effective_max = max_retries or retry_count
+
+                    def _spawn_retry_job(paths, attempt):
+                        """Create and start a retry job for unresolved webhook paths."""
+                        import os as _os
+                        basenames = [_os.path.basename(p) for p in paths]
+                        retry_library_name = (
+                            f"Retry: {basenames[0]}" if len(paths) == 1
+                            else f"Retry: {len(paths)} files"
+                        )
+                        parent_id = job_config.get("parent_job_id") or job_id
+                        rj = job_manager.create_job(
+                            library_name=retry_library_name,
+                            config={
+                                "is_retry": True,
+                                "parent_job_id": parent_id,
+                                "retry_attempt": attempt,
+                                "max_retries": effective_max,
+                                "retry_delay": retry_delay_sec,
+                                "path_count": len(paths),
+                                "webhook_basenames": basenames[:20],
+                            },
+                        )
+                        selected_libs = settings.get("selected_libraries", []) or []
+                        if not isinstance(selected_libs, list):
+                            selected_libs = []
+                        selected_libs = [str(x).strip() for x in selected_libs if str(x).strip()]
+                        _start_job_async(
+                            rj.id,
+                            {
+                                "selected_libraries": selected_libs,
+                                "sort_by": "newest",
+                                "webhook_paths": paths,
+                                "webhook_retry_count": effective_max,
+                                "webhook_retry_delay": retry_delay_sec,
+                            },
+                        )
+                        return rj.id
+
+                    # Determine whether to spawn retries for unresolved paths.
+                    # This must run regardless of whether processing had failures,
+                    # so unresolved paths are never silently dropped.
+                    spawned_retry_id = None
+                    if unresolved_paths and not (result.get("cancelled") or status_value == "cancelled"):
+                        if is_retry and retry_attempt < effective_max:
+                            spawned_retry_id = _spawn_retry_job(unresolved_paths, retry_attempt + 1)
+                            job_manager.add_log(
+                                job_id,
+                                f"INFO - Retry {retry_attempt}/{effective_max}: "
+                                f"{len(unresolved_paths)} still unresolved, next retry scheduled",
+                            )
+                        elif not is_retry and effective_max > 0:
+                            spawned_retry_id = _spawn_retry_job(unresolved_paths, 1)
+                            job_manager.add_log(
+                                job_id,
+                                f"INFO - {len(unresolved_paths)} item(s) not found in Plex, retry scheduled",
+                            )
+
+                    # Build the final completion status
+                    if result.get("cancelled") or status_value == "cancelled":
+                        job_manager.add_log(job_id, "WARNING - Job cancelled by user")
+                        job_manager.cancel_job(job_id)
+                    else:
+                        error_parts = []
+
+                        if failures:
+                            job_manager.add_log(
+                                job_id,
+                                f"WARNING - {len(failures)} file(s) failed during processing",
+                            )
+                            for i, f in enumerate(failures, 1):
+                                wt = f"[{f['worker_type']}] " if f.get("worker_type") else ""
+                                job_manager.add_log(
+                                    job_id,
+                                    f"ERROR - {i}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}",
+                                )
+                            error_parts.append(f"{len(failures)} failed file(s)")
+
+                        if spawned_retry_id:
+                            error_parts.append(f"{len(unresolved_paths)} sent for retry")
+                            summary = dict(job_config)
+                            summary["resolution_summary"] = {
+                                "total": total_paths,
+                                "resolved": resolved_count,
+                                "unresolved": len(unresolved_paths),
+                                "retry_job_ids": [spawned_retry_id],
+                            }
+                            job_manager.update_job_config(job_id, summary)
+                        elif unresolved_paths:
+                            if is_retry:
+                                error_parts.append(
+                                    f"Could not find in Plex after {effective_max} attempt(s)"
+                                )
+                            else:
+                                error_parts.append(
+                                    f"{len(unresolved_paths)} item(s) not found in Plex"
+                                )
+
+                        if error_parts:
+                            if total_paths > 0 and resolved_count < total_paths:
+                                error_msg = f"{resolved_count}/{total_paths} processed; " + ", ".join(error_parts)
+                            else:
+                                error_msg = "; ".join(error_parts)
+                            job_manager.add_log(job_id, f"WARNING - {error_msg}")
+                            # Use hard failure (red badge) for processing errors or
+                            # exhausted retries; warning (amber badge) otherwise.
+                            is_hard_failure = bool(failures) or (
+                                is_retry and unresolved_paths and not spawned_retry_id
+                            )
+                            if is_hard_failure:
+                                job_manager.complete_job(job_id, error=error_msg)
+                            else:
+                                job_manager.complete_job(job_id, warning=error_msg)
+                        else:
+                            if is_retry:
+                                job_manager.add_log(job_id, "INFO - Retry job completed successfully")
+                            else:
+                                job_manager.add_log(job_id, "INFO - Job completed successfully")
+                            job_manager.complete_job(job_id)
             finally:
                 # Clear worker statuses when job ends
                 job_manager.clear_worker_statuses()

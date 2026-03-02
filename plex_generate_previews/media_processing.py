@@ -446,10 +446,12 @@ def parse_ffmpeg_progress_line(
             if total_duration and total_duration > 0:
                 progress_percent = min(100.0, round((current_time / total_duration) * 100, 1))
 
-            # Calculate remaining time from FFmpeg data
+            # Calculate remaining wall-clock time using ffmpeg speed
             remaining_time = 0
             if total_duration and total_duration > 0 and current_time < total_duration:
-                remaining_time = total_duration - current_time
+                remaining_media = total_duration - current_time
+                speed_val = float(speed_match.group(1)) if speed_match else 0
+                remaining_time = remaining_media / speed_val if speed_val > 0 else remaining_media
 
             # Call progress callback with all FFmpeg data
             if progress_callback:

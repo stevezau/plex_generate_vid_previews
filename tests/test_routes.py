@@ -412,7 +412,28 @@ class TestJobsAPI:
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
         assert resp.status_code == 200
-        assert "logs" in resp.get_json()
+        data = resp.get_json()
+        assert "logs" in data
+        assert "log_cleared_by_retention" in data
+        assert data["log_cleared_by_retention"] is False
+
+    def test_get_job_logs_returns_retention_flag_when_log_cleared(self, client, app):
+        """When job exists but log file was removed by retention, API returns log_cleared_by_retention."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.complete_job(job_id)
+        # Remove in-memory logs and delete log file to simulate retention cleanup
+        jm.clear_logs(job_id)
+        resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["log_cleared_by_retention"] is True
+        assert data["logs"] == ["Log file was cleared due to log retention policy."]
 
     def test_pause_resume_job(self, client):
         """Per-job pause/resume routes delegate to global processing pause/resume."""
@@ -573,6 +594,80 @@ class TestJobsAPI:
         assert data["removed"] == 1
         assert data["scheduled_removal"] == 0
         assert data["unavailable"] == 1
+
+    def test_workers_add_global_no_job_returns_400(self, client):
+        """POST /api/workers/add returns 400 when no job is running."""
+        resp = client.post(
+            "/api/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert resp.status_code == 400
+        assert "running" in resp.get_json().get("error", "").lower()
+
+    def test_workers_remove_global_no_job_returns_400(self, client):
+        """POST /api/workers/remove returns 400 when no job is running."""
+        resp = client.post(
+            "/api/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert resp.status_code == 400
+        assert "running" in resp.get_json().get("error", "").lower()
+
+    def test_workers_add_global_success(self, client):
+        """POST /api/workers/add delegates to running job pool."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.add_workers.return_value = 2
+        jm.set_active_worker_pool(job_id, pool)
+
+        add_resp = client.post(
+            "/api/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "GPU", "count": 2},
+        )
+        assert add_resp.status_code == 200
+        data = add_resp.get_json()
+        assert data["added"] == 2
+        assert data["worker_type"] == "GPU"
+        pool.add_workers.assert_called_once_with("GPU", 2)
+
+    def test_workers_remove_global_success(self, client):
+        """POST /api/workers/remove delegates to running job pool."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.remove_workers.return_value = {
+            "removed": 1,
+            "scheduled": 0,
+            "unavailable": 0,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        remove_resp = client.post(
+            "/api/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["removed"] == 1
+        assert data["worker_type"] == "CPU"
+        pool.remove_workers.assert_called_once_with("CPU", 1)
 
 
 # ---------------------------------------------------------------------------

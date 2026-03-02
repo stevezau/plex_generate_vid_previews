@@ -11,11 +11,14 @@ import threading
 import uuid
 from collections import deque
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Callable, Any
 
 from loguru import logger
+
+# Message shown in UI when a job's log file was removed by retention policy.
+LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
 
 
 class JobStatus(str, Enum):
@@ -55,7 +58,6 @@ class JobProgress:
     total_items: int = 0
     processed_items: int = 0
     speed: str = "0.0x"
-    eta: str = ""
     current_file: str = ""
     workers: List[WorkerStatus] = field(default_factory=list)
 
@@ -87,7 +89,10 @@ class Job:
         if not self.created_at:
             self.created_at = datetime.now(timezone.utc).isoformat()
         if isinstance(self.progress, dict):
-            self.progress = JobProgress(**self.progress)
+            # Strip legacy 'eta' so persisted jobs.json loads without error
+            data = dict(self.progress)
+            data.pop("eta", None)
+            self.progress = JobProgress(**data)
         if isinstance(self.status, str):
             self.status = JobStatus(self.status)
 
@@ -118,13 +123,14 @@ class JobManager:
     def __init__(self, config_dir: str = "/config", socketio=None):
         self.config_dir = config_dir
         self.jobs_file = os.path.join(config_dir, "jobs.json")
+        self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
         self.socketio = socketio
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.RLock()
         self._current_job_id: Optional[str] = None
         self._on_progress_callbacks: List[Callable] = []
 
-        # Job logs storage (in-memory, last 500 lines per job)
+        # Job logs storage (in-memory for running jobs, plus file-backed under _job_logs_dir)
         self._job_logs: Dict[str, deque] = {}
         self._max_log_lines = 500
 
@@ -137,8 +143,17 @@ class JobManager:
         self._pause_events: Dict[str, threading.Event] = {}
         self._active_worker_pools: Dict[str, Any] = {}
 
+        # Background retention timer
+        self._retention_timer: Optional[threading.Timer] = None
+
         # Load existing jobs from disk
         self._load_jobs()
+        try:
+            os.makedirs(self._job_logs_dir, exist_ok=True)
+            self._enforce_log_retention()
+        except OSError as e:
+            logger.warning(f"Could not create job logs directory {self._job_logs_dir}: {e}")
+        self._start_retention_timer()
 
     def set_socketio(self, socketio) -> None:
         """Set the SocketIO instance for real-time updates."""
@@ -213,8 +228,92 @@ class JobManager:
         excess = len(terminal) - self._MAX_TERMINAL_JOBS
         if excess > 0:
             for job in terminal[:excess]:
+                self._delete_job_log_file(job.id)
                 del self._jobs[job.id]
             logger.debug(f"Pruned {excess} old terminal jobs")
+
+    def _delete_job_log_file(self, job_id: str) -> None:
+        """Remove the persisted log file for a job if it exists. Caller must hold _lock."""
+        path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            logger.debug(f"Could not remove job log file {path}: {e}")
+
+    def _get_job_history_days(self) -> int:
+        """Read job_history_days from settings, defaulting to 30."""
+        try:
+            from .settings_manager import get_settings_manager
+
+            sm = get_settings_manager()
+            return int(sm.get("job_history_days", 30))
+        except Exception:
+            return 30
+
+    def _enforce_log_retention(self) -> None:
+        """Delete terminal jobs and their log files older than job_history_days.
+
+        Also removes orphaned log files (no matching job entry).
+        """
+        days = self._get_job_history_days()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+
+        expired_ids = []
+        for job_id, job in self._jobs.items():
+            if job.status not in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                continue
+            ref_time = job.completed_at or job.created_at
+            if ref_time and ref_time < cutoff_iso:
+                expired_ids.append(job_id)
+
+        if expired_ids:
+            for job_id in expired_ids:
+                self._delete_job_log_file(job_id)
+                self._job_logs.pop(job_id, None)
+                del self._jobs[job_id]
+            self._save_jobs()
+            logger.info(f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)")
+
+        # Clean up orphaned log files whose job entry no longer exists
+        if os.path.isdir(self._job_logs_dir):
+            for name in os.listdir(self._job_logs_dir):
+                if not name.endswith(".log"):
+                    continue
+                job_id = name[:-4]  # strip ".log"
+                if job_id not in self._jobs:
+                    path = os.path.join(self._job_logs_dir, name)
+                    try:
+                        os.remove(path)
+                        logger.debug(f"Removed orphaned job log: {path}")
+                    except OSError:
+                        pass
+
+    _RETENTION_INTERVAL_SEC = 3600  # 1 hour
+
+    def _start_retention_timer(self) -> None:
+        """Start (or restart) the background hourly retention timer."""
+        self._stop_retention_timer()
+        timer = threading.Timer(self._RETENTION_INTERVAL_SEC, self._retention_tick)
+        timer.daemon = True
+        timer.start()
+        self._retention_timer = timer
+
+    def _stop_retention_timer(self) -> None:
+        """Cancel the background retention timer if running."""
+        if self._retention_timer is not None:
+            self._retention_timer.cancel()
+            self._retention_timer = None
+
+    def _retention_tick(self) -> None:
+        """Periodic callback: run retention then schedule the next tick."""
+        try:
+            with self._lock:
+                self._enforce_log_retention()
+        except Exception as e:
+            logger.debug(f"Retention tick error: {e}")
+        self._start_retention_timer()
 
     def create_job(
         self,
@@ -288,7 +387,6 @@ class JobManager:
         total_items: int = None,
         processed_items: int = None,
         speed: str = None,
-        eta: str = None,
         current_file: str = None,
     ) -> Optional[Job]:
         """Update job progress."""
@@ -305,8 +403,6 @@ class JobManager:
                     job.progress.processed_items = processed_items
                 if speed is not None:
                     job.progress.speed = speed
-                if eta is not None:
-                    job.progress.eta = eta
                 if current_file is not None:
                     job.progress.current_file = current_file
 
@@ -317,8 +413,21 @@ class JobManager:
                 )
             return job
 
-    def complete_job(self, job_id: str, error: Optional[str] = None) -> Optional[Job]:
-        """Mark a job as completed or failed."""
+    def complete_job(
+        self,
+        job_id: str,
+        error: Optional[str] = None,
+        warning: Optional[str] = None,
+    ) -> Optional[Job]:
+        """Mark a job as completed, completed-with-warning, or failed.
+
+        Args:
+            job_id: Job identifier.
+            error: If set, marks job as FAILED (red badge).
+            warning: If set (and error is not), marks job as COMPLETED with a
+                     warning message (amber badge in UI). The warning text is
+                     stored in `job.error` so the UI can display it.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
@@ -340,6 +449,13 @@ class JobManager:
                     job.paused = False
                     self._emit_event("job_failed", job.to_dict())
                     logger.error(f"Job {job_id} failed: {error}")
+                elif warning:
+                    job.status = JobStatus.COMPLETED
+                    job.error = warning
+                    job.paused = False
+                    job.progress.percent = 100.0
+                    self._emit_event("job_completed", job.to_dict())
+                    logger.info(f"Job {job_id} completed with warnings: {warning}")
                 else:
                     job.status = JobStatus.COMPLETED
                     job.paused = False
@@ -382,6 +498,9 @@ class JobManager:
             if job_id in self._jobs:
                 if self._current_job_id == job_id:
                     return False  # Can't delete running job
+                self._delete_job_log_file(job_id)
+                if job_id in self._job_logs:
+                    del self._job_logs[job_id]
                 del self._jobs[job_id]
                 self._save_jobs()
                 self._emit_event("job_deleted", {"job_id": job_id})
@@ -409,6 +528,8 @@ class JobManager:
                 job_id for job_id, job in self._jobs.items() if job.status in target
             ]
             for job_id in to_delete:
+                self._delete_job_log_file(job_id)
+                self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             if to_delete:
                 self._save_jobs()
@@ -435,26 +556,46 @@ class JobManager:
     # ========================================================================
 
     def add_log(self, job_id: str, message: str) -> None:
-        """Add a log message for a job."""
+        """Add a log message for a job (in-memory and append to file)."""
         with self._lock:
             if job_id not in self._job_logs:
                 self._job_logs[job_id] = deque(maxlen=self._max_log_lines)
             timestamp = datetime.utcnow().strftime("%H:%M:%S")
-            self._job_logs[job_id].append(f"[{timestamp}] {message}")
+            line = f"[{timestamp}] {message}"
+            self._job_logs[job_id].append(line)
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            try:
+                with open(log_path, "a") as f:
+                    f.write(line + "\n")
+            except OSError as e:
+                logger.debug(f"Could not append to job log {log_path}: {e}")
 
     def get_logs(self, job_id: str, last_n: int = None) -> List[str]:
-        """Get logs for a job."""
+        """Get logs for a job (from memory if present, else from file; retention message if cleared)."""
         with self._lock:
-            if job_id not in self._job_logs:
-                return []
-            logs = list(self._job_logs[job_id])
-            if last_n:
-                return logs[-last_n:]
-            return logs
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                if last_n:
+                    return logs[-last_n:]
+                return logs
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            if os.path.isfile(log_path):
+                try:
+                    with open(log_path, "r") as f:
+                        logs = [line.rstrip("\n") for line in f if line]
+                    if last_n:
+                        return logs[-last_n:]
+                    return logs
+                except OSError:
+                    pass
+            if job_id in self._jobs:
+                return [LOG_RETENTION_CLEARED_MESSAGE]
+            return []
 
     def clear_logs(self, job_id: str) -> None:
-        """Clear logs for a job."""
+        """Clear logs for a job (memory and file)."""
         with self._lock:
+            self._delete_job_log_file(job_id)
             if job_id in self._job_logs:
                 del self._job_logs[job_id]
 

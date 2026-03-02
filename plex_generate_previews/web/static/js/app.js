@@ -176,8 +176,13 @@ function connectSocket() {
         loadJobStats();
         loadWorkerStatuses();
         clearCurrentJob();
-        showToast('Job Completed', `Job ${job.id.substring(0, 8)} completed successfully`, 'success');
-        showNotification('Job Completed', `Processing finished for ${job.library_name || 'All Libraries'}`, 'success');
+        if (job.error) {
+            showToast('Job completed with warnings', job.error, 'warning');
+            showNotification('Job completed with warnings', job.error, 'warning');
+        } else {
+            showToast('Job Completed', `Job ${job.id.substring(0, 8)} completed successfully`, 'success');
+            showNotification('Job Completed', `Processing finished for ${job.library_name || 'All Libraries'}`, 'success');
+        }
     });
 
     socket.on('job_failed', function(job) {
@@ -438,7 +443,11 @@ async function loadJobs() {
                 if (completedJob && completedJob.status !== 'running') {
                     _lastNotifiedJobId = currentJobId;
                     if (completedJob.status === 'completed') {
-                        showNotification('Job Completed', `Job ${currentJobId.substring(0, 8)} finished successfully`, 'success');
+                        if (completedJob.error) {
+                            showNotification('Job completed with warnings', completedJob.error, 'warning');
+                        } else {
+                            showNotification('Job Completed', `Job ${currentJobId.substring(0, 8)} finished successfully`, 'success');
+                        }
                     } else if (completedJob.status === 'failed') {
                         showNotification('Job Failed', `Job ${currentJobId.substring(0, 8)} failed: ${completedJob.error || 'Unknown error'}`, 'error');
                     }
@@ -682,7 +691,7 @@ function updateJobQueue() {
     }
 
     for (const job of sortedJobs) {
-        const statusBadge = getStatusBadge(job.status, job.paused);
+        const statusBadge = getStatusBadge(job.status, job.paused, job.error);
         const progress = job.progress.percent.toFixed(1);
         const created = formatDate(job.created_at);
         let actionButtons = '';
@@ -717,10 +726,16 @@ function updateJobQueue() {
                    <i class="bi ${isFilesExpanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>
                  </button>`
             : '';
+        const isRetry = !!(job.config && job.config.is_retry);
+        const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
+        const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
+        const retryLabel = isRetry && maxRetries > 0
+            ? ` <span class="badge bg-secondary ms-1" title="Retry job">Retry ${retryAttempt}/${maxRetries}</span>`
+            : '';
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
                 <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
-                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${filesToggleBtn}</td>
+                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${retryLabel}${filesToggleBtn}</td>
                 <td>${statusBadge}</td>
                 <td>
                     <div class="progress" style="height: 20px;">
@@ -786,24 +801,6 @@ function updateCurrentJob(job) {
             webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${webhookFiles.map(function (b) { return escapeHtml(b); }).join(', ')}</span>`;
         }
     }
-    const existingTypeInput = document.getElementById('workerScaleType');
-    const existingCountInput = document.getElementById('workerScaleCount');
-    if (existingTypeInput) {
-        workerScaleState.workerType = existingTypeInput.value || workerScaleState.workerType;
-    }
-    if (existingCountInput) {
-        const parsedCount = parseInt(existingCountInput.value, 10);
-        if (!Number.isNaN(parsedCount) && parsedCount > 0) {
-            workerScaleState.count = parsedCount;
-        }
-    }
-    const selectedWorkerType = ['GPU', 'CPU', 'CPU_FALLBACK'].includes(workerScaleState.workerType)
-        ? workerScaleState.workerType
-        : 'CPU';
-    const selectedWorkerCount = Number.isInteger(workerScaleState.count) && workerScaleState.count > 0
-        ? workerScaleState.count
-        : 1;
-
     card.innerHTML = `
         <div class="mb-3">
             <strong>Job ID:</strong> <code>${escapeHtml(job.id)}</code>
@@ -822,47 +819,14 @@ function updateCurrentJob(job) {
         </div>
         <div class="mt-2 text-muted small">
             <span id="currentJobItems">Items: ${escapeHtml(job.progress.processed_items) || 0} / ${escapeHtml(job.progress.total_items) || '?'}</span>
-            <span class="ms-3" id="currentJobEta">ETA: ${escapeHtml(job.progress.eta) || 'Calculating...'}</span>
         </div>
-        <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
+        <div class="mt-3">
             <button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')">
                 <i class="bi bi-x me-1"></i>Cancel
             </button>
-            <div class="d-flex flex-wrap gap-2 align-items-center">
-                <label class="small text-muted mb-0" for="workerScaleType">Workers</label>
-                <select id="workerScaleType" class="form-select form-select-sm" style="width: 150px;">
-                    <option value="GPU" ${selectedWorkerType === 'GPU' ? 'selected' : ''}>GPU</option>
-                    <option value="CPU" ${selectedWorkerType === 'CPU' ? 'selected' : ''}>CPU</option>
-                    <option value="CPU_FALLBACK" ${selectedWorkerType === 'CPU_FALLBACK' ? 'selected' : ''}>CPU Fallback</option>
-                </select>
-                <input id="workerScaleCount" class="form-control form-control-sm" type="number" min="1" step="1" value="${selectedWorkerCount}" style="width: 78px;" />
-                <button class="btn btn-sm btn-outline-success" onclick="scaleWorkersFromControls('${escapeHtml(job.id)}', 1)">
-                    <i class="bi bi-plus-lg me-1"></i>Add
-                </button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="scaleWorkersFromControls('${escapeHtml(job.id)}', -1)">
-                    <i class="bi bi-dash-lg me-1"></i>Remove
-                </button>
-            </div>
-            <div class="w-100 small text-muted">
-                Remove retires idle workers now and schedules busy workers to retire when they finish.
-            </div>
         </div>
     `;
-    const typeInput = document.getElementById('workerScaleType');
-    const countInput = document.getElementById('workerScaleCount');
-    if (typeInput) {
-        typeInput.addEventListener('change', () => {
-            workerScaleState.workerType = typeInput.value || 'CPU';
-        });
-    }
-    if (countInput) {
-        countInput.addEventListener('input', () => {
-            const parsedCount = parseInt(countInput.value, 10);
-            if (!Number.isNaN(parsedCount) && parsedCount > 0) {
-                workerScaleState.count = parsedCount;
-            }
-        });
-    }
+    refreshWorkerScaleButtons();
 }
 
 function updateJobProgress(jobId, progress) {
@@ -888,12 +852,6 @@ function updateJobProgress(jobId, progress) {
     const itemsEl = document.getElementById('currentJobItems');
     if (itemsEl) {
         itemsEl.textContent = `Items: ${progress.processed_items || 0} / ${progress.total_items || '?'}`;
-    }
-
-    // Update ETA
-    const etaEl = document.getElementById('currentJobEta');
-    if (etaEl) {
-        etaEl.textContent = `ETA: ${progress.eta || 'Calculating...'}`;
     }
 
     // Update job queue row
@@ -923,12 +881,12 @@ function clearCurrentJob() {
     `;
     // Hide logs button when no job
     document.getElementById('viewLogsBtn').style.display = 'none';
+    refreshWorkerScaleButtons();
 }
 
 // Worker Status Functions
 let currentJobId = null;
 let logsRefreshInterval = null;
-let workerScaleState = { workerType: 'CPU', count: 1 };
 
 function updateWorkerStatuses(workers, options = {}) {
     const {
@@ -955,6 +913,7 @@ function updateWorkerStatuses(workers, options = {}) {
             if (cpuWorkersEl) cpuWorkersEl.textContent = String(counts.cpu_threads);
             if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(counts.cpu_fallback_threads);
         }
+        refreshWorkerScaleButtons();
         return;
     }
 
@@ -1003,6 +962,7 @@ function updateWorkerStatuses(workers, options = {}) {
 
     html += '</div>';
     container.innerHTML = html;
+    refreshWorkerScaleButtons();
 }
 
 async function loadWorkerStatuses() {
@@ -1099,7 +1059,15 @@ async function refreshLogs() {
         const logsContent = document.getElementById('logsContent');
         const autoScroll = document.getElementById('logsAutoScroll').checked;
 
-        if (data.logs && data.logs.length > 0) {
+        if (data.log_cleared_by_retention) {
+            _rawLogs = [];
+            logsContent.innerHTML = [
+                '<div class="alert alert-info mb-0" role="alert">',
+                '<i class="bi bi-info-circle me-2"></i>',
+                'Log file was cleared due to log retention policy.',
+                '</div>'
+            ].join('');
+        } else if (data.logs && data.logs.length > 0) {
             _rawLogs = data.logs;
             logsContent.innerHTML = data.logs.map(colorizeLogLine).join('\n');
             filterLogs();
@@ -1194,7 +1162,7 @@ async function requestNotificationPermission() {
 function showNotification(title, body, type = 'info') {
     if (!notificationsEnabled) return;
 
-    const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+    const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
 
     new Notification(`${icon} ${title}`, {
         body: body,
@@ -1417,20 +1385,79 @@ async function scaleWorkers(jobId, workerType, delta) {
     }
 }
 
-function getWorkerScaleSelection() {
-    const typeInput = document.getElementById('workerScaleType');
-    const countInput = document.getElementById('workerScaleCount');
-    const workerType = typeInput ? typeInput.value : 'CPU';
-    const parsedCount = countInput ? parseInt(countInput.value, 10) : 1;
-    const count = Number.isNaN(parsedCount) ? 1 : Math.max(1, parsedCount);
-    workerScaleState = { workerType, count };
-    return { workerType, count };
+function refreshWorkerScaleButtons() {
+    const buttons = document.querySelectorAll('.worker-scale-btn');
+    buttons.forEach((btn) => {
+        const direction = parseInt(btn.getAttribute('data-direction'), 10);
+        if (direction === 1) {
+            btn.disabled = false;
+            return;
+        }
+        const workerType = btn.getAttribute('data-worker-type');
+        btn.disabled = getWorkerCountForType(workerType) <= 0;
+    });
 }
 
-async function scaleWorkersFromControls(jobId, direction) {
-    const { workerType, count } = getWorkerScaleSelection();
-    const delta = direction > 0 ? count : -count;
-    await scaleWorkers(jobId, workerType, delta);
+function getWorkerCountForType(workerType) {
+    const id = workerType === 'GPU' ? 'gpuWorkers' : workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers';
+    const el = document.getElementById(id);
+    if (!el) return 0;
+    const n = parseInt(el.textContent, 10);
+    return Number.isNaN(n) ? 0 : n;
+}
+
+function settingsKeyForWorkerType(workerType) {
+    if (workerType === 'GPU') return 'gpu_threads';
+    if (workerType === 'CPU') return 'cpu_threads';
+    return 'cpu_fallback_threads';
+}
+
+async function scaleWorkersGlobal(workerType, direction) {
+    const currentCount = getWorkerCountForType(workerType);
+    const newCount = Math.max(0, currentCount + direction);
+    if (newCount === currentCount) return;
+
+    const settingsKey = settingsKeyForWorkerType(workerType);
+
+    try {
+        await apiPost('/api/settings', { [settingsKey]: newCount });
+        cachedWorkerConfigCounts = null;
+        await loadWorkerConfigCounts(true);
+
+        const badgeEl = document.getElementById(
+            workerType === 'GPU' ? 'gpuWorkers' : workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
+        );
+        if (badgeEl) badgeEl.textContent = String(newCount);
+        refreshWorkerScaleButtons();
+
+        const hasRunningJob = jobs.some(j => j.status === 'running');
+        if (hasRunningJob) {
+            const endpoint = direction > 0 ? 'add' : 'remove';
+            try {
+                const result = await apiPost(`/api/workers/${endpoint}`, {
+                    worker_type: workerType,
+                    count: 1
+                });
+                await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
+                if (endpoint === 'add') {
+                    showToast('Workers Updated', `Added ${result.added} ${workerType} worker(s)`, 'success');
+                } else {
+                    const scheduled = result.scheduled_removal || 0;
+                    if (scheduled > 0) {
+                        showToast('Workers Updated', `Removed ${result.removed} ${workerType}; ${scheduled} scheduled after current tasks`, 'warning');
+                    } else {
+                        showToast('Workers Updated', `Removed ${result.removed} ${workerType} worker(s)`, 'info');
+                    }
+                }
+            } catch (scaleErr) {
+                console.warn('Live worker scaling failed (setting saved):', scaleErr);
+            }
+        } else {
+            showToast('Setting Saved', `${workerType} workers set to ${newCount}`, 'success');
+        }
+    } catch (error) {
+        showToast('Error', `Failed to update ${workerType} workers: ${error.message}`, 'danger');
+    }
 }
 
 async function deleteJob(jobId) {
@@ -1588,9 +1615,12 @@ async function deleteSchedule(scheduleId) {
 }
 
 // Helper Functions
-function getStatusBadge(status, paused = false) {
+function getStatusBadge(status, paused = false, error = null) {
     if (status === 'running' && paused) {
         return '<span class="badge bg-warning text-dark">Paused</span>';
+    }
+    if (status === 'completed' && error) {
+        return '<span class="badge bg-warning text-dark">Completed with warnings</span>';
     }
     const badges = {
         'pending': '<span class="badge bg-secondary">Pending</span>',

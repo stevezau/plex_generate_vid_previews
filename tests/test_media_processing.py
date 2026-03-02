@@ -229,6 +229,47 @@ class TestFFmpegProgressParsing:
         result = parse_ffmpeg_progress_line(line, 100.0, None)
         assert result == 100.0
 
+    def test_remaining_time_accounts_for_speed(self):
+        """remaining_time should be wall-clock ETA, not raw media remaining."""
+        line = "frame= 5000 fps=120 q=28.0 size=  50000kB time=00:05:00.00 bitrate= 1000.0kbits/s speed=100.0x"
+        captured = {}
+
+        def callback(progress, current, total, speed, remaining, frame, fps, q, size, time_str, bitrate):
+            captured["remaining"] = remaining
+            captured["speed"] = speed
+
+        total_duration = 600.0  # 10 minutes
+        parse_ffmpeg_progress_line(line, total_duration, callback)
+
+        # current_time = 300s, remaining media = 300s, speed = 100x
+        # wall-clock ETA = 300 / 100 = 3 seconds
+        assert captured["speed"] == "100.0x"
+        assert abs(captured["remaining"] - 3.0) < 0.1
+
+    def test_remaining_time_at_1x_speed(self):
+        """At 1x speed, wall-clock ETA equals remaining media duration."""
+        line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=1.0x"
+        captured = {}
+
+        def callback(progress, current, total, speed, remaining, frame, fps, q, size, time_str, bitrate):
+            captured["remaining"] = remaining
+
+        parse_ffmpeg_progress_line(line, 100.0, callback)
+        # remaining media = 90s, speed = 1x -> wall-clock = 90s
+        assert abs(captured["remaining"] - 90.0) < 0.1
+
+    def test_remaining_time_no_speed_falls_back(self):
+        """When speed is not parseable, remaining_time falls back to raw media remaining."""
+        line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=N/Ax"
+        captured = {}
+
+        def callback(progress, current, total, speed, remaining, frame, fps, q, size, time_str, bitrate):
+            captured["remaining"] = remaining
+
+        parse_ffmpeg_progress_line(line, 100.0, callback)
+        # speed not parseable -> falls back to raw remaining = 90s
+        assert abs(captured["remaining"] - 90.0) < 0.1
+
 
 class TestHeuristicAllowsSkip:
     """Test skip frame heuristic."""

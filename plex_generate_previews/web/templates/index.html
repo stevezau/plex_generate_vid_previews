@@ -49,19 +49,32 @@
 
                 <!-- Workers Status (preserved across updates) -->
                 <div id="workerCounts">
-                    <div class="d-flex justify-content-between mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
                         <span>GPU Workers:</span>
-                        <span id="gpuWorkers" class="badge bg-primary">-</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="GPU" data-direction="-1" onclick="scaleWorkersGlobal('GPU', -1)" title="Remove one GPU worker"><i class="bi bi-dash-lg"></i></button>
+                            <span id="gpuWorkers" class="badge bg-primary" style="min-width: 1.5rem;">-</span>
+                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="GPU" data-direction="1" onclick="scaleWorkersGlobal('GPU', 1)" title="Add one GPU worker"><i class="bi bi-plus-lg"></i></button>
+                        </span>
                     </div>
-                    <div class="d-flex justify-content-between mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
                         <span>CPU Workers:</span>
-                        <span id="cpuWorkers" class="badge bg-secondary">-</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU" data-direction="-1" onclick="scaleWorkersGlobal('CPU', -1)" title="Remove one CPU worker"><i class="bi bi-dash-lg"></i></button>
+                            <span id="cpuWorkers" class="badge bg-secondary" style="min-width: 1.5rem;">-</span>
+                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU" data-direction="1" onclick="scaleWorkersGlobal('CPU', 1)" title="Add one CPU worker"><i class="bi bi-plus-lg"></i></button>
+                        </span>
                     </div>
-                    <div class="d-flex justify-content-between mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
                         <span>CPU Fallback Workers:</span>
-                        <span id="cpuFallbackWorkers" class="badge bg-info">-</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="-1" onclick="scaleWorkersGlobal('CPU_FALLBACK', -1)" title="Remove one CPU fallback worker"><i class="bi bi-dash-lg"></i></button>
+                            <span id="cpuFallbackWorkers" class="badge bg-info" style="min-width: 1.5rem;">-</span>
+                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="1" onclick="scaleWorkersGlobal('CPU_FALLBACK', 1)" title="Add one CPU fallback worker"><i class="bi bi-plus-lg"></i></button>
+                        </span>
                     </div>
                 </div>
+                <div class="small text-muted mt-1">Changes are saved to settings. If a job is running, workers are also scaled live.</div>
             </div>
         </div>
     </div>
@@ -535,6 +548,7 @@
                 if (gpuEl) gpuEl.textContent = config.gpu_threads ?? 0;
                 if (cpuEl) cpuEl.textContent = config.cpu_threads ?? 1;
                 if (cpuFallbackEl) cpuFallbackEl.textContent = config.cpu_fallback_threads ?? 0;
+                if (typeof refreshWorkerScaleButtons === 'function') refreshWorkerScaleButtons();
             } catch (e) {
                 console.warn('Failed to load config:', e);
             }

@@ -236,15 +236,29 @@
                             <option value="ERROR">ERROR</option>
                             <option value="CRITICAL">CRITICAL</option>
                         </select>
-                        <div class="form-text">Controls console and job log verbosity</div>
+                        <div class="form-text">Controls verbosity for container console output (<code>docker logs</code>) and per-job logs shown in the UI</div>
                     </div>
+                </div>
+                <button class="btn btn-sm btn-outline-primary mb-3" onclick="applyLogLevel()">
+                    <i class="bi bi-arrow-repeat me-1"></i>Apply Log Level Now
+                </button>
+                <div class="form-text mb-3">Applies immediately without restarting.</div>
+
+                <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-text me-1"></i>System Log Files</h6>
+                <p class="form-text mt-0 mb-2">
+                    Two log files are kept in <code>/config/logs/</code>:
+                    <strong>error.log</strong> (errors and crashes) and <strong>activity.log</strong> (warnings, retries, and failures).
+                    These are always written regardless of the log level above.
+                    When a file reaches the rotation size it is compressed and a new one starts.
+                </p>
+                <div class="row mb-3">
                     <div class="col-md-3 mb-3">
                         <label for="logRotationSize" class="form-label">Rotation Size</label>
                         <div class="input-group">
                             <input type="number" class="form-control" id="logRotationSize" min="1" max="100" value="10">
                             <span class="input-group-text">MB</span>
                         </div>
-                        <div class="form-text">Max size per log file</div>
+                        <div class="form-text">Max size before rotating</div>
                     </div>
                     <div class="col-md-3 mb-3">
                         <label for="logRetentionCount" class="form-label">Retention</label>
@@ -255,11 +269,21 @@
                         <div class="form-text">Rotated files to keep</div>
                     </div>
                 </div>
-                <button class="btn btn-sm btn-outline-primary" onclick="applyLogLevel()">
-                    <i class="bi bi-arrow-repeat me-1"></i>Apply Log Level Now
-                </button>
-                <div class="form-text mt-1">
-                    Applies immediately without restarting. Rotation &amp; retention take effect on next restart.
+                <div class="form-text mb-3">Rotation &amp; retention changes take effect on next restart.</div>
+
+                <h6 class="text-muted mb-2"><i class="bi bi-list-task me-1"></i>Job History</h6>
+                <p class="form-text mt-0 mb-2">
+                    Each job keeps its own log file in <code>/config/logs/jobs/</code>.
+                    Completed, failed, and cancelled jobs older than this are automatically removed along with their logs.
+                </p>
+                <div class="row mb-3">
+                    <div class="col-md-3 mb-3">
+                        <label for="jobHistoryDays" class="form-label">Keep History For</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="jobHistoryDays" min="1" max="365" value="30">
+                            <span class="input-group-text">days</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -358,6 +382,7 @@ async function loadSettings() {
         document.getElementById('logLevel').value = settings.log_level || 'INFO';
         document.getElementById('logRotationSize').value = parseInt(settings.log_rotation_size) || 10;
         document.getElementById('logRetentionCount').value = settings.log_retention_count || 5;
+        document.getElementById('jobHistoryDays').value = settings.job_history_days ?? 30;
 
         // Show server name and auth status
         if (settings.plex_name) {
@@ -542,6 +567,7 @@ async function saveAllSettings() {
             log_level: document.getElementById('logLevel').value,
             log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
             log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
+            job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
         };
 
         await new SettingsManager().save(settings);
