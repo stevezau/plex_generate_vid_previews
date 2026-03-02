@@ -74,7 +74,13 @@ if [ "$RUN_MODE" = "cli" ]; then
     run_as_user plex-generate-previews "${CLI_ARGS[@]}"
 else
     # Web mode - start gunicorn with threaded workers for production
-    echo "Starting gunicorn web server on port ${WEB_PORT:-8080}..."
+    RELOAD_FLAG=""
+    if [ "${DEV_RELOAD:-false}" = "true" ]; then
+        RELOAD_FLAG="--reload"
+        echo "Starting gunicorn web server on port ${WEB_PORT:-8080} (live reload enabled)..."
+    else
+        echo "Starting gunicorn web server on port ${WEB_PORT:-8080}..."
+    fi
     run_as_user gunicorn \
         --bind "0.0.0.0:${WEB_PORT:-8080}" \
         --worker-class gthread \
@@ -85,5 +91,6 @@ else
         --keep-alive 65 \
         --error-logfile - \
         --log-level info \
+        $RELOAD_FLAG \
         "plex_generate_previews.web.wsgi:app"
 fi

@@ -725,22 +725,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function setupCreatePathMappingRow(row) {
         const div = document.createElement('div');
-        div.className = 'path-mapping-row d-flex flex-wrap align-items-end gap-2 mb-2';
+        div.className = 'path-mapping-row d-flex align-items-end gap-2 mb-2';
         const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
         div.innerHTML = `
-            <div class="flex-grow-1" style="min-width: 140px;">
+            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
                 <label class="form-label small mb-0">Path in Plex</label>
                 <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${(row.plex_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
             </div>
-            <div class="flex-grow-1" style="min-width: 140px;">
+            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
                 <label class="form-label small mb-0">Path in this app</label>
                 <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${(row.local_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
             </div>
-            <div class="flex-grow-1" style="min-width: 140px;">
+            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
                 <label class="form-label small mb-0 text-muted">Path from Sonarr/Radarr (if different)</label>
                 <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${(webhookVal || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
             </div>
-            <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
+            <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove flex-shrink-0" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
         `;
         div.querySelector('.path-mapping-remove').addEventListener('click', function() {
             const parent = div.closest('.path-mapping-rows');

@@ -391,9 +391,22 @@ class SettingsManager:
             logger.info("Setup wizard completed")
 
     def is_setup_complete(self) -> bool:
-        """Check if setup wizard has been completed."""
+        """Check if setup wizard has been completed.
+
+        Returns True when:
+        - The setup_complete flag was explicitly set (wizard finished), or
+        - The app is configured (plex_url + plex_token) AND the wizard
+          is not actively in progress.
+
+        This prevents a partial wizard run (e.g. Step 2 saved plex_url/token
+        but user never finished) from being treated as complete.
+        """
         with self._lock:
-            return self.get("setup_complete", False) or self.is_configured()
+            if self.get("setup_complete", False):
+                return True
+            if self._setup_state.get("step", 0) > 0:
+                return False
+            return self.is_configured()
 
 
 # Global instance

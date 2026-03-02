@@ -67,6 +67,8 @@ def _is_within_base(base_path: str, candidate_path: str) -> bool:
     candidate_real = os.path.realpath(candidate_path)
     if base_real == candidate_real:
         return True
+    if base_real == os.sep:
+        return True
     base_with_sep = base_real if base_real.endswith(os.sep) else base_real + os.sep
     return candidate_real.startswith(base_with_sep)
 
@@ -97,6 +99,8 @@ def _safe_resolve_within(user_path: str, allowed_root: str) -> str | None:
 
     # Containment check: resolved must be root or a child of root
     if resolved == root_real:
+        return resolved
+    if root_real == os.sep:
         return resolved
     if not resolved.startswith(root_real + os.sep):
         return None
@@ -142,7 +146,11 @@ limiter = Limiter(
 @main.route("/")
 @login_required
 def index():
-    """Dashboard page."""
+    """Dashboard page. Redirects to setup wizard if setup is incomplete."""
+    from .settings_manager import get_settings_manager
+
+    if not get_settings_manager().is_setup_complete():
+        return redirect(url_for("main.setup_wizard"))
     return render_template("index.html")
 
 
@@ -1471,7 +1479,7 @@ def validate_paths():
 
         if not os.path.exists(resolved_plex_data_path):
             result["errors"].append(
-                f"Plex Data Path does not exist: {resolved_plex_data_path}"
+                f"Plex data folder not found: {resolved_plex_data_path}"
             )
             result["valid"] = False
         else:
@@ -1481,12 +1489,12 @@ def validate_paths():
 
             if not os.path.exists(media_path):
                 result["errors"].append(
-                    f'Missing "Media" folder in Plex Data Path. Expected: {media_path}'
+                    f'Plex data folder ({resolved_plex_data_path}): missing "Media" subfolder'
                 )
                 result["valid"] = False
             elif not os.path.exists(localhost_path):
                 result["errors"].append(
-                    f'Missing "Media/localhost" folder. Expected: {localhost_path}'
+                    f'Plex data folder ({resolved_plex_data_path}): missing "Media/localhost" subfolder'
                 )
                 result["valid"] = False
             else:
@@ -1498,32 +1506,38 @@ def validate_paths():
                     ]
                     if len(hex_dirs) >= 10:
                         result["info"].append(
-                            f"✓ Valid Plex database structure found ({len(hex_dirs)} hash directories)"
+                            f"✓ Plex data folder ({resolved_plex_data_path}): valid structure ({len(hex_dirs)} hash directories)"
                         )
                     else:
                         result["warnings"].append(
-                            f"Plex database structure looks incomplete. Found {len(hex_dirs)}/16 hash directories."
+                            f"Plex data folder ({resolved_plex_data_path}): structure looks incomplete ({len(hex_dirs)}/16 hash directories)"
                         )
                 except Exception as e:
                     logger.warning(f"Could not verify Plex structure: {e}")
-                    result["warnings"].append("Could not verify Plex structure")
+                    result["warnings"].append(
+                        f"Plex data folder ({resolved_plex_data_path}): could not verify structure"
+                    )
 
             # Check write permissions (non-destructive)
             if os.access(resolved_plex_data_path, os.W_OK):
-                result["info"].append("✓ Write permissions OK")
+                result["info"].append(
+                    f"✓ Plex data folder ({resolved_plex_data_path}): write permissions OK"
+                )
             else:
                 result["errors"].append(
-                    "Cannot write to Plex Data Path. Check permissions (PUID/PGID)."
+                    f"Plex data folder ({resolved_plex_data_path}): no write permission — check PUID/PGID"
                 )
                 result["valid"] = False
 
     # Validate Path Mapping (path_mappings rows or legacy pair)
     if path_mappings:
         for i, row in enumerate(path_mappings):
+            plex_prefix = (row.get("plex_prefix") or "").strip()
             local_prefix = (row.get("local_prefix") or "").strip()
             row_label = f"Row {i + 1}"
+            path_desc = f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
             if "\x00" in local_prefix:
-                result["errors"].append(f"{row_label}: Invalid path.")
+                result["errors"].append(f"{row_label} ({path_desc}): invalid path")
                 result["valid"] = False
                 continue
             if not local_prefix:
@@ -1531,24 +1545,24 @@ def validate_paths():
             resolved = _safe_resolve_within(local_prefix, MEDIA_ROOT)
             if resolved is None:
                 result["errors"].append(
-                    f"{row_label}: “Path in this app” must be inside the allowed media folder."
+                    f"{row_label} ({path_desc}): path must be inside the allowed media folder"
                 )
                 result["valid"] = False
             elif not os.path.exists(resolved):
                 result["errors"].append(
-                    f"{row_label}: Folder not found: {resolved}"
+                    f"{row_label} ({path_desc}): folder not found"
                 )
                 result["valid"] = False
             else:
                 try:
                     contents = os.listdir(resolved)
                     result["info"].append(
-                        f"✓ {row_label}: Path in this app is accessible ({len(contents)} items)"
+                        f"✓ {row_label} ({path_desc}): accessible ({len(contents)} items)"
                     )
                 except Exception as e:
                     logger.error(f"Cannot read mapping local path: {e}")
                     result["errors"].append(
-                        f"{row_label}: Cannot read this folder."
+                        f"{row_label} ({path_desc}): cannot read folder"
                     )
                     result["valid"] = False
     elif plex_media_path or local_media_path:
@@ -1576,21 +1590,25 @@ def validate_paths():
                 return jsonify(result)
             if not os.path.exists(resolved_local_media):
                 result["errors"].append(
-                    f"Local Media Path does not exist: {resolved_local_media}"
+                    f"Local media path ({resolved_local_media}): folder not found"
                 )
                 result["valid"] = False
             else:
                 try:
                     contents = os.listdir(resolved_local_media)
                     if len(contents) == 0:
-                        result["warnings"].append("Local Media Path is empty")
+                        result["warnings"].append(
+                            f"Local media path ({resolved_local_media}): folder is empty"
+                        )
                     else:
                         result["info"].append(
-                            f"✓ Local Media Path accessible ({len(contents)} items)"
+                            f"✓ Local media path ({resolved_local_media}): accessible ({len(contents)} items)"
                         )
                 except Exception as e:
                     logger.error(f"Cannot read Local Media Path: {e}")
-                    result["errors"].append("Cannot read Local Media Path")
+                    result["errors"].append(
+                        f"Local media path ({resolved_local_media}): cannot read folder"
+                    )
                     result["valid"] = False
     else:
         result["info"].append(
