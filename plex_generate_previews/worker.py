@@ -730,6 +730,41 @@ class WorkerPool:
         """
         return self.cpu_fallback_queue.qsize() == 0
 
+    def _has_cpu_capable_workers(self) -> bool:
+        """Check if any CPU or CPU_FALLBACK workers exist in the pool."""
+        with self._workers_lock:
+            return any(
+                w.worker_type in ("CPU", "CPU_FALLBACK") for w in self.workers
+            )
+
+    def _drain_fallback_queue_as_failed(self) -> int:
+        """Drain unreachable fallback items, counting them as failures.
+
+        Called when the fallback queue has items but no CPU-capable workers
+        remain to process them, preventing the dispatch loop from hanging.
+
+        Returns:
+            Number of items drained.
+        """
+        drained = 0
+        while not self.cpu_fallback_queue.empty():
+            try:
+                item = self.cpu_fallback_queue.get_nowait()
+                item_key = item[0] if isinstance(item, (list, tuple)) else item
+                logger.warning(
+                    f"Draining unreachable fallback item {item_key} as failed "
+                    "(no CPU workers available)"
+                )
+                drained += 1
+            except queue.Empty:
+                break
+        if drained:
+            logger.warning(
+                f"Drained {drained} fallback item(s) as failed — "
+                "add CPU or CPU_FALLBACK workers to process codec-fallback items"
+            )
+        return drained
+
     def process_items(
         self,
         media_items: List[tuple],
@@ -1178,6 +1213,17 @@ class WorkerPool:
                         logger.debug(
                             f"All items processed ({actual_processed}/{total_items}), exiting"
                         )
+                        break
+
+                    # Fallback queue has items but no CPU-capable workers
+                    # can drain it — fail them to avoid spinning forever.
+                    if (
+                        not self.has_busy_workers()
+                        and not self._check_fallback_queue_empty()
+                        and not self._has_cpu_capable_workers()
+                    ):
+                        drained = self._drain_fallback_queue_as_failed()
+                        run_failed += drained
                         break
 
             # Adaptive sleep

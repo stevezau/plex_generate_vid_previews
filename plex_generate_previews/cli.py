@@ -749,66 +749,74 @@ def run_processing(
                         main_progress.remove_task(main_task)
                 else:
                     worker_pool = _create_worker_pool()
-                    # Start in query mode
+                    # Collect all library items into a shared queue so
+                    # idle workers can pick up items from subsequent
+                    # libraries without waiting for the current one to finish.
                     dynamic_group.set_query_mode()
                     query_task = query_progress.add_task(
-                        "Querying library...", total=1, completed=0
+                        "Querying libraries...", total=1, completed=0
                     )
 
-                    # Get the generator for library sections
-                    library_sections = get_library_sections(plex, config)
-
-                    # Process all library sections
-                    for section, media_items in library_sections:
+                    all_media_items = []
+                    library_item_counts = []
+                    for section, media_items in get_library_sections(
+                        plex, config
+                    ):
                         if not media_items:
                             logger.info(
                                 f"No media items found in library '{section.title}', skipping"
                             )
                             continue
-
-                        # Switch to processing mode
-                        dynamic_group.set_processing_mode()
-                        query_progress.remove_task(query_task)
-
-                        main_task = main_progress.add_task(
-                            f"Processing {section.title}", total=len(media_items)
+                        logger.info(
+                            f"Queued library '{section.title}' with {len(media_items)} items"
+                        )
+                        all_media_items.extend(media_items)
+                        library_item_counts.append(
+                            (section.title, len(media_items))
                         )
 
-                        # Process items in this section with worker progress
+                    query_progress.remove_task(query_task)
+
+                    if all_media_items:
+                        total_items_count = len(all_media_items)
+                        label = (
+                            f"Processing {library_item_counts[0][0]}"
+                            if len(library_item_counts) == 1
+                            else f"Processing {len(library_item_counts)} libraries"
+                        )
+                        for lib_name, count in library_item_counts:
+                            logger.info(
+                                f"Library queued: {lib_name} ({count} items)"
+                            )
+
+                        dynamic_group.set_processing_mode()
+                        main_task = main_progress.add_task(
+                            label, total=total_items_count
+                        )
+
                         result = worker_pool.process_items(
-                            media_items,
+                            all_media_items,
                             config,
                             plex,
                             worker_progress,
                             main_progress,
                             main_task,
                             title_max_width,
-                            library_name=section.title,
+                            library_name="All Libraries",
                         )
                         total_successful += result["completed"]
                         total_failed += result["failed"]
-                        total_processed += result["completed"] + result["failed"]
+                        total_processed += (
+                            result["completed"] + result["failed"]
+                        )
                         cancellation_requested = (
                             cancellation_requested or result["cancelled"]
                         )
-
-                        # Remove completed task
                         main_progress.remove_task(main_task)
-
-                        if result["cancelled"]:
-                            logger.info(
-                                "Cancellation requested — skipping remaining libraries"
-                            )
-                            break
-
-                        # Switch back to query mode for next library
-                        dynamic_group.set_query_mode()
-                        query_task = query_progress.add_task(
-                            "Querying library...", total=1, completed=0
+                    else:
+                        logger.info(
+                            "No media items found across selected libraries"
                         )
-
-                    # Remove final query task
-                    query_progress.remove_task(query_task)
 
         if cancellation_requested:
             logger.info(

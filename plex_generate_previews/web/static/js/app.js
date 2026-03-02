@@ -11,6 +11,7 @@ let _lastNotifiedJobId = null;
 let processingPaused = false;
 const expandedJobFileRows = new Set();
 let cachedWorkerConfigCounts = null;
+let jobsLoadedOnce = false;
 
 
 /**
@@ -106,14 +107,14 @@ function initDashboard() {
     // Connect to SocketIO
     connectSocket();
 
-    // Load initial data
+    // Load jobs first so worker status can check for running jobs
+    // without a race condition that briefly flashes config defaults.
+    loadJobs().then(() => loadWorkerStatuses());
     refreshStatus();
     loadLibraries();
-    loadJobs();
     loadSchedules();
     loadJobStats();
     loadWorkerConfigCounts();
-    loadWorkerStatuses();
     loadProcessingState();
     // Request notification permission
     requestNotificationPermission();
@@ -427,6 +428,7 @@ async function loadJobs() {
     try {
         const data = await apiGet('/api/jobs');
         jobs = data.jobs || [];
+        jobsLoadedOnce = true;
         updateJobQueue();
 
         // Update current job if there's a running one
@@ -972,9 +974,11 @@ async function loadWorkerStatuses() {
         const hasRunningJob = jobs.some(j => j.status === 'running');
 
         if (workers.length === 0) {
-            if (hasRunningJob) {
+            if (hasRunningJob || !jobsLoadedOnce) {
                 // During startup/polls a running job can briefly report no
                 // worker telemetry; avoid replacing badges with config defaults.
+                // Also skip fallback on first load when we haven't fetched jobs
+                // yet — prevents a brief flash of config defaults (e.g. "1").
                 updateWorkerStatuses([], { keepBadgeCounts: true });
                 return;
             }
