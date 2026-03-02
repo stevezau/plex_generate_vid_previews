@@ -1045,24 +1045,21 @@ function showLogsModal(jobId) {
 function scrollLogsTo(position) {
     const el = document.getElementById('logsContent');
     if (!el) return;
-    _programmaticScroll = true;
+    _suppressScrollDetect = Date.now() + 600;
     if (position === 'top') {
-        el.scrollTop = 0;
+        el.scrollTo({ top: 0, behavior: 'smooth' });
         document.getElementById('logsAutoScroll').checked = false;
     } else {
-        el.scrollTop = el.scrollHeight;
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }
 }
 
-let _programmaticScroll = false;
+let _suppressScrollDetect = 0;
 document.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('logsContent');
     if (!el) return;
     el.addEventListener('scroll', () => {
-        if (_programmaticScroll) {
-            _programmaticScroll = false;
-            return;
-        }
+        if (Date.now() < _suppressScrollDetect) return;
         const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
         if (!atBottom) {
             document.getElementById('logsAutoScroll').checked = false;
@@ -1114,8 +1111,8 @@ async function refreshLogs() {
         }
 
         if (autoScroll) {
-            _programmaticScroll = true;
-            logsContent.scrollTop = logsContent.scrollHeight;
+            _suppressScrollDetect = Date.now() + 600;
+            logsContent.scrollTo({ top: logsContent.scrollHeight, behavior: 'smooth' });
         }
     } catch (error) {
         console.error('Failed to load logs:', error);

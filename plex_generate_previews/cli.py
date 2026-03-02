@@ -540,7 +540,7 @@ def run_processing(
         headless: If True, skip Rich console display (for web/background execution)
         progress_callback: Optional callback function(current, total, message) for progress updates
         worker_callback: Optional callback function(workers_list) for worker status updates
-        item_complete_callback: Optional callback(worker_id, worker_type, title, success) when a worker finishes an item
+        item_complete_callback: Optional callback(display_name, title, success) when a worker finishes an item
         cancel_check: Optional callable returning True when processing should stop
         pause_check: Optional callable returning True when processing should pause dispatch
         worker_pool_callback: Optional callable receiving WorkerPool on create/cleanup

@@ -235,6 +235,7 @@ code {
 .log-viewer {
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     white-space: pre-wrap;
+    scroll-behavior: smooth;
     word-break: break-all;
     line-height: 1.5;
 }

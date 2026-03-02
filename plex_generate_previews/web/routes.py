@@ -1658,9 +1658,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             from ..cli import run_processing
             from ..config import load_config
             from ..utils import setup_working_directory as create_working_directory
+            from ..worker import clear_job_threads, is_job_thread, register_job_thread
             from .settings_manager import get_settings_manager
 
-            job_thread_id = threading.current_thread().ident
+            register_job_thread()
 
             job_manager = get_job_manager()
             job = job_manager.get_job(job_id)
@@ -1696,8 +1697,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 job_manager.add_log(job_id, log_text)
 
             def job_thread_filter(record: dict) -> bool:
-                """Only capture messages from this job's thread."""
-                return record["thread"].id == job_thread_id
+                """Capture messages from the job thread and its worker threads."""
+                return is_job_thread(record["thread"].id)
 
             # Read the configured log level so job logs respect it
             sm = get_settings_manager()
@@ -1906,13 +1907,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 else:
                     clear_failures()
 
-                    def _on_item_complete(worker_id, worker_type, title, success):
+                    def _on_item_complete(display_name, title, success):
                         outcome = "success" if success else "failed"
-                        msg = (
-                            f"Worker {worker_type} {worker_id} completed: {title!r} ({outcome})"
+                        logger.info(
+                            f"{display_name} completed: {title!r} ({outcome})"
                         )
-                        job_manager.add_log(job_id, f"INFO - {msg}")
-                        logger.info(msg)
 
                     result = run_processing(
                         config,
@@ -2106,6 +2105,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job_manager.add_log(job_id, f"ERROR - Job failed: {e}")
             job_manager.complete_job(job_id, error=str(e))
         finally:
+            clear_job_threads()
             # Remove the log handler when job is done
             if log_handler_id is not None:
                 try:
