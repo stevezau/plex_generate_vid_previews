@@ -871,28 +871,41 @@ class WorkerPool:
 
             if worker_callback and current_time - last_worker_update >= 2.0:
                 worker_statuses = []
-                for worker in self._snapshot_workers():
+                all_workers = self._snapshot_workers()
+
+                # Build per-type 1-based indices for display names
+                type_counters: dict[str, int] = {}
+                worker_type_index: dict[int, int] = {}
+                for w in all_workers:
+                    type_counters[w.worker_type] = type_counters.get(w.worker_type, 0) + 1
+                    worker_type_index[w.worker_id] = type_counters[w.worker_type]
+
+                for worker in all_workers:
                     with self._progress_lock:
                         progress_data = worker.get_progress_data()
                         is_busy = worker.is_busy
 
-                    gpu_worker_name = (
+                    idx = worker_type_index[worker.worker_id]
+                    gpu_base_name = (
                         (worker.gpu_name or "").strip() or f"GPU {worker.gpu_index}"
                     )
+
+                    if worker.worker_type == "GPU":
+                        display_name = (
+                            f"{gpu_base_name} #{idx}"
+                            if type_counters["GPU"] > 1
+                            else gpu_base_name
+                        )
+                    elif worker.worker_type == "CPU_FALLBACK":
+                        display_name = f"CPU Fallback - Worker {idx}"
+                    else:
+                        display_name = f"CPU - Worker {idx}"
 
                     worker_statuses.append(
                         {
                             "worker_id": worker.worker_id,
                             "worker_type": worker.worker_type,
-                            "worker_name": (
-                                gpu_worker_name
-                                if worker.worker_type == "GPU"
-                                else (
-                                    f"CPU Fallback {worker.worker_id}"
-                                    if worker.worker_type == "CPU_FALLBACK"
-                                    else f"CPU {worker.worker_id}"
-                                )
-                            ),
+                            "worker_name": display_name,
                             "status": "processing" if is_busy else "idle",
                             "current_title": worker.media_title if is_busy else "",
                             "progress_percent": progress_data["progress_percent"]

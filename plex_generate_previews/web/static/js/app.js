@@ -1017,19 +1017,22 @@ function showLogsModal(jobId) {
 
     document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
     document.getElementById('logsSearchInput').value = '';
+
+    const job = jobs.find(j => j.id === targetId);
+    const isRunning = job && job.status === 'running';
+    const autoScrollEl = document.getElementById('logsAutoScroll');
+    autoScrollEl.checked = isRunning;
+
     const modal = new bootstrap.Modal(document.getElementById('logsModal'));
     modal.show();
 
     refreshLogs();
 
-    // Auto-refresh only while the job is still running
     if (logsRefreshInterval) clearInterval(logsRefreshInterval);
-    const job = jobs.find(j => j.id === targetId);
-    if (job && job.status === 'running') {
+    if (isRunning) {
         logsRefreshInterval = setInterval(refreshLogs, 5000);
     }
 
-    // Stop auto-refresh when modal is closed
     document.getElementById('logsModal').addEventListener('hidden.bs.modal', function() {
         if (logsRefreshInterval) {
             clearInterval(logsRefreshInterval);
@@ -1038,6 +1041,34 @@ function showLogsModal(jobId) {
         _logsModalJobId = null;
     }, { once: true });
 }
+
+function scrollLogsTo(position) {
+    const el = document.getElementById('logsContent');
+    if (!el) return;
+    _programmaticScroll = true;
+    if (position === 'top') {
+        el.scrollTop = 0;
+        document.getElementById('logsAutoScroll').checked = false;
+    } else {
+        el.scrollTop = el.scrollHeight;
+    }
+}
+
+let _programmaticScroll = false;
+document.addEventListener('DOMContentLoaded', () => {
+    const el = document.getElementById('logsContent');
+    if (!el) return;
+    el.addEventListener('scroll', () => {
+        if (_programmaticScroll) {
+            _programmaticScroll = false;
+            return;
+        }
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+        if (!atBottom) {
+            document.getElementById('logsAutoScroll').checked = false;
+        }
+    });
+});
 
 function colorizeLogLine(line) {
     const escaped = escapeHtml(line);
@@ -1057,6 +1088,7 @@ async function refreshLogs() {
     try {
         const data = await apiGet(`/api/jobs/${targetId}/logs`);
         const logsContent = document.getElementById('logsContent');
+        const lineCountEl = document.getElementById('logsLineCount');
         const autoScroll = document.getElementById('logsAutoScroll').checked;
 
         if (data.log_cleared_by_retention) {
@@ -1067,16 +1099,22 @@ async function refreshLogs() {
                 'Log file was cleared due to log retention policy.',
                 '</div>'
             ].join('');
+            if (lineCountEl) lineCountEl.textContent = '';
         } else if (data.logs && data.logs.length > 0) {
             _rawLogs = data.logs;
             logsContent.innerHTML = data.logs.map(colorizeLogLine).join('\n');
             filterLogs();
+            if (lineCountEl) {
+                lineCountEl.textContent = `${data.logs.length.toLocaleString()} log lines`;
+            }
         } else {
             _rawLogs = [];
             logsContent.innerHTML = '<span class="text-muted">No logs available yet...</span>';
+            if (lineCountEl) lineCountEl.textContent = '';
         }
 
         if (autoScroll) {
+            _programmaticScroll = true;
             logsContent.scrollTop = logsContent.scrollHeight;
         }
     } catch (error) {

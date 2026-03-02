@@ -449,9 +449,20 @@
                         </div>
                     </div>
                 </div>
-                <div id="logsContent" class="bg-dark text-light p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
+                <div class="position-relative">
+                    <div id="logsContent" class="bg-dark text-light p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
+                    <div class="position-absolute d-flex flex-column gap-1" style="right: 1.2rem; bottom: 0.7rem; z-index: 2;">
+                        <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('top')" title="Scroll to top">
+                            <i class="bi bi-chevron-double-up"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('bottom')" title="Scroll to bottom">
+                            <i class="bi bi-chevron-double-down"></i>
+                        </button>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
+                <small class="text-muted me-auto" id="logsLineCount"></small>
                 <button type="button" class="btn btn-outline-secondary" onclick="copyLogs()" title="Copy to clipboard">
                     <i class="bi bi-clipboard me-1"></i>Copy
                 </button>

@@ -248,6 +248,8 @@ code {
 .log-level-critical { color: #dc3545; font-weight: bold; }
 .log-highlight { background-color: rgba(229, 160, 13, 0.3); border-radius: 2px; }
 .log-line-hidden { display: none; }
+.log-nav-btn { padding: 0.15rem 0.35rem; line-height: 1; font-size: 0.8rem; backdrop-filter: blur(4px); }
+.log-nav-btn:hover { opacity: 1 !important; }
 
 /* Dropdown menus (dark theme) */
 .dropdown-menu {
