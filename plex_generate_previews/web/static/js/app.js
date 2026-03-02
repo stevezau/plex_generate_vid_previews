@@ -9,6 +9,8 @@ let jobs = [];
 let schedules = [];
 let _lastNotifiedJobId = null;
 let processingPaused = false;
+const expandedJobFileRows = new Set();
+let cachedWorkerConfigCounts = null;
 
 
 /**
@@ -38,22 +40,56 @@ async function copyToClipboard(text, successMessage = 'Copied to clipboard', err
         console.debug('Clipboard API unavailable, trying fallback copy.', error);
     }
 
+    // Legacy fallback for non-secure contexts and stricter browser policies.
+    // We attach a copy listener so clipboard data is set even if selection-based
+    // copying is unreliable in modals or restricted environments.
+    const activeElement = document.activeElement;
+    const selection = window.getSelection();
+    const storedRanges = [];
+    if (selection) {
+        for (let i = 0; i < selection.rangeCount; i += 1) {
+            storedRanges.push(selection.getRangeAt(i));
+        }
+    }
+
     const textarea = document.createElement('textarea');
     textarea.value = stringValue;
     textarea.setAttribute('readonly', '');
     textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    textarea.style.left = '0';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
     document.body.appendChild(textarea);
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
     textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
 
     let copied = false;
+    const onCopy = (event) => {
+        if (!event.clipboardData) {
+            return;
+        }
+        event.clipboardData.setData('text/plain', stringValue);
+        event.preventDefault();
+        copied = true;
+    };
+
+    document.addEventListener('copy', onCopy, true);
     try {
-        copied = document.execCommand('copy');
+        copied = document.execCommand('copy') || copied;
     } catch (error) {
         copied = false;
     } finally {
+        document.removeEventListener('copy', onCopy, true);
         document.body.removeChild(textarea);
+        if (selection) {
+            selection.removeAllRanges();
+            storedRanges.forEach((range) => selection.addRange(range));
+        }
+        if (activeElement && typeof activeElement.focus === 'function') {
+            activeElement.focus({ preventScroll: true });
+        }
     }
 
     if (copied) {
@@ -76,6 +112,7 @@ function initDashboard() {
     loadJobs();
     loadSchedules();
     loadJobStats();
+    loadWorkerConfigCounts();
     loadWorkerStatuses();
     loadProcessingState();
     // Request notification permission
@@ -331,24 +368,41 @@ async function refreshStatus() {
     }
 
     // --- Worker thread counts ---
-    // Use bare fetch (not apiGet) to avoid 401-redirect side-effects
-    // that could navigate the page away and abort other in-flight requests.
+    // Keep config counts cached for idle-state badge rendering. Actual live
+    // worker badges are updated by /api/jobs/workers to avoid race/flicker.
     try {
-        const gpuEl = document.getElementById('gpuWorkers');
-        const cpuEl = document.getElementById('cpuWorkers');
-        const cpuFallbackEl = document.getElementById('cpuFallbackWorkers');
-        if (gpuEl || cpuEl || cpuFallbackEl) {
-            const resp = await fetch('/api/system/config');
-            if (resp.ok) {
-                const config = await resp.json();
-                if (gpuEl) gpuEl.textContent = config.gpu_threads ?? 0;
-                if (cpuEl) cpuEl.textContent = config.cpu_threads ?? 1;
-                if (cpuFallbackEl) cpuFallbackEl.textContent = config.cpu_fallback_threads ?? 0;
-            }
-        }
+        await loadWorkerConfigCounts(true);
     } catch (e) {
         console.warn('Failed to load worker config:', e);
     }
+}
+
+function normalizeWorkerConfigCounts(config) {
+    return {
+        gpu_threads: Number(config?.gpu_threads ?? 0),
+        cpu_threads: Number(config?.cpu_threads ?? 1),
+        cpu_fallback_threads: Number(config?.cpu_fallback_threads ?? 0)
+    };
+}
+
+async function loadWorkerConfigCounts(forceRefresh = false) {
+    if (cachedWorkerConfigCounts && !forceRefresh) {
+        return cachedWorkerConfigCounts;
+    }
+
+    try {
+        // Use bare fetch (not apiGet) to avoid 401 redirect side-effects.
+        const resp = await fetch('/api/system/config');
+        if (resp.ok) {
+            const config = await resp.json();
+            cachedWorkerConfigCounts = normalizeWorkerConfigCounts(config);
+            return cachedWorkerConfigCounts;
+        }
+    } catch (e) {
+        console.warn('Failed to cache worker config counts:', e);
+    }
+
+    return cachedWorkerConfigCounts;
 }
 
 async function loadLibraries() {
@@ -570,6 +624,12 @@ function toggleJobFiles(jobId) {
     if (!detailRow || !btn) return;
     const isExpanded = !detailRow.classList.contains('d-none');
     detailRow.classList.toggle('d-none');
+    detailRow.setAttribute('aria-hidden', isExpanded ? 'true' : 'false');
+    if (isExpanded) {
+        expandedJobFileRows.delete(jobId);
+    } else {
+        expandedJobFileRows.add(jobId);
+    }
     const icon = btn.querySelector('i');
     if (icon) {
         icon.classList.toggle('bi-chevron-down', isExpanded);
@@ -614,6 +674,12 @@ function updateJobQueue() {
         if (b.status === 'pending' && a.status !== 'pending') return 1;
         return new Date(b.created_at) - new Date(a.created_at);
     });
+    const activeJobIds = new Set(sortedJobs.map((job) => String(job.id)));
+    for (const expandedId of Array.from(expandedJobFileRows)) {
+        if (!activeJobIds.has(expandedId)) {
+            expandedJobFileRows.delete(expandedId);
+        }
+    }
 
     for (const job of sortedJobs) {
         const statusBadge = getStatusBadge(job.status, job.paused);
@@ -641,13 +707,14 @@ function updateJobQueue() {
             ? job.config.webhook_basenames
             : [];
         const hasMultiFile = webhookBasenames.length > 1;
+        const isFilesExpanded = expandedJobFileRows.has(String(job.id));
         const libraryTitle = webhookBasenames.length > 0
             ? ` title="${escapeHtml(webhookBasenames.join(', '))}"`
             : '';
         const filesToggleBtn = hasMultiFile
             ? ` <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="job-files-toggle-${escapeHtml(job.id)}"
-                        onclick="toggleJobFiles('${escapeHtml(job.id)}')" aria-expanded="false" aria-controls="job-detail-${escapeHtml(job.id)}" title="Show files">
-                   <i class="bi bi-chevron-down"></i>
+                        onclick="toggleJobFiles('${escapeHtml(job.id)}')" aria-expanded="${isFilesExpanded ? 'true' : 'false'}" aria-controls="job-detail-${escapeHtml(job.id)}" title="Show files">
+                   <i class="bi ${isFilesExpanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>
                  </button>`
             : '';
         html += `
@@ -668,14 +735,17 @@ function updateJobQueue() {
             </tr>
         `;
         if (hasMultiFile) {
-            const filesList = webhookBasenames.map(function (b) { return escapeHtml(b); }).join(', ');
+            const filesList = webhookBasenames
+                .map(function (b) { return `<div class="text-muted">${escapeHtml(b)}</div>`; })
+                .join('');
             const overflow = job.config.path_count > webhookBasenames.length
-                ? ` <span class="text-muted">(+${job.config.path_count - webhookBasenames.length} more)</span>`
+                ? `<div class="text-muted mt-1">(+${job.config.path_count - webhookBasenames.length} more)</div>`
                 : '';
             html += `
-            <tr id="job-detail-${escapeHtml(job.id)}" class="d-none job-files-detail" aria-hidden="true">
+            <tr id="job-detail-${escapeHtml(job.id)}" class="${isFilesExpanded ? '' : 'd-none'} job-files-detail" aria-hidden="${isFilesExpanded ? 'false' : 'true'}">
                 <td colspan="6" class="bg-dark bg-opacity-10 small py-2 ps-4">
-                    <strong>Files:</strong> <span class="text-muted">${filesList}${overflow}</span>
+                    <strong>Files:</strong>
+                    <div class="mt-1">${filesList}${overflow}</div>
                 </td>
             </tr>
             `;
@@ -860,7 +930,11 @@ let currentJobId = null;
 let logsRefreshInterval = null;
 let workerScaleState = { workerType: 'CPU', count: 1 };
 
-function updateWorkerStatuses(workers) {
+function updateWorkerStatuses(workers, options = {}) {
+    const {
+        fallbackCounts = null,
+        keepBadgeCounts = false
+    } = options;
     const container = document.getElementById('workerStatusContainer');
     const gpuWorkersEl = document.getElementById('gpuWorkers');
     const cpuWorkersEl = document.getElementById('cpuWorkers');
@@ -872,6 +946,15 @@ function updateWorkerStatuses(workers) {
                 <span>No active workers</span>
             </div>
         `;
+        if (keepBadgeCounts) {
+            return;
+        }
+        const counts = fallbackCounts || cachedWorkerConfigCounts;
+        if (counts) {
+            if (gpuWorkersEl) gpuWorkersEl.textContent = String(counts.gpu_threads);
+            if (cpuWorkersEl) cpuWorkersEl.textContent = String(counts.cpu_threads);
+            if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(counts.cpu_fallback_threads);
+        }
         return;
     }
 
@@ -925,7 +1008,22 @@ function updateWorkerStatuses(workers) {
 async function loadWorkerStatuses() {
     try {
         const data = await apiGet('/api/jobs/workers');
-        updateWorkerStatuses(data.workers || []);
+        const workers = data.workers || [];
+        const hasRunningJob = jobs.some(j => j.status === 'running');
+
+        if (workers.length === 0) {
+            if (hasRunningJob) {
+                // During startup/polls a running job can briefly report no
+                // worker telemetry; avoid replacing badges with config defaults.
+                updateWorkerStatuses([], { keepBadgeCounts: true });
+                return;
+            }
+            const fallbackCounts = await loadWorkerConfigCounts(false);
+            updateWorkerStatuses([], { fallbackCounts });
+            return;
+        }
+
+        updateWorkerStatuses(workers);
     } catch (error) {
         console.error('Failed to load worker statuses:', error);
         // If not an auth error, show empty state (no workers) rather than error
@@ -941,7 +1039,8 @@ async function loadWorkerStatuses() {
                 `;
             } else {
                 // No running job, so no workers expected - show idle state
-                updateWorkerStatuses([]);
+                const fallbackCounts = await loadWorkerConfigCounts(false);
+                updateWorkerStatuses([], { fallbackCounts });
             }
         }
     }
@@ -1046,9 +1145,19 @@ function clearLogSearch() {
     }
 }
 
-function copyLogs() {
-    const text = _rawLogs.join('\n');
-    copyToClipboard(text, 'Logs copied to clipboard', 'Failed to copy logs');
+async function copyLogs() {
+    const renderedLogs = Array.from(document.querySelectorAll('#logsContent .log-line'))
+        .filter((line) => !line.classList.contains('log-line-hidden'))
+        .map((line) => (line.textContent || '').trim())
+        .filter((line) => line.length > 0);
+
+    const text = _rawLogs.length > 0 ? _rawLogs.join('\n') : renderedLogs.join('\n');
+    if (!text.trim()) {
+        showToast('Warning', 'No logs to copy', 'warning');
+        return;
+    }
+
+    await copyToClipboard(text, 'Logs copied to clipboard', 'Failed to copy logs');
 }
 
 function downloadLogs() {

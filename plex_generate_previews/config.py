@@ -215,6 +215,67 @@ def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> s
     return path
 
 
+def expand_path_mapping_candidates(
+    path: str, path_mappings: List[Dict[str, Any]]
+) -> List[str]:
+    """Return equivalent path candidates across all configured mapping rows.
+
+    This helper expands a single input path into every plausible equivalent path
+    using each mapping row. It is used for webhook matching so paths like
+    ``/data/...`` can be tested against all mapped Plex roots (for example
+    ``/data_16tb...``, ``/data_16tb2...``), not just the first matching row.
+
+    Args:
+        path: Absolute path reported by webhook/Plex/app.
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        Ordered unique list of candidate paths. The original input path is first.
+    """
+    if not path:
+        return []
+
+    cleaned_path = str(path).strip()
+    if not cleaned_path:
+        return []
+    if not path_mappings:
+        return [cleaned_path]
+
+    candidates = [cleaned_path]
+    seen = {cleaned_path}
+
+    def _add_mapped_candidate(source_prefix: str, target_prefix: str) -> None:
+        source = _normalize_prefix(source_prefix)
+        target = _normalize_prefix(target_prefix)
+        if not source or not target:
+            return
+        if not _path_matches_prefix(cleaned_path, source):
+            return
+        rest = cleaned_path[len(source) :].lstrip("/")
+        candidate = f"{target.rstrip('/')}/{rest}" if rest else (target or "/")
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    for mapping in path_mappings:
+        plex_prefix = mapping.get("plex_prefix") or ""
+        local_prefix = mapping.get("local_prefix") or ""
+        webhook_prefixes = mapping.get("webhook_prefixes") or []
+
+        # Bidirectional Plex/local expansion for all rows.
+        _add_mapped_candidate(plex_prefix, local_prefix)
+        _add_mapped_candidate(local_prefix, plex_prefix)
+
+        # Webhook aliases should fan out into both local and Plex forms.
+        for webhook_prefix in webhook_prefixes:
+            _add_mapped_candidate(webhook_prefix, local_prefix)
+            _add_mapped_candidate(webhook_prefix, plex_prefix)
+            _add_mapped_candidate(local_prefix, webhook_prefix)
+            _add_mapped_candidate(plex_prefix, webhook_prefix)
+
+    return candidates
+
+
 def plex_path_to_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
     """Map a Plex-reported path to local path (for file access)."""
     return path_to_canonical_local(path, path_mappings)
@@ -253,6 +314,48 @@ def local_path_to_webhook_aliases(
             alias = f"{wp.rstrip('/')}/{rest}" if rest else (wp or "/")
             out.append(alias)
     return out
+
+
+def _is_library_id_value(value: str) -> bool:
+    """Return True when a library selector value looks like a Plex section ID."""
+    return bool(value) and value.isdigit()
+
+
+def split_library_selectors(values: Any) -> Tuple[List[str], List[str]]:
+    """Split mixed library selectors into section IDs and lowercased titles.
+
+    Args:
+        values: Sequence of selector values from settings/API payloads.
+
+    Returns:
+        Tuple of (`library_ids`, `library_titles`) with duplicates removed while
+        preserving order.
+    """
+    if not isinstance(values, list):
+        return [], []
+
+    library_ids: List[str] = []
+    library_titles: List[str] = []
+    seen_ids = set()
+    seen_titles = set()
+
+    for raw_value in values:
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if _is_library_id_value(value):
+            if value not in seen_ids:
+                seen_ids.add(value)
+                library_ids.append(value)
+            continue
+        title = value.lower()
+        if title not in seen_titles:
+            seen_titles.add(title)
+            library_titles.append(title)
+
+    return library_ids, library_titles
 
 
 def get_config_value_bool(
@@ -787,6 +890,47 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
     return tmp_folder_created_by_us, True
 
 
+# Cache for get_cached_config(); invalidated when settings.json mtime changes or clear_config_cache() is called.
+_cached_config: Optional[Config] = None
+_cached_config_mtime: Optional[float] = None
+
+
+def get_cached_config(cli_args=None):
+    """
+    Return config, using cache if settings.json has not changed since last load.
+
+    Use this for read-only config access (e.g. API that returns current config).
+    Full validation (FFmpeg, Plex, paths) runs only on cache miss or when
+    settings file is modified. Call clear_config_cache() when settings are saved.
+
+    Returns:
+        Config or None: Same as load_config().
+    """
+    global _cached_config, _cached_config_mtime
+    settings_path = os.path.join(
+        os.environ.get("CONFIG_DIR", "/config"), "settings.json"
+    )
+    mtime = (
+        os.path.getmtime(settings_path)
+        if os.path.exists(settings_path)
+        else 0.0
+    )
+    if _cached_config is not None and _cached_config_mtime == mtime:
+        return _cached_config
+    config = load_config(cli_args)
+    if config is not None:
+        _cached_config = config
+        _cached_config_mtime = mtime
+    return config
+
+
+def clear_config_cache() -> None:
+    """Invalidate config cache so next get_cached_config() runs full load_config()."""
+    global _cached_config, _cached_config_mtime
+    _cached_config = None
+    _cached_config_mtime = None
+
+
 def load_config(cli_args=None) -> Config:
     """
     Load and validate configuration from CLI arguments, settings.json, and environment variables.
@@ -871,10 +1015,11 @@ def load_config(cli_args=None) -> Config:
 
     # Handle plex_libraries (special case for comma-separated values OR list from settings.json)
     plex_libraries_setting = ui_settings.get("selected_libraries", [])
+    plex_library_ids: Optional[List[str]] = None
     if isinstance(plex_libraries_setting, list) and plex_libraries_setting:
-        plex_libraries = [
-            str(lib).strip().lower() for lib in plex_libraries_setting if lib
-        ]
+        selected_ids, selected_titles = split_library_selectors(plex_libraries_setting)
+        plex_libraries = selected_titles
+        plex_library_ids = selected_ids or None
     else:
         plex_libraries = get_config_value_str(
             cli_args, "plex_libraries", "PLEX_LIBRARIES", ""
@@ -1013,11 +1158,11 @@ def load_config(cli_args=None) -> Config:
         if result.returncode != 0:
             validation_errors.append("FFmpeg found but not working properly")
         else:
-            # Log the FFmpeg version line for diagnostics
+            # Log FFmpeg version at debug only; load_config runs on every config request (e.g. UI refresh)
             version_line = (
                 result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
             )
-            logger.info(f"FFmpeg: {version_line}")
+            logger.debug(f"FFmpeg: {version_line}")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         validation_errors.append("FFmpeg found but cannot execute properly")
 
@@ -1098,6 +1243,7 @@ def load_config(cli_args=None) -> Config:
         tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
         log_level=log_level,
+        plex_library_ids=plex_library_ids,
     )
 
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi

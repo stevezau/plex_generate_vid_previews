@@ -402,7 +402,9 @@ class TestJobsAPI:
     def test_get_worker_statuses(self, client):
         resp = client.get("/api/jobs/workers", headers=_api_headers())
         assert resp.status_code == 200
-        assert "workers" in resp.get_json()
+        data = resp.get_json()
+        assert "workers" in data
+        assert isinstance(data["workers"], list)
 
     def test_get_job_logs(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
@@ -809,6 +811,78 @@ class TestJobConfigPathMappings:
         expected_mappings = normalize_path_mappings({"path_mappings": settings_path_mappings})
         assert cfg.path_mappings == expected_mappings
 
+    def test_start_job_library_ids_override_sets_plex_library_ids(self, client, tmp_path):
+        """library_ids request field should filter by Plex section IDs."""
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.plex_library_ids = None
+        mock_config.plex_libraries = []
+
+        with (
+            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
+            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
+            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
+            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_ids": ["1", "2"]},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        cfg = captured_configs[0]
+        assert cfg.plex_library_ids == ["1", "2"]
+        assert cfg.plex_libraries == []
+
+    def test_start_job_selected_libraries_ids_map_to_id_scope(self, client, tmp_path):
+        """selected_libraries values that are IDs should populate plex_library_ids."""
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.plex_library_ids = None
+        mock_config.plex_libraries = []
+
+        with (
+            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
+            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
+            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
+            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_names": ["1", "2"]},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        cfg = captured_configs[0]
+        assert cfg.plex_library_ids == ["1", "2"]
+        assert cfg.plex_libraries == []
+
 
 # ---------------------------------------------------------------------------
 # Setup Wizard API
@@ -942,6 +1016,10 @@ class TestSystemAPI:
         with patch("plex_generate_previews.config.load_config", return_value=None):
             resp = client.get("/api/system/config", headers=_api_headers())
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert "gpu_threads" in data
+        assert "cpu_threads" in data
+        assert "cpu_fallback_threads" in data
 
 
 # ---------------------------------------------------------------------------

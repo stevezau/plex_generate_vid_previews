@@ -9,7 +9,7 @@ import os
 import time
 import http.client
 import xml.etree.ElementTree
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 import requests
 import urllib3
 from requests.adapters import HTTPAdapter
@@ -18,8 +18,8 @@ from loguru import logger
 
 from .config import (
     Config,
+    expand_path_mapping_candidates,
     local_path_to_webhook_aliases,
-    path_to_canonical_local,
     plex_path_to_local,
 )
 
@@ -378,6 +378,9 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
 
     mappings = getattr(config, "path_mappings", None) or []
     normalized_targets = set()
+    input_paths: List[str] = []
+    input_to_candidates: Dict[str, List[str]] = {}
+    input_to_targets: Dict[str, Set[str]] = {}
     for path in file_paths or []:
         if path is None:
             continue
@@ -389,13 +392,26 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
         cleaned_path = path.strip()
         if not cleaned_path:
             continue
-        # Normalize to canonical local so webhook paths (e.g. /data) match Plex paths (e.g. /data_disk1) via mapping
-        canonical = path_to_canonical_local(cleaned_path, mappings) if mappings else cleaned_path
-        normalized_targets.add(_normalize_path_for_match(cleaned_path))
-        normalized_targets.add(_normalize_path_for_match(canonical))
+        # Expand into all equivalent mapped paths so webhook matching can fan out
+        # across multi-disk roots until one matches.
+        candidate_paths = (
+            expand_path_mapping_candidates(cleaned_path, mappings)
+            if mappings
+            else [cleaned_path]
+        )
+        input_targets = {_normalize_path_for_match(candidate) for candidate in candidate_paths}
+        if cleaned_path not in input_to_targets:
+            input_paths.append(cleaned_path)
+            input_to_targets[cleaned_path] = set()
+            input_to_candidates[cleaned_path] = candidate_paths
+        input_to_targets[cleaned_path].update(input_targets)
+        normalized_targets.update(input_targets)
     if not normalized_targets:
         logger.info("Webhook path resolution skipped (no valid file paths provided)")
         return []
+
+    num_input_files = len(input_paths)
+    logger.info(f"Received {num_input_files} webhook input file(s) to resolve")
 
     try:
         sections = retry_plex_call(plex.library.sections)
@@ -410,6 +426,9 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
     matched_items = []
     seen_keys = set()
     matched_targets = set()
+    matched_target_to_plex_path: Dict[str, str] = {}
+    selected_match_libraries_by_target: Dict[str, Set[str]] = {}
+    excluded_match_libraries_by_target: Dict[str, Set[str]] = {}
     selected_library_ids = {
         str(section_id).strip()
         for section_id in (getattr(config, "plex_library_ids", None) or [])
@@ -477,6 +496,13 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
                     continue
 
                 pass_matches.update(matched_for_item)
+                section_title = str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                plex_locations = _extract_item_locations(item)
+                plex_path = plex_locations[0] if plex_locations else ""
+                for target in matched_for_item:
+                    if target not in matched_target_to_plex_path and plex_path:
+                        matched_target_to_plex_path[target] = plex_path
+                    selected_match_libraries_by_target.setdefault(target, set()).add(section_title)
                 item_key = getattr(item, "key", None)
                 if not item_key:
                     logger.warning(
@@ -530,16 +556,30 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
                 matched_for_item = target_paths.intersection(item_targets)
                 if matched_for_item:
                     excluded_matches.update(matched_for_item)
-                    excluded_sections.add(str(getattr(section, "title", "Unknown")).strip())
+                    section_title = str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                    excluded_sections.add(section_title)
+                    for target in matched_for_item:
+                        excluded_match_libraries_by_target.setdefault(target, set()).add(
+                            section_title
+                        )
 
         return excluded_matches, excluded_sections
 
+    logger.info(
+        f"Pass 1: scanning recent items (up to {webhook_recent_limit} per library)"
+    )
     matched_targets.update(_scan_sections(normalized_targets, webhook_recent_limit))
     unresolved_targets = normalized_targets - matched_targets
+    input_files_unmatched_after_pass1 = sum(
+        1
+        for p in input_paths
+        if not input_to_targets.get(p, set()).intersection(matched_targets)
+    )
     if unresolved_targets and webhook_fallback_limit > webhook_recent_limit:
         logger.info(
-            f"Retrying unresolved webhook paths with expanded search window "
-            f"({webhook_fallback_limit} per library, {len(unresolved_targets)} unresolved)"
+            f"Pass 2: fallback scan for remaining input files "
+            f"({input_files_unmatched_after_pass1} input file(s) still unmatched after pass 1, "
+            f"up to {webhook_fallback_limit} items per library)"
         )
         matched_targets.update(
             _scan_sections(unresolved_targets, webhook_fallback_limit)
@@ -561,38 +601,214 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]):
             skipped_library_names.update(fallback_skipped_libraries)
         if skipped_by_library_targets:
             unresolved_targets = unresolved_targets - skipped_by_library_targets
+            skipped_input_paths = [
+                input_path
+                for input_path in input_paths
+                if input_to_targets.get(input_path, set()).intersection(
+                    skipped_by_library_targets
+                )
+            ]
             selected_scope = (
                 ", ".join(sorted(selected_library_titles))
                 if selected_library_titles
                 else ", ".join(sorted(selected_library_ids))
             )
-            logger.warning(
-                f"Webhook path resolution skipped {len(skipped_by_library_targets)} path(s) "
-                f"because they matched Plex items in unselected libraries: "
-                f"{', '.join(sorted(skipped_library_names))}"
-            )
             if selected_scope:
                 logger.info(f"Current selected library scope: {selected_scope}")
 
-    unresolved_targets = sorted(unresolved_targets)
-    if unresolved_targets:
+    unresolved_targets_set = set(unresolved_targets)
+    unresolved_targets_sorted = sorted(unresolved_targets_set)
+    skipped_input_paths = [
+        input_path
+        for input_path in input_paths
+        if input_to_targets.get(input_path, set()).intersection(
+            skipped_by_library_targets
+        )
+    ]
+
+    # Per-file outcome blocks (chronological, easy to follow).
+    resolved_count = 0
+    skipped_count = 0
+    unresolved_count = 0
+    resolved_input_paths_from_loop: Set[str] = set()
+    skipped_input_paths_from_loop: Set[str] = set()
+    unresolved_input_paths_from_loop: List[str] = []
+    max_detail_logs = 50
+    total_for_index = len(input_paths)
+    for file_index, input_path in enumerate(input_paths[:max_detail_logs], start=1):
+        input_targets = input_to_targets.get(input_path, set())
+        candidate_paths = input_to_candidates.get(input_path, [input_path])
+        mapped_candidates = [
+            candidate
+            for candidate in candidate_paths
+            if _normalize_path_for_match(candidate) != _normalize_path_for_match(input_path)
+        ]
+        mapping_applied = bool(mapped_candidates)
+        matched_candidates = [
+            candidate
+            for candidate in candidate_paths
+            if _normalize_path_for_match(candidate) in matched_targets
+        ]
+        skipped_candidates = [
+            candidate
+            for candidate in candidate_paths
+            if _normalize_path_for_match(candidate) in skipped_by_library_targets
+        ]
+        selected_libraries = sorted(
+            {
+                lib
+                for target in input_targets
+                for lib in selected_match_libraries_by_target.get(target, set())
+            }
+        )
+        excluded_libraries = sorted(
+            {
+                lib
+                for target in input_targets
+                for lib in excluded_match_libraries_by_target.get(target, set())
+            }
+        )
+
+        if input_targets.intersection(matched_targets):
+            resolved_count += 1
+            resolved_input_paths_from_loop.add(input_path)
+            logger.info(f"File {file_index}/{total_for_index}: resolved")
+            logger.info(f"  Input path: {input_path}")
+            if mapping_applied:
+                mapping_prefixes = sorted(
+                    set(
+                        "/" + p.split("/")[1]
+                        for p in mapped_candidates
+                        if p.startswith("/") and len(p.split("/")) > 1
+                    )
+                )
+                logger.info(
+                    f"  Looking for file in path mappings: {', '.join(mapping_prefixes)}"
+                )
+            else:
+                logger.info("  Mapping: no path mappings (path used as-is)")
+            if matched_candidates:
+                matched_norm = next(
+                    iter(input_targets & matched_targets),
+                    None,
+                )
+                plex_path = (
+                    matched_target_to_plex_path.get(matched_norm)
+                    if matched_norm
+                    else None
+                )
+                if plex_path:
+                    logger.info(f"  Matched via (Plex path): {plex_path}")
+                else:
+                    matched_via = next(
+                        (c for c in matched_candidates if c in mapped_candidates),
+                        matched_candidates[0],
+                    )
+                    logger.info(f"  Matched via: {matched_via}")
+            logger.info(
+                "  Result: matched Plex item in selected library scope"
+                + (f" ({', '.join(selected_libraries)})" if selected_libraries else "")
+            )
+            continue
+
+        if input_targets.intersection(skipped_by_library_targets):
+            skipped_count += 1
+            skipped_input_paths_from_loop.add(input_path)
+            logger.warning(f"File {file_index}/{total_for_index}: skipped (excluded library)")
+            logger.warning(f"  Input path: {input_path}")
+            if mapping_applied:
+                mapping_prefixes = sorted(
+                    set(
+                        "/" + p.split("/")[1]
+                        for p in mapped_candidates
+                        if p.startswith("/") and len(p.split("/")) > 1
+                    )
+                )
+                logger.warning(
+                    f"  Looking for file in path mappings: {', '.join(mapping_prefixes)}"
+                )
+            else:
+                logger.warning("  Mapping: no path mappings (path used as-is)")
+            if skipped_candidates:
+                logger.warning(f"  Matched in excluded library via: {skipped_candidates[0]}")
+            logger.warning(
+                "  Result: matched Plex item only in excluded libraries"
+                + (f" ({', '.join(excluded_libraries)})" if excluded_libraries else "")
+            )
+            continue
+
+        unresolved_count += 1
+        unresolved_input_paths_from_loop.append(input_path)
+        unresolved_reason = (
+            "no Plex item found in scan window after trying mapped path candidates"
+            if mapping_applied
+            else "no Plex item found in scan window (no path mapping applied)"
+        )
+        logger.warning(f"File {file_index}/{total_for_index}: not found")
+        logger.warning(f"  Input path: {input_path}")
+        if mapping_applied:
+            mapping_prefixes = sorted(
+                set(
+                    "/" + p.split("/")[1]
+                    for p in mapped_candidates
+                    if p.startswith("/") and len(p.split("/")) > 1
+                )
+            )
+            logger.warning(
+                f"  Looking for file in path mappings: {', '.join(mapping_prefixes)}"
+            )
+        else:
+            logger.warning("  Mapping: no path mappings (path used as-is)")
+        logger.warning(f"  Result: {unresolved_reason}")
+
+    # Classify any input paths beyond the per-file detail window (same formula as loop).
+    for input_path in input_paths[max_detail_logs:]:
+        targets = input_to_targets.get(input_path, set())
+        if targets.intersection(matched_targets):
+            resolved_input_paths_from_loop.add(input_path)
+        elif targets.intersection(skipped_by_library_targets):
+            skipped_input_paths_from_loop.add(input_path)
+        else:
+            unresolved_input_paths_from_loop.append(input_path)
+    unresolved_input_paths = unresolved_input_paths_from_loop
+
+    if len(input_paths) > max_detail_logs:
+        logger.info(
+            f"Webhook path detail truncated to first {max_detail_logs} of {len(input_paths)} file(s)."
+        )
+
+    # Summary (input-file counts first).
+    logger.info(
+        f"Webhook resolution summary: {len(input_paths)} input file(s) — "
+        f"resolved={resolved_count}, skipped={skipped_count}, not found={unresolved_count}"
+    )
+    if skipped_input_paths:
         logger.warning(
-            f"Webhook path resolution did not find Plex items for {len(unresolved_targets)} path(s). "
+            f"Skipped {len(skipped_input_paths)} input file(s): matched Plex items in unselected "
+            f"libraries ({', '.join(sorted(skipped_library_names))}). "
+            f"Selected scope: "
+            + (
+                ", ".join(sorted(selected_library_titles))
+                if selected_library_titles
+                else ", ".join(sorted(selected_library_ids))
+            )
+        )
+    if unresolved_input_paths:
+        logger.warning(
+            f"Did not find Plex items for {len(unresolved_input_paths)} input file(s). "
             f"Searched up to {webhook_fallback_limit} recently-added items per library."
         )
         cap = 10
-        paths_to_log = unresolved_targets[:cap]
-        if len(unresolved_targets) > cap:
+        paths_to_log = unresolved_input_paths[:cap]
+        if len(unresolved_input_paths) > cap:
             logger.warning(
-                f"Unresolved path(s) (first {cap} of {len(unresolved_targets)}): "
+                f"  Unresolved paths (first {cap} of {len(unresolved_input_paths)}): "
                 + ", ".join(repr(p) for p in paths_to_log)
             )
         else:
-            logger.warning(
-                "Unresolved path(s): " + ", ".join(repr(p) for p in paths_to_log)
-            )
+            logger.warning("  Unresolved paths: " + ", ".join(repr(p) for p in paths_to_log))
         logger.info(
-            "If this app, Plex, or Sonarr/Radarr see different paths for the same files, "
+            "If this app, Plex, or Sonarr/Radarr use different paths for the same files, "
             "configure Path mapping in Settings."
         )
     logger.info(

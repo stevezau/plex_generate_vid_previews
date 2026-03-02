@@ -253,6 +253,9 @@ class Worker:
             media_title=self.media_title,
             item_key=item_key,
         )
+        ctx_logger.info(
+            f"Worker {self.worker_type} {self.worker_id} started: {display_name}"
+        )
 
         try:
             process_item(
@@ -287,7 +290,9 @@ class Worker:
                             (item_key, self.media_title, self.media_type)
                         )
                         self.requeued_to_cpu = True
-                        ctx_logger.debug(f"Added {display_name} to CPU fallback queue")
+                        ctx_logger.info(
+                            f"Added {display_name} to CPU fallback queue (unsupported codec on GPU)"
+                        )
                     except Exception as queue_error:
                         ctx_logger.error(
                             f"Failed to add {item_key} to fallback queue: {queue_error}"
@@ -800,6 +805,7 @@ class WorkerPool:
             on_task_complete=on_task_complete,
             on_poll=on_poll,
             on_finish=on_finish,
+            on_item_complete=None,
         )
 
     def process_items_headless(
@@ -811,6 +817,7 @@ class WorkerPool:
         library_name: str = "",
         progress_callback=None,
         worker_callback=None,
+        on_item_complete=None,
         cancel_check=None,
         pause_check=None,
     ) -> dict:
@@ -828,6 +835,7 @@ class WorkerPool:
             library_name: Name of the library section being processed
             progress_callback: Optional callback function(current, total, message) for progress updates
             worker_callback: Optional callback function(workers_list) for worker status updates
+            on_item_complete: Optional callback(worker_id, worker_type, title, success) when a worker finishes an item
             cancel_check: Optional callable returning True when processing should stop
             pause_check: Optional callable returning True when dispatch should pause
         """
@@ -915,6 +923,7 @@ class WorkerPool:
             on_task_complete=on_task_complete,
             on_poll=on_poll,
             on_finish=on_finish,
+            on_item_complete=on_item_complete,
             cancel_check=cancel_check,
             pause_check=pause_check,
         )
@@ -929,6 +938,7 @@ class WorkerPool:
         on_task_complete: Optional[Any] = None,
         on_poll: Optional[Any] = None,
         on_finish: Optional[Any] = None,
+        on_item_complete: Optional[Any] = None,
         cancel_check: Optional[Any] = None,
         pause_check: Optional[Any] = None,
     ) -> dict:
@@ -947,6 +957,8 @@ class WorkerPool:
             on_task_complete: Called as on_task_complete(completed_tasks, total_items) after each task finishes
             on_poll: Called as on_poll(completed_tasks, total_items) every poll cycle for UI updates
             on_finish: Called as on_finish(total_completed, total_failed, total_items) at the end
+            on_item_complete: Optional. Called as on_item_complete(worker_id, worker_type, title, success)
+                when a worker finishes an item (not called for GPU→CPU handoffs; CPU completion is reported when CPU finishes).
             cancel_check: Optional callable returning True when processing should stop
         """
         media_queue = deque(media_items)  # O(1) popleft
@@ -981,6 +993,12 @@ class WorkerPool:
             for worker in workers:
                 if not worker.check_completion():
                     continue
+                title = worker.media_title or "(unknown)"
+                prev_completed, prev_failed = per_worker_totals.get(
+                    worker.worker_id, (0, 0)
+                )
+                completed_delta = max(0, worker.completed - prev_completed)
+                failed_delta = max(0, worker.failed - prev_failed)
                 _record_worker_delta(worker)
                 # Don't count GPU→CPU re-queued items — the CPU worker
                 # will increment completed_tasks when it actually finishes.
@@ -988,6 +1006,14 @@ class WorkerPool:
                     completed_tasks += 1
                     if on_task_complete:
                         on_task_complete(completed_tasks, total_items)
+                    if on_item_complete:
+                        success = completed_delta == 1 and failed_delta == 0
+                        on_item_complete(
+                            worker.worker_id,
+                            worker.worker_type,
+                            title,
+                            success,
+                        )
                 self._retire_idle_worker_if_scheduled(worker)
 
         # Initialize per-worker accounting baseline.
@@ -1201,7 +1227,7 @@ class WorkerPool:
 
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""
-        logger.debug("Shutting down worker pool...")
+        logger.info("Shutting down worker pool...")
         for worker in self._snapshot_workers():
             worker.shutdown()
-        logger.debug("Worker pool shutdown complete")
+        logger.info("Worker pool shutdown complete")

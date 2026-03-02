@@ -66,6 +66,11 @@ class SettingsManager:
             except OSError:
                 pass
             logger.debug(f"Saved settings to {self.settings_file}")
+            try:
+                from ..config import clear_config_cache
+                clear_config_cache()
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
             raise

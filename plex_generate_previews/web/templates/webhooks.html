@@ -294,13 +294,17 @@ async function loadHistory() {
             tbody.appendChild(tr);
 
             if (hasFiles) {
-                const filesList = evt.files_preview.map(function(f) { return escapeHtml(f); }).join(', ');
-                const overflow = pathCount > evt.files_preview.length ? ' <span class="text-muted">(+' + (pathCount - evt.files_preview.length) + ' more)</span>' : '';
+                const filesList = evt.files_preview
+                    .map(function(f) { return '<div class="text-muted">' + escapeHtml(f) + '</div>'; })
+                    .join('');
+                const overflow = pathCount > evt.files_preview.length
+                    ? '<div class="text-muted mt-1">(+' + (pathCount - evt.files_preview.length) + ' more)</div>'
+                    : '';
                 const detailTr = document.createElement('tr');
                 detailTr.id = 'history-detail-' + idx;
                 detailTr.className = 'd-none history-files-detail';
                 detailTr.setAttribute('aria-hidden', 'true');
-                detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong> <span class="text-muted">' + filesList + overflow + '</span></td>';
+                detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
                 tbody.appendChild(detailTr);
             }
         });

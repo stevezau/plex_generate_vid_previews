@@ -11,6 +11,7 @@ from plex_generate_previews.cli import (
     ApplicationState,
     list_gpus,
     parse_arguments,
+    run_processing,
     setup_logging,
     setup_working_directory,
     signal_handler,
@@ -266,6 +267,100 @@ class TestFFmpegDataColumn:
         result = column.render(task)
         assert result is not None
         assert "Waiting" in str(result)
+
+
+class TestRunProcessing:
+    """Test run_processing orchestration behavior."""
+
+    @patch("plex_generate_previews.cli.os.path.isdir", return_value=False)
+    @patch("plex_generate_previews.cli.plex_server")
+    @patch("plex_generate_previews.cli.WorkerPool")
+    @patch("plex_generate_previews.cli.get_library_sections")
+    def test_headless_merges_libraries_into_single_queue(
+        self,
+        mock_get_library_sections,
+        mock_worker_pool_cls,
+        mock_plex_server,
+        _mock_isdir,
+    ):
+        """Headless mode should process all libraries through one shared queue."""
+        section_a = MagicMock()
+        section_a.title = "Movies"
+        section_b = MagicMock()
+        section_b.title = "TV Shows"
+        mock_get_library_sections.return_value = [
+            (section_a, [("m1", "Movie 1", "movie")]),
+            (
+                section_b,
+                [("e1", "Episode 1", "episode"), ("e2", "Episode 2", "episode")],
+            ),
+        ]
+        pool = MagicMock()
+        pool.process_items_headless.return_value = {
+            "completed": 3,
+            "failed": 0,
+            "cancelled": False,
+        }
+        mock_worker_pool_cls.return_value = pool
+        mock_plex_server.return_value = MagicMock()
+
+        config = MagicMock()
+        config.webhook_paths = []
+        config.gpu_threads = 1
+        config.cpu_threads = 0
+        config.fallback_cpu_threads = 0
+        config.working_tmp_folder = "/tmp/pgvp-working"
+        progress_callback = MagicMock()
+
+        run_processing(
+            config,
+            selected_gpus=[],
+            headless=True,
+            progress_callback=progress_callback,
+        )
+
+        pool.process_items_headless.assert_called_once()
+        args, kwargs = pool.process_items_headless.call_args
+        assert len(args[0]) == 3
+        assert kwargs["library_name"] == "All Libraries"
+        progress_callback.assert_any_call(0, 3, "Processing all selected libraries (2)")
+
+    @patch("plex_generate_previews.cli.os.path.isdir", return_value=False)
+    @patch("plex_generate_previews.cli.plex_server")
+    @patch("plex_generate_previews.cli.WorkerPool")
+    @patch("plex_generate_previews.cli.get_library_sections")
+    def test_headless_cancel_before_dispatch_skips_pool_processing(
+        self,
+        mock_get_library_sections,
+        mock_worker_pool_cls,
+        mock_plex_server,
+        _mock_isdir,
+    ):
+        """Cancellation check before dispatch should skip pooled processing."""
+        section = MagicMock()
+        section.title = "Movies"
+        mock_get_library_sections.return_value = [
+            (section, [("m1", "Movie 1", "movie")]),
+        ]
+        pool = MagicMock()
+        mock_worker_pool_cls.return_value = pool
+        mock_plex_server.return_value = MagicMock()
+
+        config = MagicMock()
+        config.webhook_paths = []
+        config.gpu_threads = 1
+        config.cpu_threads = 0
+        config.fallback_cpu_threads = 0
+        config.working_tmp_folder = "/tmp/pgvp-working"
+
+        run_processing(
+            config,
+            selected_gpus=[],
+            headless=True,
+            cancel_check=lambda: True,
+        )
+
+        pool.process_items_headless.assert_not_called()
 
 
 class TestSignalHandler:

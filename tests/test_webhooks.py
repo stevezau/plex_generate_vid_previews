@@ -102,6 +102,32 @@ def _auth_headers(token: str = "test-token-12345678") -> dict:
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
 
+def test_format_sonarr_episode_title():
+    """_format_sonarr_episode_title adds SxxExx from episodes to series title."""
+    from plex_generate_previews.web.webhooks import _format_sonarr_episode_title
+
+    assert _format_sonarr_episode_title("Show Name", []) == "Show Name"
+    assert _format_sonarr_episode_title("Show Name", None) == "Show Name"
+    assert _format_sonarr_episode_title("Show", [{"seasonNumber": 1, "episodeNumber": 5}]) == "Show S01E05"
+    assert (
+        _format_sonarr_episode_title(
+            "Murder at the Post Office",
+            [{"seasonNumber": 1, "episodeNumber": 5}],
+        )
+        == "Murder at the Post Office S01E05"
+    )
+    assert (
+        _format_sonarr_episode_title(
+            "Show",
+            [
+                {"seasonNumber": 2, "episodeNumber": 3},
+                {"seasonNumber": 2, "episodeNumber": 4},
+            ],
+        )
+        == "Show S02E03, S02E04"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Radarr Webhook Tests
 # ---------------------------------------------------------------------------
@@ -140,6 +166,32 @@ def test_sonarr_webhook_download_event(mock_schedule, client):
     assert "Breaking Bad" in data["message"]
     mock_schedule.assert_called_once_with(
         "sonarr", "Breaking Bad", "/tv/Breaking Bad/Season 01/S01E01.mkv"
+    )
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_sonarr_webhook_download_with_episode_info_includes_season_episode_in_title(
+    mock_schedule, client
+):
+    """Sonarr payload with episodes[] → title includes SxxExx in webhook and history."""
+    payload = {
+        "eventType": "Download",
+        "series": {"title": "Murder at the Post Office"},
+        "episodes": [
+            {"seasonNumber": 1, "episodeNumber": 5, "title": "The Letter"},
+        ],
+        "episodeFile": {"path": "/tv/Murder at the Post Office/Season 01/S01E05.mkv"},
+    }
+    resp = client.post("/api/webhooks/sonarr", json=payload, headers=_auth_headers())
+    assert resp.status_code == 202
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "S01E05" in data["message"]
+    assert "Murder at the Post Office" in data["message"]
+    mock_schedule.assert_called_once_with(
+        "sonarr",
+        "Murder at the Post Office S01E05",
+        "/tv/Murder at the Post Office/Season 01/S01E05.mkv",
     )
 
 
@@ -444,13 +496,47 @@ def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_
 @patch("plex_generate_previews.web.webhooks.get_job_manager")
 @patch("plex_generate_previews.web.webhooks.threading.Timer")
 @patch("plex_generate_previews.web.routes._start_job_async")
+def test_execute_webhook_job_single_file_uses_title_for_library_display(
+    mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr
+):
+    """Single-file webhook job uses display title (e.g. Show S01E05) in library_name for dashboard."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer = MagicMock()
+    mock_timer.daemon = True
+    mock_timer_cls.return_value = mock_timer
+
+    mock_job = MagicMock()
+    mock_job.id = "job-1"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    mock_settings = MagicMock()
+    mock_settings.get.side_effect = lambda key, default=None: (
+        [] if key == "selected_libraries" else default
+    )
+    mock_settings_mgr.return_value = mock_settings
+
+    wh._schedule_webhook_job(
+        "sonarr", "Murder at the Post Office S01E05", "/tv/Murder at the Post Office/Season 01/S01E05.mkv"
+    )
+    wh._execute_webhook_job(wh._debounce_key("sonarr"))
+
+    mock_job_mgr.return_value.create_job.assert_called_once()
+    call_kw = mock_job_mgr.return_value.create_job.call_args[1]
+    assert call_kw["library_name"] == "Sonarr: Murder at the Post Office S01E05"
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
 def test_execute_webhook_job_uses_selected_libraries(
     mock_start_job,
     mock_timer_cls,
     mock_job_mgr,
     mock_settings_mgr,
 ):
-    """Webhook jobs should respect selected libraries from settings."""
+    """Webhook jobs should pass selected library IDs from settings."""
     from plex_generate_previews.web import webhooks as wh
 
     mock_timer = MagicMock()
@@ -463,7 +549,7 @@ def test_execute_webhook_job_uses_selected_libraries(
 
     mock_settings = MagicMock()
     mock_settings.get.side_effect = (
-        lambda key, default=None: ["Movies"] if key == "selected_libraries" else default
+        lambda key, default=None: ["1", "2"] if key == "selected_libraries" else default
     )
     mock_settings_mgr.return_value = mock_settings
 
@@ -471,7 +557,7 @@ def test_execute_webhook_job_uses_selected_libraries(
     wh._execute_webhook_job(wh._debounce_key("radarr"))
 
     config_overrides = mock_start_job.call_args[0][1]
-    assert config_overrides["selected_libraries"] == ["Movies"]
+    assert config_overrides["selected_libraries"] == ["1", "2"]
 
 
 @patch("plex_generate_previews.web.webhooks.get_job_manager")
@@ -545,6 +631,7 @@ def test_triggered_history_entry_includes_batch_metadata(
     assert len(triggered) >= 1
     evt = triggered[0]
     assert evt.get("job_id") == "batch-job-123"
+    assert evt.get("title") == "Show"  # first batch title used for triggered entry
     assert evt.get("path_count") == 2
     assert evt.get("files_preview") == ["S01E01.mkv", "S01E02.mkv"]
 

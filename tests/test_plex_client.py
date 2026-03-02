@@ -522,6 +522,29 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, [])
         assert result == []
 
+    @patch("plex_generate_previews.plex_client.logger.info")
+    def test_get_media_items_by_paths_logs_received_and_pass1(self, mock_info, mock_config):
+        """Webhook resolution logs received file count and Pass 1 before scanning."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+        mock_section.search.return_value = []
+        mock_plex.library.sections.return_value = [mock_section]
+
+        get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/Some Movie (2024)/movie.mkv"]
+        )
+        assert any(
+            "Received" in str(call) and "webhook input file" in str(call).lower()
+            for call in mock_info.call_args_list
+        )
+        assert any(
+            "Pass 1" in str(call) and "scanning recent" in str(call).lower()
+            for call in mock_info.call_args_list
+        )
+
     @patch("plex_generate_previews.plex_client.logger.warning")
     def test_get_media_items_by_paths_non_string_path_skipped(
         self, mock_warning, mock_config
@@ -557,6 +580,32 @@ class TestGetMediaItemsByPaths:
         assert result[0][2] == "movie"
         mock_section.search.assert_called_once_with(sort="addedAt:desc", maxresults=200)
 
+    @patch("plex_generate_previews.plex_client.logger.info")
+    def test_get_media_items_by_paths_logs_per_path_resolved_status(
+        self, mock_info, mock_config
+    ):
+        """Resolved path emits a per-path diagnostic status line."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/100"
+        mock_movie.title = "Test Movie"
+        mock_movie.locations = ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
+        )
+        assert len(result) == 1
+        assert any("resolved" in str(call) for call in mock_info.call_args_list)
+        assert any("File 1/" in str(call) for call in mock_info.call_args_list)
+
     def test_get_media_items_by_paths_no_match(self, mock_config):
         """Paths that match no Plex item return empty list."""
         mock_plex = MagicMock()
@@ -572,6 +621,31 @@ class TestGetMediaItemsByPaths:
             mock_plex, mock_config, ["/nonexistent/path.mkv"]
         )
         assert result == []
+
+    @patch("plex_generate_previews.plex_client.logger.warning")
+    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(
+        self, mock_warning, mock_config
+    ):
+        """Unresolved path emits a per-path diagnostic with explicit reason."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+        mock_section.search.return_value = []
+        mock_plex.library.sections.return_value = [mock_section]
+
+        result = get_media_items_by_paths(
+            mock_plex, mock_config, ["/nonexistent/path.mkv"]
+        )
+        assert result == []
+        assert any(
+            "not found" in str(call) for call in mock_warning.call_args_list
+        )
+        assert any(
+            "no plex item found in scan window" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
 
     def test_get_media_items_by_paths_episode_match(self, mock_config):
         """Path matching an episode location returns episode tuple."""
@@ -636,6 +710,40 @@ class TestGetMediaItemsByPaths:
         second_call = mock_section.search.call_args_list[1].kwargs
         assert first_call == {"sort": "addedAt:desc", "maxresults": 1}
         assert second_call == {"sort": "addedAt:desc", "maxresults": 5}
+
+    @patch.dict(
+        "os.environ",
+        {"WEBHOOK_RECENT_LIMIT": "1", "WEBHOOK_FALLBACK_LIMIT": "5"},
+        clear=False,
+    )
+    @patch("plex_generate_previews.plex_client.logger.info")
+    def test_get_media_items_by_paths_logs_pass2_when_fallback_runs(
+        self, mock_info, mock_config
+    ):
+        """When fallback scan runs, log Pass 2 with input-file count."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/999"
+        mock_movie.title = "Late Match"
+        mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.side_effect = [[], [mock_movie]]
+
+        get_media_items_by_paths(
+            mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"]
+        )
+        assert any(
+            "Pass 2" in str(call) and "fallback" in str(call).lower()
+            for call in mock_info.call_args_list
+        )
+        assert any(
+            "input file(s) still unmatched" in str(call)
+            for call in mock_info.call_args_list
+        )
 
     @patch("plex_generate_previews.plex_client.logger.warning")
     def test_get_media_items_by_paths_item_without_key_is_skipped(
@@ -781,6 +889,37 @@ class TestGetMediaItemsByPaths:
         assert len(result) == 1
         assert result[0][0] == "/library/metadata/200"
 
+    def test_get_media_items_by_paths_fans_out_local_path_across_plex_roots(
+        self, mock_config
+    ):
+        """Webhook /data path should fan out to multiple Plex roots and match first hit."""
+        mock_config.path_mappings = [
+            {"plex_prefix": "/data_16tb1", "local_prefix": "/data", "webhook_prefixes": []},
+            {"plex_prefix": "/data_16tb2", "local_prefix": "/data", "webhook_prefixes": []},
+        ]
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "2"
+        mock_section.title = "TV Shows"
+        mock_section.METADATA_TYPE = "episode"
+
+        mock_episode = MagicMock()
+        mock_episode.key = "/library/metadata/300"
+        mock_episode.grandparentTitle = "Test Show"
+        mock_episode.seasonEpisode = "s01e03"
+        mock_episode.locations = ["/data_16tb2/tv/Test Show/Season 01/S01E03.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_section.search.return_value = [mock_episode]
+
+        result = get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data/tv/Test Show/Season 01/S01E03.mkv"],
+        )
+        assert len(result) == 1
+        assert result[0][0] == "/library/metadata/300"
+
     @patch("plex_generate_previews.plex_client.logger.warning")
     def test_get_media_items_by_paths_logs_skipped_unselected_library(
         self, mock_warning, mock_config
@@ -815,6 +954,10 @@ class TestGetMediaItemsByPaths:
         assert result == []
         assert any(
             "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
+        assert any(
+            "skipped" in str(call).lower() and "excluded" in str(call).lower()
             for call in mock_warning.call_args_list
         )
 

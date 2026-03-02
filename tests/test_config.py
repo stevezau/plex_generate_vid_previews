@@ -8,6 +8,7 @@ FFmpeg detection, and environment-specific behavior.
 import pytest
 from unittest.mock import MagicMock, patch
 from plex_generate_previews.config import (
+    expand_path_mapping_candidates,
     get_config_value,
     get_path_mapping_pairs,
     load_config,
@@ -16,6 +17,7 @@ from plex_generate_previews.config import (
     path_to_canonical_local,
     plex_path_to_local,
     show_docker_help,
+    split_library_selectors,
 )
 
 
@@ -134,6 +136,68 @@ class TestGetPathMappingPairs:
     def test_get_path_mapping_pairs_mismatched_lengths_fallback(self):
         """Legacy: 3 plex vs 2 local uses first of each (backward compat)."""
         assert get_path_mapping_pairs("/a;/b;/c", "/x;/y") == [("/a", "/x")]
+
+
+class TestSplitLibrarySelectors:
+    """Test splitting selected library values into IDs and names."""
+
+    def test_split_library_selectors_ids_only(self):
+        """Numeric selectors are treated as Plex section IDs."""
+        ids, names = split_library_selectors(["1", 2, "003"])
+        assert ids == ["1", "2", "003"]
+        assert names == []
+
+    def test_split_library_selectors_names_only(self):
+        """Non-numeric selectors are normalized as lowercase titles."""
+        ids, names = split_library_selectors(["Movies", " TV Shows "])
+        assert ids == []
+        assert names == ["movies", "tv shows"]
+
+    def test_split_library_selectors_mixed_and_deduplicated(self):
+        """Mixed selectors are split and deduplicated while preserving order."""
+        ids, names = split_library_selectors(
+            ["1", "Movies", "1", "movies", "2", "TV Shows", "", None]
+        )
+        assert ids == ["1", "2"]
+        assert names == ["movies", "tv shows"]
+
+
+class TestExpandPathMappingCandidates:
+    """Test multi-row path candidate fan-out across mapping rows."""
+
+    def test_expand_candidates_webhook_to_multiple_plex_roots(self):
+        """Webhook path /data should fan out to all matching Plex/local roots."""
+        path_mappings = [
+            {
+                "plex_prefix": "/data_16tb",
+                "local_prefix": "/data_16tb",
+                "webhook_prefixes": ["/data"],
+            },
+            {
+                "plex_prefix": "/data_16tb2",
+                "local_prefix": "/data_16tb2",
+                "webhook_prefixes": ["/data"],
+            },
+        ]
+        candidates = expand_path_mapping_candidates(
+            "/data/tv/Show/S01E01.mkv", path_mappings
+        )
+        assert "/data/tv/Show/S01E01.mkv" in candidates
+        assert "/data_16tb/tv/Show/S01E01.mkv" in candidates
+        assert "/data_16tb2/tv/Show/S01E01.mkv" in candidates
+
+    def test_expand_candidates_local_to_multiple_plex_roots_without_webhook_aliases(self):
+        """Legacy-style rows still fan out from local prefix to each Plex root."""
+        path_mappings = [
+            {"plex_prefix": "/data_16tb1", "local_prefix": "/data", "webhook_prefixes": []},
+            {"plex_prefix": "/data_16tb2", "local_prefix": "/data", "webhook_prefixes": []},
+        ]
+        candidates = expand_path_mapping_candidates(
+            "/data/tv/Show/S01E03.mkv", path_mappings
+        )
+        assert "/data/tv/Show/S01E03.mkv" in candidates
+        assert "/data_16tb1/tv/Show/S01E03.mkv" in candidates
+        assert "/data_16tb2/tv/Show/S01E03.mkv" in candidates
 
 
 class TestNormalizePathMappings:

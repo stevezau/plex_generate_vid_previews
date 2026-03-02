@@ -20,8 +20,10 @@ class _ETAHarness:
 
     _SKIP_THRESHOLD = 2.0
     _STALL_THRESHOLD = 5.0
-    _SIMPLE_MIN_ELAPSED = 20.0
-    _SIMPLE_MIN_ITEMS = 10
+    _SIMPLE_MIN_ELAPSED = 10.0
+    _SIMPLE_MIN_ITEMS = 5
+    _FAST_MIN_ELAPSED = 8.0
+    _FAST_MIN_ITEMS = 5
     _REAL_MIN_ELAPSED = 30.0
     _REAL_MIN_ITEMS = 3
 
@@ -105,6 +107,9 @@ class _ETAHarness:
         # Compute ETA
         eta = ""
         if remaining > 0:
+            elapsed = (
+                now - self._processing_start_time if self._processing_start_time > 0 else 0.0
+            )
             if self._burst_resolved and self._real_work_start_time > 0:
                 real_elapsed = now - self._real_work_start_time
                 real_items = current - self._real_work_start_count
@@ -121,10 +126,19 @@ class _ETAHarness:
             if (
                 not eta
                 and self._processing_start_time > 0
-                and current >= self._SIMPLE_MIN_ITEMS
-                and stall_time < self._STALL_THRESHOLD
+                and current >= self._FAST_MIN_ITEMS
+                and elapsed >= self._FAST_MIN_ELAPSED
             ):
-                elapsed = now - self._processing_start_time
+                rate = current / elapsed
+                if rate > 0:
+                    eta = self._format_eta(remaining / rate)
+
+            if (
+                not eta
+                and self._processing_start_time > 0
+                and current >= self._SIMPLE_MIN_ITEMS
+                and (stall_time < self._STALL_THRESHOLD or bool(self._last_eta))
+            ):
                 if elapsed >= self._SIMPLE_MIN_ELAPSED:
                     rate = current / elapsed
                     if rate > 0:
@@ -244,7 +258,7 @@ class TestSimpleFallback:
     """Test the simple-rate fallback for when burst detection doesn't fire."""
 
     def test_fallback_after_warmup(self):
-        """All items fast (burst), but after 20 s + 2 items → fallback ETA.
+        """All items fast (burst), but after 10 s + 5 items → fallback ETA.
 
         The simple-rate fallback only fires when NOT stalling (stall_time
         < _STALL_THRESHOLD).  So the poll must happen soon after a
@@ -253,16 +267,16 @@ class TestSimpleFallback:
         h = _ETAHarness()
         t0 = 1_000_000.0
         total = 1000
-        # 50 items in 0.5 s each → avg = 0.5 s → burst NOT resolved
-        # Total elapsed = 25 s → meets _SIMPLE_MIN_ELAPSED (20 s)
-        for i in range(1, 51):
+        # 20 items in 0.5 s each → avg = 0.5 s → burst NOT resolved
+        # Total elapsed = 10 s → meets _SIMPLE_MIN_ELAPSED (10 s)
+        for i in range(1, 21):
             h.progress_callback(i, total, now=t0 + i * 0.5)
         assert not h._burst_resolved
-        # Last completion at t0 + 25, poll immediately → stall < 5 s
-        assert h.last_eta != "", "Fallback ETA should kick in after 20 s elapsed"
+        # Last completion at t0 + 10, poll immediately → stall < 5 s
+        assert h.last_eta != "", "Fallback ETA should kick in after 10 s elapsed"
 
     def test_fallback_not_premature(self):
-        """Fallback should NOT fire before _SIMPLE_MIN_ELAPSED."""
+        """Fallback should NOT fire before _FAST_MIN_ELAPSED."""
         h = _ETAHarness()
         t0 = 1_000_000.0
         total = 100
@@ -273,6 +287,18 @@ class TestSimpleFallback:
         assert not h._burst_resolved  # avg = 0.5 s < 2
         # Only 1.5 s elapsed, 3 items → SIMPLE_MIN_ELAPSED not met
         assert h.last_eta == ""
+
+    def test_fast_path_shows_eta_before_simple_warmup(self):
+        """High-throughput runs should show ETA before 10s simple warmup."""
+        h = _ETAHarness()
+        t0 = 1_000_000.0
+        total = 200
+        # Initial callback sets start time; then 5 items over 8 seconds
+        # reaches the fast-path threshold.
+        h.progress_callback(0, total, now=t0)
+        for i in range(1, 6):
+            h.progress_callback(i, total, now=t0 + (i * 1.6))
+        assert h.last_eta != ""
 
 
 class TestLibraryReset:

@@ -804,6 +804,8 @@ def generate_images(
         ]
 
         start_local = time.time()
+        hw_label = "GPU" if gpu else "CPU"
+        logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
         logger.debug(f"Executing: {' '.join(args)}")
 
         # Use file polling approach for non-blocking, high-frequency progress monitoring
@@ -1446,7 +1448,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     except PermissionError:
         # Re-raise PermissionError (already logged above)
         raise
-    logger.debug(f"Generated BIF file: {bif_filename}")
+    logger.info(f"Generated BIF file: {bif_filename} ({len(images)} thumbnails)")
 
 
 def process_item(
@@ -1540,13 +1542,13 @@ def process_item(
                     continue
 
             if os.path.isfile(index_bif):
-                logger.debug(
+                logger.info(
                     f"Skipping {media_file} — BIF already exists at {index_bif}"
                 )
                 continue
 
             if not os.path.isfile(index_bif):
-                logger.debug(f"Generating thumbnails for {media_file} -> {index_bif}")
+                logger.info(f"Generating BIF for {media_file} -> {index_bif}")
 
                 # Ensure directories exist
                 if not _ensure_directories(indexes_path, tmp_path, media_file):

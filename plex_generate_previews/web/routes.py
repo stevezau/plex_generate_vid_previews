@@ -737,12 +737,12 @@ def get_libraries():
         plex_token = settings.plex_token
 
         if not plex_url or not plex_token:
-            # Fall back to load_config for env var based config
+            # Fall back to cached config for env var based config
             try:
-                from ..config import load_config
+                from ..config import get_cached_config
                 from ..plex_client import get_plex_client
 
-                config = load_config()
+                config = get_cached_config()
                 if config is None:
                     return jsonify(
                         {
@@ -847,9 +847,9 @@ def get_config():
     try:
         import os
 
-        from ..config import load_config
+        from ..config import get_cached_config
 
-        config = load_config()
+        config = get_cached_config()
         if config is None:
             # Return what we can from environment variables
             return jsonify(
@@ -1648,14 +1648,16 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if settings.plex_config_folder:
                 config.plex_config_folder = settings.plex_config_folder
 
+            from ..config import normalize_path_mappings, split_library_selectors
+
             # Apply selected libraries (empty list = all libraries)
             selected_libs = settings.get("selected_libraries", [])
             if selected_libs:
-                config.plex_libraries = [lib.lower() for lib in selected_libs]
+                selected_ids, selected_titles = split_library_selectors(selected_libs)
+                config.plex_library_ids = selected_ids or None
+                config.plex_libraries = selected_titles
 
             # Apply path mappings (new format or legacy)
-            from ..config import normalize_path_mappings
-
             path_mappings = normalize_path_mappings(settings)
             if path_mappings:
                 config.path_mappings = path_mappings
@@ -1670,12 +1672,15 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             if config_overrides:
                 for key, value in config_overrides.items():
-                    # Map selected_libraries to plex_libraries
+                    # Map selected library selectors to ID/title filters.
                     if key == "selected_libraries":
-                        # Empty list means "all libraries" - set to empty to skip filtering
-                        config.plex_libraries = (
-                            [v.lower() for v in value] if value else []
-                        )
+                        selected_ids, selected_titles = split_library_selectors(value)
+                        # Empty list means "all libraries" - clear both filters.
+                        config.plex_library_ids = selected_ids or None
+                        config.plex_libraries = selected_titles
+                    elif key == "selected_library_ids":
+                        selected_ids, _ = split_library_selectors(value)
+                        config.plex_library_ids = selected_ids or None
                     elif key == "force_generate":
                         # Web UI sends "force_generate"; Config uses "regenerate_thumbnails"
                         config.regenerate_thumbnails = bool(value)
@@ -1729,7 +1734,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             #   workers completing in the same poll cycle.
             #
             # Track 2 — Simple elapsed rate (fallback)
-            #   After a short warmup (≥20 s elapsed, ≥2 items), uses
+            #   After a short warmup (≥10 s elapsed, ≥5 items), uses
             #   completed / elapsed as a fallback.  This guarantees the
             #   user sees *some* ETA even if burst detection has not yet
             #   resolved (e.g. many tiny libraries).
@@ -1751,8 +1756,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             _SKIP_THRESHOLD: float = 2.0  # avg secs/item below this → burst
             _STALL_THRESHOLD: float = 5.0  # seconds without completions → stall
             # Warmup thresholds for simple-rate fallback
-            _SIMPLE_MIN_ELAPSED: float = 20.0
-            _SIMPLE_MIN_ITEMS: int = 10
+            _SIMPLE_MIN_ELAPSED: float = 10.0
+            _SIMPLE_MIN_ITEMS: int = 5
+            # Fast-path warmup for high-throughput runs where burst detection
+            # may not resolve but the overall rate is already stable enough.
+            _FAST_MIN_ELAPSED: float = 8.0
+            _FAST_MIN_ITEMS: int = 5
             # Minimum signal before trusting burst-filtered estimates.
             # This prevents startup skew (slow first item(s)) from producing
             # a wildly inflated ETA that lingers in the UI.
@@ -1829,6 +1838,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 # ----- Compute ETA -------------------------------------------
                 eta = ""
                 if remaining > 0:
+                    elapsed = (
+                        now - _processing_start_time if _processing_start_time > 0 else 0.0
+                    )
+
                     # Prefer burst-filtered rate when available
                     if _burst_resolved and _real_work_start_time > 0:
                         real_elapsed = now - _real_work_start_time
@@ -1843,6 +1856,18 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             rate = real_items / real_elapsed
                             eta = _format_eta(remaining / rate)
 
+                    # Fast path for high-speed batches: provide an ETA early
+                    # before full warmup thresholds are reached.
+                    if (
+                        not eta
+                        and _processing_start_time > 0
+                        and current >= _FAST_MIN_ITEMS
+                        and elapsed >= _FAST_MIN_ELAPSED
+                    ):
+                        rate = current / elapsed
+                        if rate > 0:
+                            eta = _format_eta(remaining / rate)
+
                     # Fallback: simple elapsed rate after warmup.
                     # Suppress when stalling — the fast-skip rate is
                     # misleading for items that need real processing.
@@ -1850,9 +1875,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         not eta
                         and _processing_start_time > 0
                         and current >= _SIMPLE_MIN_ITEMS
-                        and stall_time < _STALL_THRESHOLD
+                        and (stall_time < _STALL_THRESHOLD or bool(_last_eta))
                     ):
-                        elapsed = now - _processing_start_time
                         if elapsed >= _SIMPLE_MIN_ELAPSED:
                             rate = current / elapsed
                             if rate > 0:
@@ -1909,12 +1933,21 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             try:
                 clear_failures()
                 # Run in headless mode with progress and worker callbacks
+                def _on_item_complete(worker_id, worker_type, title, success):
+                    outcome = "success" if success else "failed"
+                    msg = (
+                        f"Worker {worker_type} {worker_id} completed: {title!r} ({outcome})"
+                    )
+                    job_manager.add_log(job_id, f"INFO - {msg}")
+                    logger.info(msg)
+
                 result = run_processing(
                     config,
                     selected_gpus,
                     headless=True,
                     progress_callback=progress_callback,
                     worker_callback=worker_callback,
+                    item_complete_callback=_on_item_complete,
                     cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
                     pause_check=lambda: job_manager.is_pause_requested(job_id)
                     or get_settings_manager().processing_paused,

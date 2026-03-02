@@ -148,6 +148,37 @@ def _extract_sonarr_file_path(payload: dict) -> str:
     return combined.strip()
 
 
+def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:
+    """Build display title for Sonarr episode(s): 'Show Name S01E05' or 'Show Name S01E05, S01E06'.
+
+    Args:
+        series_title: Series name from payload.
+        episodes: List of episode dicts with seasonNumber/episodeNumber, or non-list for series only.
+
+    Returns:
+        Series title with SxxExx suffix when episode data is present.
+    """
+    if not series_title:
+        series_title = "Unknown"
+    episode_list = episodes if isinstance(episodes, list) and episodes else []
+    if not episode_list:
+        return series_title.strip()
+
+    parts = []
+    for ep in episode_list:
+        ep_dict = _as_dict(ep)
+        s = ep_dict.get("seasonNumber")
+        e = ep_dict.get("episodeNumber")
+        if s is not None and e is not None:
+            try:
+                parts.append(f"S{int(s):02d}E{int(e):02d}")
+            except (TypeError, ValueError):
+                pass
+    if not parts:
+        return series_title.strip()
+    return f"{series_title.strip()} {', '.join(parts)}"
+
+
 def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     """Schedule a debounced single-file webhook job and batch paths per source."""
     safe_source = str(source or "unknown")
@@ -174,9 +205,11 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
             batch = {
                 "source": source,
                 "file_paths": set(),
+                "titles": [],
             }
             _pending_batches[debounce_key] = batch
         batch["file_paths"].add(normalized_path)
+        batch["titles"].append(safe_title)
 
         timer = threading.Timer(
             delay, _execute_webhook_job, args=[debounce_key]
@@ -206,6 +239,7 @@ def _execute_webhook_job(debounce_key: str) -> None:
         return
 
     source = str(batch.get("source", "unknown"))
+    batch_titles = batch.get("titles") or []
     webhook_paths = sorted(
         path for path in batch.get("file_paths", set()) if isinstance(path, str) and path
     )
@@ -216,9 +250,12 @@ def _execute_webhook_job(debounce_key: str) -> None:
         _add_history_entry(source, "Download", "", "ignored_no_paths")
         return
 
-    # Display label: one path → "Sonarr: Show S01E01.mkv"; multiple → "Sonarr: 3 files"
+    # Display label: one path → "Sonarr: Show Name S01E05"; multiple → "Sonarr: 3 files"
     basenames = [os.path.basename(p) for p in webhook_paths]
-    if len(webhook_paths) == 1:
+    first_title = batch_titles[0] if batch_titles else None
+    if len(webhook_paths) == 1 and first_title:
+        library_display = f"{source.title()}: {first_title}"
+    elif len(webhook_paths) == 1:
         library_display = f"{source.title()}: {basenames[0]}"
     else:
         library_display = f"{source.title()}: {len(webhook_paths)} files"
@@ -251,7 +288,7 @@ def _execute_webhook_job(debounce_key: str) -> None:
     _add_history_entry(
         source,
         "Download",
-        source,
+        first_title or source,
         "triggered",
         job_id=job.id,
         path_count=len(webhook_paths),
@@ -347,26 +384,27 @@ def sonarr_webhook():
 
     series = _as_dict(data.get("series"))
     series_title = str(series.get("title", "Unknown")).strip() or "Unknown"
+    display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
     episode_file_path = _extract_sonarr_file_path(data)
 
-    was_queued = _schedule_webhook_job("sonarr", series_title, episode_file_path)
+    was_queued = _schedule_webhook_job("sonarr", display_title, episode_file_path)
     if not was_queued:
-        _add_history_entry("sonarr", "Download", series_title, "ignored_no_path")
+        _add_history_entry("sonarr", "Download", display_title, "ignored_no_path")
         return (
             jsonify(
                 {
                     "success": True,
-                    "message": f"Ignored '{series_title}' download: no file path in payload",
+                    "message": f"Ignored '{display_title}' download: no file path in payload",
                 }
             ),
             200,
         )
 
-    _add_history_entry("sonarr", "Download", series_title, "queued")
+    _add_history_entry("sonarr", "Download", display_title, "queued")
 
     return (
         jsonify(
-            {"success": True, "message": f"Processing queued for '{series_title}'"}
+            {"success": True, "message": f"Processing queued for '{display_title}'"}
         ),
         202,
     )
