@@ -111,7 +111,7 @@ class TestLogRetentionEnforcement:
         jm._jobs[job.id].completed_at = old_time
         jm._save_jobs()
 
-        with patch("plex_generate_previews.web.jobs.get_settings_manager") as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -129,7 +129,7 @@ class TestLogRetentionEnforcement:
 
         log_path = os.path.join(config_dir, "logs", "jobs", f"{job.id}.log")
 
-        with patch("plex_generate_previews.web.jobs.get_settings_manager") as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -148,7 +148,7 @@ class TestLogRetentionEnforcement:
         old_time = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         jm._jobs[job.id].created_at = old_time
 
-        with patch("plex_generate_previews.web.jobs.get_settings_manager") as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -163,7 +163,7 @@ class TestLogRetentionEnforcement:
             f.write("orphaned\n")
 
         jm = JobManager(config_dir=config_dir)
-        with patch("plex_generate_previews.web.jobs.get_settings_manager") as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -210,20 +210,28 @@ class TestLogFileCleanup:
         """Pruning old terminal jobs removes their log files."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
-        created = []
-        for i in range(52):
+        log_dir = os.path.join(config_dir, "logs", "jobs")
+
+        # Create exactly MAX_TERMINAL_JOBS completed jobs (no pruning yet)
+        max_terminal = jm._MAX_TERMINAL_JOBS
+        for i in range(max_terminal):
             job = jm.create_job(library_name=f"Lib{i}")
             jm.start_job(job.id)
             jm.add_log(job.id, "INFO - x")
             jm.complete_job(job.id)
-            created.append(job.id)
 
-        log_dir = os.path.join(config_dir, "logs", "jobs")
-        assert len([f for f in os.listdir(log_dir) if f.endswith(".log")]) == 52
+        assert len([f for f in os.listdir(log_dir) if f.endswith(".log")]) == max_terminal
 
-        jm.create_job(library_name="New")
+        # Create one more completed job — should trigger prune of the oldest
+        extra = jm.create_job(library_name="Extra")
+        jm.start_job(extra.id)
+        jm.add_log(extra.id, "INFO - x")
+        jm.complete_job(extra.id)
+
+        # Now there are max_terminal + 1 terminal jobs; next create prunes 1
+        jm.create_job(library_name="Trigger")
         remaining_logs = [f for f in os.listdir(log_dir) if f.endswith(".log")]
-        assert len(remaining_logs) == 50
+        assert len(remaining_logs) == max_terminal
 
     def test_clear_logs_removes_file(self, config_dir):
         """clear_logs deletes the job log file."""
@@ -257,3 +265,89 @@ class TestRetentionTimer:
         jm = JobManager(config_dir=config_dir)
         jm._stop_retention_timer()
         assert jm._retention_timer is None
+
+
+class TestCompleteJobWarning:
+    """complete_job warning= parameter produces COMPLETED status with error message."""
+
+    def test_complete_with_warning_sets_completed_status(self, config_dir):
+        """warning= marks the job as COMPLETED (not FAILED)."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+        jm.start_job(job.id)
+        jm.complete_job(job.id, warning="2/3 processed; 1 sent for retry")
+
+        result = jm.get_job(job.id)
+        assert result.status == JobStatus.COMPLETED
+        assert result.error == "2/3 processed; 1 sent for retry"
+
+    def test_complete_with_error_sets_failed_status(self, config_dir):
+        """error= marks the job as FAILED."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+        jm.start_job(job.id)
+        jm.complete_job(job.id, error="Could not find in Plex after 3 attempt(s)")
+
+        result = jm.get_job(job.id)
+        assert result.status == JobStatus.FAILED
+        assert result.error == "Could not find in Plex after 3 attempt(s)"
+
+    def test_complete_without_args_sets_completed_no_error(self, config_dir):
+        """No args marks the job as COMPLETED with no error."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+        jm.start_job(job.id)
+        jm.complete_job(job.id)
+
+        result = jm.get_job(job.id)
+        assert result.status == JobStatus.COMPLETED
+        assert result.error is None
+
+    def test_error_takes_precedence_over_warning(self, config_dir):
+        """If both error= and warning= are given, error= wins (FAILED)."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+        jm.start_job(job.id)
+        jm.complete_job(job.id, error="hard fail", warning="soft warning")
+
+        result = jm.get_job(job.id)
+        assert result.status == JobStatus.FAILED
+        assert result.error == "hard fail"
+
+    def test_warning_emits_job_completed_event(self, config_dir):
+        """warning= emits job_completed (not job_failed) SocketIO event."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        emitted = []
+        jm._emit_event = lambda event, data: emitted.append((event, data))
+
+        job = jm.create_job(library_name="Test")
+        jm.start_job(job.id)
+        jm.complete_job(job.id, warning="1 sent for retry")
+
+        assert len(emitted) >= 1
+        event_names = [e[0] for e in emitted]
+        assert "job_completed" in event_names
+        assert "job_failed" not in event_names
+        completed_data = next(d for e, d in emitted if e == "job_completed")
+        assert completed_data["status"] == "completed"
+        assert completed_data["error"] == "1 sent for retry"
+
+    def test_error_emits_job_failed_event(self, config_dir):
+        """error= emits job_failed (not job_completed) SocketIO event."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        emitted = []
+        jm._emit_event = lambda event, data: emitted.append((event, data))
+
+        job = jm.create_job(library_name="Test")
+        jm.start_job(job.id)
+        jm.complete_job(job.id, error="processing failed")
+
+        event_names = [e[0] for e in emitted]
+        assert "job_failed" in event_names
+        assert "job_completed" not in event_names

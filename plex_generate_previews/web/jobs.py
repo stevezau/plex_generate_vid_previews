@@ -588,7 +588,10 @@ class JobManager:
                     return logs
                 except OSError:
                     pass
-            if job_id in self._jobs:
+            job = self._jobs.get(job_id)
+            if job and job.status in (
+                JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED,
+            ):
                 return [LOG_RETENTION_CLEARED_MESSAGE]
             return []
 

@@ -765,6 +765,29 @@ class TestSettingsAPI:
         )
         assert resp.status_code == 400
 
+    def test_get_settings_returns_webhook_retry_defaults(self, client):
+        """GET /api/settings returns default webhook_retry_count and webhook_retry_delay."""
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["webhook_retry_count"] == 3
+        assert data["webhook_retry_delay"] == 30
+
+    def test_save_webhook_retry_settings(self, client):
+        """POST /api/settings persists webhook_retry_count and webhook_retry_delay."""
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_retry_count": 5, "webhook_retry_delay": 60},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+        resp2 = client.get("/api/settings", headers=_api_headers())
+        data = resp2.get_json()
+        assert data["webhook_retry_count"] == 5
+        assert data["webhook_retry_delay"] == 60
+
 
 # ---------------------------------------------------------------------------
 # Job config / path_mappings (settings vs config_overrides)

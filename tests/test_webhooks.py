@@ -560,6 +560,40 @@ def test_execute_webhook_job_uses_selected_libraries(
     assert config_overrides["selected_libraries"] == ["1", "2"]
 
 
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_execute_webhook_job_includes_retry_settings(
+    mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr
+):
+    """Webhook job config_overrides include webhook_retry_count and webhook_retry_delay from settings."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer = MagicMock()
+    mock_timer.daemon = True
+    mock_timer_cls.return_value = mock_timer
+
+    mock_job = MagicMock()
+    mock_job.id = "retry-test-id"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    mock_settings = MagicMock()
+    mock_settings.get.side_effect = lambda key, default=None: {
+        "selected_libraries": [],
+        "webhook_retry_count": 5,
+        "webhook_retry_delay": 120,
+    }.get(key, default)
+    mock_settings_mgr.return_value = mock_settings
+
+    wh._schedule_webhook_job("radarr", "Movie A", "/movies/A.mkv")
+    wh._execute_webhook_job(wh._debounce_key("radarr"))
+
+    config_overrides = mock_start_job.call_args[0][1]
+    assert config_overrides["webhook_retry_count"] == 5
+    assert config_overrides["webhook_retry_delay"] == 120
+
+
 @patch("plex_generate_previews.web.webhooks.get_job_manager")
 @patch("plex_generate_previews.web.webhooks.threading.Timer")
 @patch("plex_generate_previews.web.routes._start_job_async")
