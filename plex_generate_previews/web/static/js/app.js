@@ -171,7 +171,7 @@ function connectSocket() {
         updateJobProgress(data.job_id, data.progress);
     });
 
-    socket.on('worker_status', function(data) {
+    socket.on('worker_update', function(data) {
         const workers = data.workers || [];
         if (workers.length > 0) {
             updateWorkerStatuses(workers);
