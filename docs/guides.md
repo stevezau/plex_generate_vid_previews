@@ -125,7 +125,17 @@ In Docker, the web interface runs on **gunicorn** with the **gthread** (threaded
 
 ### Reverse Proxy
 
-If placing behind nginx or Traefik, ensure WebSocket upgrade headers are forwarded:
+If you want to expose the web UI outside your local network — for example
+with HTTPS, a custom domain, or alongside other services — you can place it
+behind a reverse proxy such as Nginx, Apache, or Traefik.
+
+The built-in server listens on port `8080` (HTTP) and the reverse proxy
+forwards external requests to it. The one requirement worth calling out:
+the web UI uses **WebSocket** (Socket.IO) for real-time job progress. Your
+reverse proxy **must** forward WebSocket upgrade requests, otherwise
+progress bars will appear frozen and only update on manual page refresh.
+
+#### Nginx
 
 ```nginx
 location / {
@@ -138,6 +148,56 @@ location / {
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+#### Apache
+
+Enable the required modules first:
+
+```bash
+sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers
+sudo systemctl restart apache2
+```
+
+Example HTTPS virtual host:
+
+```apache
+<VirtualHost *:443>
+    ServerName previews.example.com
+
+    SSLEngine On
+    SSLCertificateFile    /etc/letsencrypt/live/example.com/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/example.com/privkey.pem
+    SSLProtocol +TLSv1.2
+
+    RequestHeader set X-Forwarded-Proto https
+    RequestHeader set X-Forwarded-Ssl on
+
+    # Proxy WebSocket upgrade requests (required for real-time updates)
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*) ws://127.0.0.1:8080/$1 [P,L]
+
+    # Proxy all other traffic
+    ProxyPass / http://127.0.0.1:8080/
+    ProxyPassReverse / http://127.0.0.1:8080/
+
+    ProxyRequests Off
+    ProxyPreserveHost On
+
+    Header edit Location ^http://(.*)$ https://$1
+</VirtualHost>
+```
+
+> [!IMPORTANT]
+> The `RewriteRule` for WebSocket **must** appear before the `ProxyPass`
+> directives. Without `mod_proxy_wstunnel`, Apache treats WebSocket upgrade
+> requests as normal HTTP and the Socket.IO connection silently falls back
+> to buffered long-polling — causing job progress to appear frozen.
+
+#### Traefik
+
+Traefik v2+ forwards WebSocket upgrade headers automatically. No extra
+configuration is required beyond a standard HTTP router and service.
 
 ### Authentication
 
