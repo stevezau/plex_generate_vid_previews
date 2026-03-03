@@ -23,26 +23,9 @@ from plex_generate_previews.web.settings_manager import reset_settings_manager
 # ---------------------------------------------------------------------------
 
 
-def _drain_job_execution_lock():
-    """Wait for any running background job thread to release _job_execution_lock.
-
-    _start_job_async spawns a daemon thread that holds the lock for the
-    duration of job processing.  Acquiring and immediately releasing
-    ensures the previous thread has finished before singletons are reset,
-    preventing a race where the thread recreates the JobManager singleton
-    with the module-level default config_dir ("/config").
-    """
-    from plex_generate_previews.web.routes import _job_execution_lock
-
-    acquired = _job_execution_lock.acquire(timeout=5)
-    if acquired:
-        _job_execution_lock.release()
-
-
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Reset web singletons between tests to avoid cross-contamination."""
-    _drain_job_execution_lock()
     reset_settings_manager()
     # Also reset the jobs singleton
     import plex_generate_previews.web.jobs as jobs_mod
@@ -59,7 +42,6 @@ def _reset_singletons():
 
     clear_gpu_cache()
     yield
-    _drain_job_execution_lock()
     reset_settings_manager()
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
