@@ -13,6 +13,7 @@ import pytest
 
 from plex_generate_previews.media_processing import (
     CodecNotSupportedError,
+    FFMPEG_STALL_TIMEOUT_SEC,
     _detect_codec_error,
     _detect_dolby_vision_rpu_error,
     _detect_hwaccel_runtime_error,
@@ -512,6 +513,54 @@ class TestGenerateImages:
         args = mock_popen.call_args[0][0]
         assert mock_config.ffmpeg_path in args
         assert "/test/video.mp4" in args
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("plex_generate_previews.media_processing.time")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("glob.glob")
+    def test_ffmpeg_stall_timeout_kills_process(
+        self,
+        mock_glob,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_time,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """When FFmpeg produces no progress for FFMPEG_STALL_TIMEOUT_SEC, process is killed."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        # Process never exits on its own; we kill it via stall timeout
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = -9  # SIGKILL after kill()
+        mock_popen.return_value = mock_proc
+
+        # No progress file → last_progress_time never updated → stall detected
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        # First time.time() sets last_progress_time=0; second (in loop) triggers kill
+        mock_time.time.side_effect = [0, 0 + FFMPEG_STALL_TIMEOUT_SEC + 1]
+        mock_time.sleep.return_value = None
+
+        success, image_count, hw_used, seconds, speed = generate_images(
+            "/test/video.mp4", temp_dir, None, None, mock_config
+        )
+
+        assert success is False
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_called_once()
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
