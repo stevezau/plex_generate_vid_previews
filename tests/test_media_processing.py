@@ -550,17 +550,22 @@ class TestGenerateImages:
         mock_exists.return_value = False
         mock_glob.return_value = []
 
-        # First time.time() sets last_progress_time=0; second (in loop) triggers kill
-        mock_time.time.side_effect = [0, 0 + FFMPEG_STALL_TIMEOUT_SEC + 1]
+        # time.time() is called per _run_ffmpeg: start_local, last_progress_time, stall check, end_local.
+        # generate_images retries without skip_frame after first failure, so we need values for 2 runs.
+        stall_time = 0 + FFMPEG_STALL_TIMEOUT_SEC + 1
+        one_run = [0, 0, stall_time, stall_time + 1]
+        mock_time.time.side_effect = one_run + one_run
         mock_time.sleep.return_value = None
+        mock_time.time_ns.return_value = 0  # for temp output filename
 
         success, image_count, hw_used, seconds, speed = generate_images(
             "/test/video.mp4", temp_dir, None, None, mock_config
         )
 
         assert success is False
-        mock_proc.kill.assert_called_once()
-        mock_proc.wait.assert_called_once()
+        # First run (with skip_frame) and retry (without) both hit stall timeout
+        assert mock_proc.kill.call_count == 2
+        assert mock_proc.wait.call_count == 2
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
