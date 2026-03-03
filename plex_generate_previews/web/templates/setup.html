@@ -217,6 +217,22 @@
                 <select class="form-select d-none" id="serverSelect">
                     <option value="">Select a server...</option>
                 </select>
+
+                <div id="serverUrlOverride" class="mt-3 d-none">
+                    <label for="serverUrlInput" class="form-label">Server URL</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="serverUrlInput"
+                               placeholder="http://192.168.1.100:32400">
+                        <button class="btn btn-outline-secondary" type="button" id="serverUrlApply">
+                            Apply
+                        </button>
+                    </div>
+                    <div class="form-text">
+                        Auto-detected from Plex. Override if the URL isn't reachable from this
+                        host (e.g. inside Docker use the container network IP or
+                        <code>host.docker.internal</code>).
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -598,16 +614,34 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    function getServerUrl() {
+        if (selectedServer.local) {
+            return `http://${selectedServer.host}:${selectedServer.port}`;
+        }
+        return selectedServer.uri || `http://${selectedServer.host}:${selectedServer.port}`;
+    }
+
     document.getElementById('serverSelect').addEventListener('change', async function() {
+        const overrideEl = document.getElementById('serverUrlOverride');
+        const urlInput = document.getElementById('serverUrlInput');
+
         if (!this.value) {
             document.getElementById('librariesCard').style.display = 'none';
             document.getElementById('step2Next').disabled = true;
+            overrideEl.classList.add('d-none');
             return;
         }
 
         selectedServer = JSON.parse(this.value);
-        document.getElementById('librariesCard').style.display = 'block';
 
+        urlInput.value = getServerUrl();
+        overrideEl.classList.remove('d-none');
+
+        document.getElementById('librariesCard').style.display = 'block';
+        await loadLibraries();
+    });
+
+    document.getElementById('serverUrlApply').addEventListener('click', async function() {
         await loadLibraries();
     });
 
@@ -619,18 +653,9 @@ document.addEventListener('DOMContentLoaded', function() {
         grid.innerHTML = '';
 
         try {
-            // Prefer local connection over plex.direct relay
-            let url;
-            if (selectedServer.local) {
-                // Local servers typically use HTTP (not HTTPS) on port 32400
-                url = `http://${selectedServer.host}:${selectedServer.port}`;
-            } else {
-                // Fall back to uri for remote servers
-                url = selectedServer.uri || `http://${selectedServer.host}:${selectedServer.port}`;
-            }
+            const url = document.getElementById('serverUrlInput').value.trim() || getServerUrl();
             const token = selectedServer.access_token;
 
-            // Save server URL and token to settings
             await settingsManager.save({
                 plex_url: url,
                 plex_name: selectedServer.name,
@@ -665,7 +690,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
         } catch (error) {
             loading.classList.add('d-none');
-            grid.innerHTML = `<p class="text-danger">Failed to load libraries: ${error.message}</p>`;
+            grid.innerHTML = `
+                <div class="alert alert-danger" role="alert">
+                    <strong>Failed to load libraries:</strong> ${error.message}
+                    <hr class="my-2">
+                    <small>
+                        Try editing the Server URL above. In Docker deployments the
+                        auto-detected address is often unreachable from inside the container
+                        &mdash; use the Docker network IP or <code>host.docker.internal</code> instead.
+                    </small>
+                </div>`;
         }
     }
 

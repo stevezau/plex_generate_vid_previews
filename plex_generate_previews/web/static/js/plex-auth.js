@@ -214,8 +214,14 @@ class PlexServerManager {
         const response = await fetch(endpoint);
 
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Failed to get libraries');
+            let detail = `HTTP ${response.status}`;
+            try {
+                const body = await response.json();
+                if (body.error) detail = body.error;
+            } catch {
+                // response wasn't JSON
+            }
+            throw new Error(detail);
         }
 
         const data = await response.json();

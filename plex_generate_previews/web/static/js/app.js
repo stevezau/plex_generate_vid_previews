@@ -419,8 +419,9 @@ async function loadLibraries() {
         updateLibrarySelects();
     } catch (error) {
         console.error('Failed to load libraries:', error);
+        const detail = error.message || 'Unknown error';
         document.getElementById('libraryList').innerHTML =
-            '<div class="text-danger small">Failed to load libraries</div>';
+            `<div class="text-danger small">Failed to load libraries: ${detail}</div>`;
     }
 }
 

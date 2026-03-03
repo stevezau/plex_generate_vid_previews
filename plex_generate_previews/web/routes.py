@@ -816,13 +816,24 @@ def _fetch_libraries_via_http(
 @api.route("/libraries")
 @api_token_required
 def get_libraries():
-    """Get available Plex libraries."""
-    try:
-        from .settings_manager import get_settings_manager
+    """Get available Plex libraries.
 
-        settings = get_settings_manager()
-        plex_url = settings.plex_url
-        plex_token = settings.plex_token
+    Accepts optional query params 'url' and 'token' to override saved
+    settings (used during setup wizard before config is persisted).
+    """
+    try:
+        import requests as req_lib
+
+        # Query params override saved settings (setup wizard flow)
+        plex_url = request.args.get("url")
+        plex_token = request.args.get("token")
+
+        if not plex_url or not plex_token:
+            from .settings_manager import get_settings_manager
+
+            settings = get_settings_manager()
+            plex_url = plex_url or settings.plex_url
+            plex_token = plex_token or settings.plex_token
 
         if not plex_url or not plex_token:
             # Fall back to cached config for env var based config
@@ -863,13 +874,47 @@ def get_libraries():
                     }
                 ), 400
 
-        # Use settings.json values
+        # Use settings.json values (or query param overrides)
         libraries = _fetch_libraries_via_http(plex_url, plex_token, include_count=True)
 
         return jsonify({"libraries": libraries})
+
+    except req_lib.ConnectionError:
+        detail = f"Could not connect to Plex at {plex_url}"
+        logger.error(f"Failed to get libraries: {detail}")
+        return jsonify(
+            {
+                "error": f"{detail}. Check the server URL and ensure Plex is running and reachable from this host.",
+                "libraries": [],
+            }
+        ), 502
+    except req_lib.Timeout:
+        detail = f"Connection to Plex at {plex_url} timed out"
+        logger.error(f"Failed to get libraries: {detail}")
+        return jsonify(
+            {
+                "error": f"{detail}. The server may be overloaded or unreachable.",
+                "libraries": [],
+            }
+        ), 504
+    except req_lib.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        if status == 401:
+            detail = "Plex rejected the authentication token"
+            hint = "Re-authenticate with Plex or check your token."
+        elif status == 403:
+            detail = "Access denied by Plex server"
+            hint = "Ensure your account has access to this server."
+        else:
+            detail = f"Plex returned HTTP {status}"
+            hint = "Check Plex server logs for details."
+        logger.error(f"Failed to get libraries: {detail} (HTTP {status})")
+        return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except Exception as e:
         logger.error(f"Failed to get libraries: {e}")
-        return jsonify({"error": "Failed to retrieve libraries", "libraries": []}), 500
+        return jsonify(
+            {"error": f"Failed to retrieve libraries: {e}", "libraries": []}
+        ), 500
 
 
 # ============================================================================
@@ -1159,9 +1204,42 @@ def get_plex_libraries():
     try:
         libraries = _fetch_libraries_via_http(plex_url, plex_token)
         return jsonify({"libraries": libraries})
+    except requests.ConnectionError:
+        detail = f"Could not connect to Plex at {plex_url}"
+        logger.error(f"Failed to get Plex libraries: {detail}")
+        return jsonify(
+            {
+                "error": f"{detail}. Check the server URL and ensure Plex is running and reachable from this host.",
+                "libraries": [],
+            }
+        ), 502
+    except requests.Timeout:
+        detail = f"Connection to Plex at {plex_url} timed out"
+        logger.error(f"Failed to get Plex libraries: {detail}")
+        return jsonify(
+            {
+                "error": f"{detail}. The server may be overloaded or unreachable.",
+                "libraries": [],
+            }
+        ), 504
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        if status == 401:
+            detail = "Plex rejected the authentication token"
+            hint = "Re-authenticate with Plex or check your token."
+        elif status == 403:
+            detail = "Access denied by Plex server"
+            hint = "Ensure your account has access to this server."
+        else:
+            detail = f"Plex returned HTTP {status}"
+            hint = "Check Plex server logs for details."
+        logger.error(f"Failed to get Plex libraries: {detail} (HTTP {status})")
+        return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except requests.RequestException as e:
         logger.error(f"Failed to get Plex libraries: {e}")
-        return jsonify({"error": "Failed to get libraries", "libraries": []}), 500
+        return jsonify(
+            {"error": f"Failed to get libraries: {e}", "libraries": []}
+        ), 500
 
 
 @api.route("/plex/test", methods=["POST"])
