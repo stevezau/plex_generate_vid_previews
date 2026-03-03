@@ -1981,6 +1981,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     )
                     job_manager.update_worker_status(worker_key, status)
                 job_manager.prune_worker_statuses(active_worker_keys)
+                job_manager.emit_worker_statuses()
 
             # If this is a retry job, wait before re-resolving so Plex has time to index
             _retry_cancelled = False

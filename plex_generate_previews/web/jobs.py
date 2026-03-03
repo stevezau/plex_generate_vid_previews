@@ -638,6 +638,14 @@ class JobManager:
                 if key not in valid_keys:
                     del self._worker_statuses[key]
 
+    def emit_worker_statuses(self) -> None:
+        """Emit current worker statuses to connected clients via SocketIO."""
+        workers = self.get_worker_statuses()
+        self._emit_event(
+            "worker_status",
+            {"workers": [w.to_dict() for w in workers]},
+        )
+
     # ========================================================================
     # Cancellation Management
     # ========================================================================

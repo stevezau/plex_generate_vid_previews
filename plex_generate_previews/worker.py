@@ -930,7 +930,7 @@ class WorkerPool:
                 )
                 last_progress_update = current_time
 
-            if worker_callback and current_time - last_worker_update >= 2.0:
+            if worker_callback and current_time - last_worker_update >= 1.0:
                 worker_statuses = []
                 all_workers = self._snapshot_workers()
 

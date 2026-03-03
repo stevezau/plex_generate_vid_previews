@@ -124,7 +124,7 @@ function initDashboard() {
     setInterval(refreshStatus, 120000);
     setInterval(loadJobStats, 10000);
     setInterval(loadJobs, 5000);  // Poll jobs every 5 seconds
-    setInterval(loadWorkerStatuses, 5000);  // Poll workers every 5 seconds
+    setInterval(loadWorkerStatuses, 1000);  // Poll workers every second
 }
 
 // SocketIO Connection
@@ -169,6 +169,15 @@ function connectSocket() {
 
     socket.on('job_progress', function(data) {
         updateJobProgress(data.job_id, data.progress);
+    });
+
+    socket.on('worker_status', function(data) {
+        const workers = data.workers || [];
+        if (workers.length > 0) {
+            updateWorkerStatuses(workers);
+        } else {
+            updateWorkerStatuses([], { keepBadgeCounts: true });
+        }
     });
 
     socket.on('job_completed', function(job) {
