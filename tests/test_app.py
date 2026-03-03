@@ -7,8 +7,7 @@ run_scheduled_job, and create_app configuration.
 
 import json
 import os
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

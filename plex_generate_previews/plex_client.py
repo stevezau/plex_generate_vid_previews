@@ -637,8 +637,6 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
             if selected_scope:
                 logger.info(f"Current selected library scope: {selected_scope}")
 
-    unresolved_targets_set = set(unresolved_targets)
-    unresolved_targets_sorted = sorted(unresolved_targets_set)
     skipped_input_paths = [
         input_path
         for input_path in input_paths
@@ -666,11 +664,6 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
             if _normalize_path_for_match(candidate) != _normalize_path_for_match(input_path)
         ]
         mapping_applied = bool(mapped_candidates)
-        matched_candidates = [
-            candidate
-            for candidate in candidate_paths
-            if _normalize_path_for_match(candidate) in matched_targets
-        ]
         skipped_candidates = [
             candidate
             for candidate in candidate_paths

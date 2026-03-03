@@ -17,7 +17,6 @@ from plex_generate_previews.web.jobs import (
     LOG_RETENTION_CLEARED_MESSAGE,
     JobManager,
     JobStatus,
-    get_job_manager,
 )
 
 
