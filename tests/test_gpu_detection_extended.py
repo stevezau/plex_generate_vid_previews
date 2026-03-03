@@ -729,7 +729,9 @@ class TestNvidiaSmiDetection:
     def test_detect_nvidia_via_nvidia_smi_success(self, mock_run):
         from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="NVIDIA GeForce RTX 3080\n")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="NVIDIA GeForce RTX 3080\n"
+        )
         assert _detect_nvidia_via_nvidia_smi() == "NVIDIA"
 
     @patch("subprocess.run")
@@ -775,7 +777,10 @@ class TestGPUVendorFromDriver:
     def test_known_drivers(self):
         from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
 
-        with patch("plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci", return_value="UNKNOWN"):
+        with patch(
+            "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+            return_value="UNKNOWN",
+        ):
             assert _get_gpu_vendor_from_driver("nvidia") == "NVIDIA"
             assert _get_gpu_vendor_from_driver("amdgpu") == "AMD"
             assert _get_gpu_vendor_from_driver("i915") == "INTEL"
@@ -833,7 +838,8 @@ class TestLspciEdgeCases:
         from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(
-            returncode=0, stdout="00:1f.3 Audio device: Sound Corp\n00:00.0 Host bridge: Foo\n"
+            returncode=0,
+            stdout="00:1f.3 Audio device: Sound Corp\n00:00.0 Host bridge: Foo\n",
         )
         assert _detect_gpu_type_from_lspci() == "UNKNOWN"
 

@@ -73,7 +73,9 @@ class TestJobLogPersistence:
         assert len(logs) == 1
         assert "persisted line" in logs[0]
 
-    def test_get_logs_returns_retention_message_when_file_missing_but_job_exists(self, config_dir):
+    def test_get_logs_returns_retention_message_when_file_missing_but_job_exists(
+        self, config_dir
+    ):
         """get_logs returns retention message when log file is gone but job still in jobs.json."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
@@ -110,7 +112,9 @@ class TestLogRetentionEnforcement:
         jm._jobs[job.id].completed_at = old_time
         jm._save_jobs()
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch(
+            "plex_generate_previews.web.settings_manager.get_settings_manager"
+        ) as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -128,7 +132,9 @@ class TestLogRetentionEnforcement:
 
         log_path = os.path.join(config_dir, "logs", "jobs", f"{job.id}.log")
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch(
+            "plex_generate_previews.web.settings_manager.get_settings_manager"
+        ) as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -147,7 +153,9 @@ class TestLogRetentionEnforcement:
         old_time = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         jm._jobs[job.id].created_at = old_time
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch(
+            "plex_generate_previews.web.settings_manager.get_settings_manager"
+        ) as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -162,7 +170,9 @@ class TestLogRetentionEnforcement:
             f.write("orphaned\n")
 
         jm = JobManager(config_dir=config_dir)
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch(
+            "plex_generate_previews.web.settings_manager.get_settings_manager"
+        ) as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -219,7 +229,9 @@ class TestLogFileCleanup:
             jm.add_log(job.id, "INFO - x")
             jm.complete_job(job.id)
 
-        assert len([f for f in os.listdir(log_dir) if f.endswith(".log")]) == max_terminal
+        assert (
+            len([f for f in os.listdir(log_dir) if f.endswith(".log")]) == max_terminal
+        )
 
         # Create one more completed job — should trigger prune of the oldest
         extra = jm.create_job(library_name="Extra")

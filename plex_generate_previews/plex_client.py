@@ -335,7 +335,9 @@ def _map_plex_path_to_local(path: str, config: Config) -> str:
 
 def _build_episode_title(item) -> str:
     """Build display title for episode media items."""
-    show_title = getattr(item, "grandparentTitle", "") or getattr(item, "title", "Unknown")
+    show_title = getattr(item, "grandparentTitle", "") or getattr(
+        item, "title", "Unknown"
+    )
     season_episode = str(getattr(item, "seasonEpisode", "")).upper()
     return f"{show_title} {season_episode}".strip()
 
@@ -364,7 +366,9 @@ class WebhookResolutionResult:
     skipped_paths: List[str]
 
 
-def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> WebhookResolutionResult:
+def get_media_items_by_paths(
+    plex, config: Config, file_paths: List[str]
+) -> WebhookResolutionResult:
     """Resolve webhook file paths into Plex media tuples.
 
     We need Plex because preview BIF files must be written to a path derived from
@@ -385,7 +389,9 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
     # Only fetch recently-added items when resolving webhook paths (avoids full-library scan).
     # Limits can be tuned via environment variables for larger/busier servers.
     try:
-        webhook_recent_limit = max(1, int(os.environ.get("WEBHOOK_RECENT_LIMIT", "200")))
+        webhook_recent_limit = max(
+            1, int(os.environ.get("WEBHOOK_RECENT_LIMIT", "200"))
+        )
     except ValueError:
         webhook_recent_limit = 200
 
@@ -420,7 +426,9 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
             if mappings
             else [cleaned_path]
         )
-        input_targets = {_normalize_path_for_match(candidate) for candidate in candidate_paths}
+        input_targets = {
+            _normalize_path_for_match(candidate) for candidate in candidate_paths
+        }
         if cleaned_path not in input_to_targets:
             input_paths.append(cleaned_path)
             input_to_targets[cleaned_path] = set()
@@ -466,7 +474,10 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
         if selected_library_ids:
             return str(getattr(section, "key", "")).strip() in selected_library_ids
         if selected_library_titles:
-            return str(getattr(section, "title", "")).strip().lower() in selected_library_titles
+            return (
+                str(getattr(section, "title", "")).strip().lower()
+                in selected_library_titles
+            )
         return True
 
     def _collect_item_targets(item) -> set[str]:
@@ -517,13 +528,17 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
                     continue
 
                 pass_matches.update(matched_for_item)
-                section_title = str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                section_title = (
+                    str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                )
                 plex_locations = _extract_item_locations(item)
                 plex_path = plex_locations[0] if plex_locations else ""
                 for target in matched_for_item:
                     if target not in matched_target_to_plex_path and plex_path:
                         matched_target_to_plex_path[target] = plex_path
-                    selected_match_libraries_by_target.setdefault(target, set()).add(section_title)
+                    selected_match_libraries_by_target.setdefault(target, set()).add(
+                        section_title
+                    )
                 item_key = getattr(item, "key", None)
                 if not item_key:
                     logger.warning(
@@ -577,19 +592,19 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
                 matched_for_item = target_paths.intersection(item_targets)
                 if matched_for_item:
                     excluded_matches.update(matched_for_item)
-                    section_title = str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                    section_title = (
+                        str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                    )
                     excluded_sections.add(section_title)
                     for target in matched_for_item:
-                        excluded_match_libraries_by_target.setdefault(target, set()).add(
-                            section_title
-                        )
+                        excluded_match_libraries_by_target.setdefault(
+                            target, set()
+                        ).add(section_title)
 
         return excluded_matches, excluded_sections
 
     logger.info("Querying Plex for recently added items...")
-    logger.info(
-        f"  Pass 1: scanned up to {webhook_recent_limit} items per library"
-    )
+    logger.info(f"  Pass 1: scanned up to {webhook_recent_limit} items per library")
     matched_targets.update(_scan_sections(normalized_targets, webhook_recent_limit))
     unresolved_targets = normalized_targets - matched_targets
     input_files_unmatched_after_pass1 = sum(
@@ -614,9 +629,14 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
             unresolved_targets, webhook_recent_limit
         )
         remaining_for_excluded_scan = unresolved_targets - skipped_by_library_targets
-        if remaining_for_excluded_scan and webhook_fallback_limit > webhook_recent_limit:
-            fallback_skipped_targets, fallback_skipped_libraries = _scan_excluded_sections(
-                remaining_for_excluded_scan, webhook_fallback_limit
+        if (
+            remaining_for_excluded_scan
+            and webhook_fallback_limit > webhook_recent_limit
+        ):
+            fallback_skipped_targets, fallback_skipped_libraries = (
+                _scan_excluded_sections(
+                    remaining_for_excluded_scan, webhook_fallback_limit
+                )
             )
             skipped_by_library_targets.update(fallback_skipped_targets)
             skipped_library_names.update(fallback_skipped_libraries)
@@ -661,7 +681,8 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
         mapped_candidates = [
             candidate
             for candidate in candidate_paths
-            if _normalize_path_for_match(candidate) != _normalize_path_for_match(input_path)
+            if _normalize_path_for_match(candidate)
+            != _normalize_path_for_match(input_path)
         ]
         mapping_applied = bool(mapped_candidates)
         skipped_candidates = [
@@ -714,7 +735,11 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
                     logger.info(f"        Found via mapping: {plex_path}")
             logger.info(
                 "        Result: resolved"
-                + (f" (library: {', '.join(selected_libraries)})" if selected_libraries else "")
+                + (
+                    f" (library: {', '.join(selected_libraries)})"
+                    if selected_libraries
+                    else ""
+                )
             )
             continue
 
@@ -740,9 +765,7 @@ def get_media_items_by_paths(plex, config: Config, file_paths: List[str]) -> Web
             result_suffix = (
                 f": {', '.join(excluded_libraries)})" if excluded_libraries else ")"
             )
-            logger.warning(
-                "        Result: skipped (excluded library" + result_suffix
-            )
+            logger.warning("        Result: skipped (excluded library" + result_suffix)
             continue
 
         unresolved_count += 1

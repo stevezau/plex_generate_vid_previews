@@ -44,7 +44,9 @@ def _authenticate_webhook(f):
             token = auth_header[7:]
         elif auth_header.startswith("Basic "):
             try:
-                decoded = base64.b64decode(auth_header[6:].encode()).decode("utf-8", errors="replace")
+                decoded = base64.b64decode(auth_header[6:].encode()).decode(
+                    "utf-8", errors="replace"
+                )
                 if ":" in decoded:
                     _, token = decoded.split(":", 1)
             except Exception:
@@ -211,9 +213,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         batch["file_paths"].add(normalized_path)
         batch["titles"].append(safe_title)
 
-        timer = threading.Timer(
-            delay, _execute_webhook_job, args=[debounce_key]
-        )
+        timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
         timer.daemon = True
         _pending_timers[debounce_key] = timer
         timer.start()
@@ -241,7 +241,9 @@ def _execute_webhook_job(debounce_key: str) -> None:
     source = str(batch.get("source", "unknown"))
     batch_titles = batch.get("titles") or []
     webhook_paths = sorted(
-        path for path in batch.get("file_paths", set()) if isinstance(path, str) and path
+        path
+        for path in batch.get("file_paths", set())
+        if isinstance(path, str) and path
     )
     if not webhook_paths:
         logger.warning(

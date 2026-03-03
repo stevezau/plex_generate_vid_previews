@@ -513,7 +513,6 @@ class TestGetLibrarySectionsExtended:
         section, media = sections[0]
         assert len(media) == 1
 
-
     def test_get_library_sections_cancel_before_section(self, mock_config):
         """Test that cancel_check aborts before processing a section."""
         mock_plex = MagicMock()
@@ -563,7 +562,9 @@ class TestGetLibrarySectionsExtended:
             return call_count > 1
 
         sections = list(
-            get_library_sections(mock_plex, mock_config, cancel_check=cancel_after_first)
+            get_library_sections(
+                mock_plex, mock_config, cancel_check=cancel_after_first
+            )
         )
 
         # Only the first section should have been returned before cancellation
@@ -603,7 +604,9 @@ class TestGetMediaItemsByPaths:
         assert result.skipped_paths == []
 
     @patch("plex_generate_previews.plex_client.logger.info")
-    def test_get_media_items_by_paths_logs_received_and_pass1(self, mock_info, mock_config):
+    def test_get_media_items_by_paths_logs_received_and_pass1(
+        self, mock_info, mock_config
+    ):
         """Webhook resolution logs received file count and Pass 1 before scanning."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -725,9 +728,7 @@ class TestGetMediaItemsByPaths:
             mock_plex, mock_config, ["/nonexistent/path.mkv"]
         )
         assert result.items == []
-        assert any(
-            "not found" in str(call) for call in mock_warning.call_args_list
-        )
+        assert any("not found" in str(call) for call in mock_warning.call_args_list)
         assert any(
             "Direct path not found in Plex" in str(call)
             for call in mock_warning.call_args_list
@@ -826,10 +827,7 @@ class TestGetMediaItemsByPaths:
             "Pass 2" in str(call) and "scanned" in str(call).lower()
             for call in mock_info.call_args_list
         )
-        assert any(
-            "still unmatched" in str(call)
-            for call in mock_info.call_args_list
-        )
+        assert any("still unmatched" in str(call) for call in mock_info.call_args_list)
 
     @patch("plex_generate_previews.plex_client.logger.warning")
     def test_get_media_items_by_paths_item_without_key_is_skipped(
@@ -949,8 +947,16 @@ class TestGetMediaItemsByPaths:
     def test_get_media_items_by_paths_multi_row_same_webhook_alias(self, mock_config):
         """Two rows with same webhook_prefix; webhook path /data/... matches item on either plex root."""
         mock_config.path_mappings = [
-            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": ["/data"]},
-            {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": ["/data"]},
+            {
+                "plex_prefix": "/data_disk1",
+                "local_prefix": "/data",
+                "webhook_prefixes": ["/data"],
+            },
+            {
+                "plex_prefix": "/data_disk2",
+                "local_prefix": "/data",
+                "webhook_prefixes": ["/data"],
+            },
         ]
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -980,8 +986,16 @@ class TestGetMediaItemsByPaths:
     ):
         """Webhook /data path should fan out to multiple Plex roots and match first hit."""
         mock_config.path_mappings = [
-            {"plex_prefix": "/data_16tb1", "local_prefix": "/data", "webhook_prefixes": []},
-            {"plex_prefix": "/data_16tb2", "local_prefix": "/data", "webhook_prefixes": []},
+            {
+                "plex_prefix": "/data_16tb1",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/data_16tb2",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
         ]
         mock_plex = MagicMock()
         mock_section = MagicMock()

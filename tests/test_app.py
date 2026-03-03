@@ -168,6 +168,7 @@ class TestWsgiModule:
     def test_wsgi_importable(self):
         """wsgi module can be imported without error."""
         import importlib
+
         # Just verify the module file exists and is syntactically valid
         spec = importlib.util.find_spec("plex_generate_previews.web.wsgi")
         assert spec is not None

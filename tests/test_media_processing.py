@@ -214,7 +214,19 @@ class TestFFmpegProgressParsing:
         line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:33.33 bitrate= 800.0kbits/s speed=1.0x"
         progress_seen = []
 
-        def callback(progress, current, total, speed, remaining=None, frame=0, fps=0, q=0, size=0, time_str="", bitrate=0):
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining=None,
+            frame=0,
+            fps=0,
+            q=0,
+            size=0,
+            time_str="",
+            bitrate=0,
+        ):
             progress_seen.append(progress)
 
         parse_ffmpeg_progress_line(line, 100.0, callback)
@@ -234,7 +246,19 @@ class TestFFmpegProgressParsing:
         line = "frame= 5000 fps=120 q=28.0 size=  50000kB time=00:05:00.00 bitrate= 1000.0kbits/s speed=100.0x"
         captured = {}
 
-        def callback(progress, current, total, speed, remaining, frame, fps, q, size, time_str, bitrate):
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining,
+            frame,
+            fps,
+            q,
+            size,
+            time_str,
+            bitrate,
+        ):
             captured["remaining"] = remaining
             captured["speed"] = speed
 
@@ -251,7 +275,19 @@ class TestFFmpegProgressParsing:
         line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=1.0x"
         captured = {}
 
-        def callback(progress, current, total, speed, remaining, frame, fps, q, size, time_str, bitrate):
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining,
+            frame,
+            fps,
+            q,
+            size,
+            time_str,
+            bitrate,
+        ):
             captured["remaining"] = remaining
 
         parse_ffmpeg_progress_line(line, 100.0, callback)
@@ -263,7 +299,19 @@ class TestFFmpegProgressParsing:
         line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=N/Ax"
         captured = {}
 
-        def callback(progress, current, total, speed, remaining, frame, fps, q, size, time_str, bitrate):
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining,
+            frame,
+            fps,
+            q,
+            size,
+            time_str,
+            bitrate,
+        ):
             captured["remaining"] = remaining
 
         parse_ffmpeg_progress_line(line, 100.0, callback)
@@ -1285,7 +1333,11 @@ class TestProcessItem:
 
         # Configure path mapping
         mock_config.path_mappings = [
-            {"plex_prefix": "/data", "local_prefix": "/mnt/videos", "webhook_prefixes": []}
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/videos",
+                "webhook_prefixes": [],
+            }
         ]
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
@@ -1341,8 +1393,16 @@ class TestProcessItem:
         mock_plex.query.return_value = ET.fromstring(tree_xml)
 
         mock_config.path_mappings = [
-            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []},
-            {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": []},
+            {
+                "plex_prefix": "/data_disk1",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/data_disk2",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
         ]
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
@@ -1362,7 +1422,9 @@ class TestProcessItem:
         import os as _os
 
         expected_prefix = _os.path.normpath("/data")
-        assert called_path.startswith(expected_prefix), f"Expected path under /data, got {called_path}"
+        assert called_path.startswith(expected_prefix), (
+            f"Expected path under /data, got {called_path}"
+        )
 
     @patch("plex_generate_previews.media_processing.generate_bif")
     @patch("plex_generate_previews.media_processing.generate_images")
@@ -1392,7 +1454,11 @@ class TestProcessItem:
         mock_plex.query.return_value = ET.fromstring(tree_xml)
 
         mock_config.path_mappings = [
-            {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
         ]
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
@@ -1413,7 +1479,9 @@ class TestProcessItem:
 
         # Should still be /database/... (no mapping applied)
         expected_prefix = _os.path.normpath("/database")
-        assert called_path.startswith(expected_prefix), f"Expected path under /database, got {called_path}"
+        assert called_path.startswith(expected_prefix), (
+            f"Expected path under /database, got {called_path}"
+        )
 
     @patch("os.path.isfile")
     def test_process_item_missing_file(

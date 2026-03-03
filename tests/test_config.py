@@ -88,7 +88,9 @@ class TestGetConfigValue:
             __slots__ = ()
 
         with patch.dict("os.environ", {"TEST_FIELD": "env_value"}, clear=True):
-            result = get_config_value(NoVarsObject(), "test_field", "TEST_FIELD", "default")
+            result = get_config_value(
+                NoVarsObject(), "test_field", "TEST_FIELD", "default"
+            )
             assert result == "env_value"
 
 
@@ -186,11 +188,21 @@ class TestExpandPathMappingCandidates:
         assert "/data_16tb/tv/Show/S01E01.mkv" in candidates
         assert "/data_16tb2/tv/Show/S01E01.mkv" in candidates
 
-    def test_expand_candidates_local_to_multiple_plex_roots_without_webhook_aliases(self):
+    def test_expand_candidates_local_to_multiple_plex_roots_without_webhook_aliases(
+        self,
+    ):
         """Legacy-style rows still fan out from local prefix to each Plex root."""
         path_mappings = [
-            {"plex_prefix": "/data_16tb1", "local_prefix": "/data", "webhook_prefixes": []},
-            {"plex_prefix": "/data_16tb2", "local_prefix": "/data", "webhook_prefixes": []},
+            {
+                "plex_prefix": "/data_16tb1",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/data_16tb2",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
         ]
         candidates = expand_path_mapping_candidates(
             "/data/tv/Show/S01E03.mkv", path_mappings
@@ -207,8 +219,16 @@ class TestNormalizePathMappings:
         """New path_mappings list is validated and returned."""
         settings = {
             "path_mappings": [
-                {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []},
-                {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": ["/data"]},
+                {
+                    "plex_prefix": "/data",
+                    "local_prefix": "/mnt/data",
+                    "webhook_prefixes": [],
+                },
+                {
+                    "plex_prefix": "/data_disk1",
+                    "local_prefix": "/data",
+                    "webhook_prefixes": ["/data"],
+                },
             ]
         }
         result = normalize_path_mappings(settings)
@@ -226,8 +246,16 @@ class TestNormalizePathMappings:
         }
         result = normalize_path_mappings(settings)
         assert len(result) == 2
-        assert result[0] == {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []}
-        assert result[1] == {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": []}
+        assert result[0] == {
+            "plex_prefix": "/data_disk1",
+            "local_prefix": "/data",
+            "webhook_prefixes": [],
+        }
+        assert result[1] == {
+            "plex_prefix": "/data_disk2",
+            "local_prefix": "/data",
+            "webhook_prefixes": [],
+        }
 
     def test_normalize_path_mappings_empty(self):
         """Empty or missing settings returns empty list."""
@@ -239,7 +267,11 @@ class TestNormalizePathMappings:
         """When both path_mappings and legacy pair exist, new format wins."""
         settings = {
             "path_mappings": [
-                {"plex_prefix": "/plex", "local_prefix": "/local", "webhook_prefixes": []},
+                {
+                    "plex_prefix": "/plex",
+                    "local_prefix": "/local",
+                    "webhook_prefixes": [],
+                },
             ],
             "plex_videos_path_mapping": "/legacy_plex",
             "plex_local_videos_path_mapping": "/legacy_local",
@@ -258,7 +290,11 @@ class TestNormalizePathMappings:
                 {"plex_prefix": "/b", "local_prefix": ""},  # missing local
                 {"plex_prefix": "", "local_prefix": "/y"},  # missing plex
                 {"local_prefix": "/z"},  # missing plex_prefix
-                {"plex_prefix": "/c", "local_prefix": "/w", "webhook_prefixes": ["/data"]},
+                {
+                    "plex_prefix": "/c",
+                    "local_prefix": "/w",
+                    "webhook_prefixes": ["/data"],
+                },
             ]
         }
         result = normalize_path_mappings(settings)
@@ -273,7 +309,11 @@ class TestNormalizePathMappings:
         """Empty list and missing webhook_prefixes key both yield webhook_prefixes=[]."""
         for settings in [
             {"path_mappings": [{"plex_prefix": "/p", "local_prefix": "/l"}]},
-            {"path_mappings": [{"plex_prefix": "/p", "local_prefix": "/l", "webhook_prefixes": []}]},
+            {
+                "path_mappings": [
+                    {"plex_prefix": "/p", "local_prefix": "/l", "webhook_prefixes": []}
+                ]
+            },
         ]:
             result = normalize_path_mappings(settings)
             assert len(result) == 1
@@ -285,21 +325,49 @@ class TestPathToCanonicalLocal:
 
     def test_plex_to_local_single(self):
         """Plex path is mapped to local."""
-        mappings = [{"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}]
-        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
-        assert plex_path_to_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
+        mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
+        assert (
+            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
+            == "/mnt/data/Movies/foo.mkv"
+        )
+        assert (
+            plex_path_to_local("/data/Movies/foo.mkv", mappings)
+            == "/mnt/data/Movies/foo.mkv"
+        )
 
     def test_webhook_to_local(self):
         """Webhook path (webhook_prefixes) maps to same local as plex."""
         mappings = [
-            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": ["/data"]}
+            {
+                "plex_prefix": "/data_disk1",
+                "local_prefix": "/data",
+                "webhook_prefixes": ["/data"],
+            }
         ]
-        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
-        assert path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
+        assert (
+            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
+            == "/data/Movies/foo.mkv"
+        )
+        assert (
+            path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings)
+            == "/data/Movies/foo.mkv"
+        )
 
     def test_no_partial_match(self):
         """Prefix /data does not match /database."""
-        mappings = [{"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}]
+        mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
         assert path_to_canonical_local("/database/x.mkv", mappings) == "/database/x.mkv"
 
     def test_empty_mappings_returns_unchanged(self):
@@ -309,35 +377,83 @@ class TestPathToCanonicalLocal:
     def test_mergerfs_multiple_plex_roots(self):
         """Multiple Plex roots map to one local (mergerfs)."""
         mappings = [
-            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []},
-            {"plex_prefix": "/data_disk2", "local_prefix": "/data", "webhook_prefixes": []},
+            {
+                "plex_prefix": "/data_disk1",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/data_disk2",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
         ]
-        assert path_to_canonical_local("/data_disk1/Movies/a.mkv", mappings) == "/data/Movies/a.mkv"
-        assert path_to_canonical_local("/data_disk2/TV/b.mkv", mappings) == "/data/TV/b.mkv"
+        assert (
+            path_to_canonical_local("/data_disk1/Movies/a.mkv", mappings)
+            == "/data/Movies/a.mkv"
+        )
+        assert (
+            path_to_canonical_local("/data_disk2/TV/b.mkv", mappings)
+            == "/data/TV/b.mkv"
+        )
 
     def test_first_match_wins_overlapping_prefixes(self):
         """When multiple mappings could match, first matching row is used."""
         # /data is before /data_disk1; path /data_disk1/... matches second row only
         mappings = [
-            {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []},
-            {"plex_prefix": "/data_disk1", "local_prefix": "/data", "webhook_prefixes": []},
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/data_disk1",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
         ]
-        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
-        assert path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
+        assert (
+            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
+            == "/mnt/data/Movies/foo.mkv"
+        )
+        assert (
+            path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings)
+            == "/data/Movies/foo.mkv"
+        )
 
     def test_case_sensitive_prefix_match(self):
         """Prefix matching is case-sensitive; /Data does not match plex_prefix /data."""
-        mappings = [{"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}]
-        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
-        assert path_to_canonical_local("/Data/Movies/foo.mkv", mappings) == "/Data/Movies/foo.mkv"
+        mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
+        assert (
+            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
+            == "/mnt/data/Movies/foo.mkv"
+        )
+        assert (
+            path_to_canonical_local("/Data/Movies/foo.mkv", mappings)
+            == "/Data/Movies/foo.mkv"
+        )
 
     def test_first_match_plex_before_webhook_prefix(self):
         """When path matches both plex_prefix of row1 and webhook_prefix of row2, first row wins (plex)."""
         # Row1: plex /data -> /mnt/data; Row2: plex /other, local /other, webhook /data
         # Path /data/foo.mkv matches row1 by plex_prefix -> /mnt/data/foo.mkv
         mappings = [
-            {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []},
-            {"plex_prefix": "/other", "local_prefix": "/other", "webhook_prefixes": ["/data"]},
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/other",
+                "local_prefix": "/other",
+                "webhook_prefixes": ["/data"],
+            },
         ]
         assert path_to_canonical_local("/data/foo.mkv", mappings) == "/mnt/data/foo.mkv"
 
@@ -348,7 +464,11 @@ class TestLocalPathToWebhookAliases:
     def test_returns_webhook_form_for_matching_row(self):
         """Local path under a row with webhook_prefixes returns that alias."""
         mappings = [
-            {"plex_prefix": "/data_16tb1", "local_prefix": "/data_16tb1", "webhook_prefixes": ["/data"]}
+            {
+                "plex_prefix": "/data_16tb1",
+                "local_prefix": "/data_16tb1",
+                "webhook_prefixes": ["/data"],
+            }
         ]
         assert local_path_to_webhook_aliases(
             "/data_16tb1/Movies/foo.mkv", mappings
@@ -356,7 +476,13 @@ class TestLocalPathToWebhookAliases:
 
     def test_returns_empty_when_no_webhook_prefix(self):
         """Row without webhook_prefixes adds no alias."""
-        mappings = [{"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}]
+        mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
         assert local_path_to_webhook_aliases("/mnt/data/Movies/foo.mkv", mappings) == []
 
     def test_returns_empty_for_empty_mappings(self):

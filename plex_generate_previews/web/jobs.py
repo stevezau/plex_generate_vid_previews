@@ -152,7 +152,9 @@ class JobManager:
             os.makedirs(self._job_logs_dir, exist_ok=True)
             self._enforce_log_retention()
         except OSError as e:
-            logger.warning(f"Could not create job logs directory {self._job_logs_dir}: {e}")
+            logger.warning(
+                f"Could not create job logs directory {self._job_logs_dir}: {e}"
+            )
         self._start_retention_timer()
 
     def set_socketio(self, socketio) -> None:
@@ -262,7 +264,11 @@ class JobManager:
 
         expired_ids = []
         for job_id, job in self._jobs.items():
-            if job.status not in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            if job.status not in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
                 continue
             ref_time = job.completed_at or job.created_at
             if ref_time and ref_time < cutoff_iso:
@@ -274,7 +280,9 @@ class JobManager:
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             self._save_jobs()
-            logger.info(f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)")
+            logger.info(
+                f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)"
+            )
 
         # Clean up orphaned log files whose job entry no longer exists
         if os.path.isdir(self._job_logs_dir):
@@ -590,7 +598,9 @@ class JobManager:
                     pass
             job = self._jobs.get(job_id)
             if job and job.status in (
-                JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED,
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
             ):
                 return [LOG_RETENTION_CLEARED_MESSAGE]
             return []

@@ -549,12 +549,14 @@ def get_job_logs(job_id):
         len(logs) == 1 and logs[0] == LOG_RETENTION_CLEARED_MESSAGE
     )
 
-    return jsonify({
-        "job_id": job_id,
-        "logs": logs,
-        "count": len(logs),
-        "log_cleared_by_retention": log_cleared_by_retention,
-    })
+    return jsonify(
+        {
+            "job_id": job_id,
+            "logs": logs,
+            "count": len(logs),
+            "log_cleared_by_retention": log_cleared_by_retention,
+        }
+    )
 
 
 @api.route("/jobs/workers", methods=["GET"])
@@ -595,9 +597,7 @@ def reprocess_job(job_id):
         return jsonify({"error": "Job not found"}), 404
     if job.status in (JobStatus.RUNNING, JobStatus.PENDING):
         return (
-            jsonify(
-                {"error": "Cannot reprocess job that is running or pending"}
-            ),
+            jsonify({"error": "Cannot reprocess job that is running or pending"}),
             409,
         )
     new_job = job_manager.create_job(
@@ -1535,7 +1535,9 @@ def validate_paths():
             plex_prefix = (row.get("plex_prefix") or "").strip()
             local_prefix = (row.get("local_prefix") or "").strip()
             row_label = f"Row {i + 1}"
-            path_desc = f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
+            path_desc = (
+                f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
+            )
             if "\x00" in local_prefix:
                 result["errors"].append(f"{row_label} ({path_desc}): invalid path")
                 result["valid"] = False
@@ -1549,9 +1551,7 @@ def validate_paths():
                 )
                 result["valid"] = False
             elif not os.path.exists(resolved):
-                result["errors"].append(
-                    f"{row_label} ({path_desc}): folder not found"
-                )
+                result["errors"].append(f"{row_label} ({path_desc}): folder not found")
                 result["valid"] = False
             else:
                 try:
@@ -1650,6 +1650,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
     def run_job():
         log_handler_id = None
         _acquired_execution_lock = False
+        job_manager = None
         try:
             import os
 
@@ -1671,7 +1672,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if get_settings_manager().processing_paused:
                 merged = {**(job.config or {}), **(config_overrides or {})}
                 job_manager.update_job_config(job_id, merged)
-                logger.info(f"Job {job_id} not started — global processing paused; job remains pending")
+                logger.info(
+                    f"Job {job_id} not started — global processing paused; job remains pending"
+                )
                 return
 
             if not _job_execution_lock.acquire(blocking=False):
@@ -1682,9 +1685,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     reason = f"another job ({running.id[:8]}) is currently running"
                 else:
                     reason = "a cancelled job is still winding down"
-                logger.info(
-                    f"Job {job_id} not started — {reason}; remains in queue"
-                )
+                logger.info(f"Job {job_id} not started — {reason}; remains in queue")
                 return
 
             _acquired_execution_lock = True
@@ -1879,8 +1880,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             run_job_config = job_manager.get_job(job_id)
             if run_job_config and run_job_config.config.get("is_retry"):
                 import time as _time
+
                 delay_sec = max(1, int(run_job_config.config.get("retry_delay", 30)))
-                job_manager.add_log(job_id, f"INFO - Waiting {delay_sec}s before retry (Plex may still be indexing)")
+                job_manager.add_log(
+                    job_id,
+                    f"INFO - Waiting {delay_sec}s before retry (Plex may still be indexing)",
+                )
                 job_manager.update_progress(
                     job_id,
                     percent=0,
@@ -1902,16 +1907,16 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             try:
                 if _retry_cancelled:
-                    job_manager.add_log(job_id, "WARNING - Retry cancelled by user during wait")
+                    job_manager.add_log(
+                        job_id, "WARNING - Retry cancelled by user during wait"
+                    )
                     job_manager.cancel_job(job_id)
                 else:
                     clear_failures()
 
                     def _on_item_complete(display_name, title, success):
                         outcome = "success" if success else "failed"
-                        logger.info(
-                            f"{display_name} completed: {title!r} ({outcome})"
-                        )
+                        logger.info(f"{display_name} completed: {title!r} ({outcome})")
 
                     result = run_processing(
                         config,
@@ -1920,14 +1925,18 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         progress_callback=progress_callback,
                         worker_callback=worker_callback,
                         item_complete_callback=_on_item_complete,
-                        cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
-                        pause_check=lambda: job_manager.is_pause_requested(job_id)
-                        or get_settings_manager().processing_paused,
-                        worker_pool_callback=lambda pool: job_manager.set_active_worker_pool(
-                            job_id, pool
-                        )
-                        if pool is not None
-                        else job_manager.clear_active_worker_pool(job_id),
+                        cancel_check=lambda: job_manager.is_cancellation_requested(
+                            job_id
+                        ),
+                        pause_check=lambda: (
+                            job_manager.is_pause_requested(job_id)
+                            or get_settings_manager().processing_paused
+                        ),
+                        worker_pool_callback=lambda pool: (
+                            job_manager.set_active_worker_pool(job_id, pool)
+                            if pool is not None
+                            else job_manager.clear_active_worker_pool(job_id)
+                        ),
                     )
                     log_failure_summary()
 
@@ -1950,15 +1959,19 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     retry_attempt = int(job_config.get("retry_attempt", 0))
                     max_retries = int(job_config.get("max_retries", 0))
                     retry_count = max(0, int(job_config.get("webhook_retry_count", 0)))
-                    retry_delay_sec = max(10, min(300, int(job_config.get("webhook_retry_delay", 30))))
+                    retry_delay_sec = max(
+                        10, min(300, int(job_config.get("webhook_retry_delay", 30)))
+                    )
                     effective_max = max_retries or retry_count
 
                     def _spawn_retry_job(paths, attempt):
                         """Create and start a retry job for unresolved webhook paths."""
                         import os as _os
+
                         basenames = [_os.path.basename(p) for p in paths]
                         retry_library_name = (
-                            f"Retry: {basenames[0]}" if len(paths) == 1
+                            f"Retry: {basenames[0]}"
+                            if len(paths) == 1
                             else f"Retry: {len(paths)} files"
                         )
                         parent_id = job_config.get("parent_job_id") or job_id
@@ -1977,7 +1990,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         selected_libs = settings.get("selected_libraries", []) or []
                         if not isinstance(selected_libs, list):
                             selected_libs = []
-                        selected_libs = [str(x).strip() for x in selected_libs if str(x).strip()]
+                        selected_libs = [
+                            str(x).strip() for x in selected_libs if str(x).strip()
+                        ]
                         _start_job_async(
                             rj.id,
                             {
@@ -1994,9 +2009,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     # This must run regardless of whether processing had failures,
                     # so unresolved paths are never silently dropped.
                     spawned_retry_id = None
-                    if unresolved_paths and not (result.get("cancelled") or status_value == "cancelled"):
+                    if unresolved_paths and not (
+                        result.get("cancelled") or status_value == "cancelled"
+                    ):
                         if is_retry and retry_attempt < effective_max:
-                            spawned_retry_id = _spawn_retry_job(unresolved_paths, retry_attempt + 1)
+                            spawned_retry_id = _spawn_retry_job(
+                                unresolved_paths, retry_attempt + 1
+                            )
                             job_manager.add_log(
                                 job_id,
                                 f"INFO - Retry {retry_attempt}/{effective_max}: "
@@ -2022,7 +2041,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 f"WARNING - {len(failures)} file(s) failed during processing",
                             )
                             for i, f in enumerate(failures, 1):
-                                wt = f"[{f['worker_type']}] " if f.get("worker_type") else ""
+                                wt = (
+                                    f"[{f['worker_type']}] "
+                                    if f.get("worker_type")
+                                    else ""
+                                )
                                 job_manager.add_log(
                                     job_id,
                                     f"ERROR - {i}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}",
@@ -2030,7 +2053,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             error_parts.append(f"{len(failures)} failed file(s)")
 
                         if spawned_retry_id:
-                            error_parts.append(f"{len(unresolved_paths)} sent for retry")
+                            error_parts.append(
+                                f"{len(unresolved_paths)} sent for retry"
+                            )
                             summary = dict(job_config)
                             summary["resolution_summary"] = {
                                 "total": total_paths,
@@ -2051,7 +2076,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                         if error_parts:
                             if total_paths > 0 and resolved_count < total_paths:
-                                error_msg = f"{resolved_count}/{total_paths} processed; " + ", ".join(error_parts)
+                                error_msg = (
+                                    f"{resolved_count}/{total_paths} processed; "
+                                    + ", ".join(error_parts)
+                                )
                             else:
                                 error_msg = "; ".join(error_parts)
                             job_manager.add_log(job_id, f"WARNING - {error_msg}")
@@ -2066,9 +2094,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 job_manager.complete_job(job_id, warning=error_msg)
                         else:
                             if is_retry:
-                                job_manager.add_log(job_id, "INFO - Retry job completed successfully")
+                                job_manager.add_log(
+                                    job_id, "INFO - Retry job completed successfully"
+                                )
                             else:
-                                job_manager.add_log(job_id, "INFO - Job completed successfully")
+                                job_manager.add_log(
+                                    job_id, "INFO - Job completed successfully"
+                                )
                             job_manager.complete_job(job_id)
             finally:
                 # Clear worker statuses when job ends
@@ -2101,7 +2133,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}")
-            job_manager = get_job_manager()
+            if job_manager is None:
+                job_manager = get_job_manager()
             job_manager.add_log(job_id, f"ERROR - Job failed: {e}")
             job_manager.complete_job(job_id, error=str(e))
         finally:
@@ -2116,11 +2149,14 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     pass
             if _acquired_execution_lock:
                 _job_execution_lock.release()
-                # Start next pending job so queued jobs run in order
-                _job_manager = get_job_manager()
-                if not _job_manager.get_running_job() and not get_settings_manager().processing_paused:
+                if job_manager is None:
+                    job_manager = get_job_manager()
+                if (
+                    not job_manager.get_running_job()
+                    and not get_settings_manager().processing_paused
+                ):
                     pending = sorted(
-                        _job_manager.get_pending_jobs(),
+                        job_manager.get_pending_jobs(),
                         key=lambda j: j.created_at or "",
                     )
                     if pending:

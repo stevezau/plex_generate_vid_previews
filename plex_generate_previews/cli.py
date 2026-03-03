@@ -626,7 +626,9 @@ def run_processing(
                     total_successful += result["completed"]
                     total_failed += result["failed"]
                     total_processed += result["completed"] + result["failed"]
-                    cancellation_requested = cancellation_requested or result["cancelled"]
+                    cancellation_requested = (
+                        cancellation_requested or result["cancelled"]
+                    )
             else:
                 worker_pool = _create_worker_pool()
                 # Build a single queue across libraries so idle workers can
@@ -648,9 +650,7 @@ def run_processing(
                             f"No media items found in library '{section.title}', skipping"
                         )
                         continue
-                    logger.info(
-                        f"Queued library '{section.title}' with {count} items"
-                    )
+                    logger.info(f"Queued library '{section.title}' with {count} items")
                     all_media_items.extend(media_items)
                     library_item_counts.append((section.title, count))
 
@@ -692,7 +692,9 @@ def run_processing(
                     total_successful += result["completed"]
                     total_failed += result["failed"]
                     total_processed += result["completed"] + result["failed"]
-                    cancellation_requested = cancellation_requested or result["cancelled"]
+                    cancellation_requested = (
+                        cancellation_requested or result["cancelled"]
+                    )
         else:
             # Interactive mode with Rich console display
             # Create progress displays
@@ -728,7 +730,8 @@ def run_processing(
                         worker_pool = _create_worker_pool()
                         dynamic_group.set_processing_mode()
                         main_task = main_progress.add_task(
-                            "Processing Webhook Targets", total=len(webhook_resolution.items)
+                            "Processing Webhook Targets",
+                            total=len(webhook_resolution.items),
                         )
                         result = worker_pool.process_items(
                             webhook_resolution.items,
@@ -759,9 +762,7 @@ def run_processing(
 
                     all_media_items = []
                     library_item_counts = []
-                    for section, media_items in get_library_sections(
-                        plex, config
-                    ):
+                    for section, media_items in get_library_sections(plex, config):
                         if not media_items:
                             logger.info(
                                 f"No media items found in library '{section.title}', skipping"
@@ -771,9 +772,7 @@ def run_processing(
                             f"Queued library '{section.title}' with {len(media_items)} items"
                         )
                         all_media_items.extend(media_items)
-                        library_item_counts.append(
-                            (section.title, len(media_items))
-                        )
+                        library_item_counts.append((section.title, len(media_items)))
 
                     query_progress.remove_task(query_task)
 
@@ -785,9 +784,7 @@ def run_processing(
                             else f"Processing {len(library_item_counts)} libraries"
                         )
                         for lib_name, count in library_item_counts:
-                            logger.info(
-                                f"Library queued: {lib_name} ({count} items)"
-                            )
+                            logger.info(f"Library queued: {lib_name} ({count} items)")
 
                         dynamic_group.set_processing_mode()
                         main_task = main_progress.add_task(
@@ -806,17 +803,13 @@ def run_processing(
                         )
                         total_successful += result["completed"]
                         total_failed += result["failed"]
-                        total_processed += (
-                            result["completed"] + result["failed"]
-                        )
+                        total_processed += result["completed"] + result["failed"]
                         cancellation_requested = (
                             cancellation_requested or result["cancelled"]
                         )
                         main_progress.remove_task(main_task)
                     else:
-                        logger.info(
-                            "No media items found across selected libraries"
-                        )
+                        logger.info("No media items found across selected libraries")
 
         if cancellation_requested:
             logger.info(

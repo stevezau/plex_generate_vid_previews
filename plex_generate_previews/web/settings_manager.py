@@ -68,6 +68,7 @@ class SettingsManager:
             logger.debug(f"Saved settings to {self.settings_file}")
             try:
                 from ..config import clear_config_cache
+
                 clear_config_cache()
             except Exception:
                 pass

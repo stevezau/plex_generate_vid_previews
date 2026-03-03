@@ -108,7 +108,10 @@ def test_format_sonarr_episode_title():
 
     assert _format_sonarr_episode_title("Show Name", []) == "Show Name"
     assert _format_sonarr_episode_title("Show Name", None) == "Show Name"
-    assert _format_sonarr_episode_title("Show", [{"seasonNumber": 1, "episodeNumber": 5}]) == "Show S01E05"
+    assert (
+        _format_sonarr_episode_title("Show", [{"seasonNumber": 1, "episodeNumber": 5}])
+        == "Show S01E05"
+    )
     assert (
         _format_sonarr_episode_title(
             "Murder at the Post Office",
@@ -469,7 +472,9 @@ def test_sonarr_download_malformed_episode_file_payload_is_ignored(client):
 @patch("plex_generate_previews.web.webhooks.get_job_manager")
 @patch("plex_generate_previews.web.webhooks.threading.Timer")
 @patch("plex_generate_previews.web.routes._start_job_async")
-def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_job_mgr):
+def test_execute_webhook_job_batches_paths(
+    mock_start_job, mock_timer_cls, mock_job_mgr
+):
     """Debounced execution should pass batched webhook paths in one job."""
     from plex_generate_previews.web import webhooks as wh
 
@@ -489,7 +494,10 @@ def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_
 
     mock_start_job.assert_called_once()
     config_overrides = mock_start_job.call_args[0][1]
-    assert sorted(config_overrides["webhook_paths"]) == ["/movies/A.mkv", "/movies/B.mkv"]
+    assert sorted(config_overrides["webhook_paths"]) == [
+        "/movies/A.mkv",
+        "/movies/B.mkv",
+    ]
 
 
 @patch("plex_generate_previews.web.webhooks.get_settings_manager")
@@ -517,7 +525,9 @@ def test_execute_webhook_job_single_file_uses_title_for_library_display(
     mock_settings_mgr.return_value = mock_settings
 
     wh._schedule_webhook_job(
-        "sonarr", "Murder at the Post Office S01E05", "/tv/Murder at the Post Office/Season 01/S01E05.mkv"
+        "sonarr",
+        "Murder at the Post Office S01E05",
+        "/tv/Murder at the Post Office/Season 01/S01E05.mkv",
     )
     wh._execute_webhook_job(wh._debounce_key("sonarr"))
 
@@ -548,8 +558,8 @@ def test_execute_webhook_job_uses_selected_libraries(
     mock_job_mgr.return_value.create_job.return_value = mock_job
 
     mock_settings = MagicMock()
-    mock_settings.get.side_effect = (
-        lambda key, default=None: ["1", "2"] if key == "selected_libraries" else default
+    mock_settings.get.side_effect = lambda key, default=None: (
+        ["1", "2"] if key == "selected_libraries" else default
     )
     mock_settings_mgr.return_value = mock_settings
 
@@ -597,7 +607,9 @@ def test_execute_webhook_job_includes_retry_settings(
 @patch("plex_generate_previews.web.webhooks.get_job_manager")
 @patch("plex_generate_previews.web.webhooks.threading.Timer")
 @patch("plex_generate_previews.web.routes._start_job_async")
-def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_timer_cls, mock_job_mgr, client):
+def test_webhook_payload_path_in_job_config_for_mapping(
+    mock_start_job, mock_timer_cls, mock_job_mgr, client
+):
     """Path extracted from Radarr payload is passed in job config for mapping-aware resolution."""
     from plex_generate_previews.web import webhooks as wh
 
@@ -613,7 +625,10 @@ def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_tim
     payload_path = "/data/Movies/Test Movie (2024)/Test Movie.mkv"
     payload = {
         "eventType": "Download",
-        "movie": {"title": "Test Movie", "folderPath": "/data/Movies/Test Movie (2024)"},
+        "movie": {
+            "title": "Test Movie",
+            "folderPath": "/data/Movies/Test Movie (2024)",
+        },
         "movieFile": {"path": payload_path},
     }
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())

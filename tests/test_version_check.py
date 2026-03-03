@@ -228,9 +228,7 @@ class TestCheckForUpdates:
 
     @patch("plex_generate_previews.version_check.get_latest_github_release")
     @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_invalid_version_handled(
-        self, mock_current, mock_latest
-    ):
+    def test_check_for_updates_invalid_version_handled(self, mock_current, mock_latest):
         """Invalid current version is handled gracefully."""
         mock_current.return_value = "invalid"
         mock_latest.return_value = "v2.1.0"

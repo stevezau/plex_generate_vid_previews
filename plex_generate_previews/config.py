@@ -115,6 +115,7 @@ def get_path_mapping_pairs(
 # Path mappings (plex_prefix, local_prefix, optional webhook_prefixes)
 # -----------------------------------------------------------------------------
 
+
 def _normalize_prefix(p: str) -> str:
     """Return path with consistent trailing slash for prefix matching."""
     if not p:
@@ -206,12 +207,18 @@ def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> s
         local_prefix = _normalize_prefix(m.get("local_prefix") or "")
         if plex_prefix and _path_matches_prefix(path, plex_prefix):
             rest = path[len(plex_prefix) :].lstrip("/")
-            return f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
+            return (
+                f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
+            )
         for wp in m.get("webhook_prefixes") or []:
             wp = _normalize_prefix(wp)
             if wp and _path_matches_prefix(path, wp):
                 rest = path[len(wp) :].lstrip("/")
-                return f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
+                return (
+                    f"{local_prefix.rstrip('/')}/{rest}"
+                    if rest
+                    else (local_prefix or "/")
+                )
     return path
 
 
@@ -910,11 +917,7 @@ def get_cached_config(cli_args=None):
     settings_path = os.path.join(
         os.environ.get("CONFIG_DIR", "/config"), "settings.json"
     )
-    mtime = (
-        os.path.getmtime(settings_path)
-        if os.path.exists(settings_path)
-        else 0.0
-    )
+    mtime = os.path.getmtime(settings_path) if os.path.exists(settings_path) else 0.0
     if _cached_config is not None and _cached_config_mtime == mtime:
         return _cached_config
     config = load_config(cli_args)
@@ -1056,7 +1059,9 @@ def load_config(cli_args=None) -> Config:
     )
 
     path_mappings = normalize_path_mappings(ui_settings)
-    if not path_mappings and (plex_videos_path_mapping or plex_local_videos_path_mapping):
+    if not path_mappings and (
+        plex_videos_path_mapping or plex_local_videos_path_mapping
+    ):
         path_mappings = _legacy_settings_to_path_mappings(
             plex_videos_path_mapping, plex_local_videos_path_mapping
         )

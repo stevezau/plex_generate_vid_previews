@@ -504,7 +504,9 @@ class TestWorkerPool:
                     assigned_count["removed"] = True
             return assigned
 
-        with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove):
+        with patch.object(
+            pool, "_assign_main_queue_task", side_effect=assign_and_remove
+        ):
             start = time.time()
             result = pool.process_items_headless(items, config, plex)
             elapsed = time.time() - start
@@ -537,7 +539,9 @@ class TestWorkerPool:
                     assign_count["removed"] = True
             return assigned
 
-        with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu):
+        with patch.object(
+            pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu
+        ):
             start = time.time()
             result = pool.process_items_headless(items, config, plex)
             elapsed = time.time() - start

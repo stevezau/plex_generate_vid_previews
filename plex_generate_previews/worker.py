@@ -321,10 +321,7 @@ class Worker:
                         )
                         self.failed += 1
                 else:
-                    if (
-                        config.cpu_threads == 0
-                        and fallback_threads == 0
-                    ):
+                    if config.cpu_threads == 0 and fallback_threads == 0:
                         ctx_logger.warning(
                             "Codec not supported by GPU, but CPU fallback is disabled "
                             "(CPU_THREADS=0 and FALLBACK_CPU_THREADS=0); "
@@ -584,9 +581,7 @@ class WorkerPool:
             self.workers.remove(worker)
             self._pending_removals[worker.worker_type] = pending - 1
 
-        logger.info(
-            f"Retired {worker.display_name} after deferred removal request"
-        )
+        logger.info(f"Retired {worker.display_name} after deferred removal request")
         return True
 
     def _apply_deferred_removals(self) -> int:
@@ -611,10 +606,14 @@ class WorkerPool:
         with self._workers_lock:
             if cpu_only:
                 for worker in self.workers:
-                    if worker.worker_type in (
-                        "CPU",
-                        "CPU_FALLBACK",
-                    ) and worker.is_available():
+                    if (
+                        worker.worker_type
+                        in (
+                            "CPU",
+                            "CPU_FALLBACK",
+                        )
+                        and worker.is_available()
+                    ):
                         return worker
                 return None
             # Fallback-only workers should never consume main-queue tasks.
@@ -673,9 +672,7 @@ class WorkerPool:
                 title_max_width=title_max_width,
                 cpu_fallback_queue=None,
             )
-            logger.info(
-                f"Dispatch: assigned fallback item to {worker.display_name}"
-            )
+            logger.info(f"Dispatch: assigned fallback item to {worker.display_name}")
             return True
         except queue.Empty:
             return False
@@ -733,9 +730,7 @@ class WorkerPool:
     def _has_cpu_capable_workers(self) -> bool:
         """Check if any CPU or CPU_FALLBACK workers exist in the pool."""
         with self._workers_lock:
-            return any(
-                w.worker_type in ("CPU", "CPU_FALLBACK") for w in self.workers
-            )
+            return any(w.worker_type in ("CPU", "CPU_FALLBACK") for w in self.workers)
 
     def _drain_fallback_queue_as_failed(self) -> int:
         """Drain unreachable fallback items, counting them as failures.
@@ -943,7 +938,9 @@ class WorkerPool:
                 type_counters: dict[str, int] = {}
                 worker_type_index: dict[int, int] = {}
                 for w in all_workers:
-                    type_counters[w.worker_type] = type_counters.get(w.worker_type, 0) + 1
+                    type_counters[w.worker_type] = (
+                        type_counters.get(w.worker_type, 0) + 1
+                    )
                     worker_type_index[w.worker_id] = type_counters[w.worker_type]
 
                 for worker in all_workers:
@@ -953,8 +950,8 @@ class WorkerPool:
 
                     idx = worker_type_index[worker.worker_id]
                     gpu_base_name = (
-                        (worker.gpu_name or "").strip() or f"GPU {worker.gpu_index}"
-                    )
+                        worker.gpu_name or ""
+                    ).strip() or f"GPU {worker.gpu_index}"
 
                     if worker.worker_type == "GPU":
                         display_name = (
@@ -1062,7 +1059,9 @@ class WorkerPool:
         def _record_worker_delta(worker: "Worker") -> None:
             """Track per-worker success/failure deltas for this run."""
             nonlocal run_successful, run_failed
-            prev_completed, prev_failed = per_worker_totals.get(worker.worker_id, (0, 0))
+            prev_completed, prev_failed = per_worker_totals.get(
+                worker.worker_id, (0, 0)
+            )
             completed_delta = max(0, worker.completed - prev_completed)
             failed_delta = max(0, worker.failed - prev_failed)
             if completed_delta or failed_delta:

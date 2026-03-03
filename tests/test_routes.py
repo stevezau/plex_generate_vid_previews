@@ -566,7 +566,9 @@ class TestJobsAPI:
         assert data["unavailable"] == 0
         pool.remove_workers.assert_called_once_with("GPU", 2)
 
-    def test_scale_workers_remove_returns_unavailable_when_fewer_workers_exist(self, client):
+    def test_scale_workers_remove_returns_unavailable_when_fewer_workers_exist(
+        self, client
+    ):
         """Remove endpoint returns unavailable when requesting more than existing workers."""
         with patch("plex_generate_previews.web.routes._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -826,11 +828,24 @@ class TestJobConfigPathMappings:
         mock_config.plex_token = "token"
 
         with (
-            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
-            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
         ):
             resp = client.post("/api/jobs", headers=_api_headers(), json={})
         assert resp.status_code == 201
@@ -842,14 +857,22 @@ class TestJobConfigPathMappings:
     def test_start_job_config_overrides_path_mappings(self, client, tmp_path):
         """config_overrides.path_mappings overrides settings path_mappings."""
         override_mappings = [
-            {"plex_prefix": "/override", "local_prefix": "/local_override", "webhook_prefixes": []}
+            {
+                "plex_prefix": "/override",
+                "local_prefix": "/local_override",
+                "webhook_prefixes": [],
+            }
         ]
         client.post(
             "/api/settings",
             headers=_api_headers(),
             json={
                 "path_mappings": [
-                    {"plex_prefix": "/from_settings", "local_prefix": "/local", "webhook_prefixes": []}
+                    {
+                        "plex_prefix": "/from_settings",
+                        "local_prefix": "/local",
+                        "webhook_prefixes": [],
+                    }
                 ]
             },
         )
@@ -868,11 +891,24 @@ class TestJobConfigPathMappings:
         mock_config.plex_token = "token"
 
         with (
-            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
-            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -884,10 +920,16 @@ class TestJobConfigPathMappings:
         assert len(captured_configs) == 1
         assert captured_configs[0].path_mappings == override_mappings
 
-    def test_webhook_job_retains_path_mappings_and_webhook_paths(self, client, tmp_path):
+    def test_webhook_job_retains_path_mappings_and_webhook_paths(
+        self, client, tmp_path
+    ):
         """Webhook job with config_overrides has webhook_paths and path_mappings from settings."""
         settings_path_mappings = [
-            {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": ["/data"]}
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": ["/data"],
+            }
         ]
         client.post(
             "/api/settings",
@@ -910,11 +952,24 @@ class TestJobConfigPathMappings:
         mock_config.webhook_paths = None
 
         with (
-            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
-            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -926,10 +981,14 @@ class TestJobConfigPathMappings:
         assert len(captured_configs) == 1
         cfg = captured_configs[0]
         assert cfg.webhook_paths == ["/data/Movies/foo.mkv"]
-        expected_mappings = normalize_path_mappings({"path_mappings": settings_path_mappings})
+        expected_mappings = normalize_path_mappings(
+            {"path_mappings": settings_path_mappings}
+        )
         assert cfg.path_mappings == expected_mappings
 
-    def test_start_job_library_ids_override_sets_plex_library_ids(self, client, tmp_path):
+    def test_start_job_library_ids_override_sets_plex_library_ids(
+        self, client, tmp_path
+    ):
         """library_ids request field should filter by Plex section IDs."""
         captured_configs = []
         done = threading.Event()
@@ -947,11 +1006,24 @@ class TestJobConfigPathMappings:
         mock_config.plex_libraries = []
 
         with (
-            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
-            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -983,11 +1055,24 @@ class TestJobConfigPathMappings:
         mock_config.plex_libraries = []
 
         with (
-            patch("plex_generate_previews.cli.run_processing", side_effect=capture_run_processing),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch("plex_generate_previews.web.routes._verify_tmp_folder_health", return_value=(True, [])),
-            patch("plex_generate_previews.utils.setup_working_directory", return_value=str(tmp_path / "work")),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1425,9 +1510,7 @@ class TestSchedulesCRUD:
         assert resp.get_json()["enabled"] is False
 
     def test_disable_nonexistent_schedule(self, client):
-        resp = client.post(
-            "/api/schedules/nonexistent/disable", headers=_api_headers()
-        )
+        resp = client.post("/api/schedules/nonexistent/disable", headers=_api_headers())
         assert resp.status_code == 404
 
     def test_run_now(self, client):
@@ -1437,9 +1520,7 @@ class TestSchedulesCRUD:
             json={"name": "RunMe", "cron_expression": "0 0 * * *"},
         )
         schedule_id = create_resp.get_json()["id"]
-        resp = client.post(
-            f"/api/schedules/{schedule_id}/run", headers=_api_headers()
-        )
+        resp = client.post(f"/api/schedules/{schedule_id}/run", headers=_api_headers())
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
@@ -1470,9 +1551,7 @@ class TestReprocessJob:
         jm.complete_job(job_id)
 
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            resp = client.post(
-                f"/api/jobs/{job_id}/reprocess", headers=_api_headers()
-            )
+            resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 201
         assert resp.get_json()["id"] != job_id
 
@@ -1482,9 +1561,7 @@ class TestReprocessJob:
 
     def test_reprocess_running_job_rejected(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
-            create_resp = client.post(
-                "/api/jobs", headers=_api_headers(), json={}
-            )
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
         from plex_generate_previews.web.jobs import get_job_manager
@@ -1636,7 +1713,9 @@ class TestValidatePathsBranches:
         assert data["valid"] is True
         assert any("valid structure" in i for i in data["info"])
 
-    def test_validate_paths_missing_media_subfolder(self, client, tmp_path, monkeypatch):
+    def test_validate_paths_missing_media_subfolder(
+        self, client, tmp_path, monkeypatch
+    ):
         """Plex directory missing Media subfolder."""
         monkeypatch.setattr(
             "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
@@ -1791,7 +1870,9 @@ class TestPageRoutesAdditional:
             os.environ,
             {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
         ):
-            from plex_generate_previews.web.settings_manager import reset_settings_manager
+            from plex_generate_previews.web.settings_manager import (
+                reset_settings_manager,
+            )
 
             reset_settings_manager()
             flask_app = create_app(config_dir=config_dir)
@@ -1840,7 +1921,9 @@ class TestLibrariesAPI:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PLEX_URL", None)
             os.environ.pop("PLEX_TOKEN", None)
-            with patch("plex_generate_previews.config.get_cached_config", return_value=None):
+            with patch(
+                "plex_generate_previews.config.get_cached_config", return_value=None
+            ):
                 resp = client.get("/api/libraries", headers=_api_headers())
         assert resp.status_code == 400
         assert "libraries" in resp.get_json()
@@ -1885,9 +1968,7 @@ class TestPlexTestConnection:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PLEX_URL", None)
             os.environ.pop("PLEX_TOKEN", None)
-            resp = client.post(
-                "/api/plex/test", headers=_api_headers(), json={}
-            )
+            resp = client.post("/api/plex/test", headers=_api_headers(), json={})
         assert resp.status_code == 400
 
     @patch("requests.get")
@@ -1966,7 +2047,9 @@ class TestFetchLibrariesViaHTTP:
         }
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
-        result = _fetch_libraries_via_http("http://plex:32400", "token", include_count=True)
+        result = _fetch_libraries_via_http(
+            "http://plex:32400", "token", include_count=True
+        )
         assert len(result) == 2
         assert result[0]["name"] == "Movies"
         assert result[0]["count"] == 50
