@@ -925,8 +925,8 @@ def generate_images(
             except OSError:
                 pass
 
-        # Error logging
-        if proc.returncode != 0:
+        # Error logging (skip generic failure log when we killed due to stall; already logged above)
+        if proc.returncode != 0 and not stalled:
             exit_diagnosis = _diagnose_ffmpeg_exit_code(proc.returncode)
             logger.error(
                 f"FFmpeg failed with return code {proc.returncode} ({exit_diagnosis}) for {video_file}"
