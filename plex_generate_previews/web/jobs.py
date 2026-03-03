@@ -753,13 +753,32 @@ DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
 
 
 def get_job_manager(config_dir: Optional[str] = None, socketio=None) -> JobManager:
-    """Get or create the global JobManager instance (thread-safe)."""
+    """Get or create the global JobManager instance (thread-safe).
+
+    When ``config_dir`` is explicitly provided and differs from the
+    current singleton's directory, the singleton is recreated so that
+    all derived paths (jobs file, log directory) stay consistent.
+    In production this never happens; it guards against race conditions
+    in tests where background threads can recreate the singleton with
+    the module-level default between fixture resets.
+
+    Args:
+        config_dir: Configuration directory path, or ``None`` to use
+            the existing singleton / module default.
+        socketio: Optional SocketIO instance for real-time events.
+
+    Returns:
+        The global ``JobManager`` singleton.
+    """
     global _job_manager
     with _job_lock:
         if _job_manager is None:
             _job_manager = JobManager(
                 config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio
             )
-        elif socketio and _job_manager.socketio is None:
-            _job_manager.set_socketio(socketio)
+        else:
+            if config_dir and _job_manager.config_dir != config_dir:
+                _job_manager = JobManager(config_dir=config_dir, socketio=socketio)
+            elif socketio and _job_manager.socketio is None:
+                _job_manager.set_socketio(socketio)
         return _job_manager
