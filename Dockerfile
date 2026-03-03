@@ -90,9 +90,11 @@ ENV S6_KEEP_ENV=1
 EXPOSE 8080
 
 # Health check for web UI — respects WEB_PORT env var
-# Uses python3 stdlib instead of curl (one fewer binary dependency)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import urllib.request, os; urllib.request.urlopen('http://localhost:' + os.environ.get('WEB_PORT', '8080') + '/api/health')" || exit 1
+# Uses python3 stdlib instead of curl (one fewer binary dependency).
+# exec replaces the shell so Docker kills the Python process on timeout (no orphans).
+# timeout=5 ensures the process exits if the server is unresponsive.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD exec python3 -c "import urllib.request, os; urllib.request.urlopen('http://localhost:' + os.environ.get('WEB_PORT', '8080') + '/api/health', timeout=5)"
 
 # Use LinuxServer's /init for PUID/PGID handling
 ENTRYPOINT ["/init", "/app/wrapper.sh"]

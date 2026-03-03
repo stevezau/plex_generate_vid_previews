@@ -22,6 +22,10 @@ from loguru import logger
 
 from .utils import sanitize_path
 
+# If FFmpeg produces no progress output for this many seconds, the process is
+# killed to avoid hanging the worker indefinitely (e.g. unresponsive NAS).
+FFMPEG_STALL_TIMEOUT_SEC = 300
+
 # ---------------------------------------------------------------------------
 # Failure tracker — collects per-file failure info for end-of-run summary
 # ---------------------------------------------------------------------------
@@ -835,6 +839,8 @@ def generate_images(
             speed_local = "0.0x"
             ffmpeg_output_lines = []
             line_count = 0
+            last_progress_time = time.time()
+            stalled = False
 
             def speed_capture_callback(
                 progress_percent,
@@ -883,8 +889,17 @@ def generate_images(
                                             line, total_duration, speed_capture_callback
                                         )
                                 line_count = len(lines)
+                                last_progress_time = time.time()
                     except (OSError, IOError):
                         pass
+                if time.time() - last_progress_time > FFMPEG_STALL_TIMEOUT_SEC:
+                    logger.warning(
+                        f"FFmpeg stalled (no progress for {FFMPEG_STALL_TIMEOUT_SEC}s), killing process for {video_file}"
+                    )
+                    stalled = True
+                    proc.kill()
+                    proc.wait()
+                    break
                 time.sleep(0.005)
 
             # Process any remaining data

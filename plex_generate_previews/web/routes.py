@@ -115,6 +115,56 @@ api = Blueprint("api", __name__, url_prefix="/api")
 # Cache for GPU detection results (GPUs don't change at runtime)
 _gpu_cache: dict = {"result": None, "timestamp": 0.0}
 _GPU_CACHE_TTL = 300  # 5 minutes
+_gpu_cache_lock = threading.Lock()
+_gpu_refresh_thread_started = False
+
+
+def _refresh_gpu_cache() -> None:
+    """Run GPU detection and update the cache. Runs in a background thread."""
+    import time
+
+    try:
+        from ..gpu_detection import detect_all_gpus
+
+        gpus_raw = detect_all_gpus()
+        gpus = []
+        for gpu_type, gpu_device, gpu_info in gpus_raw:
+            gpus.append(
+                {
+                    "name": gpu_info.get("name", gpu_type),
+                    "type": gpu_type,
+                    "device": gpu_device,
+                }
+            )
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = gpus
+            _gpu_cache["timestamp"] = time.monotonic()
+        logger.debug(f"GPU detection cache refreshed: {len(gpus)} GPU(s)")
+    except Exception as e:
+        logger.warning(f"Background GPU detection failed: {e}")
+
+
+def _gpu_refresh_loop() -> None:
+    """Daemon thread: refresh GPU cache every _GPU_CACHE_TTL seconds."""
+    import time
+
+    while True:
+        _refresh_gpu_cache()
+        time.sleep(_GPU_CACHE_TTL)
+
+
+def _ensure_gpu_refresh_thread() -> None:
+    """Start the GPU cache refresh daemon thread if not already running."""
+    global _gpu_refresh_thread_started
+    if _gpu_refresh_thread_started:
+        return
+    with _gpu_cache_lock:
+        if _gpu_refresh_thread_started:
+            return
+        _gpu_refresh_thread_started = True
+    thread = threading.Thread(target=_gpu_refresh_loop, daemon=True)
+    thread.start()
+    logger.debug("GPU cache refresh thread started")
 
 
 def clear_gpu_cache() -> None:
@@ -122,8 +172,9 @@ def clear_gpu_cache() -> None:
 
     Useful for tests and when the user explicitly requests a re-scan.
     """
-    _gpu_cache["result"] = None
-    _gpu_cache["timestamp"] = 0.0
+    with _gpu_cache_lock:
+        _gpu_cache["result"] = None
+        _gpu_cache["timestamp"] = 0.0
 
 
 # Initialize rate limiter
@@ -927,35 +978,15 @@ def get_libraries():
 def get_system_status():
     """Get system status including GPU info.
 
-    GPU detection results are cached for ``_GPU_CACHE_TTL`` seconds because
-    the detection runs FFmpeg sub-processes that are expensive and hardware
-    does not change at runtime.
+    GPU detection never runs in the request path. Results are refreshed in a
+    background daemon thread every _GPU_CACHE_TTL seconds. This handler always
+    returns cached results (or empty GPU list on first load) so it never blocks.
     """
-    import time
-
     try:
-        now = time.monotonic()
-        if (
-            _gpu_cache["result"] is None
-            or (now - _gpu_cache["timestamp"]) > _GPU_CACHE_TTL
-        ):
-            from ..gpu_detection import detect_all_gpus
-
-            gpus_raw = detect_all_gpus()
-            gpus = []
-            for gpu_type, gpu_device, gpu_info in gpus_raw:
-                gpus.append(
-                    {
-                        "name": gpu_info.get("name", gpu_type),
-                        "type": gpu_type,
-                        "device": gpu_device,
-                    }
-                )
-            _gpu_cache["result"] = gpus
-            _gpu_cache["timestamp"] = now
-            logger.debug(f"GPU detection cache refreshed: {len(gpus)} GPU(s)")
-        else:
-            gpus = _gpu_cache["result"]
+        # Ensure background refresh thread is running (idempotent)
+        _ensure_gpu_refresh_thread()
+        with _gpu_cache_lock:
+            gpus = _gpu_cache["result"] if _gpu_cache["result"] is not None else []
 
         job_manager = get_job_manager()
         running_job = job_manager.get_running_job()
@@ -1893,10 +1924,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             # Run processing — use cached GPU results when available
             # to avoid expensive FFmpeg subprocess calls on every job.
-            if _gpu_cache["result"] is not None:
+            with _gpu_cache_lock:
+                cached_gpus = _gpu_cache["result"]
+            if cached_gpus is not None:
                 # Reconstruct the tuple format that run_processing expects
                 selected_gpus = [
-                    (g["type"], g["device"], g) for g in _gpu_cache["result"]
+                    (g["type"], g["device"], g) for g in cached_gpus
                 ]
             else:
                 from ..gpu_detection import detect_all_gpus
