@@ -109,7 +109,7 @@ Output location: `{plex_config}/Media/localhost/{hash}/Indexes/index-sd.bif`
 - **Plex API**: Via `plexapi` library - always wrap in `retry_plex_call()`
 - **FFmpeg**: Subprocess calls in `media_processing.py` - handle codec errors gracefully
 - **GPU drivers**: NVIDIA (nvenc), Intel (qsv), AMD (vaapi), Apple (videotoolbox)
-- **Web UI**: gunicorn + gthread at `:8080`, Flask-SocketIO for real-time updates, APScheduler with SQLAlchemy jobstore for schedules, JSON file for settings persistence
+- **Web UI**: gunicorn + eventlet at `:8080`, Flask-SocketIO for real-time updates, APScheduler with SQLAlchemy jobstore for schedules, JSON file for settings persistence
 
 ## Security
 

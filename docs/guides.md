@@ -106,16 +106,15 @@ Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
 
 ### Production Server
 
-In Docker, the web interface runs on **gunicorn** with the **gthread** (threaded) worker class:
+In Docker, the web interface runs on **gunicorn** with the **eventlet** worker class:
 
-- **Native WebSocket support** via `simple-websocket`
-- **Reliable real-time updates** — Python threads handle concurrent HTTP and WebSocket connections
-- **No monkey-patching** — standard library modules work unmodified
+- **Native WebSocket support** via eventlet green threads
+- **Scalable real-time updates** — thousands of concurrent WebSocket connections
+- **No thread exhaustion** — green threads are lightweight coroutines, not OS threads
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| Worker class | `gthread` | Threaded worker for concurrent requests |
-| Threads | `4` | Handles parallel HTTP + WebSocket |
+| Worker class | `eventlet` | Async worker with green threads for WebSocket |
 | Workers | `1` | Single worker (required for in-process job state) |
 | Timeout | `300s` | Accommodates long-running FFmpeg processing |
 | Keep-alive | `65s` | Outlives typical reverse proxy timeouts (60s) |
@@ -130,10 +129,9 @@ with HTTPS, a custom domain, or alongside other services — you can place it
 behind a reverse proxy such as Nginx, Apache, or Traefik.
 
 The built-in server listens on port `8080` (HTTP) and the reverse proxy
-forwards external requests to it. The one requirement worth calling out:
-the web UI uses **WebSocket** (Socket.IO) for real-time job progress. Your
-reverse proxy **must** forward WebSocket upgrade requests, otherwise
-progress bars will appear frozen and only update on manual page refresh.
+forwards external requests to it. The web UI uses **WebSocket** (Socket.IO)
+for real-time updates, so your reverse proxy **must** forward WebSocket
+upgrade requests.
 
 #### Nginx
 
@@ -172,12 +170,10 @@ Example HTTPS virtual host:
     RequestHeader set X-Forwarded-Proto https
     RequestHeader set X-Forwarded-Ssl on
 
-    # Proxy WebSocket upgrade requests (required for real-time updates)
     RewriteEngine On
     RewriteCond %{HTTP:Upgrade} =websocket [NC]
     RewriteRule /(.*) ws://127.0.0.1:8080/$1 [P,L]
 
-    # Proxy all other traffic
     ProxyPass / http://127.0.0.1:8080/
     ProxyPassReverse / http://127.0.0.1:8080/
 
@@ -187,12 +183,6 @@ Example HTTPS virtual host:
     Header edit Location ^http://(.*)$ https://$1
 </VirtualHost>
 ```
-
-> [!IMPORTANT]
-> The `RewriteRule` for WebSocket **must** appear before the `ProxyPass`
-> directives. Without `mod_proxy_wstunnel`, Apache treats WebSocket upgrade
-> requests as normal HTTP and the Socket.IO connection silently falls back
-> to buffered long-polling — causing job progress to appear frozen.
 
 #### Traefik
 
@@ -248,7 +238,7 @@ plex-generate-previews --cli --plex-url ... --plex-token ...
 
 ### Real-Time Updates
 
-The dashboard uses WebSocket connections (via Flask-SocketIO + simple-websocket) for real-time job progress updates. The client connects to the `/jobs` namespace using WebSocket transport with automatic polling fallback.
+The dashboard uses Flask-SocketIO with WebSocket for real-time job progress updates. The client connects to the `/jobs` namespace.
 
 | Event | Description |
 |-------|-------------|

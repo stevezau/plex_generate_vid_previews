@@ -70,7 +70,7 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 
 ## Web Interface Settings
 
-The web server uses **gunicorn** with **gthread** workers in production (Docker).
+The web server uses **gunicorn** with **eventlet** workers in production (Docker).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -593,7 +593,7 @@ All errors follow this format:
 
 ## WebSocket Events
 
-The dashboard uses WebSocket (via Flask-SocketIO + simple-websocket) for real-time updates. The client connects to the `/jobs` namespace.
+The dashboard uses Flask-SocketIO with WebSocket for real-time updates. The client connects to the `/jobs` namespace.
 
 ```javascript
 const socket = io('/jobs', {

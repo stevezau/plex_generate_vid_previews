@@ -40,7 +40,7 @@ dependencies = [
     "flask-limiter>=3.5.0,<4",
     "apscheduler>=3.10.0,<4",
     "gunicorn>=22.0.0,<24",
-    "simple-websocket>=1.0.0,<2",
+    "eventlet>=0.35.0",
     "sqlalchemy>=2.0.0,<3",
 ]
 
