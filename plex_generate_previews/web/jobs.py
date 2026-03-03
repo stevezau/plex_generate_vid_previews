@@ -205,9 +205,24 @@ class JobManager:
             logger.error(f"Failed to save jobs: {e}")
 
     def _emit_event(self, event: str, data: dict) -> None:
-        """Emit a SocketIO event if available."""
-        if self.socketio:
-            self.socketio.emit(event, data, namespace="/jobs")
+        """Emit a SocketIO event without blocking the calling thread.
+
+        SocketIO writes to dead/slow WebSocket clients can block
+        indefinitely (CLOSE_WAIT sockets).  Running the emit in a
+        short-lived daemon thread prevents the processing loop from
+        stalling.
+        """
+        if not self.socketio:
+            return
+
+        def _do_emit():
+            try:
+                self.socketio.emit(event, data, namespace="/jobs")
+            except Exception:
+                logger.debug(f"SocketIO emit failed for {event}", exc_info=True)
+
+        t = threading.Thread(target=_do_emit, daemon=True)
+        t.start()
 
     def emit_processing_paused_changed(self, paused: bool) -> None:
         """Emit event when global processing pause state changes."""

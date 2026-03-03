@@ -905,15 +905,17 @@ class WorkerPool:
         library_prefix = f"[{library_name}] " if library_name else ""
 
         def on_task_complete(completed_tasks: int, total_items: int) -> None:
-            """Call progress callback on task completion."""
+            """Call progress callback on task completion (throttled to avoid SocketIO flood)."""
             nonlocal last_progress_update
             if progress_callback:
-                progress_callback(
-                    completed_tasks,
-                    total_items,
-                    f"{library_prefix}{completed_tasks}/{total_items} completed",
-                )
-                last_progress_update = time.time()
+                now = time.time()
+                if now - last_progress_update >= 0.5:
+                    progress_callback(
+                        completed_tasks,
+                        total_items,
+                        f"{library_prefix}{completed_tasks}/{total_items} completed",
+                    )
+                    last_progress_update = now
 
         def on_poll(completed_tasks: int, total_items: int) -> None:
             """Emit worker status and progress updates periodically."""

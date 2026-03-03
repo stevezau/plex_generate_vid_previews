@@ -204,8 +204,8 @@ def create_app(config_dir: str = None) -> Flask:
         app,
         async_mode="threading",
         cors_allowed_origins=cors_origins,
-        ping_timeout=60,
-        ping_interval=25,
+        ping_timeout=20,
+        ping_interval=10,
     )
 
     # Initialize settings manager with the config_dir FIRST

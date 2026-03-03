@@ -84,7 +84,7 @@ else
     run_as_user gunicorn \
         --bind "0.0.0.0:${WEB_PORT:-8080}" \
         --worker-class gthread \
-        --threads 8 \
+        --threads 16 \
         --workers 1 \
         --timeout 300 \
         --graceful-timeout 30 \
