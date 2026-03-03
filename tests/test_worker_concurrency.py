@@ -227,8 +227,10 @@ class TestWorkerPoolProcessing:
 
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 6
-        # Progress should have been called at least once per item
-        assert len(progress_calls) >= 6
+        # Progress is throttled (0.5s) to avoid SocketIO flood, but the
+        # final completion is always reported.
+        assert len(progress_calls) >= 1
+        assert progress_calls[-1] == (6, 6)
 
     def test_failed_items_tracked(self, mock_config, mock_plex):
         """Failed items should increment failed counter, not completed."""

@@ -905,11 +905,15 @@ class WorkerPool:
         library_prefix = f"[{library_name}] " if library_name else ""
 
         def on_task_complete(completed_tasks: int, total_items: int) -> None:
-            """Call progress callback on task completion (throttled to avoid SocketIO flood)."""
+            """Call progress callback on task completion (throttled to avoid SocketIO flood).
+
+            Always fires for the final item so callers see 100% completion.
+            """
             nonlocal last_progress_update
             if progress_callback:
                 now = time.time()
-                if now - last_progress_update >= 0.5:
+                is_final = completed_tasks >= total_items
+                if is_final or now - last_progress_update >= 0.5:
                     progress_callback(
                         completed_tasks,
                         total_items,
