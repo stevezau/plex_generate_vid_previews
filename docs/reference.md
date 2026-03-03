@@ -70,7 +70,7 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 
 ## Web Interface Settings
 
-The web server uses **gunicorn** with **gthread** workers in production (Docker).
+The web server uses **gunicorn** with **eventlet** workers in production (Docker).
 
 | Variable | Default | Description |
 |----------|---------|-------------|

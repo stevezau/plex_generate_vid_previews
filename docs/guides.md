@@ -106,16 +106,15 @@ Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
 
 ### Production Server
 
-In Docker, the web interface runs on **gunicorn** with the **gthread** (threaded) worker class:
+In Docker, the web interface runs on **gunicorn** with the **eventlet** worker class:
 
-- **Native WebSocket support** via `simple-websocket`
-- **Reliable real-time updates** — Python threads handle concurrent HTTP and WebSocket connections
-- **No monkey-patching** — standard library modules work unmodified
+- **Native WebSocket support** via eventlet green threads
+- **Scalable real-time updates** — thousands of concurrent WebSocket connections
+- **No thread exhaustion** — green threads are lightweight coroutines, not OS threads
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| Worker class | `gthread` | Threaded worker for concurrent requests |
-| Threads | `4` | Handles parallel HTTP + WebSocket |
+| Worker class | `eventlet` | Async worker with green threads for WebSocket |
 | Workers | `1` | Single worker (required for in-process job state) |
 | Timeout | `300s` | Accommodates long-running FFmpeg processing |
 | Keep-alive | `65s` | Outlives typical reverse proxy timeouts (60s) |

@@ -205,12 +205,10 @@ class JobManager:
             logger.error(f"Failed to save jobs: {e}")
 
     def _emit_event(self, event: str, data: dict) -> None:
-        """Emit a SocketIO event without blocking the calling thread.
+        """Emit a SocketIO event without blocking the caller.
 
-        SocketIO writes to dead/slow WebSocket clients can block
-        indefinitely (CLOSE_WAIT sockets).  Running the emit in a
-        short-lived daemon thread prevents the processing loop from
-        stalling.
+        Runs the emit in a separate green thread so the processing
+        loop never pauses while data is being sent to clients.
         """
         if not self.socketio:
             return
