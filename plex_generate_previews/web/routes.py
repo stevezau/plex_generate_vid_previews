@@ -1928,9 +1928,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 cached_gpus = _gpu_cache["result"]
             if cached_gpus is not None:
                 # Reconstruct the tuple format that run_processing expects
-                selected_gpus = [
-                    (g["type"], g["device"], g) for g in cached_gpus
-                ]
+                selected_gpus = [(g["type"], g["device"], g) for g in cached_gpus]
             else:
                 from ..gpu_detection import detect_all_gpus
 
