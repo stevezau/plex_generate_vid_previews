@@ -1237,9 +1237,7 @@ def get_plex_libraries():
         return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except requests.RequestException as e:
         logger.error(f"Failed to get Plex libraries: {e}")
-        return jsonify(
-            {"error": f"Failed to get libraries: {e}", "libraries": []}
-        ), 500
+        return jsonify({"error": f"Failed to get libraries: {e}", "libraries": []}), 500
 
 
 @api.route("/plex/test", methods=["POST"])
