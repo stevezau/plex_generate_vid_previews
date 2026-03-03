@@ -254,6 +254,7 @@ class TestWorker:
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
         config = MagicMock()
         config.cpu_threads = 0  # CPU threads disabled
+        config.cpu_fallback_threads = 0
         plex = MagicMock()
         fallback_queue = queue.Queue()
 
@@ -281,6 +282,37 @@ class TestWorker:
 
         # Fallback queue should be empty
         assert fallback_queue.empty()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_worker_gpu_codec_error_uses_fallback_cpu_threads(self, mock_process):
+        """Test GPU worker re-queues when fallback CPU threads are enabled."""
+        worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
+        config = MagicMock()
+        config.cpu_threads = 0
+        config.fallback_cpu_threads = 2
+        plex = MagicMock()
+        fallback_queue = queue.Queue()
+
+        def mock_process_fn(*args, **kwargs):
+            raise CodecNotSupportedError("Codec not supported by GPU")
+
+        mock_process.side_effect = mock_process_fn
+
+        worker.assign_task(
+            "test_key",
+            config,
+            plex,
+            media_title="AV1 Video",
+            media_type="episode",
+            cpu_fallback_queue=fallback_queue,
+        )
+
+        time.sleep(0.2)
+
+        assert worker.completed == 0
+        assert worker.failed == 0
+        assert worker.requeued_to_cpu is True
+        assert not fallback_queue.empty()
 
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_cpu_handles_codec_error_as_failure(self, mock_process):
@@ -332,6 +364,21 @@ class TestWorkerPool:
         # Should have fallback queue
         assert hasattr(pool, "cpu_fallback_queue")
         assert isinstance(pool.cpu_fallback_queue, queue.Queue)
+
+    def test_worker_pool_fallback_workers_initialization(self):
+        """Test worker pool creates fallback-only CPU workers."""
+        selected_gpus = [("NVIDIA", "cuda", {"name": "RTX 3080"})]
+        pool = WorkerPool(
+            gpu_workers=1,
+            cpu_workers=0,
+            selected_gpus=selected_gpus,
+            fallback_cpu_workers=2,
+        )
+
+        assert len(pool.workers) == 3
+        assert pool.workers[0].worker_type == "GPU"
+        assert pool.workers[1].worker_type == "CPU_FALLBACK"
+        assert pool.workers[2].worker_type == "CPU_FALLBACK"
 
     def test_worker_pool_gpu_assignment(self):
         """Test round-robin GPU assignment."""
@@ -402,6 +449,182 @@ class TestWorkerPool:
 
         # Should not crash
         pool.shutdown()
+
+    def test_worker_pool_add_and_remove_workers(self):
+        """Test dynamic worker add/remove behavior."""
+        selected_gpus = [("NVIDIA", "cuda", {"name": "RTX 3080"})]
+        pool = WorkerPool(gpu_workers=1, cpu_workers=1, selected_gpus=selected_gpus)
+
+        added_cpu = pool.add_workers("CPU", 2)
+        added_fallback = pool.add_workers("CPU_FALLBACK", 1)
+        assert added_cpu == 2
+        assert added_fallback == 1
+        assert len(pool.workers) == 5
+
+        cpu_workers = [w for w in pool.workers if w.worker_type == "CPU"]
+        cpu_workers[0].is_busy = True
+        result = pool.remove_workers("CPU", 3)
+        assert result["removed"] == 2
+        assert result["scheduled"] == 1
+        assert result["unavailable"] == 0
+
+    def test_remove_workers_schedules_busy_and_retires_when_idle(self):
+        """Busy workers should be scheduled and retired after task completion."""
+        pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
+        cpu_workers = [w for w in pool.workers if w.worker_type == "CPU"]
+        cpu_workers[0].is_busy = True
+
+        result = pool.remove_workers("CPU", 2)
+        assert result == {"removed": 1, "scheduled": 1, "unavailable": 0}
+        assert len([w for w in pool.workers if w.worker_type == "CPU"]) == 1
+
+        cpu_workers[0].is_busy = False
+        retired = pool._apply_deferred_removals()
+        assert retired == 1
+        assert len([w for w in pool.workers if w.worker_type == "CPU"]) == 0
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_dynamic_remove_does_not_stall_completion(self, mock_process):
+        """Dynamic worker removal should not trap processing at 100%."""
+        mock_process.side_effect = lambda *args, **kwargs: time.sleep(0.01)
+        pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
+        config = MagicMock()
+        plex = MagicMock()
+        items = [(f"key{i}", f"Movie {i}", "movie") for i in range(8)]
+
+        original_assign = pool._assign_main_queue_task
+        assigned_count = {"value": 0, "removed": False}
+
+        def assign_and_remove(*args, **kwargs):
+            assigned = original_assign(*args, **kwargs)
+            if assigned:
+                assigned_count["value"] += 1
+                if assigned_count["value"] >= 3 and not assigned_count["removed"]:
+                    pool.remove_workers("CPU", 1)
+                    assigned_count["removed"] = True
+            return assigned
+
+        with patch.object(
+            pool, "_assign_main_queue_task", side_effect=assign_and_remove
+        ):
+            start = time.time()
+            result = pool.process_items_headless(items, config, plex)
+            elapsed = time.time() - start
+
+        assert elapsed < 2.0
+        assert result["completed"] + result["failed"] == len(items)
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_dynamic_gpu_removal_does_not_stall_completion(self, mock_process):
+        """Dynamic GPU worker removal during active processing must not stall at 100%."""
+        mock_process.side_effect = lambda *args, **kwargs: time.sleep(0.01)
+        selected_gpus = [
+            ("NVIDIA", "cuda", {"name": "GPU0"}),
+            ("NVIDIA", "cuda", {"name": "GPU1"}),
+        ]
+        pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
+        config = MagicMock()
+        plex = MagicMock()
+        items = [(f"key{i}", f"Movie {i}", "movie") for i in range(8)]
+
+        original_assign = pool._assign_main_queue_task
+        assign_count = {"value": 0, "removed": False}
+
+        def assign_and_remove_gpu(*args, **kwargs):
+            assigned = original_assign(*args, **kwargs)
+            if assigned:
+                assign_count["value"] += 1
+                if assign_count["value"] >= 3 and not assign_count["removed"]:
+                    pool.remove_workers("GPU", 1)
+                    assign_count["removed"] = True
+            return assigned
+
+        with patch.object(
+            pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu
+        ):
+            start = time.time()
+            result = pool.process_items_headless(items, config, plex)
+            elapsed = time.time() - start
+
+        assert elapsed < 2.0, "Run must not stall after GPU removal"
+        assert result["completed"] + result["failed"] == len(items), (
+            f"All items must be accounted for; got completed={result['completed']}, "
+            f"failed={result['failed']}, total={len(items)}"
+        )
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):
+        """Pause check should delay task dispatch until resumed."""
+        mock_process.return_value = None
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        config = MagicMock()
+        plex = MagicMock()
+        items = [("key1", "Movie 1", "movie"), ("key2", "Movie 2", "movie")]
+
+        pause_state = {"paused": True}
+
+        def unpause_later():
+            time.sleep(0.25)
+            pause_state["paused"] = False
+
+        import threading
+
+        threading.Thread(target=unpause_later, daemon=True).start()
+        start = time.time()
+        result = pool.process_items_headless(
+            items,
+            config,
+            plex,
+            pause_check=lambda: pause_state["paused"],
+        )
+        elapsed = time.time() - start
+
+        assert result["completed"] == 2
+        assert elapsed >= 0.2
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_no_dispatch_while_paused(self, mock_process):
+        """No new task is assigned while pause_check returns True; first assignment after unpause."""
+        mock_process.return_value = None
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        config = MagicMock()
+        plex = MagicMock()
+        items = [("key1", "Movie 1", "movie"), ("key2", "Movie 2", "movie")]
+
+        pause_duration = 0.3
+        start_time = time.time()
+        pause_state = {"paused": True}
+        first_assign_time = {}
+
+        def unpause_later():
+            time.sleep(pause_duration)
+            pause_state["paused"] = False
+
+        original_assign = pool._assign_main_queue_task
+
+        def record_assign(*args, **kwargs):
+            if "first_assign_time" not in first_assign_time:
+                first_assign_time["first_assign_time"] = time.time() - start_time
+            return original_assign(*args, **kwargs)
+
+        with patch.object(pool, "_assign_main_queue_task", side_effect=record_assign):
+            import threading
+
+            threading.Thread(target=unpause_later, daemon=True).start()
+            result = pool.process_items_headless(
+                items,
+                config,
+                plex,
+                pause_check=lambda: pause_state["paused"],
+            )
+
+        assert result["completed"] == 2
+        assert "first_assign_time" in first_assign_time
+        assert first_assign_time["first_assign_time"] >= pause_duration * 0.9, (
+            "First assignment must occur after pause window; got "
+            f"first_assign_time={first_assign_time['first_assign_time']:.3f}s, "
+            f"pause_duration={pause_duration}s"
+        )
 
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_stats_are_per_library(self, mock_process):

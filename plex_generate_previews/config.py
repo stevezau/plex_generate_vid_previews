@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -38,7 +38,14 @@ def get_config_value(
     Returns:
         The configuration value converted to the specified type
     """
-    cli_value = getattr(cli_args, field_name, None) if cli_args else None
+    cli_value = None
+    if cli_args is not None:
+        try:
+            cli_vars = vars(cli_args)
+        except TypeError:
+            cli_vars = {}
+        if field_name in cli_vars:
+            cli_value = cli_vars[field_name]
     if cli_value is not None:
         return cli_value
 
@@ -76,6 +83,288 @@ def get_config_value_int(
     return get_config_value(cli_args, field_name, env_key, default, int)
 
 
+def get_path_mapping_pairs(
+    plex_mapping: str, local_mapping: str
+) -> List[Tuple[str, str]]:
+    """Parse path mapping config into (plex_root, local_root) pairs.
+
+    Supports: (1) single pair when both are single values; (2) mergefs: multiple
+    Plex roots (semicolon-separated) with one local path — all map to that path;
+    (3) same count both sides — pair by index.
+
+    Args:
+        plex_mapping: Plex path(s), semicolon-separated for multiple.
+        local_mapping: Local path(s), semicolon-separated or single.
+
+    Returns:
+        List of (plex_root, local_root) tuples to try in order.
+    """
+    plex_list = [s.strip() for s in (plex_mapping or "").split(";") if s.strip()]
+    local_list = [s.strip() for s in (local_mapping or "").split(";") if s.strip()]
+    if not plex_list or not local_list:
+        return []
+    if len(local_list) == 1:
+        return [(plex_root, local_list[0]) for plex_root in plex_list]
+    if len(plex_list) == len(local_list):
+        return list(zip(plex_list, local_list))
+    # Mismatched lengths: use first of each (backward compat)
+    return [(plex_list[0], local_list[0])]
+
+
+# -----------------------------------------------------------------------------
+# Path mappings (plex_prefix, local_prefix, optional webhook_prefixes)
+# -----------------------------------------------------------------------------
+
+
+def _normalize_prefix(p: str) -> str:
+    """Return path with consistent trailing slash for prefix matching."""
+    if not p:
+        return p
+    return p.rstrip("/") or "/"
+
+
+def _legacy_settings_to_path_mappings(
+    plex_mapping: str, local_mapping: str
+) -> List[Dict[str, Any]]:
+    """Convert legacy semicolon pair config into path_mappings list."""
+    pairs = get_path_mapping_pairs(plex_mapping or "", local_mapping or "")
+    return [
+        {"plex_prefix": plex_root, "local_prefix": local_root, "webhook_prefixes": []}
+        for plex_root, local_root in pairs
+    ]
+
+
+def normalize_path_mappings(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build path_mappings list from settings (new format or legacy).
+
+    New format: settings["path_mappings"] is a list of dicts with keys
+    plex_prefix, local_prefix, and optionally webhook_prefixes (list of strings).
+    Legacy: settings has plex_videos_path_mapping and plex_local_videos_path_mapping
+    (semicolon-separated); converted to mapping rows with empty webhook_prefixes.
+
+    Args:
+        settings: Dict from settings.json or equivalent (e.g. ui_settings).
+
+    Returns:
+        List of mapping dicts: {"plex_prefix", "local_prefix", "webhook_prefixes"}.
+    """
+    raw = settings.get("path_mappings")
+    if isinstance(raw, list) and len(raw) > 0:
+        out = []
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            plex = (row.get("plex_prefix") or "").strip()
+            local = (row.get("local_prefix") or "").strip()
+            if not plex or not local:
+                continue
+            web = row.get("webhook_prefixes")
+            if isinstance(web, list):
+                web = [s.strip() for s in web if s and str(s).strip()]
+            else:
+                web = []
+            out.append(
+                {"plex_prefix": plex, "local_prefix": local, "webhook_prefixes": web}
+            )
+        if out:
+            return out
+    # Legacy
+    plex_str = (settings.get("plex_videos_path_mapping") or "").strip()
+    local_str = (settings.get("plex_local_videos_path_mapping") or "").strip()
+    if plex_str and local_str:
+        return _legacy_settings_to_path_mappings(plex_str, local_str)
+    return []
+
+
+def _path_matches_prefix(path: str, prefix: str) -> bool:
+    """Return True if path equals prefix or has prefix as a path prefix (no partial segment)."""
+    norm = _normalize_prefix(prefix)
+    if not norm:
+        return False
+    path = (path or "").strip()
+    return path == norm or path.startswith(norm + "/")
+
+
+def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
+    """Map any path (Plex, webhook, or local) to canonical local path.
+
+    Uses the first matching mapping: plex_prefix or any webhook_prefix is
+    replaced by local_prefix. If no mapping matches, the path is returned
+    unchanged (treated as already local).
+
+    Args:
+        path: Absolute path as seen by Plex, webhook, or this app.
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        Path in the form this app can use for file access / comparison.
+    """
+    if not path or not path_mappings:
+        return path or ""
+    path = (path or "").strip()
+    for m in path_mappings:
+        plex_prefix = _normalize_prefix(m.get("plex_prefix") or "")
+        local_prefix = _normalize_prefix(m.get("local_prefix") or "")
+        if plex_prefix and _path_matches_prefix(path, plex_prefix):
+            rest = path[len(plex_prefix) :].lstrip("/")
+            return (
+                f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
+            )
+        for wp in m.get("webhook_prefixes") or []:
+            wp = _normalize_prefix(wp)
+            if wp and _path_matches_prefix(path, wp):
+                rest = path[len(wp) :].lstrip("/")
+                return (
+                    f"{local_prefix.rstrip('/')}/{rest}"
+                    if rest
+                    else (local_prefix or "/")
+                )
+    return path
+
+
+def expand_path_mapping_candidates(
+    path: str, path_mappings: List[Dict[str, Any]]
+) -> List[str]:
+    """Return equivalent path candidates across all configured mapping rows.
+
+    This helper expands a single input path into every plausible equivalent path
+    using each mapping row. It is used for webhook matching so paths like
+    ``/data/...`` can be tested against all mapped Plex roots (for example
+    ``/data_16tb...``, ``/data_16tb2...``), not just the first matching row.
+
+    Args:
+        path: Absolute path reported by webhook/Plex/app.
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        Ordered unique list of candidate paths. The original input path is first.
+    """
+    if not path:
+        return []
+
+    cleaned_path = str(path).strip()
+    if not cleaned_path:
+        return []
+    if not path_mappings:
+        return [cleaned_path]
+
+    candidates = [cleaned_path]
+    seen = {cleaned_path}
+
+    def _add_mapped_candidate(source_prefix: str, target_prefix: str) -> None:
+        source = _normalize_prefix(source_prefix)
+        target = _normalize_prefix(target_prefix)
+        if not source or not target:
+            return
+        if not _path_matches_prefix(cleaned_path, source):
+            return
+        rest = cleaned_path[len(source) :].lstrip("/")
+        candidate = f"{target.rstrip('/')}/{rest}" if rest else (target or "/")
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    for mapping in path_mappings:
+        plex_prefix = mapping.get("plex_prefix") or ""
+        local_prefix = mapping.get("local_prefix") or ""
+        webhook_prefixes = mapping.get("webhook_prefixes") or []
+
+        # Bidirectional Plex/local expansion for all rows.
+        _add_mapped_candidate(plex_prefix, local_prefix)
+        _add_mapped_candidate(local_prefix, plex_prefix)
+
+        # Webhook aliases should fan out into both local and Plex forms.
+        for webhook_prefix in webhook_prefixes:
+            _add_mapped_candidate(webhook_prefix, local_prefix)
+            _add_mapped_candidate(webhook_prefix, plex_prefix)
+            _add_mapped_candidate(local_prefix, webhook_prefix)
+            _add_mapped_candidate(plex_prefix, webhook_prefix)
+
+    return candidates
+
+
+def plex_path_to_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
+    """Map a Plex-reported path to local path (for file access)."""
+    return path_to_canonical_local(path, path_mappings)
+
+
+def local_path_to_webhook_aliases(
+    path: str, path_mappings: List[Dict[str, Any]]
+) -> List[str]:
+    """Return webhook-style paths that could refer to the same file as the given local path.
+
+    Used when matching webhook payloads (e.g. /data/...) to Plex items whose
+    location is a specific disk (e.g. /data_16tb1/...). For each mapping where
+    path starts with local_prefix and webhook_prefixes is set, returns path with
+    local_prefix replaced by that webhook prefix.
+
+    Args:
+        path: Local path (e.g. /data_16tb1/Movies/foo.mkv).
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        List of paths in webhook form (e.g. [/data/Movies/foo.mkv]).
+    """
+    if not path or not path_mappings:
+        return []
+    path = (path or "").strip()
+    out = []
+    for m in path_mappings:
+        local_prefix = _normalize_prefix(m.get("local_prefix") or "")
+        if not local_prefix or not _path_matches_prefix(path, local_prefix):
+            continue
+        for wp in m.get("webhook_prefixes") or []:
+            wp = _normalize_prefix(wp)
+            if not wp or wp == local_prefix:
+                continue
+            rest = path[len(local_prefix) :].lstrip("/")
+            alias = f"{wp.rstrip('/')}/{rest}" if rest else (wp or "/")
+            out.append(alias)
+    return out
+
+
+def _is_library_id_value(value: str) -> bool:
+    """Return True when a library selector value looks like a Plex section ID."""
+    return bool(value) and value.isdigit()
+
+
+def split_library_selectors(values: Any) -> Tuple[List[str], List[str]]:
+    """Split mixed library selectors into section IDs and lowercased titles.
+
+    Args:
+        values: Sequence of selector values from settings/API payloads.
+
+    Returns:
+        Tuple of (`library_ids`, `library_titles`) with duplicates removed while
+        preserving order.
+    """
+    if not isinstance(values, list):
+        return [], []
+
+    library_ids: List[str] = []
+    library_titles: List[str] = []
+    seen_ids = set()
+    seen_titles = set()
+
+    for raw_value in values:
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if _is_library_id_value(value):
+            if value not in seen_ids:
+                seen_ids.add(value)
+                library_ids.append(value)
+            continue
+        title = value.lower()
+        if title not in seen_titles:
+            seen_titles.add(title)
+            library_titles.append(title)
+
+    return library_ids, library_titles
+
+
 def get_config_value_bool(
     cli_args, field_name: str, env_key: str, default: bool = False
 ) -> bool:
@@ -97,6 +386,8 @@ class Config:
     plex_config_folder: str
     plex_local_videos_path_mapping: str
     plex_videos_path_mapping: str
+    # Resolved path mapping rows: [{"plex_prefix", "local_prefix", "webhook_prefixes"}]
+    path_mappings: List[Dict[str, Any]]
 
     # Processing configuration
     plex_bif_frame_interval: int
@@ -117,6 +408,9 @@ class Config:
     # Logging
     log_level: str
 
+    # Optional GPU->CPU fallback worker count (used when cpu_threads=0)
+    fallback_cpu_threads: int = 0
+
     # Runtime state (set after construction)
     working_tmp_folder: str = ""
 
@@ -125,6 +419,9 @@ class Config:
 
     # When set, filter libraries by Plex section key (ID) instead of plex_libraries (names)
     plex_library_ids: Optional[List[str]] = None
+
+    # Runtime-only file targets for webhook-triggered single-file processing.
+    webhook_paths: Optional[List[str]] = None
 
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
@@ -487,7 +784,11 @@ def _validate_processing_config(
 
 
 def _validate_thread_config(
-    gpu_threads: int, cpu_threads: int, gpu_selection: str, validation_errors: list
+    gpu_threads: int,
+    cpu_threads: int,
+    fallback_cpu_threads: int,
+    gpu_selection: str,
+    validation_errors: list,
 ) -> tuple[bool, str]:
     """
     Validate thread configuration parameters.
@@ -495,6 +796,7 @@ def _validate_thread_config(
     Args:
         gpu_threads: Number of GPU worker threads
         cpu_threads: Number of CPU worker threads
+        fallback_cpu_threads: Number of CPU fallback worker threads
         gpu_selection: GPU selection string
         validation_errors: List to append validation errors
 
@@ -510,6 +812,11 @@ def _validate_thread_config(
     if cpu_threads < 0 or cpu_threads > 32:
         validation_errors.append(
             f"CPU_THREADS must be between 0-32 (got: {cpu_threads})"
+        )
+
+    if fallback_cpu_threads < 0 or fallback_cpu_threads > 32:
+        validation_errors.append(
+            f"FALLBACK_CPU_THREADS must be between 0-32 (got: {fallback_cpu_threads})"
         )
 
     # Validate gpu_selection format
@@ -590,6 +897,43 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
     return tmp_folder_created_by_us, True
 
 
+# Cache for get_cached_config(); invalidated when settings.json mtime changes or clear_config_cache() is called.
+_cached_config: Optional[Config] = None
+_cached_config_mtime: Optional[float] = None
+
+
+def get_cached_config(cli_args=None):
+    """
+    Return config, using cache if settings.json has not changed since last load.
+
+    Use this for read-only config access (e.g. API that returns current config).
+    Full validation (FFmpeg, Plex, paths) runs only on cache miss or when
+    settings file is modified. Call clear_config_cache() when settings are saved.
+
+    Returns:
+        Config or None: Same as load_config().
+    """
+    global _cached_config, _cached_config_mtime
+    settings_path = os.path.join(
+        os.environ.get("CONFIG_DIR", "/config"), "settings.json"
+    )
+    mtime = os.path.getmtime(settings_path) if os.path.exists(settings_path) else 0.0
+    if _cached_config is not None and _cached_config_mtime == mtime:
+        return _cached_config
+    config = load_config(cli_args)
+    if config is not None:
+        _cached_config = config
+        _cached_config_mtime = mtime
+    return config
+
+
+def clear_config_cache() -> None:
+    """Invalidate config cache so next get_cached_config() runs full load_config()."""
+    global _cached_config, _cached_config_mtime
+    _cached_config = None
+    _cached_config_mtime = None
+
+
 def load_config(cli_args=None) -> Config:
     """
     Load and validate configuration from CLI arguments, settings.json, and environment variables.
@@ -621,7 +965,14 @@ def load_config(cli_args=None) -> Config:
     # Helper to get value with precedence: CLI > settings.json > env > default
     def get_value(cli_args, field_name, settings_key, env_key, default, value_type=str):
         # 1. CLI args (highest precedence)
-        cli_value = getattr(cli_args, field_name, None) if cli_args else None
+        cli_value = None
+        if cli_args is not None:
+            try:
+                cli_vars = vars(cli_args)
+            except TypeError:
+                cli_vars = {}
+            if field_name in cli_vars:
+                cli_value = cli_vars[field_name]
         if cli_value is not None:
             return cli_value
 
@@ -667,10 +1018,11 @@ def load_config(cli_args=None) -> Config:
 
     # Handle plex_libraries (special case for comma-separated values OR list from settings.json)
     plex_libraries_setting = ui_settings.get("selected_libraries", [])
+    plex_library_ids: Optional[List[str]] = None
     if isinstance(plex_libraries_setting, list) and plex_libraries_setting:
-        plex_libraries = [
-            str(lib).strip().lower() for lib in plex_libraries_setting if lib
-        ]
+        selected_ids, selected_titles = split_library_selectors(plex_libraries_setting)
+        plex_libraries = selected_titles
+        plex_library_ids = selected_ids or None
     else:
         plex_libraries = get_config_value_str(
             cli_args, "plex_libraries", "PLEX_LIBRARIES", ""
@@ -706,6 +1058,14 @@ def load_config(cli_args=None) -> Config:
         str,
     )
 
+    path_mappings = normalize_path_mappings(ui_settings)
+    if not path_mappings and (
+        plex_videos_path_mapping or plex_local_videos_path_mapping
+    ):
+        path_mappings = _legacy_settings_to_path_mappings(
+            plex_videos_path_mapping, plex_local_videos_path_mapping
+        )
+
     plex_bif_frame_interval = get_value(
         cli_args,
         "plex_bif_frame_interval",
@@ -735,6 +1095,14 @@ def load_config(cli_args=None) -> Config:
     )
     cpu_threads = get_value(
         cli_args, "cpu_threads", "cpu_threads", "CPU_THREADS", 1, int
+    )
+    fallback_cpu_threads = get_value(
+        cli_args,
+        "fallback_cpu_threads",
+        "cpu_fallback_threads",
+        "FALLBACK_CPU_THREADS",
+        0,
+        int,
     )
     gpu_selection = get_value(
         cli_args, "gpu_selection", "gpu_selection", "GPU_SELECTION", "all", str
@@ -795,11 +1163,11 @@ def load_config(cli_args=None) -> Config:
         if result.returncode != 0:
             validation_errors.append("FFmpeg found but not working properly")
         else:
-            # Log the FFmpeg version line for diagnostics
+            # Log FFmpeg version at debug only; load_config runs on every config request (e.g. UI refresh)
             version_line = (
                 result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
             )
-            logger.info(f"FFmpeg: {version_line}")
+            logger.debug(f"FFmpeg: {version_line}")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         validation_errors.append("FFmpeg found but cannot execute properly")
 
@@ -811,7 +1179,7 @@ def load_config(cli_args=None) -> Config:
         plex_bif_frame_interval, thumbnail_quality, plex_timeout, validation_errors
     )
     should_exit, thread_error = _validate_thread_config(
-        gpu_threads, cpu_threads, gpu_selection, validation_errors
+        gpu_threads, cpu_threads, fallback_cpu_threads, gpu_selection, validation_errors
     )
     tmp_folder_created_by_us, _ = _validate_paths(tmp_folder, validation_errors)
 
@@ -867,17 +1235,20 @@ def load_config(cli_args=None) -> Config:
         plex_config_folder=plex_config_folder,
         plex_local_videos_path_mapping=plex_local_videos_path_mapping,
         plex_videos_path_mapping=plex_videos_path_mapping,
+        path_mappings=path_mappings,
         plex_bif_frame_interval=plex_bif_frame_interval,
         thumbnail_quality=thumbnail_quality,
         regenerate_thumbnails=regenerate_thumbnails,
         sort_by=sort_by,
         gpu_threads=gpu_threads,
         cpu_threads=cpu_threads,
+        fallback_cpu_threads=fallback_cpu_threads,
         gpu_selection=gpu_selection,
         tmp_folder=tmp_folder,
         tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
         log_level=log_level,
+        plex_library_ids=plex_library_ids,
     )
 
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi
@@ -895,8 +1266,10 @@ def load_config(cli_args=None) -> Config:
         f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}"
     )
     logger.debug(f"PLEX_VIDEOS_PATH_MAPPING = {config.plex_videos_path_mapping}")
+    logger.debug(f"path_mappings = {len(config.path_mappings)} row(s)")
     logger.debug(f"GPU_THREADS = {config.gpu_threads}")
     logger.debug(f"CPU_THREADS = {config.cpu_threads}")
+    logger.debug(f"FALLBACK_CPU_THREADS = {config.fallback_cpu_threads}")
     logger.debug(f"GPU_SELECTION = {config.gpu_selection}")
     logger.debug(f"REGENERATE_THUMBNAILS = {config.regenerate_thumbnails}")
     logger.debug(f"SORT_BY = {config.sort_by}")

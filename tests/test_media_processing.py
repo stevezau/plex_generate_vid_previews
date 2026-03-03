@@ -209,11 +209,114 @@ class TestFFmpegProgressParsing:
         parse_ffmpeg_progress_line(line, 100.0, callback)
         assert callback_called
 
+    def test_parse_ffmpeg_progress_line_progress_decimal_precision(self):
+        """Progress percent uses one decimal place for UI (Issue #144)."""
+        line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:33.33 bitrate= 800.0kbits/s speed=1.0x"
+        progress_seen = []
+
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining=None,
+            frame=0,
+            fps=0,
+            q=0,
+            size=0,
+            time_str="",
+            bitrate=0,
+        ):
+            progress_seen.append(progress)
+
+        parse_ffmpeg_progress_line(line, 100.0, callback)
+        assert len(progress_seen) == 1
+        # 33.33/100*100 = 33.33 -> round(33.33, 1) = 33.3
+        assert progress_seen[0] == 33.3
+        assert isinstance(progress_seen[0], float)
+
     def test_parse_ffmpeg_progress_line_no_callback(self):
         """Test parsing without callback doesn't crash."""
         line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=1.0x"
         result = parse_ffmpeg_progress_line(line, 100.0, None)
         assert result == 100.0
+
+    def test_remaining_time_accounts_for_speed(self):
+        """remaining_time should be wall-clock ETA, not raw media remaining."""
+        line = "frame= 5000 fps=120 q=28.0 size=  50000kB time=00:05:00.00 bitrate= 1000.0kbits/s speed=100.0x"
+        captured = {}
+
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining,
+            frame,
+            fps,
+            q,
+            size,
+            time_str,
+            bitrate,
+        ):
+            captured["remaining"] = remaining
+            captured["speed"] = speed
+
+        total_duration = 600.0  # 10 minutes
+        parse_ffmpeg_progress_line(line, total_duration, callback)
+
+        # current_time = 300s, remaining media = 300s, speed = 100x
+        # wall-clock ETA = 300 / 100 = 3 seconds
+        assert captured["speed"] == "100.0x"
+        assert abs(captured["remaining"] - 3.0) < 0.1
+
+    def test_remaining_time_at_1x_speed(self):
+        """At 1x speed, wall-clock ETA equals remaining media duration."""
+        line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=1.0x"
+        captured = {}
+
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining,
+            frame,
+            fps,
+            q,
+            size,
+            time_str,
+            bitrate,
+        ):
+            captured["remaining"] = remaining
+
+        parse_ffmpeg_progress_line(line, 100.0, callback)
+        # remaining media = 90s, speed = 1x -> wall-clock = 90s
+        assert abs(captured["remaining"] - 90.0) < 0.1
+
+    def test_remaining_time_no_speed_falls_back(self):
+        """When speed is not parseable, remaining_time falls back to raw media remaining."""
+        line = "frame= 100 fps=30.0 q=28.0 size=  1000kB time=00:00:10.00 bitrate= 800.0kbits/s speed=N/Ax"
+        captured = {}
+
+        def callback(
+            progress,
+            current,
+            total,
+            speed,
+            remaining,
+            frame,
+            fps,
+            q,
+            size,
+            time_str,
+            bitrate,
+        ):
+            captured["remaining"] = remaining
+
+        parse_ffmpeg_progress_line(line, 100.0, callback)
+        # speed not parseable -> falls back to raw remaining = 90s
+        assert abs(captured["remaining"] - 90.0) < 0.1
 
 
 class TestHeuristicAllowsSkip:
@@ -1229,8 +1332,13 @@ class TestProcessItem:
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
 
         # Configure path mapping
-        mock_config.plex_videos_path_mapping = "/data"
-        mock_config.plex_local_videos_path_mapping = "/mnt/videos"
+        mock_config.path_mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/videos",
+                "webhook_prefixes": [],
+            }
+        ]
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.regenerate_thumbnails = False
@@ -1255,6 +1363,125 @@ class TestProcessItem:
 
         expected_prefix = _os.path.normpath("/mnt/videos")
         assert called_path.startswith(expected_prefix)
+
+    @patch("plex_generate_previews.media_processing.generate_bif")
+    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("os.path.isfile")
+    @patch("os.path.isdir")
+    @patch("os.makedirs")
+    @patch("shutil.rmtree")
+    def test_process_item_mergerfs_multiple_plex_roots(
+        self,
+        mock_rmtree,
+        mock_makedirs,
+        mock_isdir,
+        mock_isfile,
+        mock_gen_images,
+        mock_gen_bif,
+        mock_config,
+        plex_xml_movie_tree,
+    ):
+        """Multiple Plex roots map to one local path in process_item."""
+        mock_plex = MagicMock()
+        import xml.etree.ElementTree as ET
+
+        # Fixture has /data/movies/...; use XML with /data_disk1/ so we map to /data
+        tree_xml = plex_xml_movie_tree.replace(
+            'file="/data/movies/',
+            'file="/data_disk1/movies/',
+        )
+        mock_plex.query.return_value = ET.fromstring(tree_xml)
+
+        mock_config.path_mappings = [
+            {
+                "plex_prefix": "/data_disk1",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/data_disk2",
+                "local_prefix": "/data",
+                "webhook_prefixes": [],
+            },
+        ]
+        mock_config.plex_config_folder = "/config/plex"
+        mock_config.tmp_folder = "/tmp"
+        mock_config.regenerate_thumbnails = False
+
+        def isfile_side_effect(path):
+            return ".bif" not in path
+
+        mock_isfile.side_effect = isfile_side_effect
+        mock_isdir.return_value = False
+        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
+
+        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+
+        assert mock_gen_images.called
+        called_path = mock_gen_images.call_args[0][0]
+        import os as _os
+
+        expected_prefix = _os.path.normpath("/data")
+        assert called_path.startswith(expected_prefix), (
+            f"Expected path under /data, got {called_path}"
+        )
+
+    @patch("plex_generate_previews.media_processing.generate_bif")
+    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("os.path.isfile")
+    @patch("os.path.isdir")
+    @patch("os.makedirs")
+    @patch("shutil.rmtree")
+    def test_process_item_no_partial_prefix_match(
+        self,
+        mock_rmtree,
+        mock_makedirs,
+        mock_isdir,
+        mock_isfile,
+        mock_gen_images,
+        mock_gen_bif,
+        mock_config,
+        plex_xml_movie_tree,
+    ):
+        """Path /database/... is not remapped when mapping is /data -> /mnt/data."""
+        mock_plex = MagicMock()
+        import xml.etree.ElementTree as ET
+
+        tree_xml = plex_xml_movie_tree.replace(
+            'file="/data/movies/',
+            'file="/database/movies/',
+        )
+        mock_plex.query.return_value = ET.fromstring(tree_xml)
+
+        mock_config.path_mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
+        mock_config.plex_config_folder = "/config/plex"
+        mock_config.tmp_folder = "/tmp"
+        mock_config.regenerate_thumbnails = False
+
+        def isfile_side_effect(path):
+            return ".bif" not in path
+
+        mock_isfile.side_effect = isfile_side_effect
+        mock_isdir.return_value = False
+        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
+
+        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
+
+        assert mock_gen_images.called
+        called_path = mock_gen_images.call_args[0][0]
+        import os as _os
+
+        # Should still be /database/... (no mapping applied)
+        expected_prefix = _os.path.normpath("/database")
+        assert called_path.startswith(expected_prefix), (
+            f"Expected path under /database, got {called_path}"
+        )
 
     @patch("os.path.isfile")
     def test_process_item_missing_file(

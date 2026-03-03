@@ -68,12 +68,43 @@
                 <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
             </button>
 
-            <p class="mt-4 text-muted small">
-                <i class="bi bi-info-circle me-1"></i>
-                Enter the access token you set during setup.
-                <br>If you kept the auto-generated token, check the console logs.
-                <br>You can also set the <code>WEB_AUTH_TOKEN</code> environment variable.
-            </p>
+            <div class="mt-4 text-start">
+                <p class="text-muted small mb-2">
+                    <i class="bi bi-question-circle me-1"></i><strong>How do I find my token?</strong>
+                </p>
+                <div class="text-muted small ps-3" style="line-height: 1.8;">
+                    <div class="mb-1">
+                        <i class="bi bi-file-earmark-lock me-1 text-warning"></i>
+                        Check <code>/config/auth.json</code> in your config volume
+                    </div>
+                    <div class="mb-1">
+                        <i class="bi bi-terminal me-1 text-warning"></i>
+                        Or run: <code>docker logs &lt;container&gt;</code> for the file path
+                    </div>
+                    <div>
+                        <i class="bi bi-gear me-1 text-warning"></i>
+                        Or set <code>WEB_AUTH_TOKEN</code> in your environment/docker-compose
+                    </div>
+                </div>
+                <details class="mt-2 small text-muted">
+                    <summary class="cursor-pointer" style="cursor: pointer;">
+                        <i class="bi bi-info-circle me-1"></i>First time? More details&hellip;
+                    </summary>
+                    <div class="mt-2 ps-3" style="line-height: 1.7;">
+                        A random token was generated on first startup and saved to
+                        <code>/config/auth.json</code> inside the container. This maps to
+                        whichever host path you mounted as <code>/config</code>.
+                        <br><br>
+                        To use your own password instead, add this to your
+                        <code>docker-compose.yml</code>:
+                        <div class="bg-dark border rounded p-2 mt-1 mb-1" style="font-family: monospace; font-size: 0.8rem;">
+                            <span class="text-info">environment:</span><br>
+                            &nbsp;&nbsp;- <span class="text-warning">WEB_AUTH_TOKEN=your-password</span>
+                        </div>
+                        Then restart the container.
+                    </div>
+                </details>
+            </div>
         </form>
     </main>
 </body>

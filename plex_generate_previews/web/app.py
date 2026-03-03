@@ -7,6 +7,7 @@ Creates and configures the Flask application with SocketIO support.
 import atexit
 import hashlib
 import hmac
+import logging
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -220,6 +221,10 @@ def create_app(config_dir: str = None) -> Flask:
         rotation=sm.get("log_rotation_size", "10 MB"),
         retention=sm.get("log_retention_count", 5),
     )
+
+    # Silence Werkzeug's per-request HTTP logs (method, path, status) to avoid log noise.
+    # Real errors from Werkzeug still log at WARNING+.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     # Initialize job manager with SocketIO
     get_job_manager(config_dir=config_dir, socketio=socketio)

@@ -46,11 +46,13 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 ---
 
 ## Processing Options
+<a id="cpu-fallback-workers"></a>
 
 | Variable | CLI Argument | Web UI | Default | Description |
 |----------|--------------|--------|---------|-------------|
 | `GPU_THREADS` | `--gpu-threads` | Yes | `1` | Number of GPU worker threads (0–32) |
 | `CPU_THREADS` | `--cpu-threads` | Yes | `1` | Number of CPU worker threads (0–32) |
+| `FALLBACK_CPU_THREADS` | `--fallback-cpu-threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `CPU_THREADS=0`) |
 | `GPU_SELECTION` | `--gpu-selection` | No | `all` | GPU selection: `all` or `0,1,2` |
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Yes | `5` | Interval between preview images (1–60 s) |
@@ -58,6 +60,11 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 | `PLEX_LIBRARIES` | `--plex-libraries` | Yes | All | Comma-separated library names or IDs |
 | `SORT_BY` | `--sort-by` | No | `newest` | Sort order: `newest` or `oldest` |
 | `NICE_LEVEL` | N/A | No | `15` | Process priority (0–19) |
+
+> [!TIP]
+> For GPU-first processing with CPU safety net:
+> set `CPU_THREADS=0` and `FALLBACK_CPU_THREADS>0`.
+> This prevents regular CPU main-queue work while still allowing GPU-failed items to be retried on CPU.
 
 ---
 
@@ -102,10 +109,10 @@ Settings for automatic preview generation when media is imported via Radarr or S
 | Setting | Default | Web UI | Description |
 |---------|---------|--------|-------------|
 | `webhook_enabled` | `true` | Yes | Master enable/disable for webhook processing |
-| `webhook_delay` | `60` | Yes | Seconds to wait after import before triggering (10–300 s) |
+| `webhook_delay` | `60` | Yes | Delay before processing (10–300 s). Incoming webhooks are queued per source; a batch runs only after this many seconds with no new imports, so every file gets at least this long for Plex to add it before we process. |
 | `webhook_secret` | *(empty)* | Yes | Dedicated secret for webhook auth (falls back to API token) |
-| `webhook_radarr_library` | *(empty)* | Yes | Library to scan for Radarr imports (empty = all) |
-| `webhook_sonarr_library` | *(empty)* | Yes | Library to scan for Sonarr imports (empty = all) |
+
+Webhook processing respects `selected_libraries`; paths outside unchecked libraries are ignored.
 
 > [!TIP]
 > Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.
@@ -139,20 +146,39 @@ To see detected GPUs, use the web UI: open **Settings** or **Setup**.
 
 Without mapping, you'll see "Skipping as file not found" errors.
 
-### Configuration
+### Configuration (Web UI)
+
+In **Settings** and **Setup**, you add mapping rows. Each row has:
+
+- **Path in Plex** — The folder path Plex uses for the media (e.g. `/data`).
+- **Path in this app** — The folder path this app uses for the same files (e.g. `/mnt/data`).
+- **Path from Sonarr/Radarr (if different)** — Only if Sonarr/Radarr report a different path than Plex (e.g. they use `/data` while Plex uses `/data_disk1`). You can leave this blank if they match.
+
+Add as many rows as you need (e.g. one per disk when Plex uses multiple roots).
+
+### Legacy env/CLI (semicolon pair)
 
 | Variable | CLI Argument | Description |
 |----------|--------------|-------------|
-| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Path as Plex sees it |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Path as container sees it |
+| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Path(s) as Plex sees it; semicolon-separated for multiple roots |
+| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Path as this app sees it (one value, or semicolon-separated to pair by index) |
 
-### Common Examples
+If you use the Web UI, the saved **path_mappings** take precedence. Existing semicolon-based values are converted to mapping rows when loading.
 
-| Setup | PLEX_VIDEOS_PATH_MAPPING | PLEX_LOCAL_VIDEOS_PATH_MAPPING |
-|-------|--------------------------|--------------------------------|
-| linuxserver/plex | `/data/media` | `/media` |
-| Unraid share | `/mnt/user/media` | `/media` |
-| Windows share | `\\\\server\\media` | `/media` |
+### When Plex uses multiple roots (e.g. mergerfs)
+
+If Plex has several roots (e.g. `/data_disk1`, `/data_disk2`) but Sonarr/Radarr see one path (`/data`):
+
+- Add one row per Plex root, each with the same **Path in this app** (e.g. `/data`).
+- In **Path from Sonarr/Radarr**, enter `/data` on one of the rows so imports from Sonarr/Radarr still match.
+
+### Examples
+
+| Situation | Path in Plex | Path in this app | Path from Sonarr/Radarr |
+|-----------|--------------|------------------|--------------------------|
+| Different paths in Docker | `/data` | `/mnt/data` | *(blank)* |
+| Multiple disks, Sonarr sees one path | `/data_disk1` | `/data` | `/data` |
+| Same (second disk) | `/data_disk2` | `/data` | *(blank)* |
 
 ### How to Find Your Paths
 
@@ -283,8 +309,12 @@ Get current settings.
   "media_path": "/media",
   "plex_videos_path_mapping": "",
   "plex_local_videos_path_mapping": "",
+  "path_mappings": [
+    {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+  ],
   "gpu_threads": 4,
   "cpu_threads": 2,
+  "cpu_fallback_threads": 0,
   "thumbnail_interval": 5,
   "thumbnail_quality": 4
 }
@@ -297,6 +327,7 @@ Update settings. Send only the fields to change.
 ```json
 {
   "gpu_threads": 4,
+  "cpu_fallback_threads": 1,
   "thumbnail_interval": 5,
   "plex_url": "http://192.168.1.100:32400"
 }
@@ -357,6 +388,20 @@ Get libraries from connected Plex server. Optional query parameters: `url`, `tok
 
 Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"success": true, "server_name": "...", "version": "..."}`.
 
+## Processing state (global pause)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/processing/state` | Get global processing pause state |
+| POST | `/api/processing/pause` | Set global pause (no new jobs start; active job stops dispatch after current tasks) |
+| POST | `/api/processing/resume` | Clear global pause |
+
+**GET /api/processing/state** — Response: `{"paused": true}` or `{"paused": false}`. State is persisted and survives restarts.
+
+**POST /api/processing/pause** — Response: `{"paused": true}`.
+
+**POST /api/processing/resume** — Response: `{"paused": false}`.
+
 ## Jobs Endpoints
 
 | Method | Endpoint | Description |
@@ -365,6 +410,8 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | POST | `/api/jobs` | Create new job |
 | GET | `/api/jobs/{id}` | Get job details |
 | POST | `/api/jobs/{id}/cancel` | Cancel job |
+| POST | `/api/jobs/{id}/pause` | Global pause (delegates to `/api/processing/pause`) |
+| POST | `/api/jobs/{id}/resume` | Global resume (delegates to `/api/processing/resume`) |
 | DELETE | `/api/jobs/{id}` | Delete job |
 
 ### GET /api/jobs
@@ -501,17 +548,20 @@ Same authentication and response patterns as Radarr.
 
 ### GET /api/webhooks/history
 
-Get recent webhook events (newest first, max 100).
+Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files") and on the Webhooks page Recent Activity (expand triggered rows).
 
 ```json
 {
   "events": [
     {
       "timestamp": "2026-02-12T10:30:00+00:00",
-      "source": "radarr",
+      "source": "sonarr",
       "event_type": "Download",
-      "title": "Inception",
-      "status": "triggered"
+      "title": "sonarr",
+      "status": "triggered",
+      "job_id": "abc-123",
+      "path_count": 3,
+      "files_preview": ["S01E01.mkv", "S01E02.mkv", "S01E03.mkv"]
     }
   ]
 }

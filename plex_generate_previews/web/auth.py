@@ -73,11 +73,16 @@ def get_auth_token() -> str:
     if "token" in config:
         return config["token"]
 
-    # Generate new token
+    # Generate new token on first run
     new_token = generate_token()
     config["token"] = new_token
     save_auth_config(config)
-    logger.info("Generated new authentication token (hidden)")
+    logger.info("=" * 60)
+    logger.info("FIRST-RUN: Generated new authentication token")
+    logger.info(f"Token: {new_token}")
+    logger.info(f"Saved to: {AUTH_FILE}")
+    logger.info("Set WEB_AUTH_TOKEN env var to use your own password.")
+    logger.info("=" * 60)
     return new_token
 
 

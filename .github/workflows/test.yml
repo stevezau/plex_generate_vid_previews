@@ -44,18 +44,15 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # setuptools-scm needs full history
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg mediainfo

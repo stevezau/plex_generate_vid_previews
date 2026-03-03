@@ -66,6 +66,12 @@ class SettingsManager:
             except OSError:
                 pass
             logger.debug(f"Saved settings to {self.settings_file}")
+            try:
+                from ..config import clear_config_cache
+
+                clear_config_cache()
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
             raise
@@ -196,7 +202,10 @@ class SettingsManager:
 
     @property
     def gpu_threads(self) -> int:
-        return int(self.get("gpu_threads") or os.environ.get("GPU_THREADS", "1"))
+        val = self.get("gpu_threads")
+        if val is None or val == "":
+            return int(os.environ.get("GPU_THREADS", "1"))
+        return int(val)
 
     @gpu_threads.setter
     def gpu_threads(self, value: int) -> None:
@@ -204,11 +213,25 @@ class SettingsManager:
 
     @property
     def cpu_threads(self) -> int:
-        return int(self.get("cpu_threads") or os.environ.get("CPU_THREADS", "1"))
+        val = self.get("cpu_threads")
+        if val is None or val == "":
+            return int(os.environ.get("CPU_THREADS", "1"))
+        return int(val)
 
     @cpu_threads.setter
     def cpu_threads(self, value: int) -> None:
         self.set("cpu_threads", value)
+
+    @property
+    def cpu_fallback_threads(self) -> int:
+        val = self.get("cpu_fallback_threads")
+        if val is None or val == "":
+            return int(os.environ.get("FALLBACK_CPU_THREADS", "0"))
+        return int(val)
+
+    @cpu_fallback_threads.setter
+    def cpu_fallback_threads(self, value: int) -> None:
+        self.set("cpu_fallback_threads", value)
 
     @property
     def thumbnail_quality(self) -> int:
@@ -238,6 +261,15 @@ class SettingsManager:
     @plex_name.setter
     def plex_name(self, value: str) -> None:
         self.set("plex_name", value)
+
+    @property
+    def processing_paused(self) -> bool:
+        """Global processing pause: when True, no new jobs start and dispatch stops (soft)."""
+        return bool(self.get("processing_paused", False))
+
+    @processing_paused.setter
+    def processing_paused(self, value: bool) -> None:
+        self.set("processing_paused", bool(value))
 
     # =========================================================================
     # Configuration Status Methods
@@ -360,9 +392,22 @@ class SettingsManager:
             logger.info("Setup wizard completed")
 
     def is_setup_complete(self) -> bool:
-        """Check if setup wizard has been completed."""
+        """Check if setup wizard has been completed.
+
+        Returns True when:
+        - The setup_complete flag was explicitly set (wizard finished), or
+        - The app is configured (plex_url + plex_token) AND the wizard
+          is not actively in progress.
+
+        This prevents a partial wizard run (e.g. Step 2 saved plex_url/token
+        but user never finished) from being treated as complete.
+        """
         with self._lock:
-            return self.get("setup_complete", False) or self.is_configured()
+            if self.get("setup_complete", False):
+                return True
+            if self._setup_state.get("step", 0) > 0:
+                return False
+            return self.is_configured()
 
 
 # Global instance

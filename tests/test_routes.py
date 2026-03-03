@@ -8,9 +8,12 @@ Uses Flask's test client with an in-memory config dir.
 
 import json
 import os
-from unittest.mock import patch
+import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+from plex_generate_previews.config import normalize_path_mappings
 
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.settings_manager import reset_settings_manager
@@ -322,6 +325,26 @@ class TestJobsAPI:
         job_id = create_resp.get_json()["id"]
         resp = client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
         assert resp.status_code == 200
+        logs_resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
+        logs = logs_resp.get_json()["logs"]
+        assert any("Cancellation requested by user" in line for line in logs)
+
+    def test_complete_job_does_not_override_cancelled_status(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.request_cancellation(job_id)
+        jm.cancel_job(job_id)
+        jm.complete_job(job_id)
+
+        resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "cancelled"
 
     def test_delete_job(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
@@ -379,7 +402,9 @@ class TestJobsAPI:
     def test_get_worker_statuses(self, client):
         resp = client.get("/api/jobs/workers", headers=_api_headers())
         assert resp.status_code == 200
-        assert "workers" in resp.get_json()
+        data = resp.get_json()
+        assert "workers" in data
+        assert isinstance(data["workers"], list)
 
     def test_get_job_logs(self, client):
         with patch("plex_generate_previews.web.routes._start_job_async"):
@@ -387,7 +412,264 @@ class TestJobsAPI:
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
         assert resp.status_code == 200
-        assert "logs" in resp.get_json()
+        data = resp.get_json()
+        assert "logs" in data
+        assert "log_cleared_by_retention" in data
+        assert data["log_cleared_by_retention"] is False
+
+    def test_get_job_logs_returns_retention_flag_when_log_cleared(self, client, app):
+        """When job exists but log file was removed by retention, API returns log_cleared_by_retention."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.complete_job(job_id)
+        # Remove in-memory logs and delete log file to simulate retention cleanup
+        jm.clear_logs(job_id)
+        resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["log_cleared_by_retention"] is True
+        assert data["logs"] == ["Log file was cleared due to log retention policy."]
+
+    def test_pause_resume_job(self, client):
+        """Per-job pause/resume routes delegate to global processing pause/resume."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        pause_resp = client.post(f"/api/jobs/{job_id}/pause", headers=_api_headers())
+        assert pause_resp.status_code == 200
+        assert pause_resp.get_json().get("paused") is True
+
+        resume_resp = client.post(f"/api/jobs/{job_id}/resume", headers=_api_headers())
+        assert resume_resp.status_code == 200
+        assert resume_resp.get_json().get("paused") is False
+
+    def test_processing_state_get(self, client):
+        """GET /api/processing/state returns global pause state."""
+        resp = client.get("/api/processing/state", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "paused" in data
+        assert isinstance(data["paused"], bool)
+
+    def test_processing_pause_resume(self, client):
+        """POST /api/processing/pause and resume set and return global state."""
+        pause_resp = client.post("/api/processing/pause", headers=_api_headers())
+        assert pause_resp.status_code == 200
+        assert pause_resp.get_json()["paused"] is True
+
+        state_resp = client.get("/api/processing/state", headers=_api_headers())
+        assert state_resp.get_json()["paused"] is True
+
+        resume_resp = client.post("/api/processing/resume", headers=_api_headers())
+        assert resume_resp.status_code == 200
+        assert resume_resp.get_json()["paused"] is False
+
+        state_resp2 = client.get("/api/processing/state", headers=_api_headers())
+        assert state_resp2.get_json()["paused"] is False
+
+    def test_job_not_started_when_processing_paused(self, client):
+        """When global processing is paused, new job remains pending (not started)."""
+        import time
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().processing_paused = True
+        try:
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+            assert create_resp.status_code == 201
+            job_id = create_resp.get_json()["id"]
+            time.sleep(0.3)
+            job_resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
+            assert job_resp.status_code == 200
+            assert job_resp.get_json()["status"] == "pending"
+        finally:
+            get_settings_manager().processing_paused = False
+
+    def test_scale_workers_add_remove(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.add_workers.return_value = 2
+        pool.remove_workers.return_value = {
+            "removed": 1,
+            "scheduled": 1,
+            "unavailable": 0,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        add_resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 2},
+        )
+        assert add_resp.status_code == 200
+        assert add_resp.get_json()["added"] == 2
+        pool.add_workers.assert_called_once_with("CPU", 2)
+
+        remove_resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 2},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["removed"] == 1
+        assert data["scheduled_removal"] == 1
+        assert data["unavailable"] == 0
+        pool.remove_workers.assert_called_once_with("CPU", 2)
+
+    def test_scale_workers_remove_busy_workers_returns_scheduled_removal(self, client):
+        """Remove endpoint returns scheduled_removal when workers are busy (deferred removal)."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.remove_workers.return_value = {
+            "removed": 0,
+            "scheduled": 2,
+            "unavailable": 0,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        remove_resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "GPU", "count": 2},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["success"] is True
+        assert data["removed"] == 0
+        assert data["scheduled_removal"] == 2
+        assert data["unavailable"] == 0
+        pool.remove_workers.assert_called_once_with("GPU", 2)
+
+    def test_scale_workers_remove_returns_unavailable_when_fewer_workers_exist(
+        self, client
+    ):
+        """Remove endpoint returns unavailable when requesting more than existing workers."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.remove_workers.return_value = {
+            "removed": 1,
+            "scheduled": 0,
+            "unavailable": 1,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        remove_resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU_FALLBACK", "count": 2},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["removed"] == 1
+        assert data["scheduled_removal"] == 0
+        assert data["unavailable"] == 1
+
+    def test_workers_add_global_no_job_returns_400(self, client):
+        """POST /api/workers/add returns 400 when no job is running."""
+        resp = client.post(
+            "/api/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert resp.status_code == 400
+        assert "running" in resp.get_json().get("error", "").lower()
+
+    def test_workers_remove_global_no_job_returns_400(self, client):
+        """POST /api/workers/remove returns 400 when no job is running."""
+        resp = client.post(
+            "/api/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert resp.status_code == 400
+        assert "running" in resp.get_json().get("error", "").lower()
+
+    def test_workers_add_global_success(self, client):
+        """POST /api/workers/add delegates to running job pool."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.add_workers.return_value = 2
+        jm.set_active_worker_pool(job_id, pool)
+
+        add_resp = client.post(
+            "/api/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "GPU", "count": 2},
+        )
+        assert add_resp.status_code == 200
+        data = add_resp.get_json()
+        assert data["added"] == 2
+        assert data["worker_type"] == "GPU"
+        pool.add_workers.assert_called_once_with("GPU", 2)
+
+    def test_workers_remove_global_success(self, client):
+        """POST /api/workers/remove delegates to running job pool."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        pool.remove_workers.return_value = {
+            "removed": 1,
+            "scheduled": 0,
+            "unavailable": 0,
+        }
+        jm.set_active_worker_pool(job_id, pool)
+
+        remove_resp = client.post(
+            "/api/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert remove_resp.status_code == 200
+        data = remove_resp.get_json()
+        assert data["removed"] == 1
+        assert data["worker_type"] == "CPU"
+        pool.remove_workers.assert_called_once_with("CPU", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -404,12 +686,31 @@ class TestSettingsAPI:
         data = resp.get_json()
         assert "gpu_threads" in data
         assert "cpu_threads" in data
+        assert "cpu_fallback_threads" in data
+
+    def test_get_settings_returns_path_mappings(self, client):
+        """GET /api/settings includes path_mappings when present."""
+        path_mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": [],
+            }
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"path_mappings": path_mappings},
+        )
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json().get("path_mappings") == path_mappings
 
     def test_save_settings(self, client):
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
-            json={"gpu_threads": 2, "cpu_threads": 4},
+            json={"gpu_threads": 2, "cpu_threads": 4, "cpu_fallback_threads": 1},
         )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
@@ -419,6 +720,7 @@ class TestSettingsAPI:
         data = resp2.get_json()
         assert data["gpu_threads"] == 2
         assert data["cpu_threads"] == 4
+        assert data["cpu_fallback_threads"] == 1
 
     def test_save_settings_ignores_unknown_fields(self, client):
         resp = client.post(
@@ -465,6 +767,325 @@ class TestSettingsAPI:
         )
         assert resp.status_code == 400
 
+    def test_get_settings_returns_webhook_retry_defaults(self, client):
+        """GET /api/settings returns default webhook_retry_count and webhook_retry_delay."""
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["webhook_retry_count"] == 3
+        assert data["webhook_retry_delay"] == 30
+
+    def test_save_webhook_retry_settings(self, client):
+        """POST /api/settings persists webhook_retry_count and webhook_retry_delay."""
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_retry_count": 5, "webhook_retry_delay": 60},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+        resp2 = client.get("/api/settings", headers=_api_headers())
+        data = resp2.get_json()
+        assert data["webhook_retry_count"] == 5
+        assert data["webhook_retry_delay"] == 60
+
+
+# ---------------------------------------------------------------------------
+# Job config / path_mappings (settings vs config_overrides)
+# ---------------------------------------------------------------------------
+
+
+class TestJobConfigPathMappings:
+    """Test _start_job_async applies settings path_mappings and config_overrides correctly."""
+
+    def test_start_job_applies_settings_path_mappings(self, client, tmp_path):
+        """Settings-provided path_mappings are applied to config when starting a job."""
+        settings_path_mappings = [
+            {
+                "plex_prefix": "/plex",
+                "local_prefix": "/local",
+                "webhook_prefixes": ["/webhook"],
+            }
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"path_mappings": settings_path_mappings},
+        )
+
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+
+        with (
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
+        ):
+            resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        expected = normalize_path_mappings({"path_mappings": settings_path_mappings})
+        assert captured_configs[0].path_mappings == expected
+
+    def test_start_job_config_overrides_path_mappings(self, client, tmp_path):
+        """config_overrides.path_mappings overrides settings path_mappings."""
+        override_mappings = [
+            {
+                "plex_prefix": "/override",
+                "local_prefix": "/local_override",
+                "webhook_prefixes": [],
+            }
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "path_mappings": [
+                    {
+                        "plex_prefix": "/from_settings",
+                        "local_prefix": "/local",
+                        "webhook_prefixes": [],
+                    }
+                ]
+            },
+        )
+
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+
+        with (
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"config": {"path_mappings": override_mappings}},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        assert captured_configs[0].path_mappings == override_mappings
+
+    def test_webhook_job_retains_path_mappings_and_webhook_paths(
+        self, client, tmp_path
+    ):
+        """Webhook job with config_overrides has webhook_paths and path_mappings from settings."""
+        settings_path_mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": "/mnt/data",
+                "webhook_prefixes": ["/data"],
+            }
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"path_mappings": settings_path_mappings},
+        )
+
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.webhook_paths = None
+
+        with (
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"config": {"webhook_paths": ["/data/Movies/foo.mkv"]}},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        cfg = captured_configs[0]
+        assert cfg.webhook_paths == ["/data/Movies/foo.mkv"]
+        expected_mappings = normalize_path_mappings(
+            {"path_mappings": settings_path_mappings}
+        )
+        assert cfg.path_mappings == expected_mappings
+
+    def test_start_job_library_ids_override_sets_plex_library_ids(
+        self, client, tmp_path
+    ):
+        """library_ids request field should filter by Plex section IDs."""
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.plex_library_ids = None
+        mock_config.plex_libraries = []
+
+        with (
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_ids": ["1", "2"]},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        cfg = captured_configs[0]
+        assert cfg.plex_library_ids == ["1", "2"]
+        assert cfg.plex_libraries == []
+
+    def test_start_job_selected_libraries_ids_map_to_id_scope(self, client, tmp_path):
+        """selected_libraries values that are IDs should populate plex_library_ids."""
+        captured_configs = []
+        done = threading.Event()
+
+        def capture_run_processing(config, *args, **kwargs):
+            captured_configs.append(config)
+            done.set()
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.plex_library_ids = None
+        mock_config.plex_libraries = []
+
+        with (
+            patch(
+                "plex_generate_previews.cli.run_processing",
+                side_effect=capture_run_processing,
+            ),
+            patch(
+                "plex_generate_previews.config.load_config", return_value=mock_config
+            ),
+            patch(
+                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "plex_generate_previews.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]
+            ),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_names": ["1", "2"]},
+            )
+        assert resp.status_code == 201
+        assert done.wait(timeout=2.0), "run_processing was not called"
+        assert len(captured_configs) == 1
+        cfg = captured_configs[0]
+        assert cfg.plex_library_ids == ["1", "2"]
+        assert cfg.plex_libraries == []
+
 
 # ---------------------------------------------------------------------------
 # Setup Wizard API
@@ -500,6 +1121,29 @@ class TestSetupWizardAPI:
         # Verify persistence
         resp2 = client.get("/api/setup/state", headers=_api_headers())
         assert resp2.get_json()["step"] == 2
+
+    def test_setup_state_save_and_load_path_mappings(self, client):
+        """Setup wizard state persists path_mappings in step data."""
+        path_mappings = [
+            {
+                "plex_prefix": "/plex",
+                "local_prefix": "/local",
+                "webhook_prefixes": ["/webhook"],
+            }
+        ]
+        resp = client.post(
+            "/api/setup/state",
+            headers=_api_headers(),
+            json={"step": 3, "data": {"path_mappings": path_mappings}},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+        resp2 = client.get("/api/setup/state", headers=_api_headers())
+        assert resp2.status_code == 200
+        state = resp2.get_json()
+        assert state["step"] == 3
+        assert state.get("data", {}).get("path_mappings") == path_mappings
 
     def test_complete_setup(self, client):
         resp = client.post("/api/setup/complete", headers=_api_headers())
@@ -575,6 +1219,10 @@ class TestSystemAPI:
         with patch("plex_generate_previews.config.load_config", return_value=None):
             resp = client.get("/api/system/config", headers=_api_headers())
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert "gpu_threads" in data
+        assert "cpu_threads" in data
+        assert "cpu_fallback_threads" in data
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +1262,108 @@ class TestPathValidation:
         )
         assert resp.status_code == 401
 
+    def test_validate_paths_path_mappings_new_format_local_not_found(
+        self, client, tmp_path, monkeypatch
+    ):
+        """New-format path_mappings: invalid local_prefix returns validation error."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "path_mappings": [
+                    {
+                        "plex_prefix": "/plex",
+                        "local_prefix": "/nonexistent_xyz_path_123",
+                        "webhook_prefixes": [],
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        # Path mapping row validation: either folder not found or outside allowed root
+        assert any(
+            "Folder not found" in e or "Path in this app" in e or "Row 1" in e
+            for e in data["errors"]
+        )
+
+    def test_validate_paths_path_mappings_null_byte_in_local(
+        self, client, tmp_path, monkeypatch
+    ):
+        """path_mappings row with null byte in local_prefix returns invalid path error."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "path_mappings": [
+                    {
+                        "plex_prefix": "/p",
+                        "local_prefix": "/local\x00evil",
+                        "webhook_prefixes": [],
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("invalid path" in e for e in data["errors"])
+
+    def test_validate_paths_legacy_plex_only_returns_error(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Legacy: only plex_videos_path_mapping set returns Local Media Path required."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "plex_videos_path_mapping": "/plex",
+                "plex_local_videos_path_mapping": "",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Local Media Path is required" in e for e in data["errors"])
+
+    def test_validate_paths_legacy_local_only_returns_error(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Legacy: only plex_local_videos_path_mapping set returns Plex Media Path required."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "plex_videos_path_mapping": "",
+                "plex_local_videos_path_mapping": "/local",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Plex Media Path is required" in e for e in data["errors"])
+
 
 # ---------------------------------------------------------------------------
 # Bearer vs Session Auth
@@ -647,3 +1397,660 @@ class TestAuthRejection:
     def test_no_auth_rejected(self, client):
         resp = client.get("/api/jobs")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Schedule CRUD
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulesCRUD:
+    """Test schedule create, read, update, delete, enable, disable, run."""
+
+    def test_create_schedule_cron(self, client):
+        resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "Nightly", "cron_expression": "0 3 * * *"},
+        )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["name"] == "Nightly"
+        assert "id" in data
+
+    def test_create_schedule_interval(self, client):
+        resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "Every 6h", "interval_minutes": 360},
+        )
+        assert resp.status_code == 201
+
+    def test_get_specific_schedule(self, client):
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "Test", "cron_expression": "0 0 * * *"},
+        )
+        schedule_id = create_resp.get_json()["id"]
+        resp = client.get(f"/api/schedules/{schedule_id}", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["id"] == schedule_id
+
+    def test_get_nonexistent_schedule(self, client):
+        resp = client.get("/api/schedules/nonexistent", headers=_api_headers())
+        assert resp.status_code == 404
+
+    def test_update_schedule(self, client):
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "Original", "cron_expression": "0 0 * * *"},
+        )
+        schedule_id = create_resp.get_json()["id"]
+        resp = client.put(
+            f"/api/schedules/{schedule_id}",
+            headers=_api_headers(),
+            json={"name": "Updated"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["name"] == "Updated"
+
+    def test_update_nonexistent_schedule(self, client):
+        resp = client.put(
+            "/api/schedules/nonexistent",
+            headers=_api_headers(),
+            json={"name": "Nope"},
+        )
+        assert resp.status_code == 404
+
+    def test_delete_schedule(self, client):
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "ToDelete", "cron_expression": "0 0 * * *"},
+        )
+        schedule_id = create_resp.get_json()["id"]
+        resp = client.delete(f"/api/schedules/{schedule_id}", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+    def test_delete_nonexistent_schedule(self, client):
+        resp = client.delete("/api/schedules/nonexistent", headers=_api_headers())
+        assert resp.status_code == 404
+
+    def test_enable_schedule(self, client):
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "S", "cron_expression": "0 0 * * *", "enabled": False},
+        )
+        schedule_id = create_resp.get_json()["id"]
+        resp = client.post(
+            f"/api/schedules/{schedule_id}/enable", headers=_api_headers()
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["enabled"] is True
+
+    def test_enable_nonexistent_schedule(self, client):
+        resp = client.post("/api/schedules/nonexistent/enable", headers=_api_headers())
+        assert resp.status_code == 404
+
+    def test_disable_schedule(self, client):
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "S", "cron_expression": "0 0 * * *"},
+        )
+        schedule_id = create_resp.get_json()["id"]
+        resp = client.post(
+            f"/api/schedules/{schedule_id}/disable", headers=_api_headers()
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["enabled"] is False
+
+    def test_disable_nonexistent_schedule(self, client):
+        resp = client.post("/api/schedules/nonexistent/disable", headers=_api_headers())
+        assert resp.status_code == 404
+
+    def test_run_now(self, client):
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "RunMe", "cron_expression": "0 0 * * *"},
+        )
+        schedule_id = create_resp.get_json()["id"]
+        resp = client.post(f"/api/schedules/{schedule_id}/run", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+    def test_run_now_nonexistent(self, client):
+        resp = client.post("/api/schedules/nonexistent/run", headers=_api_headers())
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Reprocess Job
+# ---------------------------------------------------------------------------
+
+
+class TestReprocessJob:
+    """Test /api/jobs/<id>/reprocess endpoint."""
+
+    def test_reprocess_completed_job(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post(
+                "/api/jobs", headers=_api_headers(), json={"library_name": "Movies"}
+            )
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.complete_job(job_id)
+
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
+        assert resp.status_code == 201
+        assert resp.get_json()["id"] != job_id
+
+    def test_reprocess_nonexistent_job(self, client):
+        resp = client.post("/api/jobs/nonexistent/reprocess", headers=_api_headers())
+        assert resp.status_code == 404
+
+    def test_reprocess_running_job_rejected(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
+        assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Worker Scaling Validation
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerScalingValidation:
+    """Test worker scaling edge cases and validation."""
+
+    def test_add_workers_zero_count_rejected(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 0},
+        )
+        assert resp.status_code == 400
+
+    def test_add_workers_invalid_type_rejected(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "INVALID", "count": 1},
+        )
+        assert resp.status_code == 400
+
+    def test_add_workers_no_pool_returns_409(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 1},
+        )
+        assert resp.status_code == 409
+
+    def test_remove_workers_zero_count_rejected(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        resp = client.post(
+            f"/api/jobs/{job_id}/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 0},
+        )
+        assert resp.status_code == 400
+
+    def test_global_add_workers_invalid_type(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        pool = MagicMock()
+        jm.set_active_worker_pool(job_id, pool)
+
+        resp = client.post(
+            "/api/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "BADTYPE", "count": 1},
+        )
+        assert resp.status_code == 400
+
+    def test_global_remove_workers_zero_count(self, client):
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+
+        resp = client.post(
+            "/api/workers/remove",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": 0},
+        )
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Validate Paths - Additional Branches
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePathsBranches:
+    """Test additional validate_paths branches."""
+
+    def test_validate_paths_valid_structure(self, client, tmp_path, monkeypatch):
+        """Valid Plex directory structure succeeds."""
+        media_dir = tmp_path / "Media" / "localhost"
+        media_dir.mkdir(parents=True)
+        for h in "0123456789abcdef":
+            (media_dir / h).mkdir()
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": str(tmp_path)},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is True
+        assert any("valid structure" in i for i in data["info"])
+
+    def test_validate_paths_missing_media_subfolder(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Plex directory missing Media subfolder."""
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": str(tmp_path)},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Media" in e for e in data["errors"])
+
+    def test_validate_paths_missing_localhost(self, client, tmp_path, monkeypatch):
+        """Plex directory has Media but missing localhost subfolder."""
+        (tmp_path / "Media").mkdir()
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": str(tmp_path)},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("localhost" in e for e in data["errors"])
+
+    def test_validate_paths_incomplete_structure_warns(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Plex directory with few hash dirs warns."""
+        media_dir = tmp_path / "Media" / "localhost"
+        media_dir.mkdir(parents=True)
+        (media_dir / "a").mkdir()
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": str(tmp_path)},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert any("incomplete" in w for w in data["warnings"])
+
+    def test_validate_paths_no_mapping_info(self, client, tmp_path, monkeypatch):
+        """No path mapping gives informational message."""
+        media_dir = tmp_path / "Media" / "localhost"
+        media_dir.mkdir(parents=True)
+        for h in "0123456789abcdef":
+            (media_dir / h).mkdir()
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": str(tmp_path)},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert any("No path mapping" in i for i in data["info"])
+
+    def test_validate_paths_traversal_rejected(self, client, tmp_path, monkeypatch):
+        """Path traversal attempt is rejected."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": str(tmp_path / ".." / ".." / "etc")},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+
+    def test_validate_paths_legacy_null_byte_in_local_media(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Legacy local_media_path with null byte is rejected via the path_mappings branch."""
+        (tmp_path / "Media" / "localhost").mkdir(parents=True)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={
+                "plex_config_folder": str(tmp_path),
+                "plex_videos_path_mapping": "/plex",
+                "plex_local_videos_path_mapping": "/local\x00evil",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("invalid path" in e for e in data["errors"])
+
+    def test_validate_paths_plex_data_path_null_byte_rejected(
+        self, client, tmp_path, monkeypatch
+    ):
+        """Null byte in plex_config_folder is rejected."""
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+        )
+        resp = client.post(
+            "/api/setup/validate-paths",
+            headers=_api_headers(),
+            json={"plex_config_folder": "/plex\x00evil"},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert any("Invalid Plex Data Path" in e for e in data["errors"])
+
+
+# ---------------------------------------------------------------------------
+# Page Routes - Additional
+# ---------------------------------------------------------------------------
+
+
+class TestPageRoutesAdditional:
+    """Test additional page routes."""
+
+    def test_webhooks_page_requires_auth(self, client):
+        resp = client.get("/webhooks", follow_redirects=False)
+        assert resp.status_code in (302, 308)
+
+    def test_webhooks_page_accessible_when_authenticated(self, authed_client):
+        resp = authed_client.get("/webhooks")
+        assert resp.status_code == 200
+
+    def test_setup_wizard_page_redirects_when_configured(self, authed_client):
+        resp = authed_client.get("/setup", follow_redirects=False)
+        assert resp.status_code in (200, 302, 308)
+
+    def test_index_redirects_to_setup_when_not_configured(self, client, tmp_path):
+        """When setup is incomplete, authenticated user is redirected to setup."""
+        config_dir = str(tmp_path / "setup_test_config")
+        os.makedirs(config_dir, exist_ok=True)
+        auth_file = os.path.join(config_dir, "auth.json")
+        with open(auth_file, "w") as f:
+            json.dump({"token": "test-token-12345678"}, f)
+
+        with patch.dict(
+            os.environ,
+            {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
+        ):
+            from plex_generate_previews.web.settings_manager import (
+                reset_settings_manager,
+            )
+
+            reset_settings_manager()
+            flask_app = create_app(config_dir=config_dir)
+            flask_app.config["TESTING"] = True
+            test_client = flask_app.test_client()
+            with test_client.session_transaction() as sess:
+                sess["authenticated"] = True
+
+            resp = test_client.get("/", follow_redirects=False)
+            assert resp.status_code in (200, 302, 308)
+            reset_settings_manager()
+
+
+# ---------------------------------------------------------------------------
+# Libraries API
+# ---------------------------------------------------------------------------
+
+
+class TestLibrariesAPI:
+    """Test /api/libraries endpoint."""
+
+    @patch("plex_generate_previews.web.routes._fetch_libraries_via_http")
+    def test_get_libraries_with_settings(self, mock_fetch, client):
+        """Libraries are fetched via HTTP when plex_url/token are set in settings."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        mock_fetch.return_value = [
+            {"id": "1", "name": "Movies", "type": "movie", "count": 100}
+        ]
+        resp = client.get("/api/libraries", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["libraries"]) == 1
+        assert data["libraries"][0]["name"] == "Movies"
+
+    def test_get_libraries_no_config(self, client):
+        """Libraries endpoint with no plex config falls back gracefully."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.delete("plex_url")
+        sm.delete("plex_token")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PLEX_URL", None)
+            os.environ.pop("PLEX_TOKEN", None)
+            with patch(
+                "plex_generate_previews.config.get_cached_config", return_value=None
+            ):
+                resp = client.get("/api/libraries", headers=_api_headers())
+        assert resp.status_code == 400
+        assert "libraries" in resp.get_json()
+
+
+# ---------------------------------------------------------------------------
+# Plex Test Connection
+# ---------------------------------------------------------------------------
+
+
+class TestPlexTestConnection:
+    """Test /api/plex/test endpoint."""
+
+    @patch("requests.get")
+    def test_plex_test_success(self, mock_get, client):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "MediaContainer": {"friendlyName": "My Plex"}
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "http://plex:32400", "token": "test-token"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        assert resp.get_json()["server_name"] == "My Plex"
+
+    def test_plex_test_no_url_returns_400(self, client):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.delete("plex_url")
+        sm.delete("plex_token")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PLEX_URL", None)
+            os.environ.pop("PLEX_TOKEN", None)
+            resp = client.post("/api/plex/test", headers=_api_headers(), json={})
+        assert resp.status_code == 400
+
+    @patch("requests.get")
+    def test_plex_test_connection_failure(self, mock_get, client):
+        import requests as req_mod
+
+        mock_get.side_effect = req_mod.exceptions.ConnectionError("refused")
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "http://plex:32400", "token": "test-token"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Plex Libraries API
+# ---------------------------------------------------------------------------
+
+
+class TestPlexLibrariesAPI:
+    """Test /api/plex/libraries endpoint."""
+
+    @patch("plex_generate_previews.web.routes._fetch_libraries_via_http")
+    def test_get_plex_libraries(self, mock_fetch, client):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        resp = client.get("/api/plex/libraries", headers=_api_headers())
+        assert resp.status_code == 200
+        assert len(resp.get_json()["libraries"]) == 1
+
+    def test_get_plex_libraries_no_creds(self, client):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.delete("plex_url")
+        sm.delete("plex_token")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PLEX_URL", None)
+            os.environ.pop("PLEX_TOKEN", None)
+            resp = client.get("/api/plex/libraries", headers=_api_headers())
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Fetch Libraries Via HTTP (unit)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchLibrariesViaHTTP:
+    """Test _fetch_libraries_via_http helper."""
+
+    @patch("requests.get")
+    def test_fetch_libraries_filters_movie_and_show(self, mock_get):
+        from plex_generate_previews.web.routes import _fetch_libraries_via_http
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [
+                    {"key": "1", "title": "Movies", "type": "movie", "totalSize": 50},
+                    {"key": "2", "title": "TV", "type": "show", "totalSize": 20},
+                    {"key": "3", "title": "Photos", "type": "photo"},
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+        result = _fetch_libraries_via_http(
+            "http://plex:32400", "token", include_count=True
+        )
+        assert len(result) == 2
+        assert result[0]["name"] == "Movies"
+        assert result[0]["count"] == 50
+        assert result[1]["name"] == "TV"

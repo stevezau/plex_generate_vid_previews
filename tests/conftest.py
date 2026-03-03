@@ -29,6 +29,7 @@ def mock_config():
     config.plex_config_folder = "/config/plex"
     config.plex_local_videos_path_mapping = ""
     config.plex_videos_path_mapping = ""
+    config.path_mappings = []
     config.plex_bif_frame_interval = 5
     config.thumbnail_quality = 4
     config.regenerate_thumbnails = False

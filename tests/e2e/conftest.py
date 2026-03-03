@@ -7,68 +7,66 @@ This module provides fixtures for running end-to-end tests with Playwright.
 import os
 import pytest
 import subprocess
+import sys
 import time
 import socket
 from typing import Generator
-
-
-# Port configuration for test server
-APP_PORT = 8081
-
-
-def is_port_in_use(port: int) -> bool:
-    """Check if a port is already in use."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(("localhost", port)) == 0
 
 
 def wait_for_port(port: int, timeout: float = 10.0) -> bool:
     """Wait for a port to become available."""
     start = time.time()
     while time.time() - start < timeout:
-        if is_port_in_use(port):
-            return True
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("localhost", port)) == 0:
+                return True
         time.sleep(0.1)
     return False
 
 
+def get_free_port() -> int:
+    """Allocate an ephemeral localhost port for isolated E2E runs."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return int(s.getsockname()[1])
+
+
 @pytest.fixture(scope="session")
 def app_url(tmp_path_factory) -> Generator[str, None, None]:
-    """Start the application server for testing."""
+    """Start an isolated application server for E2E testing."""
     config_dir = tmp_path_factory.mktemp("config")
-
-    if is_port_in_use(APP_PORT):
-        yield f"http://localhost:{APP_PORT}"
-        return
+    app_port = get_free_port()
 
     env = {
         **os.environ,
-        "WEB_PORT": str(APP_PORT),
+        "WEB_PORT": str(app_port),
         "CONFIG_DIR": str(config_dir),
         "WEB_AUTH_TOKEN": "e2e-test-token",
     }
 
     # Start the Flask app using run_server directly (bypasses CLI config validation).
+    # Use the same interpreter as pytest so venv/path differences do not break startup.
     proc = subprocess.Popen(
         [
-            "python",
+            sys.executable,
             "-c",
-            f"from plex_generate_previews.web.app import run_server; run_server(host='0.0.0.0', port={APP_PORT})",
+            f"from plex_generate_previews.web.app import run_server; run_server(host='0.0.0.0', port={app_port})",
         ],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
-    if not wait_for_port(APP_PORT, timeout=20):
+    if not wait_for_port(app_port, timeout=20):
         stdout, stderr = proc.communicate(timeout=5)
         proc.kill()
         raise RuntimeError(
-            f"App server failed to start on port {APP_PORT}.\n"
+            f"App server failed to start on port {app_port}.\n"
             f"stdout: {stdout.decode()}\nstderr: {stderr.decode()}"
         )
 
-    yield f"http://localhost:{APP_PORT}"
+    yield f"http://localhost:{app_port}"
 
     proc.terminate()
     try:

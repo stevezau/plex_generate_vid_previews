@@ -2,9 +2,12 @@
 Webhook endpoints for Radarr/Sonarr integration.
 
 Receives JSON POST payloads on media import, delays for Plex indexing,
-debounces rapid imports, then triggers a library-scan job sorted by newest.
+debounces rapid imports, then triggers a job that processes only the
+file path(s) from the payload(s) — no full-library scan.
 """
 
+import base64
+import os
 import secrets
 import threading
 from collections import deque
@@ -20,8 +23,9 @@ from .settings_manager import get_settings_manager
 
 webhooks_bp = Blueprint("webhooks_bp", __name__, url_prefix="/api/webhooks")
 
-# Debounce timers keyed by library name
+# Debounce timers and payload batches keyed by source (radarr / sonarr).
 _pending_timers: dict[str, threading.Timer] = {}
+_pending_batches: dict[str, dict[str, object]] = {}
 _pending_lock = threading.Lock()
 
 # In-memory log of received webhook events (diagnostic/transient)
@@ -29,7 +33,7 @@ _webhook_history: deque = deque(maxlen=100)
 
 
 def _authenticate_webhook(f):
-    """Check X-Auth-Token / Authorization: Bearer against webhook_secret or app token."""
+    """Check X-Auth-Token, Authorization Bearer, or Basic auth password as token."""
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -38,6 +42,15 @@ def _authenticate_webhook(f):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
+        elif auth_header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth_header[6:].encode()).decode(
+                    "utf-8", errors="replace"
+                )
+                if ":" in decoded:
+                    _, token = decoded.split(":", 1)
+            except Exception:
+                pass
 
         if not token:
             token = request.headers.get("X-Auth-Token", "")
@@ -59,58 +72,234 @@ def _authenticate_webhook(f):
     return decorated_function
 
 
-def _add_history_entry(source: str, event_type: str, title: str, status: str) -> None:
-    """Append an event to the in-memory webhook history."""
-    _webhook_history.append(
-        {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": source,
-            "event_type": event_type,
-            "title": title,
-            "status": status,
-        }
+# Max basenames to store per history entry (matches job config cap for UI consistency)
+_HISTORY_FILES_PREVIEW_CAP = 20
+
+
+def _add_history_entry(
+    source: str,
+    event_type: str,
+    title: str,
+    status: str,
+    *,
+    job_id: str | None = None,
+    path_count: int | None = None,
+    files_preview: list[str] | None = None,
+) -> None:
+    """Append an event to the in-memory webhook history.
+
+    Optional batch metadata (job_id, path_count, files_preview) is included
+    for triggered debounced batches so the UI can show which files were in the batch.
+    """
+    entry: dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "event_type": event_type,
+        "title": title,
+        "status": status,
+    }
+    if job_id is not None:
+        entry["job_id"] = job_id
+    if path_count is not None:
+        entry["path_count"] = path_count
+    if files_preview is not None:
+        entry["files_preview"] = files_preview[:_HISTORY_FILES_PREVIEW_CAP]
+    _webhook_history.append(entry)
+
+
+def _debounce_key(source: str) -> str:
+    """Build a stable debounce key for source (Radarr vs Sonarr)."""
+    return source
+
+
+def _as_dict(value: object) -> dict:
+    """Return value if dict-like, otherwise an empty dict."""
+    return value if isinstance(value, dict) else {}
+
+
+def _combine_path(base_path: str, relative_path: str) -> str:
+    """Combine base and relative paths into a normalized absolute-ish path."""
+    if not base_path or not relative_path:
+        return ""
+    return os.path.normpath(os.path.join(base_path, relative_path))
+
+
+def _extract_radarr_file_path(payload: dict) -> str:
+    """Extract a target file path from a Radarr Download webhook payload."""
+    movie_file = _as_dict(payload.get("movieFile"))
+    if movie_file.get("path"):
+        return str(movie_file.get("path")).strip()
+
+    combined = _combine_path(
+        str(_as_dict(payload.get("movie")).get("folderPath", "")).strip(),
+        str(movie_file.get("relativePath", "")).strip(),
     )
+    return combined.strip()
 
 
-def _schedule_webhook_job(library_name: str, source: str, title: str) -> None:
-    """Schedule a job after the configured delay, debouncing rapid imports."""
+def _extract_sonarr_file_path(payload: dict) -> str:
+    """Extract a target file path from a Sonarr Download webhook payload."""
+    episode_file = _as_dict(payload.get("episodeFile"))
+    if episode_file.get("path"):
+        return str(episode_file.get("path")).strip()
+
+    combined = _combine_path(
+        str(_as_dict(payload.get("series")).get("path", "")).strip(),
+        str(episode_file.get("relativePath", "")).strip(),
+    )
+    return combined.strip()
+
+
+def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:
+    """Build display title for Sonarr episode(s): 'Show Name S01E05' or 'Show Name S01E05, S01E06'.
+
+    Args:
+        series_title: Series name from payload.
+        episodes: List of episode dicts with seasonNumber/episodeNumber, or non-list for series only.
+
+    Returns:
+        Series title with SxxExx suffix when episode data is present.
+    """
+    if not series_title:
+        series_title = "Unknown"
+    episode_list = episodes if isinstance(episodes, list) and episodes else []
+    if not episode_list:
+        return series_title.strip()
+
+    parts = []
+    for ep in episode_list:
+        ep_dict = _as_dict(ep)
+        s = ep_dict.get("seasonNumber")
+        e = ep_dict.get("episodeNumber")
+        if s is not None and e is not None:
+            try:
+                parts.append(f"S{int(s):02d}E{int(e):02d}")
+            except (TypeError, ValueError):
+                pass
+    if not parts:
+        return series_title.strip()
+    return f"{series_title.strip()} {', '.join(parts)}"
+
+
+def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
+    """Schedule a debounced single-file webhook job and batch paths per source."""
+    safe_source = str(source or "unknown")
+    safe_title = str(title or "Unknown")
+    normalized_input_path = str(file_path or "").strip()
+    if not normalized_input_path:
+        logger.warning(
+            f"Webhook: {safe_source} Download for '{safe_title}' ignored (missing file path)"
+        )
+        return False
+
     settings = get_settings_manager()
     delay = int(settings.get("webhook_delay", 60))
+    debounce_key = _debounce_key(safe_source)
+    normalized_path = os.path.normpath(normalized_input_path)
 
     with _pending_lock:
-        existing = _pending_timers.get(library_name)
+        existing = _pending_timers.get(debounce_key)
         if existing:
             existing.cancel()
 
-        timer = threading.Timer(
-            delay, _execute_webhook_job, args=[library_name, source]
-        )
+        batch = _pending_batches.get(debounce_key)
+        if not batch:
+            batch = {
+                "source": source,
+                "file_paths": set(),
+                "titles": [],
+            }
+            _pending_batches[debounce_key] = batch
+        batch["file_paths"].add(normalized_path)
+        batch["titles"].append(safe_title)
+
+        timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
         timer.daemon = True
-        _pending_timers[library_name] = timer
+        _pending_timers[debounce_key] = timer
         timer.start()
+        path_count = len(batch["file_paths"])
 
     logger.info(
-        f"Webhook: {source} imported '{title}' — scheduling job for "
-        f"'{library_name}' in {delay}s"
+        f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with "
+        f"{path_count} path(s) in {delay}s"
     )
+    return True
 
 
-def _execute_webhook_job(library_name: str, source: str) -> None:
-    """Execute the actual job after the debounce delay."""
+def _execute_webhook_job(debounce_key: str) -> None:
+    """Execute a debounced batch of webhook file paths."""
     from .routes import _start_job_async
+
+    with _pending_lock:
+        batch = _pending_batches.pop(debounce_key, None)
+        _pending_timers.pop(debounce_key, None)
+
+    if not batch:
+        logger.warning(f"Webhook: no pending batch found for key '{debounce_key}'")
+        return
+
+    source = str(batch.get("source", "unknown"))
+    batch_titles = batch.get("titles") or []
+    webhook_paths = sorted(
+        path
+        for path in batch.get("file_paths", set())
+        if isinstance(path, str) and path
+    )
+    if not webhook_paths:
+        logger.warning(
+            f"Webhook: debounced batch for source '{source}' had no valid paths"
+        )
+        _add_history_entry(source, "Download", "", "ignored_no_paths")
+        return
+
+    # Display label: one path → "Sonarr: Show Name S01E05"; multiple → "Sonarr: 3 files"
+    basenames = [os.path.basename(p) for p in webhook_paths]
+    first_title = batch_titles[0] if batch_titles else None
+    if len(webhook_paths) == 1 and first_title:
+        library_display = f"{source.title()}: {first_title}"
+    elif len(webhook_paths) == 1:
+        library_display = f"{source.title()}: {basenames[0]}"
+    else:
+        library_display = f"{source.title()}: {len(webhook_paths)} files"
 
     job_manager = get_job_manager()
     job = job_manager.create_job(
-        library_name=f"Webhook: {library_name}",
-        config={"source": source},
+        library_name=library_display,
+        config={
+            "source": source,
+            "path_count": len(webhook_paths),
+            "webhook_basenames": basenames[:20],  # First 20 for UI; avoid huge payloads
+        },
     )
+    settings = get_settings_manager()
+    selected_libraries = settings.get("selected_libraries", [])
+    if not isinstance(selected_libraries, list):
+        selected_libraries = []
+    selected_libraries = [
+        str(name).strip() for name in selected_libraries if str(name).strip()
+    ]
+    retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
+    retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
-    selected = [library_name] if library_name else []
-    _start_job_async(job.id, {"selected_libraries": selected, "sort_by": "newest"})
-    _add_history_entry(source, "Download", library_name, "triggered")
-
-    with _pending_lock:
-        _pending_timers.pop(library_name, None)
+    _start_job_async(
+        job.id,
+        {
+            "selected_libraries": selected_libraries,
+            "sort_by": "newest",
+            "webhook_paths": webhook_paths,
+            "webhook_retry_count": retry_count,
+            "webhook_retry_delay": retry_delay,
+        },
+    )
+    _add_history_entry(
+        source,
+        "Download",
+        first_title or source,
+        "triggered",
+        job_id=job.id,
+        path_count=len(webhook_paths),
+        files_preview=basenames,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,9 +313,10 @@ def radarr_webhook():
     """Receive Radarr webhook payloads."""
     data = request.get_json(silent=True)
     if not data:
+        logger.warning("Webhook: Radarr request ignored (invalid or missing JSON body)")
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
-    event_type = data.get("eventType", "")
+    event_type = str(data.get("eventType", "")).strip()
 
     if event_type == "Test":
         _add_history_entry("radarr", "Test", "", "test")
@@ -137,17 +327,31 @@ def radarr_webhook():
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry("radarr", event_type, "", "disabled")
+        logger.info(f"Webhook: Radarr event '{event_type}' ignored (webhooks disabled)")
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type != "Download":
         _add_history_entry("radarr", event_type, "", "ignored")
+        logger.info(f"Webhook: Radarr event '{event_type}' ignored")
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
-    movie = data.get("movie", {})
-    movie_title = movie.get("title", "Unknown")
+    movie = _as_dict(data.get("movie"))
+    movie_title = str(movie.get("title", "Unknown")).strip() or "Unknown"
+    movie_file_path = _extract_radarr_file_path(data)
 
-    library_name = settings.get("webhook_radarr_library", "")
-    _schedule_webhook_job(library_name, "radarr", movie_title)
+    was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
+    if not was_queued:
+        _add_history_entry("radarr", "Download", movie_title, "ignored_no_path")
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "message": f"Ignored '{movie_title}' download: no file path in payload",
+                }
+            ),
+            200,
+        )
+
     _add_history_entry("radarr", "Download", movie_title, "queued")
 
     return (
@@ -162,9 +366,10 @@ def sonarr_webhook():
     """Receive Sonarr webhook payloads."""
     data = request.get_json(silent=True)
     if not data:
+        logger.warning("Webhook: Sonarr request ignored (invalid or missing JSON body)")
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
-    event_type = data.get("eventType", "")
+    event_type = str(data.get("eventType", "")).strip()
 
     if event_type == "Test":
         _add_history_entry("sonarr", "Test", "", "test")
@@ -175,22 +380,37 @@ def sonarr_webhook():
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry("sonarr", event_type, "", "disabled")
+        logger.info(f"Webhook: Sonarr event '{event_type}' ignored (webhooks disabled)")
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type != "Download":
         _add_history_entry("sonarr", event_type, "", "ignored")
+        logger.info(f"Webhook: Sonarr event '{event_type}' ignored")
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
-    series = data.get("series", {})
-    series_title = series.get("title", "Unknown")
+    series = _as_dict(data.get("series"))
+    series_title = str(series.get("title", "Unknown")).strip() or "Unknown"
+    display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
+    episode_file_path = _extract_sonarr_file_path(data)
 
-    library_name = settings.get("webhook_sonarr_library", "")
-    _schedule_webhook_job(library_name, "sonarr", series_title)
-    _add_history_entry("sonarr", "Download", series_title, "queued")
+    was_queued = _schedule_webhook_job("sonarr", display_title, episode_file_path)
+    if not was_queued:
+        _add_history_entry("sonarr", "Download", display_title, "ignored_no_path")
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "message": f"Ignored '{display_title}' download: no file path in payload",
+                }
+            ),
+            200,
+        )
+
+    _add_history_entry("sonarr", "Download", display_title, "queued")
 
     return (
         jsonify(
-            {"success": True, "message": f"Processing queued for '{series_title}'"}
+            {"success": True, "message": f"Processing queued for '{display_title}'"}
         ),
         202,
     )

@@ -138,14 +138,8 @@ class TestSetupWizardStep5:
 
     def test_setup_wizard_has_5_steps(self, page: Page, app_url: str, auth_token: str):
         """Verify setup wizard now has 5 progress steps."""
-        # Login first
-        page.goto(f"{app_url}/login")
-        token_input = page.locator('input[name="token"], input[type="password"]')
-        token_input.fill(auth_token)
-        page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
-
-        # Navigate to setup
+        # Setup page is accessible without login and avoids auth/session state
+        # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
         page.wait_for_timeout(1000)
 
@@ -155,12 +149,8 @@ class TestSetupWizardStep5:
 
     def test_step5_has_security_label(self, page: Page, app_url: str, auth_token: str):
         """Verify Step 5 is labeled 'Security'."""
-        # Login and go to setup
-        page.goto(f"{app_url}/login")
-        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
-        page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
-
+        # Setup page is accessible without login and avoids auth/session state
+        # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
         page.wait_for_timeout(1000)
 
@@ -170,12 +160,8 @@ class TestSetupWizardStep5:
 
     def test_step5_shows_token_display(self, page: Page, app_url: str, auth_token: str):
         """Verify Step 5 shows the current token input."""
-        # Login and go to setup
-        page.goto(f"{app_url}/login")
-        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
-        page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
-
+        # Setup page is accessible without login and avoids auth/session state
+        # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
         page.wait_for_timeout(1000)
 
@@ -188,12 +174,8 @@ class TestSetupWizardStep5:
         self, page: Page, app_url: str, auth_token: str
     ):
         """Verify Step 5 has the custom token checkbox."""
-        # Login and go to setup
-        page.goto(f"{app_url}/login")
-        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
-        page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
-
+        # Setup page is accessible without login and avoids auth/session state
+        # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
         page.wait_for_timeout(1000)
 
@@ -203,12 +185,8 @@ class TestSetupWizardStep5:
 
     def test_step5_has_finish_button(self, page: Page, app_url: str, auth_token: str):
         """Verify Step 5 has the Complete Setup button."""
-        # Login and go to setup
-        page.goto(f"{app_url}/login")
-        page.locator('input[name="token"], input[type="password"]').fill(auth_token)
-        page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
-
+        # Setup page is accessible without login and avoids auth/session state
+        # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
         page.wait_for_timeout(1000)
 

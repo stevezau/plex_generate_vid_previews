@@ -49,15 +49,32 @@
 
                 <!-- Workers Status (preserved across updates) -->
                 <div id="workerCounts">
-                    <div class="d-flex justify-content-between mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
                         <span>GPU Workers:</span>
-                        <span id="gpuWorkers" class="badge bg-primary">-</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="GPU" data-direction="-1" onclick="scaleWorkersGlobal('GPU', -1)" title="Remove one GPU worker"><i class="bi bi-dash-lg"></i></button>
+                            <span id="gpuWorkers" class="badge bg-primary" style="min-width: 1.5rem;">-</span>
+                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="GPU" data-direction="1" onclick="scaleWorkersGlobal('GPU', 1)" title="Add one GPU worker"><i class="bi bi-plus-lg"></i></button>
+                        </span>
                     </div>
-                    <div class="d-flex justify-content-between mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
                         <span>CPU Workers:</span>
-                        <span id="cpuWorkers" class="badge bg-secondary">-</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU" data-direction="-1" onclick="scaleWorkersGlobal('CPU', -1)" title="Remove one CPU worker"><i class="bi bi-dash-lg"></i></button>
+                            <span id="cpuWorkers" class="badge bg-secondary" style="min-width: 1.5rem;">-</span>
+                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU" data-direction="1" onclick="scaleWorkersGlobal('CPU', 1)" title="Add one CPU worker"><i class="bi bi-plus-lg"></i></button>
+                        </span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span>CPU Fallback Workers:</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="-1" onclick="scaleWorkersGlobal('CPU_FALLBACK', -1)" title="Remove one CPU fallback worker"><i class="bi bi-dash-lg"></i></button>
+                            <span id="cpuFallbackWorkers" class="badge bg-info" style="min-width: 1.5rem;">-</span>
+                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="1" onclick="scaleWorkersGlobal('CPU_FALLBACK', 1)" title="Add one CPU fallback worker"><i class="bi bi-plus-lg"></i></button>
+                        </span>
                     </div>
                 </div>
+                <div class="small text-muted mt-1">Changes are saved to settings. If a job is running, workers are also scaled live.</div>
             </div>
         </div>
     </div>
@@ -83,7 +100,7 @@
 
                 <hr>
 
-                <h6 class="mb-3"><i class="bi bi-collection me-2"></i>Selected Libraries</h6>
+                <h6 class="mb-3"><i class="bi bi-collection me-2"></i>Libraries to Process</h6>
                 <div id="libraryList">
                     <div class="text-muted small">Loading libraries...</div>
                 </div>
@@ -155,7 +172,8 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-activity me-2"></i>Current Job</span>
-                <div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="globalPauseResumeCurrentJob"></span>
                     <button class="btn btn-sm btn-outline-info me-2" id="viewLogsBtn" onclick="showLogsModal()" style="display: none;">
                         <i class="bi bi-file-text me-1"></i>View Logs
                     </button>
@@ -178,7 +196,8 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-list-task me-2"></i>Job Queue</span>
-                <div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="globalPauseResumeQueue"></span>
                     <div class="dropdown d-inline-block">
                         <button class="btn btn-sm btn-outline-danger dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                             <i class="bi bi-trash me-1"></i>Clear Jobs
@@ -430,9 +449,20 @@
                         </div>
                     </div>
                 </div>
-                <div id="logsContent" class="bg-dark text-light p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
+                <div class="position-relative">
+                    <div id="logsContent" class="bg-dark text-light p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
+                    <div class="position-absolute d-flex flex-column gap-1" style="right: 1.2rem; bottom: 0.7rem; z-index: 2;">
+                        <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('top')" title="Scroll to top">
+                            <i class="bi bi-chevron-double-up"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('bottom')" title="Scroll to bottom">
+                            <i class="bi bi-chevron-double-down"></i>
+                        </button>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
+                <small class="text-muted me-auto" id="logsLineCount"></small>
                 <button type="button" class="btn btn-outline-secondary" onclick="copyLogs()" title="Copy to clipboard">
                     <i class="bi bi-clipboard me-1"></i>Copy
                 </button>
@@ -525,8 +555,11 @@
 
                 const gpuEl = document.getElementById('gpuWorkers');
                 const cpuEl = document.getElementById('cpuWorkers');
-                if (gpuEl) gpuEl.textContent = config.gpu_threads || 0;
-                if (cpuEl) cpuEl.textContent = config.cpu_threads || 1;
+                const cpuFallbackEl = document.getElementById('cpuFallbackWorkers');
+                if (gpuEl) gpuEl.textContent = config.gpu_threads ?? 0;
+                if (cpuEl) cpuEl.textContent = config.cpu_threads ?? 1;
+                if (cpuFallbackEl) cpuFallbackEl.textContent = config.cpu_fallback_threads ?? 0;
+                if (typeof refreshWorkerScaleButtons === 'function') refreshWorkerScaleButtons();
             } catch (e) {
                 console.warn('Failed to load config:', e);
             }

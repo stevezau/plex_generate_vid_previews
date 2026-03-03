@@ -28,7 +28,7 @@ When you first access the web interface, you'll be guided through a **Setup Wiza
 1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
 2. **Select Server** — choose which Plex server to connect to
 3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, thumbnail quality, etc.
+4. **Processing Options** — configure GPU threads, CPU threads, CPU fallback workers, thumbnail quality, etc.
 5. **Security** — view or customize your access token (optional)
 
 After setup completes, you'll be taken to the dashboard.
@@ -57,6 +57,12 @@ After setup completes, you'll be taken to the dashboard.
 > [!NOTE]
 > Only one job runs at a time. If a job is triggered (manually, by a schedule, or by a webhook) while another is already running, the incoming job is immediately marked **Cancelled** and a warning is logged. This prevents concurrent FFmpeg workloads and temp-folder conflicts.
 
+**Pause / Resume (global):**
+
+- **Pause Processing** — Stops all processing system-wide: no new jobs will start (manual, scheduled, or webhook), and the current job stops dispatching new tasks. Already-running FFmpeg tasks finish their current file (soft pause), then workers idle. Use this to cap bandwidth or pause overnight.
+- **Resume Processing** — Clears the global pause; new jobs can start and the current job resumes dispatching.
+- Controls appear in the **Current Job** header and to the left of **Clear Jobs** in the Job Queue. State is persisted and survives restarts.
+
 **Scheduling:**
 
 - **Cron schedules** — set up recurring processing
@@ -70,7 +76,20 @@ Access settings at `/settings` to manage:
 - **Plex Connection** — re-authenticate, test connection
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
-- **Processing Options** — GPU/CPU threads, thumbnail interval and quality
+- **Processing Options** — GPU/CPU threads, CPU fallback workers, thumbnail interval and quality
+
+### CPU Fallback Workers (GPU Safety Net)
+
+Use this when you want GPU-only main processing but still want CPU recovery for unsupported GPU files.
+
+- Set **CPU Workers** to `0`
+- Set **CPU Fallback Workers** to `1` or more
+
+Behavior:
+
+- Main queue runs on GPU workers only
+- If a GPU worker hits an unsupported codec/runtime decode failure, the item is queued to CPU fallback workers
+- If **CPU Workers > 0**, fallback-only workers are not used (regular CPU workers already handle fallback work)
 
 Settings are saved to `/config/settings.json` and persist across restarts.
 
@@ -81,7 +100,6 @@ Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
 - **Enable/Disable** — master toggle for webhook processing
 - **Webhook URLs** — copy-ready URLs for Radarr and Sonarr
 - **Delay** — seconds to wait after import (gives Plex time to index)
-- **Library Mapping** — which library to scan for each source
 - **Webhook Secret** — optional dedicated authentication token
 - **Setup Instructions** — step-by-step guide for Radarr/Sonarr configuration
 - **Activity Log** — recent webhook events with status badges
@@ -184,17 +202,15 @@ The dashboard uses WebSocket connections (via Flask-SocketIO + simple-websocket)
 
 ## Webhook Integration
 
-Automatically generate preview thumbnails when Radarr or Sonarr imports new media. Webhooks trigger a library scan after a configurable delay, giving Plex time to detect and index the new files.
+Automatically generate preview thumbnails when Radarr or Sonarr imports new media. Webhooks trigger processing of **only the imported file(s)** after a configurable delay, giving Plex time to detect and index the new files.
 
 ### How It Works
 
-1. Radarr/Sonarr imports a file and sends a webhook POST to this app
-2. The app waits for the configured delay (default 60s) to let Plex index the file
-3. If multiple imports arrive for the same library, they are **debounced** — only one scan runs
-4. When the delay expires, the app checks whether a job is already running
-   - **No job running** — a new job is created and starts immediately, sorted by newest items first
-   - **Job already running** — the incoming job is marked **Cancelled** (visible in job history) and a warning is logged; the running job is not interrupted
-5. Items that already have preview thumbnails are skipped automatically
+1. Radarr/Sonarr imports a file and sends a webhook POST to this app.
+2. The app **queues** the file and starts (or resets) a timer. Imports from the same source (Radarr or Sonarr) are batched together.
+3. A batch is processed only after the **delay** (e.g. 60s) has passed with **no new** imports from that source. So if another file arrives 1 second before the batch would run, it is added to the queue and the timer resets — the batch runs 60 seconds after that file. Every file gets at least 60 seconds before we process it.
+4. This delay is important because **Plex needs time to add the new file to its library**. If we process too soon, Plex may not have indexed the file yet and the job can fail or skip the item.
+5. When the timer fires, the app resolves each queued path to a Plex item and processes only those items (no full-library scan), limited to libraries selected in Settings. Items that already have preview thumbnails are skipped automatically.
 
 ### Prerequisites
 
@@ -211,9 +227,9 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 6. Under **Events**, enable:
    - On Import
    - On Upgrade
-7. Add a header for authentication:
-   - **Key**: `X-Auth-Token`
-   - **Value**: your API token (see [Authentication Token](getting-started.md#authentication-token)) or webhook secret (if configured)
+7. **Authentication** (use one):
+   - **Username/Password** (works in all versions): Leave **Username** empty and set **Password** to your API token (see [Authentication Token](getting-started.md#authentication-token)) or webhook secret. The app treats the password as the token.
+   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
 8. Click **Test** to verify the connection
 9. Click **Save**
 
@@ -223,10 +239,10 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 2. In Sonarr, go to **Settings → Connect → + → Webhook**
 3. Set **Name**: `Plex Previews`
 4. Set **URL**: paste the Sonarr Webhook URL
-5. Under **Events**, enable:
-   - On Import
-   - On Upgrade
-6. Add authentication header: **Key**: `X-Auth-Token`, **Value**: your API token or webhook secret
+5. Under **Events**, enable **On File Import** and **On File Upgrade**
+6. **Authentication** (use one):
+   - **Username/Password** (works in all versions): Leave **Username** empty and set **Password** to your API token or webhook secret. The app treats the password as the token.
+   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
 7. Click **Test** then **Save**
 
 ### Configuration
@@ -235,10 +251,10 @@ All settings are configurable from the **Webhooks** page in the web UI.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Enable Webhooks** | On | Master toggle |
-| **Delay** | 60s | Wait time before scanning (10–300 s) |
-| **Radarr Library** | All | Which Plex library to scan for movie imports |
-| **Sonarr Library** | All | Which Plex library to scan for TV imports |
+| **Delay before processing** | 60s | How long to wait with no new imports before running a batch (10–300 s). Incoming files are queued; a batch runs only after this many seconds of “quiet” from that source. Each new import resets the timer so every file gets at least this long for Plex to add it to the library before we process. |
 | **Webhook Secret** | *(empty)* | Dedicated authentication token for webhooks |
+
+Webhook processing uses your Settings library selection. If a webhook path belongs to an unchecked library, it is skipped.
 
 ### Webhook Secret
 
@@ -246,13 +262,15 @@ By default, webhooks authenticate using your main API token. You can optionally 
 
 1. On the Webhooks page, click **Generate** next to the secret field
 2. Click **Save Changes**
-3. Use the generated secret as the `X-Auth-Token` value in Radarr/Sonarr
+3. Use the generated secret as the token: in Radarr/Sonarr, either put it in **Password** (leave Username empty) or in the **X-Auth-Token** header if your form has a Headers section.
 
-### Debouncing
+### Batching and the delay
 
-When multiple files are imported in quick succession (e.g., a season pack), the app **debounces** the webhook triggers. Each new import for the same library resets the delay timer, so only one scan runs after all imports complete.
+When multiple files are imported in quick succession (e.g., a season pack), the app **queues** them per source (Radarr or Sonarr). Each new import **resets** the delay timer for that source. A batch runs only when the timer finally fires — i.e. when that many seconds have passed with no new imports. So every file in the batch has had at least that long for Plex to add it to the library before we process.
 
-Example: Sonarr imports 10 episodes over 30 seconds with a 60s delay configured. The scan starts 60 seconds after the *last* episode is imported, not after each one.
+**Example:** Sonarr imports 10 episodes over 30 seconds with a 60s delay. The timer keeps resetting as each episode arrives. One job runs 60 seconds after the *last* episode and processes all 10 files. A file that arrived at 59 seconds is not processed in an earlier batch — it goes in this batch, and the batch runs 60 seconds after it, so Plex has time to index it.
+
+**Viewing files in a batch:** On the **Dashboard**, jobs from webhooks show a label like "Sonarr: 3 files". Click the **+** (chevron) next to the label to expand and see the list of files. On the **Webhooks** page, **Recent Activity** rows for triggered batches include a chevron; click it to expand and see the files in that batch.
 
 ---
 
@@ -399,10 +417,11 @@ Use this table to diagnose common failures quickly.
 | `PLEX_CONFIG_FOLDER does not exist` | Incorrect mount or Plex config path | Confirm mounted path contains `Cache`, `Media`, and `Metadata`. |
 | `Connection failed to Plex` | Bad Plex URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify Plex is running, and test token with curl. |
 | Webhook job shows as **Cancelled** in history | Another job was already running when the webhook delay expired | Wait for the active job to finish; webhooks fired while idle will run normally. To avoid this, increase the webhook delay so imports do not fire during long processing runs. |
-| Webhook returns `401` | Invalid or missing authentication token in webhook headers | Set `X-Auth-Token` to your API token or configured webhook secret. |
+| Webhook returns `401` | Invalid or missing authentication | In Sonarr/Radarr webhook settings, leave **Username** empty and set **Password** to your API token or webhook secret. |
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and verify `webhook_enabled=true`. |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |
+| New job starts after I paused | Global pause not set or UI not refreshed | Use **Pause Processing** (Current Job or Job Queue header). Pause is global and persisted; in-flight files finish before workers idle. |
 
 ### Validate Plex Config Path
 

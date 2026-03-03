@@ -11,11 +11,14 @@ import threading
 import uuid
 from collections import deque
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Callable, Any
 
 from loguru import logger
+
+# Message shown in UI when a job's log file was removed by retention policy.
+LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
 
 
 class JobStatus(str, Enum):
@@ -55,7 +58,6 @@ class JobProgress:
     total_items: int = 0
     processed_items: int = 0
     speed: str = "0.0x"
-    eta: str = ""
     current_file: str = ""
     workers: List[WorkerStatus] = field(default_factory=list)
 
@@ -81,12 +83,16 @@ class Job:
     progress: JobProgress = field(default_factory=JobProgress)
     error: Optional[str] = None
     config: Dict[str, Any] = field(default_factory=dict)
+    paused: bool = False
 
     def __post_init__(self):
         if not self.created_at:
             self.created_at = datetime.now(timezone.utc).isoformat()
         if isinstance(self.progress, dict):
-            self.progress = JobProgress(**self.progress)
+            # Strip legacy 'eta' so persisted jobs.json loads without error
+            data = dict(self.progress)
+            data.pop("eta", None)
+            self.progress = JobProgress(**data)
         if isinstance(self.status, str):
             self.status = JobStatus(self.status)
 
@@ -102,6 +108,7 @@ class Job:
             "progress": self.progress.to_dict(),
             "error": self.error,
             "config": self.config,
+            "paused": self.paused,
         }
 
 
@@ -116,13 +123,14 @@ class JobManager:
     def __init__(self, config_dir: str = "/config", socketio=None):
         self.config_dir = config_dir
         self.jobs_file = os.path.join(config_dir, "jobs.json")
+        self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
         self.socketio = socketio
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.RLock()
         self._current_job_id: Optional[str] = None
         self._on_progress_callbacks: List[Callable] = []
 
-        # Job logs storage (in-memory, last 500 lines per job)
+        # Job logs storage (in-memory for running jobs, plus file-backed under _job_logs_dir)
         self._job_logs: Dict[str, deque] = {}
         self._max_log_lines = 500
 
@@ -131,9 +139,23 @@ class JobManager:
 
         # Cancellation flags
         self._cancellation_flags: Dict[str, bool] = {}
+        self._pause_flags: Dict[str, bool] = {}
+        self._pause_events: Dict[str, threading.Event] = {}
+        self._active_worker_pools: Dict[str, Any] = {}
+
+        # Background retention timer
+        self._retention_timer: Optional[threading.Timer] = None
 
         # Load existing jobs from disk
         self._load_jobs()
+        try:
+            os.makedirs(self._job_logs_dir, exist_ok=True)
+            self._enforce_log_retention()
+        except OSError as e:
+            logger.warning(
+                f"Could not create job logs directory {self._job_logs_dir}: {e}"
+            )
+        self._start_retention_timer()
 
     def set_socketio(self, socketio) -> None:
         """Set the SocketIO instance for real-time updates."""
@@ -187,6 +209,10 @@ class JobManager:
         if self.socketio:
             self.socketio.emit(event, data, namespace="/jobs")
 
+    def emit_processing_paused_changed(self, paused: bool) -> None:
+        """Emit event when global processing pause state changes."""
+        self._emit_event("processing_paused_changed", {"paused": paused})
+
     # Maximum number of terminal-state jobs to keep on disk
     _MAX_TERMINAL_JOBS = 50
 
@@ -204,8 +230,98 @@ class JobManager:
         excess = len(terminal) - self._MAX_TERMINAL_JOBS
         if excess > 0:
             for job in terminal[:excess]:
+                self._delete_job_log_file(job.id)
                 del self._jobs[job.id]
             logger.debug(f"Pruned {excess} old terminal jobs")
+
+    def _delete_job_log_file(self, job_id: str) -> None:
+        """Remove the persisted log file for a job if it exists. Caller must hold _lock."""
+        path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            logger.debug(f"Could not remove job log file {path}: {e}")
+
+    def _get_job_history_days(self) -> int:
+        """Read job_history_days from settings, defaulting to 30."""
+        try:
+            from .settings_manager import get_settings_manager
+
+            sm = get_settings_manager()
+            return int(sm.get("job_history_days", 30))
+        except Exception:
+            return 30
+
+    def _enforce_log_retention(self) -> None:
+        """Delete terminal jobs and their log files older than job_history_days.
+
+        Also removes orphaned log files (no matching job entry).
+        """
+        days = self._get_job_history_days()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+
+        expired_ids = []
+        for job_id, job in self._jobs.items():
+            if job.status not in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                continue
+            ref_time = job.completed_at or job.created_at
+            if ref_time and ref_time < cutoff_iso:
+                expired_ids.append(job_id)
+
+        if expired_ids:
+            for job_id in expired_ids:
+                self._delete_job_log_file(job_id)
+                self._job_logs.pop(job_id, None)
+                del self._jobs[job_id]
+            self._save_jobs()
+            logger.info(
+                f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)"
+            )
+
+        # Clean up orphaned log files whose job entry no longer exists
+        if os.path.isdir(self._job_logs_dir):
+            for name in os.listdir(self._job_logs_dir):
+                if not name.endswith(".log"):
+                    continue
+                job_id = name[:-4]  # strip ".log"
+                if job_id not in self._jobs:
+                    path = os.path.join(self._job_logs_dir, name)
+                    try:
+                        os.remove(path)
+                        logger.debug(f"Removed orphaned job log: {path}")
+                    except OSError:
+                        pass
+
+    _RETENTION_INTERVAL_SEC = 3600  # 1 hour
+
+    def _start_retention_timer(self) -> None:
+        """Start (or restart) the background hourly retention timer."""
+        self._stop_retention_timer()
+        timer = threading.Timer(self._RETENTION_INTERVAL_SEC, self._retention_tick)
+        timer.daemon = True
+        timer.start()
+        self._retention_timer = timer
+
+    def _stop_retention_timer(self) -> None:
+        """Cancel the background retention timer if running."""
+        if self._retention_timer is not None:
+            self._retention_timer.cancel()
+            self._retention_timer = None
+
+    def _retention_tick(self) -> None:
+        """Periodic callback: run retention then schedule the next tick."""
+        try:
+            with self._lock:
+                self._enforce_log_retention()
+        except Exception as e:
+            logger.debug(f"Retention tick error: {e}")
+        self._start_retention_timer()
 
     def create_job(
         self,
@@ -246,14 +362,26 @@ class JobManager:
             return self._jobs.get(self._current_job_id)
         return None
 
+    def update_job_config(self, job_id: str, config: Dict[str, Any]) -> None:
+        """Update stored config for a job (e.g. when start is deferred due to pause)."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.config = dict(config)
+                self._save_jobs()
+
     def start_job(self, job_id: str) -> Optional[Job]:
         """Mark a job as started."""
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
                 job.status = JobStatus.RUNNING
+                job.paused = False
                 job.started_at = datetime.now(timezone.utc).isoformat()
                 self._current_job_id = job_id
+                self._pause_flags[job_id] = False
+                self._pause_events[job_id] = threading.Event()
+                self._pause_events[job_id].set()
                 self._save_jobs()
                 self._emit_event("job_started", job.to_dict())
                 logger.info(f"Started job {job_id}")
@@ -267,7 +395,6 @@ class JobManager:
         total_items: int = None,
         processed_items: int = None,
         speed: str = None,
-        eta: str = None,
         current_file: str = None,
     ) -> Optional[Job]:
         """Update job progress."""
@@ -284,8 +411,6 @@ class JobManager:
                     job.progress.processed_items = processed_items
                 if speed is not None:
                     job.progress.speed = speed
-                if eta is not None:
-                    job.progress.eta = eta
                 if current_file is not None:
                     job.progress.current_file = current_file
 
@@ -296,25 +421,61 @@ class JobManager:
                 )
             return job
 
-    def complete_job(self, job_id: str, error: Optional[str] = None) -> Optional[Job]:
-        """Mark a job as completed or failed."""
+    def complete_job(
+        self,
+        job_id: str,
+        error: Optional[str] = None,
+        warning: Optional[str] = None,
+    ) -> Optional[Job]:
+        """Mark a job as completed, completed-with-warning, or failed.
+
+        Args:
+            job_id: Job identifier.
+            error: If set, marks job as FAILED (red badge).
+            warning: If set (and error is not), marks job as COMPLETED with a
+                     warning message (amber badge in UI). The warning text is
+                     stored in `job.error` so the UI can display it.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
+                # Cancellation is terminal; do not overwrite with completed/failed.
+                if job.status == JobStatus.CANCELLED:
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._save_jobs()
+                    logger.info(
+                        f"Job {job_id} already cancelled; skipping completion update"
+                    )
+                    return job
+
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 if error:
                     job.status = JobStatus.FAILED
                     job.error = error
+                    job.paused = False
                     self._emit_event("job_failed", job.to_dict())
                     logger.error(f"Job {job_id} failed: {error}")
+                elif warning:
+                    job.status = JobStatus.COMPLETED
+                    job.error = warning
+                    job.paused = False
+                    job.progress.percent = 100.0
+                    self._emit_event("job_completed", job.to_dict())
+                    logger.info(f"Job {job_id} completed with warnings: {warning}")
                 else:
                     job.status = JobStatus.COMPLETED
+                    job.paused = False
                     job.progress.percent = 100.0
                     self._emit_event("job_completed", job.to_dict())
                     logger.info(f"Job {job_id} completed successfully")
 
                 if self._current_job_id == job_id:
                     self._current_job_id = None
+                self.clear_pause_flag(job_id)
+                self.clear_cancellation_flag(job_id)
+                self.clear_active_worker_pool(job_id)
                 self._save_jobs()
             return job
 
@@ -323,10 +484,17 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                was_running = job.status == JobStatus.RUNNING
                 job.status = JobStatus.CANCELLED
+                job.paused = False
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 if self._current_job_id == job_id:
                     self._current_job_id = None
+                self.clear_pause_flag(job_id)
+                # Keep cancellation flag for running jobs so the worker loop sees it.
+                if not was_running:
+                    self.clear_cancellation_flag(job_id)
+                self.clear_active_worker_pool(job_id)
                 self._save_jobs()
                 self._emit_event("job_cancelled", job.to_dict())
                 logger.info(f"Cancelled job {job_id}")
@@ -338,6 +506,9 @@ class JobManager:
             if job_id in self._jobs:
                 if self._current_job_id == job_id:
                     return False  # Can't delete running job
+                self._delete_job_log_file(job_id)
+                if job_id in self._job_logs:
+                    del self._job_logs[job_id]
                 del self._jobs[job_id]
                 self._save_jobs()
                 self._emit_event("job_deleted", {"job_id": job_id})
@@ -365,6 +536,8 @@ class JobManager:
                 job_id for job_id, job in self._jobs.items() if job.status in target
             ]
             for job_id in to_delete:
+                self._delete_job_log_file(job_id)
+                self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             if to_delete:
                 self._save_jobs()
@@ -391,26 +564,51 @@ class JobManager:
     # ========================================================================
 
     def add_log(self, job_id: str, message: str) -> None:
-        """Add a log message for a job."""
+        """Add a log message for a job (in-memory and append to file)."""
         with self._lock:
             if job_id not in self._job_logs:
                 self._job_logs[job_id] = deque(maxlen=self._max_log_lines)
             timestamp = datetime.utcnow().strftime("%H:%M:%S")
-            self._job_logs[job_id].append(f"[{timestamp}] {message}")
+            line = f"[{timestamp}] {message}"
+            self._job_logs[job_id].append(line)
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            try:
+                with open(log_path, "a") as f:
+                    f.write(line + "\n")
+            except OSError as e:
+                logger.debug(f"Could not append to job log {log_path}: {e}")
 
     def get_logs(self, job_id: str, last_n: int = None) -> List[str]:
-        """Get logs for a job."""
+        """Get logs for a job (from memory if present, else from file; retention message if cleared)."""
         with self._lock:
-            if job_id not in self._job_logs:
-                return []
-            logs = list(self._job_logs[job_id])
-            if last_n:
-                return logs[-last_n:]
-            return logs
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                if last_n:
+                    return logs[-last_n:]
+                return logs
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            if os.path.isfile(log_path):
+                try:
+                    with open(log_path, "r") as f:
+                        logs = [line.rstrip("\n") for line in f if line]
+                    if last_n:
+                        return logs[-last_n:]
+                    return logs
+                except OSError:
+                    pass
+            job = self._jobs.get(job_id)
+            if job and job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                return [LOG_RETENTION_CLEARED_MESSAGE]
+            return []
 
     def clear_logs(self, job_id: str) -> None:
-        """Clear logs for a job."""
+        """Clear logs for a job (memory and file)."""
         with self._lock:
+            self._delete_job_log_file(job_id)
             if job_id in self._job_logs:
                 del self._job_logs[job_id]
 
@@ -432,6 +630,13 @@ class JobManager:
         """Clear all worker statuses."""
         with self._lock:
             self._worker_statuses.clear()
+
+    def prune_worker_statuses(self, valid_keys: set[str]) -> None:
+        """Remove stale worker statuses not present in the latest snapshot."""
+        with self._lock:
+            for key in list(self._worker_statuses.keys()):
+                if key not in valid_keys:
+                    del self._worker_statuses[key]
 
     # ========================================================================
     # Cancellation Management
@@ -456,6 +661,88 @@ class JobManager:
             if job_id in self._cancellation_flags:
                 del self._cancellation_flags[job_id]
 
+    # ========================================================================
+    # Pause / Resume Management
+    # ========================================================================
+
+    def request_pause(self, job_id: str) -> bool:
+        """Request pause for a running job."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.RUNNING:
+                return False
+            self._pause_flags[job_id] = True
+            event = self._pause_events.get(job_id)
+            if event is None:
+                event = threading.Event()
+                self._pause_events[job_id] = event
+            event.clear()
+            job.paused = True
+            self._save_jobs()
+            self._emit_event("job_paused", {"job_id": job_id, "paused": True})
+            logger.info(
+                f"Pause audit: job_id={job_id}, status={job.status.value}, paused=True"
+            )
+            self.add_log(
+                job_id,
+                "INFO - Pause requested; no new tasks will be dispatched until resume.",
+            )
+            return True
+
+    def request_resume(self, job_id: str) -> bool:
+        """Request resume for a paused job."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.RUNNING:
+                return False
+            self._pause_flags[job_id] = False
+            event = self._pause_events.get(job_id)
+            if event is None:
+                event = threading.Event()
+                self._pause_events[job_id] = event
+            event.set()
+            job.paused = False
+            self._save_jobs()
+            self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
+            logger.info(
+                f"Resume audit: job_id={job_id}, status={job.status.value}, paused=False"
+            )
+            self.add_log(job_id, "INFO - Resume requested; dispatch will continue.")
+            return True
+
+    def is_pause_requested(self, job_id: str) -> bool:
+        """Check if pause has been requested for a job."""
+        with self._lock:
+            return self._pause_flags.get(job_id, False)
+
+    def clear_pause_flag(self, job_id: str) -> None:
+        """Clear pause state for a job."""
+        with self._lock:
+            self._pause_flags.pop(job_id, None)
+            self._pause_events.pop(job_id, None)
+            job = self._jobs.get(job_id)
+            if job:
+                job.paused = False
+
+    # ========================================================================
+    # Active Worker Pool Management
+    # ========================================================================
+
+    def set_active_worker_pool(self, job_id: str, worker_pool: Any) -> None:
+        """Store the active worker pool for a running job."""
+        with self._lock:
+            self._active_worker_pools[job_id] = worker_pool
+
+    def get_active_worker_pool(self, job_id: str) -> Optional[Any]:
+        """Get active worker pool for a job."""
+        with self._lock:
+            return self._active_worker_pools.get(job_id)
+
+    def clear_active_worker_pool(self, job_id: str) -> None:
+        """Clear active worker pool reference for a job."""
+        with self._lock:
+            self._active_worker_pools.pop(job_id, None)
+
 
 # Global job manager instance
 _job_manager: Optional[JobManager] = None
@@ -466,13 +753,32 @@ DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
 
 
 def get_job_manager(config_dir: Optional[str] = None, socketio=None) -> JobManager:
-    """Get or create the global JobManager instance (thread-safe)."""
+    """Get or create the global JobManager instance (thread-safe).
+
+    When ``config_dir`` is explicitly provided and differs from the
+    current singleton's directory, the singleton is recreated so that
+    all derived paths (jobs file, log directory) stay consistent.
+    In production this never happens; it guards against race conditions
+    in tests where background threads can recreate the singleton with
+    the module-level default between fixture resets.
+
+    Args:
+        config_dir: Configuration directory path, or ``None`` to use
+            the existing singleton / module default.
+        socketio: Optional SocketIO instance for real-time events.
+
+    Returns:
+        The global ``JobManager`` singleton.
+    """
     global _job_manager
     with _job_lock:
         if _job_manager is None:
             _job_manager = JobManager(
                 config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio
             )
-        elif socketio and _job_manager.socketio is None:
-            _job_manager.set_socketio(socketio)
+        else:
+            if config_dir and _job_manager.config_dir != config_dir:
+                _job_manager = JobManager(config_dir=config_dir, socketio=socketio)
+            elif socketio and _job_manager.socketio is None:
+                _job_manager.set_socketio(socketio)
         return _job_manager

@@ -106,7 +106,7 @@ except Exception as e:
     print(f"WARNING: Could not validate MediaInfo library: {e}")
     print("Proceeding anyway, but errors may occur during processing")
 
-from .config import Config  # noqa: E402
+from .config import Config, plex_path_to_local  # noqa: E402
 from .plex_client import retry_plex_call  # noqa: E402
 
 
@@ -441,15 +441,21 @@ def parse_ffmpeg_progress_line(
             current_time = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
             time_str = f"{hours}:{minutes}:{seconds}"
 
-            # Update progress
+            # Update progress (1 decimal place for UI; Issue #144)
             progress_percent = 0
             if total_duration and total_duration > 0:
-                progress_percent = min(100, int((current_time / total_duration) * 100))
+                progress_percent = min(
+                    100.0, round((current_time / total_duration) * 100, 1)
+                )
 
-            # Calculate remaining time from FFmpeg data
+            # Calculate remaining wall-clock time using ffmpeg speed
             remaining_time = 0
             if total_duration and total_duration > 0 and current_time < total_duration:
-                remaining_time = total_duration - current_time
+                remaining_media = total_duration - current_time
+                speed_val = float(speed_match.group(1)) if speed_match else 0
+                remaining_time = (
+                    remaining_media / speed_val if speed_val > 0 else remaining_media
+                )
 
             # Call progress callback with all FFmpeg data
             if progress_callback:
@@ -804,6 +810,8 @@ def generate_images(
         ]
 
         start_local = time.time()
+        hw_label = "GPU" if gpu else "CPU"
+        logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
         logger.debug(f"Executing: {' '.join(args)}")
 
         # Use file polling approach for non-blocking, high-frequency progress monitoring
@@ -1446,7 +1454,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     except PermissionError:
         # Re-raise PermissionError (already logged above)
         raise
-    logger.debug(f"Generated BIF file: {bif_filename}")
+    logger.info(f"Generated BIF file: {bif_filename} ({len(images)} thumbnails)")
 
 
 def process_item(
@@ -1497,20 +1505,13 @@ def process_item(
     for media_part in data.findall(".//MediaPart"):
         if "hash" in media_part.attrib:
             bundle_hash = media_part.attrib["hash"]
-            # Apply path mapping if both mapping parameters are provided (for remote generation)
-            if (
-                config.plex_videos_path_mapping
-                and config.plex_local_videos_path_mapping
-            ):
-                media_file = sanitize_path(
-                    media_part.attrib["file"].replace(
-                        config.plex_videos_path_mapping,
-                        config.plex_local_videos_path_mapping,
-                    )
-                )
+            # Apply path mapping if configured (path_mappings: plex_prefix → local_prefix)
+            plex_path = media_part.attrib["file"]
+            mappings = getattr(config, "path_mappings", None) or []
+            if mappings:
+                media_file = sanitize_path(plex_path_to_local(plex_path, mappings))
             else:
-                # Use file path directly (for local generation)
-                media_file = sanitize_path(media_part.attrib["file"])
+                media_file = sanitize_path(plex_path)
 
             # Validate bundle_hash has sufficient length (at least 2 characters)
             if not bundle_hash or len(bundle_hash) < 2:
@@ -1547,13 +1548,13 @@ def process_item(
                     continue
 
             if os.path.isfile(index_bif):
-                logger.debug(
+                logger.info(
                     f"Skipping {media_file} — BIF already exists at {index_bif}"
                 )
                 continue
 
             if not os.path.isfile(index_bif):
-                logger.debug(f"Generating thumbnails for {media_file} -> {index_bif}")
+                logger.info(f"Generating BIF for {media_file} -> {index_bif}")
 
                 # Ensure directories exist
                 if not _ensure_directories(indexes_path, tmp_path, media_file):

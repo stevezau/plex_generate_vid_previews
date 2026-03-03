@@ -75,23 +75,27 @@
                 Delay before processing: <strong><span id="delayValue">60</span>s</strong>
             </label>
             <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
-            <div class="form-text">Seconds to wait after import before triggering. Gives Plex time to detect and index new files.</div>
+            <div class="form-text">
+                Imports are queued and processed in batches. A batch runs only after this many seconds pass with <em>no new</em> imports from that source — so if a file arrives just before the batch would run, it goes into the queue and the timer resets; that file is processed in the next batch, after the delay has passed again. The delay gives Plex time to add the new file to its library; processing too soon can fail because Plex may not have indexed it yet. Webhook runs only process items from the libraries selected on the Settings page.
+            </div>
         </div>
 
         <div class="mb-3">
-            <label for="webhookRadarrLibrary" class="form-label">Radarr Library</label>
-            <select class="form-select" id="webhookRadarrLibrary">
-                <option value="">All Libraries</option>
-            </select>
-            <div class="form-text">Library to scan when Radarr reports a new import.</div>
+            <label for="webhookRetryCount" class="form-label">Retry count</label>
+            <input type="number" class="form-control" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 6rem;">
+            <div class="form-text">
+                When an item from a webhook cannot be found in Plex (e.g. Plex has not indexed it yet), how many times to retry. Each retry runs as a separate job after the configured delay. Set to 0 to disable retries.
+            </div>
         </div>
 
         <div class="mb-3">
-            <label for="webhookSonarrLibrary" class="form-label">Sonarr Library</label>
-            <select class="form-select" id="webhookSonarrLibrary">
-                <option value="">All Libraries</option>
-            </select>
-            <div class="form-text">Library to scan when Sonarr reports a new import.</div>
+            <label for="webhookRetryDelay" class="form-label">
+                Delay between retries: <strong><span id="retryDelayValue">30</span>s</strong>
+            </label>
+            <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
+            <div class="form-text">
+                Seconds to wait before each retry when an item could not be found in Plex. Gives Plex time to finish indexing.
+            </div>
         </div>
 
         <div class="mb-3">
@@ -124,7 +128,12 @@
                 <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
                 <li>Set <strong>URL</strong>: copy the Radarr Webhook URL above</li>
                 <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
-                <li>Add header <code>X-Auth-Token</code> with your API token (or webhook secret if configured)</li>
+                <li><strong>Authentication</strong> (use one):
+                    <ul class="mb-0">
+                        <li><strong>Username/Password</strong>: Leave <strong>Username</strong> blank and put your API token or webhook secret in <strong>Password</strong>.</li>
+                        <li><strong>Headers</strong>: If your webhook form has a Headers section, add <code>X-Auth-Token</code> = your API token or webhook secret.</li>
+                    </ul>
+                </li>
                 <li>Click <strong>Test</strong> then <strong>Save</strong></li>
             </ol>
 
@@ -133,8 +142,13 @@
                 <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
                 <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
                 <li>Set <strong>URL</strong>: copy the Sonarr Webhook URL above</li>
-                <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
-                <li>Add header <code>X-Auth-Token</code> with your API token (or webhook secret if configured)</li>
+                <li>Under <strong>Events</strong>, enable <em>On File Import</em> and <em>On File Upgrade</em></li>
+                <li><strong>Authentication</strong> (use one):
+                    <ul class="mb-0">
+                        <li><strong>Username/Password</strong>: Leave <strong>Username</strong> blank and put your API token or webhook secret in <strong>Password</strong>.</li>
+                        <li><strong>Headers</strong>: If your webhook form has a Headers section, add <code>X-Auth-Token</code> = your API token or webhook secret.</li>
+                    </ul>
+                </li>
                 <li>Click <strong>Test</strong> then <strong>Save</strong></li>
             </ol>
         </div>
@@ -183,16 +197,18 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
 
     loadWebhookSettings();
-    loadLibraries();
     loadHistory();
 
-    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRadarrLibrary, #webhookSonarrLibrary, #webhookSecret').forEach(function(el) {
+    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRetryCount, #webhookRetryDelay, #webhookSecret').forEach(function(el) {
         el.addEventListener('change', markDirty);
         el.addEventListener('input', markDirty);
     });
 
     document.getElementById('webhookDelay').addEventListener('input', function() {
         document.getElementById('delayValue').textContent = this.value;
+    });
+    document.getElementById('webhookRetryDelay').addEventListener('input', function() {
+        document.getElementById('retryDelayValue').textContent = this.value;
     });
 
     setInterval(loadHistory, 10000);
@@ -211,44 +227,16 @@ async function loadWebhookSettings() {
         document.getElementById('webhookEnabled').checked = data.webhook_enabled !== false;
         document.getElementById('webhookDelay').value = data.webhook_delay || 60;
         document.getElementById('delayValue').textContent = data.webhook_delay || 60;
+        document.getElementById('webhookRetryCount').value = Math.min(10, Math.max(0, parseInt(data.webhook_retry_count, 10) || 3));
+        document.getElementById('webhookRetryDelay').value = data.webhook_retry_delay || 30;
+        document.getElementById('retryDelayValue').textContent = data.webhook_retry_delay || 30;
         if (data.webhook_secret && data.webhook_secret !== '****') {
             document.getElementById('webhookSecret').value = data.webhook_secret;
-        } else if (data.webhook_secret === '****') {
+        } else         if (data.webhook_secret === '****') {
             document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
         }
-        // Library selects populated after loadLibraries
-        window._savedRadarrLibrary = data.webhook_radarr_library || '';
-        window._savedSonarrLibrary = data.webhook_sonarr_library || '';
     } catch (e) {
         console.error('Failed to load webhook settings:', e);
-    }
-}
-
-async function loadLibraries() {
-    try {
-        const data = await apiGet('/api/libraries');
-        const libs = data.libraries || data || [];
-        ['webhookRadarrLibrary', 'webhookSonarrLibrary'].forEach(function(selectId) {
-            const sel = document.getElementById(selectId);
-            // Keep the "All Libraries" default
-            while (sel.options.length > 1) sel.remove(1);
-            libs.forEach(function(lib) {
-                const name = lib.title || lib.name || lib;
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                sel.appendChild(opt);
-            });
-        });
-        // Apply saved values after populating
-        if (window._savedRadarrLibrary) {
-            document.getElementById('webhookRadarrLibrary').value = window._savedRadarrLibrary;
-        }
-        if (window._savedSonarrLibrary) {
-            document.getElementById('webhookSonarrLibrary').value = window._savedSonarrLibrary;
-        }
-    } catch (e) {
-        console.error('Failed to load libraries:', e);
     }
 }
 
@@ -257,11 +245,12 @@ async function saveWebhookSettings() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
 
+    const retryCount = Math.min(10, Math.max(0, parseInt(document.getElementById('webhookRetryCount').value, 10) || 0));
     const payload = {
         webhook_enabled: document.getElementById('webhookEnabled').checked,
         webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
-        webhook_radarr_library: document.getElementById('webhookRadarrLibrary').value,
-        webhook_sonarr_library: document.getElementById('webhookSonarrLibrary').value,
+        webhook_retry_count: retryCount,
+        webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
     };
 
     const secretVal = document.getElementById('webhookSecret').value;
@@ -305,8 +294,9 @@ async function loadHistory() {
         table.classList.remove('d-none');
         tbody.innerHTML = '';
 
-        events.forEach(function(evt) {
+        events.forEach(function(evt, idx) {
             const tr = document.createElement('tr');
+            tr.id = 'history-row-' + idx;
             const time = new Date(evt.timestamp);
             const relative = timeAgo(time);
 
@@ -315,18 +305,55 @@ async function loadHistory() {
                 : '<span class="badge source-badge sonarr">Sonarr</span>';
 
             const statusClass = evt.status || 'ignored';
+            const hasFiles = evt.status === 'triggered' && evt.files_preview && evt.files_preview.length > 0;
+            const pathCount = typeof evt.path_count === 'number' ? evt.path_count : (evt.files_preview ? evt.files_preview.length : 0);
+            let titleCell = escapeHtml(evt.title || '-');
+            if (hasFiles) {
+                const moreCount = pathCount > evt.files_preview.length ? pathCount - evt.files_preview.length : 0;
+                titleCell += ' <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="history-files-toggle-' + idx + '" onclick="toggleHistoryFiles(' + idx + ')" aria-expanded="false" aria-controls="history-detail-' + idx + '" title="Show files"><i class="bi bi-chevron-down"></i></button>';
+            }
 
             tr.innerHTML =
                 '<td title="' + escapeHtml(time.toLocaleString()) + '">' + escapeHtml(relative) + '</td>' +
                 '<td>' + sourceBadge + '</td>' +
-                '<td>' + escapeHtml(evt.title || '-') + '</td>' +
+                '<td>' + titleCell + '</td>' +
                 '<td><span class="badge status-badge ' + escapeHtml(statusClass) + '">' + escapeHtml(evt.status) + '</span></td>';
             tbody.appendChild(tr);
+
+            if (hasFiles) {
+                const filesList = evt.files_preview
+                    .map(function(f) { return '<div class="text-muted">' + escapeHtml(f) + '</div>'; })
+                    .join('');
+                const overflow = pathCount > evt.files_preview.length
+                    ? '<div class="text-muted mt-1">(+' + (pathCount - evt.files_preview.length) + ' more)</div>'
+                    : '';
+                const detailTr = document.createElement('tr');
+                detailTr.id = 'history-detail-' + idx;
+                detailTr.className = 'd-none history-files-detail';
+                detailTr.setAttribute('aria-hidden', 'true');
+                detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
+                tbody.appendChild(detailTr);
+            }
         });
     } catch (e) {
         console.error('Failed to load history:', e);
         document.getElementById('historyLoading').classList.add('d-none');
     }
+}
+
+function toggleHistoryFiles(index) {
+    const detailRow = document.getElementById('history-detail-' + index);
+    const btn = document.getElementById('history-files-toggle-' + index);
+    if (!detailRow || !btn) return;
+    const isExpanded = !detailRow.classList.contains('d-none');
+    detailRow.classList.toggle('d-none');
+    detailRow.setAttribute('aria-hidden', isExpanded ? 'true' : 'false');
+    const icon = btn.querySelector('i');
+    if (icon) {
+        icon.classList.toggle('bi-chevron-down', isExpanded);
+        icon.classList.toggle('bi-chevron-up', !isExpanded);
+    }
+    btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
 }
 
 async function clearHistory() {

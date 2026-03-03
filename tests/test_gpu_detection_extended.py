@@ -722,6 +722,202 @@ class TestAccelerationMethodTesting:
         assert result is False
 
 
+class TestNvidiaSmiDetection:
+    """Test nvidia-smi fallback detection."""
+
+    @patch("subprocess.run")
+    def test_detect_nvidia_via_nvidia_smi_success(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="NVIDIA GeForce RTX 3080\n"
+        )
+        assert _detect_nvidia_via_nvidia_smi() == "NVIDIA"
+
+    @patch("subprocess.run")
+    def test_detect_nvidia_via_nvidia_smi_not_installed(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+
+        mock_run.side_effect = FileNotFoundError()
+        assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_detect_nvidia_via_nvidia_smi_failure(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+
+        mock_run.return_value = MagicMock(returncode=1, stderr="error")
+        assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_detect_nvidia_via_nvidia_smi_empty_output(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_detect_nvidia_via_nvidia_smi_timeout(self, mock_run):
+        from subprocess import TimeoutExpired
+        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+
+        mock_run.side_effect = TimeoutExpired("nvidia-smi", 5)
+        assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_detect_nvidia_via_nvidia_smi_exception(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+
+        mock_run.side_effect = RuntimeError("unexpected")
+        assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
+
+
+class TestGPUVendorFromDriver:
+    """Test driver-to-vendor mapping."""
+
+    def test_known_drivers(self):
+        from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
+
+        with patch(
+            "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+            return_value="UNKNOWN",
+        ):
+            assert _get_gpu_vendor_from_driver("nvidia") == "NVIDIA"
+            assert _get_gpu_vendor_from_driver("amdgpu") == "AMD"
+            assert _get_gpu_vendor_from_driver("i915") == "INTEL"
+
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci")
+    def test_unknown_driver_uses_lspci(self, mock_lspci, _mock_wsl):
+        from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
+
+        mock_lspci.return_value = "AMD"
+        assert _get_gpu_vendor_from_driver("somedriver") == "AMD"
+
+
+class TestCheckDeviceAccess:
+    """Test device access checking."""
+
+    @patch("os.access", return_value=True)
+    @patch("os.path.exists", return_value=True)
+    def test_accessible_device(self, _mock_exists, _mock_access):
+        from plex_generate_previews.gpu_detection import _check_device_access
+
+        ok, reason = _check_device_access("/dev/dri/renderD128")
+        assert ok is True
+        assert reason == "accessible"
+
+    @patch("os.path.exists", return_value=False)
+    def test_nonexistent_device(self, _mock_exists):
+        from plex_generate_previews.gpu_detection import _check_device_access
+
+        ok, reason = _check_device_access("/dev/dri/renderD999")
+        assert ok is False
+        assert reason == "not_found"
+
+
+class TestLspciEdgeCases:
+    """Additional lspci edge cases."""
+
+    @patch("subprocess.run")
+    def test_lspci_empty_output(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        assert _detect_gpu_type_from_lspci() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_lspci_timeout(self, mock_run):
+        from subprocess import TimeoutExpired
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+
+        mock_run.side_effect = TimeoutExpired("lspci", 5)
+        assert _detect_gpu_type_from_lspci() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_lspci_no_vga_devices(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="00:1f.3 Audio device: Sound Corp\n00:00.0 Host bridge: Foo\n",
+        )
+        assert _detect_gpu_type_from_lspci() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_lspci_unrecognized_gpu_vendor(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="00:02.0 VGA compatible controller: Matrox Corporation"
+        )
+        assert _detect_gpu_type_from_lspci() == "UNKNOWN"
+
+    @patch("subprocess.run")
+    def test_lspci_with_stderr(self, mock_run):
+        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="pcilib: Cannot open /proc/bus/pci", stdout=""
+        )
+        assert _detect_gpu_type_from_lspci() == "UNKNOWN"
+
+
+class TestCheckFFmpegVersion:
+    """Test FFmpeg version validation."""
+
+    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_version")
+    def test_version_meets_minimum(self, mock_version):
+        from plex_generate_previews.gpu_detection import _check_ffmpeg_version
+
+        mock_version.return_value = (7, 1, 1)
+        assert _check_ffmpeg_version() is True
+
+    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_version")
+    def test_version_below_minimum(self, mock_version):
+        from plex_generate_previews.gpu_detection import _check_ffmpeg_version
+
+        mock_version.return_value = (4, 0, 0)
+        assert _check_ffmpeg_version() is False
+
+
+class TestGetFFmpegVersionParsing:
+    """Test FFmpeg version parsing edge cases."""
+
+    @patch("subprocess.run")
+    def test_date_based_git_build(self, mock_run):
+        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="ffmpeg version 2025-10-12-git-abcdef"
+        )
+        assert _get_ffmpeg_version() is None
+
+    @patch("subprocess.run")
+    def test_two_part_version(self, mock_run):
+        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="ffmpeg version 8.0 Copyright"
+        )
+        assert _get_ffmpeg_version() == (8, 0, 0)
+
+    @patch("subprocess.run")
+    def test_version_with_suffix(self, mock_run):
+        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="ffmpeg version 7.1.1-1ubuntu1.2 Copyright"
+        )
+        assert _get_ffmpeg_version() == (7, 1, 1)
+
+    @patch("subprocess.run")
+    def test_ffmpeg_not_found(self, mock_run):
+        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+
+        mock_run.return_value = MagicMock(returncode=1, stderr="command not found")
+        assert _get_ffmpeg_version() is None
+
+
 class TestDetectAllGPUsEdgeCases:
     """Test edge cases in detect_all_gpus."""
 
