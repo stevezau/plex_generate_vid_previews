@@ -130,10 +130,8 @@ with HTTPS, a custom domain, or alongside other services — you can place it
 behind a reverse proxy such as Nginx, Apache, or Traefik.
 
 The built-in server listens on port `8080` (HTTP) and the reverse proxy
-forwards external requests to it. The one requirement worth calling out:
-the web UI uses **WebSocket** (Socket.IO) for real-time job progress. Your
-reverse proxy **must** forward WebSocket upgrade requests, otherwise
-progress bars will appear frozen and only update on manual page refresh.
+forwards external requests to it. Real-time updates use HTTP long-polling
+(Socket.IO), so no special WebSocket configuration is needed.
 
 #### Nginx
 
@@ -141,8 +139,6 @@ progress bars will appear frozen and only update on manual page refresh.
 location / {
     proxy_pass http://localhost:8080;
     proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -154,7 +150,7 @@ location / {
 Enable the required modules first:
 
 ```bash
-sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers
+sudo a2enmod proxy proxy_http rewrite headers
 sudo systemctl restart apache2
 ```
 
@@ -172,12 +168,6 @@ Example HTTPS virtual host:
     RequestHeader set X-Forwarded-Proto https
     RequestHeader set X-Forwarded-Ssl on
 
-    # Proxy WebSocket upgrade requests (required for real-time updates)
-    RewriteEngine On
-    RewriteCond %{HTTP:Upgrade} =websocket [NC]
-    RewriteRule /(.*) ws://127.0.0.1:8080/$1 [P,L]
-
-    # Proxy all other traffic
     ProxyPass / http://127.0.0.1:8080/
     ProxyPassReverse / http://127.0.0.1:8080/
 
@@ -187,12 +177,6 @@ Example HTTPS virtual host:
     Header edit Location ^http://(.*)$ https://$1
 </VirtualHost>
 ```
-
-> [!IMPORTANT]
-> The `RewriteRule` for WebSocket **must** appear before the `ProxyPass`
-> directives. Without `mod_proxy_wstunnel`, Apache treats WebSocket upgrade
-> requests as normal HTTP and the Socket.IO connection silently falls back
-> to buffered long-polling — causing job progress to appear frozen.
 
 #### Traefik
 
@@ -248,7 +232,7 @@ plex-generate-previews --cli --plex-url ... --plex-token ...
 
 ### Real-Time Updates
 
-The dashboard uses WebSocket connections (via Flask-SocketIO + simple-websocket) for real-time job progress updates. The client connects to the `/jobs` namespace using WebSocket transport with automatic polling fallback.
+The dashboard uses Flask-SocketIO with HTTP long-polling for real-time job progress updates. The client connects to the `/jobs` namespace.
 
 | Event | Description |
 |-------|-------------|

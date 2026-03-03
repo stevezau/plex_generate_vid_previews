@@ -196,16 +196,19 @@ def create_app(config_dir: str = None) -> Flask:
     # CSRF exemptions are applied selectively per-endpoint after
     # blueprint registration.  See the loop below register_blueprint().
 
-    # Initialize SocketIO with the app.
-    # async_mode="threading" uses native Python threads + simple-websocket
-    # for WebSocket support.  This avoids gevent monkey-patching which
-    # caused worker starvation (all requests "Pending") on page refresh.
+    # Initialize SocketIO with polling-only transport.
+    # WebSocket connections monopolise a gunicorn thread for their
+    # lifetime; dead/stale connections (CLOSE_WAIT) accumulate and
+    # exhaust the thread pool, making the entire UI unresponsive.
+    # HTTP long-polling avoids persistent connections so dead clients
+    # can never hog threads.
     socketio.init_app(
         app,
         async_mode="threading",
         cors_allowed_origins=cors_origins,
         ping_timeout=20,
         ping_interval=10,
+        allow_upgrades=False,
     )
 
     # Initialize settings manager with the config_dir FIRST

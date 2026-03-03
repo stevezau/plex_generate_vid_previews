@@ -130,7 +130,7 @@ function initDashboard() {
 // SocketIO Connection
 function connectSocket() {
     socket = io('/jobs', {
-        transports: ['websocket', 'polling'],
+        transports: ['polling'],
         reconnection: true,
         reconnectionAttempts: 10,
         reconnectionDelay: 1000
