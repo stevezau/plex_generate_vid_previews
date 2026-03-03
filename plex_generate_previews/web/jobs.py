@@ -642,7 +642,7 @@ class JobManager:
         """Emit current worker statuses to connected clients via SocketIO."""
         workers = self.get_worker_statuses()
         self._emit_event(
-            "worker_status",
+            "worker_update",
             {"workers": [w.to_dict() for w in workers]},
         )
 
