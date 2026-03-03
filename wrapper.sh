@@ -83,8 +83,7 @@ else
     fi
     run_as_user gunicorn \
         --bind "0.0.0.0:${WEB_PORT:-8080}" \
-        --worker-class gthread \
-        --threads 8 \
+        --worker-class eventlet \
         --workers 1 \
         --timeout 300 \
         --graceful-timeout 30 \

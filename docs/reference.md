@@ -593,11 +593,11 @@ All errors follow this format:
 
 ## WebSocket Events
 
-The dashboard uses Flask-SocketIO with HTTP long-polling for real-time updates. The client connects to the `/jobs` namespace.
+The dashboard uses Flask-SocketIO with WebSocket for real-time updates. The client connects to the `/jobs` namespace.
 
 ```javascript
 const socket = io('/jobs', {
-    transports: ['polling'],
+    transports: ['websocket', 'polling'],
     reconnection: true
 });
 ```

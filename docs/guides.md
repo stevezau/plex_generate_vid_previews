@@ -130,8 +130,9 @@ with HTTPS, a custom domain, or alongside other services — you can place it
 behind a reverse proxy such as Nginx, Apache, or Traefik.
 
 The built-in server listens on port `8080` (HTTP) and the reverse proxy
-forwards external requests to it. Real-time updates use HTTP long-polling
-(Socket.IO), so no special WebSocket configuration is needed.
+forwards external requests to it. The web UI uses **WebSocket** (Socket.IO)
+for real-time updates, so your reverse proxy **must** forward WebSocket
+upgrade requests.
 
 #### Nginx
 
@@ -139,6 +140,8 @@ forwards external requests to it. Real-time updates use HTTP long-polling
 location / {
     proxy_pass http://localhost:8080;
     proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -150,7 +153,7 @@ location / {
 Enable the required modules first:
 
 ```bash
-sudo a2enmod proxy proxy_http rewrite headers
+sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers
 sudo systemctl restart apache2
 ```
 
@@ -167,6 +170,10 @@ Example HTTPS virtual host:
 
     RequestHeader set X-Forwarded-Proto https
     RequestHeader set X-Forwarded-Ssl on
+
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*) ws://127.0.0.1:8080/$1 [P,L]
 
     ProxyPass / http://127.0.0.1:8080/
     ProxyPassReverse / http://127.0.0.1:8080/
@@ -232,7 +239,7 @@ plex-generate-previews --cli --plex-url ... --plex-token ...
 
 ### Real-Time Updates
 
-The dashboard uses Flask-SocketIO with HTTP long-polling for real-time job progress updates. The client connects to the `/jobs` namespace.
+The dashboard uses Flask-SocketIO with WebSocket for real-time job progress updates. The client connects to the `/jobs` namespace.
 
 | Event | Description |
 |-------|-------------|

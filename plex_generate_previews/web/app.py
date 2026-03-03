@@ -196,19 +196,17 @@ def create_app(config_dir: str = None) -> Flask:
     # CSRF exemptions are applied selectively per-endpoint after
     # blueprint registration.  See the loop below register_blueprint().
 
-    # Initialize SocketIO with polling-only transport.
-    # WebSocket connections monopolise a gunicorn thread for their
-    # lifetime; dead/stale connections (CLOSE_WAIT) accumulate and
-    # exhaust the thread pool, making the entire UI unresponsive.
-    # HTTP long-polling avoids persistent connections so dead clients
-    # can never hog threads.
+    # Initialize SocketIO with eventlet async mode.
+    # Eventlet uses green threads (lightweight coroutines) so thousands
+    # of concurrent WebSocket connections can coexist without exhausting
+    # OS threads.  This replaces async_mode="threading" which used one
+    # OS thread per WebSocket and caused CLOSE_WAIT thread exhaustion.
     socketio.init_app(
         app,
-        async_mode="threading",
+        async_mode="eventlet",
         cors_allowed_origins=cors_origins,
         ping_timeout=20,
         ping_interval=10,
-        allow_upgrades=False,
     )
 
     # Initialize settings manager with the config_dir FIRST
