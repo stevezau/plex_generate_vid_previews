@@ -596,7 +596,9 @@ def get_media_items_by_paths(
                 str(getattr(section, "title", "Unknown")).strip() or "Unknown"
             )
             for basename, targets_for_basename in basename_to_targets.items():
-                if not targets_for_basename.intersection(target_paths - excluded_matches):
+                if not targets_for_basename.intersection(
+                    target_paths - excluded_matches
+                ):
                     continue
                 try:
                     ekey = (

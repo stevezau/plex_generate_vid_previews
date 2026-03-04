@@ -807,7 +807,9 @@ class TestGetMediaItemsByPaths:
         assert result.items[0][2] == "episode"
         assert mock_plex.fetchItems.called
 
-    def test_get_media_items_by_paths_file_path_search_resolves_match(self, mock_config):
+    def test_get_media_items_by_paths_file_path_search_resolves_match(
+        self, mock_config
+    ):
         """Targeted file-path search resolves path to Plex item."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
