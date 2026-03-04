@@ -567,7 +567,9 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
 
             # Skip GPUs visible in sysfs but not mounted into the container
             if not os.path.exists(render_device):
-                logger.debug(f"Skipping {entry}: {render_device} not present in /dev/dri")
+                logger.debug(
+                    f"Skipping {entry}: {render_device} not present in /dev/dri"
+                )
                 continue
 
             # Get driver information
