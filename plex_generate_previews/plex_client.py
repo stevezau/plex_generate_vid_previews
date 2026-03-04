@@ -7,6 +7,7 @@ library querying, and duplicate location filtering.
 
 import os
 import time
+import urllib.parse
 import http.client
 import xml.etree.ElementTree
 from dataclasses import dataclass
@@ -375,8 +376,8 @@ def get_media_items_by_paths(
     the item's bundle hash (from Plex). The webhook only gives us the file path;
     we look up the Plex item to get its key and then /tree to get the hash.
 
-    For webhooks the file was just imported, so we search recently-added items
-    per library first, then run one bounded fallback pass for unresolved paths.
+    We query Plex by file path (Plex API file= filter) so both new imports and
+    file upgrades (where addedAt is unchanged) are found.
 
     Args:
         plex: Plex server instance.
@@ -386,23 +387,6 @@ def get_media_items_by_paths(
     Returns:
         WebhookResolutionResult with items (matched), unresolved_paths, and skipped_paths.
     """
-    # Only fetch recently-added items when resolving webhook paths (avoids full-library scan).
-    # Limits can be tuned via environment variables for larger/busier servers.
-    try:
-        webhook_recent_limit = max(
-            1, int(os.environ.get("WEBHOOK_RECENT_LIMIT", "200"))
-        )
-    except ValueError:
-        webhook_recent_limit = 200
-
-    try:
-        webhook_fallback_limit = max(
-            webhook_recent_limit,
-            int(os.environ.get("WEBHOOK_FALLBACK_LIMIT", "1200")),
-        )
-    except ValueError:
-        webhook_fallback_limit = max(webhook_recent_limit, 1200)
-
     mappings = getattr(config, "path_mappings", None) or []
     normalized_targets = set()
     input_paths: List[str] = []
@@ -491,155 +475,165 @@ def get_media_items_by_paths(
                 item_targets.add(_normalize_path_for_match(alias))
         return item_targets
 
-    def _scan_sections(target_paths: set[str], max_results: int) -> set[str]:
-        """Scan sections and return matched target paths for this pass."""
+    def _section_type_id(media_type: Optional[str]) -> Optional[int]:
+        """Return Plex API type id for library section query (1=movie, 4=episode)."""
+        if media_type == "movie":
+            return 1
+        if media_type == "episode":
+            return 4
+        return None
+
+    def _search_by_file_path(target_paths: set[str]) -> set[str]:
+        """Resolve paths by querying Plex with file= basename filter. Returns matched targets."""
         pass_matches = set()
+        unresolved_inputs = [
+            p
+            for p in input_paths
+            if not input_to_targets.get(p, set()).intersection(matched_targets)
+        ]
+        basename_to_targets: Dict[str, Set[str]] = {}
+        for p in unresolved_inputs:
+            bn = os.path.basename(p)
+            targets_for_path = input_to_targets.get(p, set()) & target_paths
+            if targets_for_path:
+                basename_to_targets.setdefault(bn, set()).update(targets_for_path)
 
         for section in sections:
             if not _is_selected_section(section):
                 continue
-
             media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
             if not media_type:
                 continue
-
-            search_kwargs = {"libtype": "episode"} if media_type == "episode" else {}
-            search_kwargs["sort"] = "addedAt:desc"
-            search_kwargs["maxresults"] = max_results
-            try:
-                items = retry_plex_call(section.search, **search_kwargs)
-            except (
-                requests.exceptions.RequestException,
-                http.client.BadStatusLine,
-                xml.etree.ElementTree.ParseError,
-            ) as e:
-                logger.warning(
-                    f"Skipping library '{section.title}' while resolving webhook paths: {e}"
-                )
+            type_id = _section_type_id(media_type)
+            if type_id is None:
                 continue
-
-            for item in items:
-                item_targets = _collect_item_targets(item)
-                if not item_targets:
+            section_key = getattr(section, "key", None)
+            if section_key is None:
+                continue
+            section_title = (
+                str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+            )
+            for basename, targets_for_basename in basename_to_targets.items():
+                if not targets_for_basename.intersection(target_paths - pass_matches):
                     continue
-
-                matched_for_item = target_paths.intersection(item_targets)
-                if not matched_for_item:
-                    continue
-
-                pass_matches.update(matched_for_item)
-                section_title = (
-                    str(getattr(section, "title", "Unknown")).strip() or "Unknown"
-                )
-                plex_locations = _extract_item_locations(item)
-                plex_path = plex_locations[0] if plex_locations else ""
-                for target in matched_for_item:
-                    if target not in matched_target_to_plex_path and plex_path:
-                        matched_target_to_plex_path[target] = plex_path
-                    selected_match_libraries_by_target.setdefault(target, set()).add(
-                        section_title
+                try:
+                    ekey = (
+                        f"/library/sections/{section_key}/all"
+                        f"?type={type_id}&file={urllib.parse.quote(basename)}"
                     )
-                item_key = getattr(item, "key", None)
-                if not item_key:
+                    items = retry_plex_call(plex.fetchItems, ekey)
+                except (
+                    requests.exceptions.RequestException,
+                    http.client.BadStatusLine,
+                    xml.etree.ElementTree.ParseError,
+                ) as e:
                     logger.warning(
-                        "Skipping matched Plex item without metadata key during webhook path resolution"
+                        f"Skipping library '{section_title}' file-path search: {e}"
                     )
                     continue
-
-                if item_key in seen_keys:
-                    continue
-
-                seen_keys.add(item_key)
-                title = (
-                    str(getattr(item, "title", "Unknown")).strip() or "Unknown"
-                    if media_type == "movie"
-                    else _build_episode_title(item)
-                )
-                matched_items.append((item_key, title, media_type))
-
+                for item in items:
+                    item_targets = _collect_item_targets(item)
+                    if not item_targets:
+                        continue
+                    matched_for_item = target_paths.intersection(item_targets)
+                    if not matched_for_item:
+                        continue
+                    pass_matches.update(matched_for_item)
+                    plex_locations = _extract_item_locations(item)
+                    plex_path = plex_locations[0] if plex_locations else ""
+                    for target in matched_for_item:
+                        if target not in matched_target_to_plex_path and plex_path:
+                            matched_target_to_plex_path[target] = plex_path
+                        selected_match_libraries_by_target.setdefault(
+                            target, set()
+                        ).add(section_title)
+                    item_key = getattr(item, "key", None)
+                    if not item_key:
+                        logger.warning(
+                            "Skipping matched Plex item without metadata key during webhook path resolution"
+                        )
+                        continue
+                    if item_key in seen_keys:
+                        continue
+                    seen_keys.add(item_key)
+                    title = (
+                        str(getattr(item, "title", "Unknown")).strip() or "Unknown"
+                        if media_type == "movie"
+                        else _build_episode_title(item)
+                    )
+                    matched_items.append((item_key, title, media_type))
         return pass_matches
 
-    def _scan_excluded_sections(target_paths: set[str], max_results: int):
-        """Return target paths that match Plex items in excluded libraries."""
+    def _search_excluded_sections_by_file_path(target_paths: set[str]):
+        """Return target paths that match Plex items in excluded libraries (file-path search)."""
         excluded_matches = set()
         excluded_sections = set()
+        unresolved_inputs = [
+            p
+            for p in input_paths
+            if not input_to_targets.get(p, set()).intersection(matched_targets)
+        ]
+        basename_to_targets: Dict[str, Set[str]] = {}
+        for p in unresolved_inputs:
+            bn = os.path.basename(p)
+            targets_for_path = input_to_targets.get(p, set()) & target_paths
+            if targets_for_path:
+                basename_to_targets.setdefault(bn, set()).update(targets_for_path)
 
         for section in sections:
             if _is_selected_section(section):
                 continue
-
             media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
             if not media_type:
                 continue
-
-            search_kwargs = {"libtype": "episode"} if media_type == "episode" else {}
-            search_kwargs["sort"] = "addedAt:desc"
-            search_kwargs["maxresults"] = max_results
-            try:
-                items = retry_plex_call(section.search, **search_kwargs)
-            except (
-                requests.exceptions.RequestException,
-                http.client.BadStatusLine,
-                xml.etree.ElementTree.ParseError,
-            ):
+            type_id = _section_type_id(media_type)
+            if type_id is None:
                 continue
-
-            for item in items:
-                item_targets = _collect_item_targets(item)
-                if not item_targets:
+            section_key = getattr(section, "key", None)
+            if section_key is None:
+                continue
+            section_title = (
+                str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+            )
+            for basename, targets_for_basename in basename_to_targets.items():
+                if not targets_for_basename.intersection(target_paths - excluded_matches):
                     continue
-
-                matched_for_item = target_paths.intersection(item_targets)
-                if matched_for_item:
-                    excluded_matches.update(matched_for_item)
-                    section_title = (
-                        str(getattr(section, "title", "Unknown")).strip() or "Unknown"
+                try:
+                    ekey = (
+                        f"/library/sections/{section_key}/all"
+                        f"?type={type_id}&file={urllib.parse.quote(basename)}"
                     )
-                    excluded_sections.add(section_title)
-                    for target in matched_for_item:
-                        excluded_match_libraries_by_target.setdefault(
-                            target, set()
-                        ).add(section_title)
-
+                    items = retry_plex_call(plex.fetchItems, ekey)
+                except (
+                    requests.exceptions.RequestException,
+                    http.client.BadStatusLine,
+                    xml.etree.ElementTree.ParseError,
+                ):
+                    continue
+                for item in items:
+                    item_targets = _collect_item_targets(item)
+                    if not item_targets:
+                        continue
+                    matched_for_item = target_paths.intersection(item_targets)
+                    if matched_for_item:
+                        excluded_matches.update(matched_for_item)
+                        excluded_sections.add(section_title)
+                        for target in matched_for_item:
+                            excluded_match_libraries_by_target.setdefault(
+                                target, set()
+                            ).add(section_title)
         return excluded_matches, excluded_sections
 
-    logger.info("Querying Plex for recently added items...")
-    logger.info(f"  Pass 1: scanned up to {webhook_recent_limit} items per library")
-    matched_targets.update(_scan_sections(normalized_targets, webhook_recent_limit))
+    logger.info("Querying Plex by file path...")
+    matched_targets.update(_search_by_file_path(normalized_targets))
     unresolved_targets = normalized_targets - matched_targets
-    input_files_unmatched_after_pass1 = sum(
-        1
-        for p in input_paths
-        if not input_to_targets.get(p, set()).intersection(matched_targets)
-    )
-    if unresolved_targets and webhook_fallback_limit > webhook_recent_limit:
-        logger.info(
-            f"  Pass 2: scanned up to {webhook_fallback_limit} items per library "
-            f"({input_files_unmatched_after_pass1} file(s) still unmatched)"
-        )
-        matched_targets.update(
-            _scan_sections(unresolved_targets, webhook_fallback_limit)
-        )
-        unresolved_targets = normalized_targets - matched_targets
 
     skipped_by_library_targets = set()
     skipped_library_names = set()
     if unresolved_targets and (selected_library_ids or selected_library_titles):
-        skipped_by_library_targets, skipped_library_names = _scan_excluded_sections(
-            unresolved_targets, webhook_recent_limit
+        skipped_by_library_targets, skipped_library_names = (
+            _search_excluded_sections_by_file_path(unresolved_targets)
         )
-        remaining_for_excluded_scan = unresolved_targets - skipped_by_library_targets
-        if (
-            remaining_for_excluded_scan
-            and webhook_fallback_limit > webhook_recent_limit
-        ):
-            fallback_skipped_targets, fallback_skipped_libraries = (
-                _scan_excluded_sections(
-                    remaining_for_excluded_scan, webhook_fallback_limit
-                )
-            )
-            skipped_by_library_targets.update(fallback_skipped_targets)
-            skipped_library_names.update(fallback_skipped_libraries)
         if skipped_by_library_targets:
             unresolved_targets = unresolved_targets - skipped_by_library_targets
             skipped_input_paths = [
