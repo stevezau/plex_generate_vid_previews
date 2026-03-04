@@ -196,19 +196,12 @@ def create_app(config_dir: str = None) -> Flask:
     # CSRF exemptions are applied selectively per-endpoint after
     # blueprint registration.  See the loop below register_blueprint().
 
-    # Prefer eventlet (green threads — handles thousands of WebSocket
-    # connections without exhausting OS threads).  Fall back to threading
-    # when eventlet is not installed (tests, development).
-    try:
-        import eventlet  # noqa: F401
-
-        _async_mode = "eventlet"
-    except ImportError:
-        _async_mode = "threading"
-
+    # Threading mode: uses real OS threads (no eventlet/gevent).
+    # Eventlet replaces threading.Thread with cooperative green threads,
+    # which deadlocks worker.py's subprocess calls. See GitHub #154.
     socketio.init_app(
         app,
-        async_mode=_async_mode,
+        async_mode="threading",
         cors_allowed_origins=cors_origins,
         ping_timeout=20,
         ping_interval=10,
