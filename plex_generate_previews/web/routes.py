@@ -1817,6 +1817,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 level=job_log_level,
                 format="{message}",
                 filter=job_thread_filter,
+                enqueue=True,
             )
 
             job_manager.start_job(job_id)
@@ -2247,11 +2248,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job_manager.complete_job(job_id, error=str(e))
         finally:
             clear_job_threads()
-            # Remove the log handler when job is done
+            # Flush enqueued log messages, then remove the handler
             if log_handler_id is not None:
                 try:
                     from loguru import logger as loguru_logger
 
+                    loguru_logger.complete()
                     loguru_logger.remove(log_handler_id)
                 except Exception:
                     pass

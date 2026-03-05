@@ -195,7 +195,7 @@ class JobManager:
                 logger.error(f"Unexpected error loading jobs: {e}")
 
     def _save_jobs(self) -> None:
-        """Save jobs to persistent storage."""
+        """Save jobs to persistent storage. Caller must hold _lock."""
         os.makedirs(self.config_dir, exist_ok=True)
         try:
             with open(self.jobs_file, "w") as f:
@@ -229,8 +229,12 @@ class JobManager:
     # Maximum number of terminal-state jobs to keep on disk
     _MAX_TERMINAL_JOBS = 50
 
-    def _prune_terminal_jobs(self) -> None:
-        """Remove oldest completed/failed/cancelled jobs when limit exceeded."""
+    def _prune_terminal_jobs(self) -> int:
+        """Remove oldest completed/failed/cancelled jobs when limit exceeded.
+
+        Returns:
+            Number of pruned jobs (caller can log outside the lock).
+        """
         terminal = sorted(
             (
                 j
@@ -245,7 +249,7 @@ class JobManager:
             for job in terminal[:excess]:
                 self._delete_job_log_file(job.id)
                 del self._jobs[job.id]
-            logger.debug(f"Pruned {excess} old terminal jobs")
+        return max(excess, 0)
 
     def _delete_job_log_file(self, job_id: str) -> None:
         """Remove the persisted log file for a job if it exists. Caller must hold _lock."""
@@ -270,6 +274,7 @@ class JobManager:
         """Delete terminal jobs and their log files older than job_history_days.
 
         Also removes orphaned log files (no matching job entry).
+        Caller must hold _lock.
         """
         days = self._get_job_history_days()
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -297,12 +302,11 @@ class JobManager:
                 f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)"
             )
 
-        # Clean up orphaned log files whose job entry no longer exists
         if os.path.isdir(self._job_logs_dir):
             for name in os.listdir(self._job_logs_dir):
                 if not name.endswith(".log"):
                     continue
-                job_id = name[:-4]  # strip ".log"
+                job_id = name[:-4]
                 if job_id not in self._jobs:
                     path = os.path.join(self._job_logs_dir, name)
                     try:
@@ -343,6 +347,7 @@ class JobManager:
         config: Optional[Dict[str, Any]] = None,
     ) -> Job:
         """Create a new job."""
+        pruned = 0
         with self._lock:
             job = Job(
                 id=str(uuid.uuid4()),
@@ -351,11 +356,13 @@ class JobManager:
                 config=config or {},
             )
             self._jobs[job.id] = job
-            self._prune_terminal_jobs()
+            pruned = self._prune_terminal_jobs()
             self._save_jobs()
             self._emit_event("job_created", job.to_dict())
-            logger.info(f"Created job {job.id} for library {library_name}")
-            return job
+        if pruned:
+            logger.debug(f"Pruned {pruned} old terminal jobs")
+        logger.info(f"Created job {job.id} for library {library_name}")
+        return job
 
     def get_job(self, job_id: str) -> Optional[Job]:
         """Get a job by ID."""
@@ -385,6 +392,7 @@ class JobManager:
 
     def start_job(self, job_id: str) -> Optional[Job]:
         """Mark a job as started."""
+        started = False
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
@@ -397,8 +405,10 @@ class JobManager:
                 self._pause_events[job_id].set()
                 self._save_jobs()
                 self._emit_event("job_started", job.to_dict())
-                logger.info(f"Started job {job_id}")
-            return job
+                started = True
+        if started:
+            logger.info(f"Started job {job_id}")
+        return job
 
     def update_progress(
         self,
@@ -449,51 +459,55 @@ class JobManager:
                      warning message (amber badge in UI). The warning text is
                      stored in `job.error` so the UI can display it.
         """
+        log_msg = None
+        log_level = "info"
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
-                # Cancellation is terminal; do not overwrite with completed/failed.
                 if job.status == JobStatus.CANCELLED:
                     self.clear_pause_flag(job_id)
                     self.clear_cancellation_flag(job_id)
                     self.clear_active_worker_pool(job_id)
                     self._save_jobs()
-                    logger.info(
-                        f"Job {job_id} already cancelled; skipping completion update"
-                    )
-                    return job
-
-                job.completed_at = datetime.now(timezone.utc).isoformat()
-                if error:
-                    job.status = JobStatus.FAILED
-                    job.error = error
-                    job.paused = False
-                    self._emit_event("job_failed", job.to_dict())
-                    logger.error(f"Job {job_id} failed: {error}")
-                elif warning:
-                    job.status = JobStatus.COMPLETED
-                    job.error = warning
-                    job.paused = False
-                    job.progress.percent = 100.0
-                    self._emit_event("job_completed", job.to_dict())
-                    logger.info(f"Job {job_id} completed with warnings: {warning}")
+                    log_msg = f"Job {job_id} already cancelled; skipping completion update"
+                    # Early return after logging outside the lock
                 else:
-                    job.status = JobStatus.COMPLETED
-                    job.paused = False
-                    job.progress.percent = 100.0
-                    self._emit_event("job_completed", job.to_dict())
-                    logger.info(f"Job {job_id} completed successfully")
+                    job.completed_at = datetime.now(timezone.utc).isoformat()
+                    if error:
+                        job.status = JobStatus.FAILED
+                        job.error = error
+                        job.paused = False
+                        self._emit_event("job_failed", job.to_dict())
+                        log_msg = f"Job {job_id} failed: {error}"
+                        log_level = "error"
+                    elif warning:
+                        job.status = JobStatus.COMPLETED
+                        job.error = warning
+                        job.paused = False
+                        job.progress.percent = 100.0
+                        self._emit_event("job_completed", job.to_dict())
+                        log_msg = f"Job {job_id} completed with warnings: {warning}"
+                    else:
+                        job.status = JobStatus.COMPLETED
+                        job.paused = False
+                        job.progress.percent = 100.0
+                        self._emit_event("job_completed", job.to_dict())
+                        log_msg = f"Job {job_id} completed successfully"
 
-                if self._current_job_id == job_id:
-                    self._current_job_id = None
-                self.clear_pause_flag(job_id)
-                self.clear_cancellation_flag(job_id)
-                self.clear_active_worker_pool(job_id)
-                self._save_jobs()
-            return job
+                    if self._current_job_id == job_id:
+                        self._current_job_id = None
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._save_jobs()
+
+        if log_msg:
+            getattr(logger, log_level)(log_msg)
+        return job
 
     def cancel_job(self, job_id: str) -> Optional[Job]:
         """Cancel a job."""
+        cancelled = False
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
@@ -504,17 +518,19 @@ class JobManager:
                 if self._current_job_id == job_id:
                     self._current_job_id = None
                 self.clear_pause_flag(job_id)
-                # Keep cancellation flag for running jobs so the worker loop sees it.
                 if not was_running:
                     self.clear_cancellation_flag(job_id)
                 self.clear_active_worker_pool(job_id)
                 self._save_jobs()
                 self._emit_event("job_cancelled", job.to_dict())
-                logger.info(f"Cancelled job {job_id}")
-            return job
+                cancelled = True
+        if cancelled:
+            logger.info(f"Cancelled job {job_id}")
+        return job
 
     def delete_job(self, job_id: str) -> bool:
         """Delete a job."""
+        deleted = False
         with self._lock:
             if job_id in self._jobs:
                 if self._current_job_id == job_id:
@@ -525,9 +541,10 @@ class JobManager:
                 del self._jobs[job_id]
                 self._save_jobs()
                 self._emit_event("job_deleted", {"job_id": job_id})
-                logger.info(f"Deleted job {job_id}")
-                return True
-            return False
+                deleted = True
+        if deleted:
+            logger.info(f"Deleted job {job_id}")
+        return deleted
 
     def clear_completed_jobs(self, statuses: Optional[List[str]] = None) -> int:
         """Clear jobs by status.
@@ -688,6 +705,8 @@ class JobManager:
 
     def request_pause(self, job_id: str) -> bool:
         """Request pause for a running job."""
+        paused = False
+        status_val = ""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.status != JobStatus.RUNNING:
@@ -699,19 +718,24 @@ class JobManager:
                 self._pause_events[job_id] = event
             event.clear()
             job.paused = True
+            status_val = job.status.value
             self._save_jobs()
             self._emit_event("job_paused", {"job_id": job_id, "paused": True})
+            paused = True
+        if paused:
             logger.info(
-                f"Pause audit: job_id={job_id}, status={job.status.value}, paused=True"
+                f"Pause audit: job_id={job_id}, status={status_val}, paused=True"
             )
             self.add_log(
                 job_id,
                 "INFO - Pause requested; no new tasks will be dispatched until resume.",
             )
-            return True
+        return paused
 
     def request_resume(self, job_id: str) -> bool:
         """Request resume for a paused job."""
+        resumed = False
+        status_val = ""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.status != JobStatus.RUNNING:
@@ -723,13 +747,16 @@ class JobManager:
                 self._pause_events[job_id] = event
             event.set()
             job.paused = False
+            status_val = job.status.value
             self._save_jobs()
             self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
+            resumed = True
+        if resumed:
             logger.info(
-                f"Resume audit: job_id={job_id}, status={job.status.value}, paused=False"
+                f"Resume audit: job_id={job_id}, status={status_val}, paused=False"
             )
             self.add_log(job_id, "INFO - Resume requested; dispatch will continue.")
-            return True
+        return resumed
 
     def is_pause_requested(self, job_id: str) -> bool:
         """Check if pause has been requested for a job."""
