@@ -517,9 +517,7 @@ function createExcludePathRow(row) {
         <button type="button" class="btn btn-outline-danger btn-sm exclude-path-remove flex-shrink-0" title="Remove"><i class="bi bi-dash-lg"></i></button>
     `;
     div.querySelector('.exclude-path-remove').addEventListener('click', function() {
-        const parent = div.closest('.exclude-path-rows');
-        const rowEls = parent ? parent.querySelectorAll('.exclude-path-row') : [];
-        if (rowEls.length > 1) div.remove();
+        div.remove();
         markDirty();
     });
     div.querySelectorAll('input, select').forEach(el => el.addEventListener('input', markDirty));
