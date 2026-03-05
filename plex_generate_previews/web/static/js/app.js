@@ -687,12 +687,14 @@ function updateJobQueue() {
 
     let html = '';
 
-    // Sort jobs: running first, then pending, then by created_at desc
+    // Sort jobs: running first, then pending (oldest first = queue order), then terminal by created_at desc
     const sortedJobs = [...jobs].sort((a, b) => {
         if (a.status === 'running') return -1;
         if (b.status === 'running') return 1;
         if (a.status === 'pending' && b.status !== 'pending') return -1;
         if (b.status === 'pending' && a.status !== 'pending') return 1;
+        // Pending: oldest first (queue order); terminal: newest first
+        if (a.status === 'pending') return new Date(a.created_at) - new Date(b.created_at);
         return new Date(b.created_at) - new Date(a.created_at);
     });
     const activeJobIds = new Set(sortedJobs.map((job) => String(job.id)));
