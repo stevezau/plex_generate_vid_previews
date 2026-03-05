@@ -652,7 +652,13 @@ def reprocess_job(job_id):
             409,
         )
     new_config = dict(job.config or {})
-    for key in ("is_retry", "retry_delay", "retry_attempt", "max_retries", "parent_job_id"):
+    for key in (
+        "is_retry",
+        "retry_delay",
+        "retry_attempt",
+        "max_retries",
+        "parent_job_id",
+    ):
         new_config.pop(key, None)
     new_job = job_manager.create_job(
         library_id=job.library_id,
