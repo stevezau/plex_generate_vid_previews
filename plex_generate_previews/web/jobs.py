@@ -469,7 +469,9 @@ class JobManager:
                     self.clear_cancellation_flag(job_id)
                     self.clear_active_worker_pool(job_id)
                     self._save_jobs()
-                    log_msg = f"Job {job_id} already cancelled; skipping completion update"
+                    log_msg = (
+                        f"Job {job_id} already cancelled; skipping completion update"
+                    )
                     # Early return after logging outside the lock
                 else:
                     job.completed_at = datetime.now(timezone.utc).isoformat()
