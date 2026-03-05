@@ -475,6 +475,7 @@ def get_media_items_by_paths(
     matched_items = []
     seen_keys = set()
     matched_targets = set()
+    excluded_by_path_targets: Set[str] = set()
     matched_target_to_plex_path: Dict[str, str] = {}
     selected_match_libraries_by_target: Dict[str, Set[str]] = {}
     excluded_match_libraries_by_target: Dict[str, Set[str]] = {}
@@ -574,15 +575,8 @@ def get_media_items_by_paths(
                     matched_for_item = target_paths.intersection(item_targets)
                     if not matched_for_item:
                         continue
-                    pass_matches.update(matched_for_item)
                     plex_locations = _extract_item_locations(item)
                     plex_path = plex_locations[0] if plex_locations else ""
-                    for target in matched_for_item:
-                        if target not in matched_target_to_plex_path and plex_path:
-                            matched_target_to_plex_path[target] = plex_path
-                        selected_match_libraries_by_target.setdefault(
-                            target, set()
-                        ).add(section_title)
                     item_key = getattr(item, "key", None)
                     if not item_key:
                         logger.warning(
@@ -591,14 +585,22 @@ def get_media_items_by_paths(
                         continue
                     if item_key in seen_keys:
                         continue
-                    seen_keys.add(item_key)
                     local_path = (
                         plex_path_to_local(plex_path, mappings) if plex_path else ""
                     )
                     if local_path and is_path_excluded(
                         local_path, getattr(config, "exclude_paths", None)
                     ):
+                        excluded_by_path_targets.update(matched_for_item)
                         continue
+                    seen_keys.add(item_key)
+                    pass_matches.update(matched_for_item)
+                    for target in matched_for_item:
+                        if target not in matched_target_to_plex_path and plex_path:
+                            matched_target_to_plex_path[target] = plex_path
+                        selected_match_libraries_by_target.setdefault(
+                            target, set()
+                        ).add(section_title)
                     title = (
                         str(getattr(item, "title", "Unknown")).strip() or "Unknown"
                         if media_type == "movie"
@@ -707,9 +709,11 @@ def get_media_items_by_paths(
     # Per-file outcome blocks (chronological, easy to follow).
     resolved_count = 0
     skipped_count = 0
+    excluded_count = 0
     unresolved_count = 0
     resolved_input_paths_from_loop: Set[str] = set()
     skipped_input_paths_from_loop: Set[str] = set()
+    excluded_input_paths_from_loop: Set[str] = set()
     unresolved_input_paths_from_loop: List[str] = []
     max_detail_logs = 50
     total_for_index = len(input_paths)
@@ -743,6 +747,13 @@ def get_media_items_by_paths(
                 for lib in excluded_match_libraries_by_target.get(target, set())
             }
         )
+
+        if input_targets.intersection(excluded_by_path_targets):
+            excluded_count += 1
+            excluded_input_paths_from_loop.add(input_path)
+            logger.info(f"  [{file_index}/{total_for_index}] {input_path}")
+            logger.info("        Result: excluded (path rule — matches exclude list)")
+            continue
 
         if input_targets.intersection(matched_targets):
             resolved_count += 1
@@ -797,10 +808,10 @@ def get_media_items_by_paths(
                 logger.warning(
                     f"        Trying path mappings: {', '.join(mapping_prefixes)}"
                 )
-                if skipped_candidates:
-                    logger.warning(
-                        f"        Found in excluded library: {skipped_candidates[0]}"
-                    )
+            if skipped_candidates:
+                logger.warning(
+                    f"        Found in excluded library: {skipped_candidates[0]}"
+                )
             result_suffix = (
                 f": {', '.join(excluded_libraries)})" if excluded_libraries else ")"
             )
@@ -827,7 +838,10 @@ def get_media_items_by_paths(
     # Classify any input paths beyond the per-file detail window (same formula as loop).
     for input_path in input_paths[max_detail_logs:]:
         targets = input_to_targets.get(input_path, set())
-        if targets.intersection(matched_targets):
+        if targets.intersection(excluded_by_path_targets):
+            excluded_input_paths_from_loop.add(input_path)
+            excluded_count += 1
+        elif targets.intersection(matched_targets):
             resolved_input_paths_from_loop.add(input_path)
         elif targets.intersection(skipped_by_library_targets):
             skipped_input_paths_from_loop.add(input_path)
@@ -841,10 +855,20 @@ def get_media_items_by_paths(
         )
 
     # Summary (input-file counts first).
+    summary_parts = [
+        f"resolved={resolved_count}",
+        f"skipped={skipped_count}",
+        f"not found={unresolved_count}",
+    ]
+    if excluded_count > 0:
+        summary_parts.insert(1, f"excluded={excluded_count} (path rule)")
     logger.info(
-        f"Resolution summary: {len(input_paths)} file(s) — "
-        f"resolved={resolved_count}, skipped={skipped_count}, not found={unresolved_count}"
+        f"Resolution summary: {len(input_paths)} file(s) — " + ", ".join(summary_parts)
     )
+    if excluded_count > 0:
+        logger.info(
+            f"Excluded {excluded_count} file(s) by path rule (see Settings → Exclude paths)"
+        )
     if skipped_input_paths:
         logger.warning(
             f"Skipped {len(skipped_input_paths)} input file(s): matched Plex items in unselected "
@@ -870,9 +894,15 @@ def get_media_items_by_paths(
             "If this app, Plex, or Sonarr/Radarr use different paths for the same files, "
             "configure Path mapping in Settings."
         )
-    logger.info(
-        f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"
-    )
+    if excluded_count > 0 and len(matched_items) == 0:
+        logger.info(
+            f"Matched {len(matched_targets) + len(excluded_by_path_targets)} path(s) in Plex; "
+            f"{len(matched_items)} item(s) queued ({excluded_count} excluded by path rule)"
+        )
+    else:
+        logger.info(
+            f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"
+        )
     return WebhookResolutionResult(
         items=matched_items,
         unresolved_paths=unresolved_input_paths,
