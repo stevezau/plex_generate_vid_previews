@@ -706,6 +706,21 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         assert resp.get_json().get("path_mappings") == path_mappings
 
+    def test_get_settings_returns_exclude_paths(self, client):
+        """GET /api/settings includes exclude_paths; save and load round-trip."""
+        exclude_paths = [
+            {"value": "/mnt/media/archive", "type": "path"},
+            {"value": r".*\.iso$", "type": "regex"},
+        ]
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"exclude_paths": exclude_paths},
+        )
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json().get("exclude_paths") == exclude_paths
+
     def test_save_settings(self, client):
         resp = client.post(
             "/api/settings",

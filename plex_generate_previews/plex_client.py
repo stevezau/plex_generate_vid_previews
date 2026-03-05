@@ -21,7 +21,9 @@ from loguru import logger
 from .config import (
     Config,
     expand_path_mapping_candidates,
+    is_path_excluded,
     local_path_to_webhook_aliases,
+    path_to_canonical_local,
     plex_path_to_local,
 )
 
@@ -191,6 +193,30 @@ def filter_duplicate_locations(media_items):
     return filtered_items
 
 
+def _filter_excluded_by_path(media_items: List[tuple], config: Config) -> List[tuple]:
+    """Drop items whose first location (mapped to local) is in config.exclude_paths."""
+    exclude = getattr(config, "exclude_paths", None) or []
+    if not exclude:
+        return media_items
+    mappings = getattr(config, "path_mappings", None) or []
+    out = []
+    for item in media_items:
+        if len(item) == 4:
+            key, locations, title, media_type = item
+        else:
+            out.append(item)
+            continue
+        locs = list(locations) if locations else []
+        if not locs:
+            out.append(item)
+            continue
+        local_path = path_to_canonical_local(locs[0], mappings) or locs[0]
+        if is_path_excluded(local_path, exclude):
+            continue
+        out.append(item)
+    return out
+
+
 def get_library_sections(plex, config: Config, cancel_check=None):
     """
     Get all library sections from Plex server.
@@ -276,9 +302,12 @@ def get_library_sections(plex, config: Config, cancel_check=None):
                     show_title = m.grandparentTitle
                     season_episode = m.seasonEpisode.upper()
                     formatted_title = f"{show_title} {season_episode}"
-                    media_with_locations.append(
-                        (m.key, m.locations, formatted_title, "episode")
-                    )
+                media_with_locations.append(
+                    (m.key, m.locations, formatted_title, "episode")
+                )
+                media_with_locations = _filter_excluded_by_path(
+                    media_with_locations, config
+                )
                 # Filter out multi episode files based on file locations
                 media = filter_duplicate_locations(media_with_locations)
             elif section.METADATA_TYPE == "movie":
@@ -286,7 +315,14 @@ def get_library_sections(plex, config: Config, cancel_check=None):
                 if sort_param:
                     search_kwargs["sort"] = sort_param
                 search_results = retry_plex_call(section.search, **search_kwargs)
-                media = [(m.key, m.title, "movie") for m in search_results]
+                media_with_locations = [
+                    (m.key, getattr(m, "locations", []) or [], m.title, "movie")
+                    for m in search_results
+                ]
+                media_with_locations = _filter_excluded_by_path(
+                    media_with_locations, config
+                )
+                media = [(k, t, "movie") for k, _loc, t, _ in media_with_locations]
             else:
                 logger.info(
                     "Skipping library {} as '{}' is unsupported".format(
@@ -556,6 +592,13 @@ def get_media_items_by_paths(
                     if item_key in seen_keys:
                         continue
                     seen_keys.add(item_key)
+                    local_path = (
+                        plex_path_to_local(plex_path, mappings) if plex_path else ""
+                    )
+                    if local_path and is_path_excluded(
+                        local_path, getattr(config, "exclude_paths", None)
+                    ):
+                        continue
                     title = (
                         str(getattr(item, "title", "Unknown")).strip() or "Unknown"
                         if media_type == "movie"

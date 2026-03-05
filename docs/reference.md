@@ -189,6 +189,15 @@ If Plex has several roots (e.g. `/data_disk1`, `/data_disk2`) but Sonarr/Radarr 
 
 If both Plex and this container see files at the same path (e.g., both use `/media`), skip this configuration.
 
+### Exclude Paths
+
+Under the same **Media path mapping** settings you can add **Exclude paths**: paths or folders to skip for preview generation. These are applied to the **local** path (as this app sees the file after path mapping).
+
+- **Path prefix** — Any file under this folder is skipped (e.g. `/mnt/media/archive` skips everything under that path).
+- **Regex** — The full local path is matched against the pattern (e.g. `.*\.iso$` to skip ISO files).
+
+Add one row per path or pattern. Excluded items are not queued for full-library runs and are skipped for webhook-triggered runs.
+
 ---
 
 ## REST API

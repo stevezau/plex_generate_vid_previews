@@ -1353,6 +1353,7 @@ def get_settings():
             "plex_local_videos_path_mapping": settings.plex_local_videos_path_mapping
             or "",
             "path_mappings": settings.get("path_mappings", []),
+            "exclude_paths": settings.get("exclude_paths", []),
             "gpu_threads": settings.gpu_threads,
             "cpu_threads": settings.cpu_threads,
             "cpu_fallback_threads": settings.cpu_fallback_threads,
@@ -1391,6 +1392,7 @@ def save_settings():
         "plex_videos_path_mapping",
         "plex_local_videos_path_mapping",
         "path_mappings",
+        "exclude_paths",
         "gpu_threads",
         "cpu_threads",
         "cpu_fallback_threads",
@@ -1875,7 +1877,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if settings.plex_config_folder:
                 config.plex_config_folder = settings.plex_config_folder
 
-            from ..config import normalize_path_mappings, split_library_selectors
+            from ..config import (
+                normalize_path_mappings,
+                normalize_exclude_paths,
+                split_library_selectors,
+            )
 
             # Apply selected libraries (empty list = all libraries)
             selected_libs = settings.get("selected_libraries", [])
@@ -1888,6 +1894,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             path_mappings = normalize_path_mappings(settings)
             if path_mappings:
                 config.path_mappings = path_mappings
+            config.exclude_paths = normalize_exclude_paths(
+                settings.get("exclude_paths")
+            )
             if settings.get("plex_videos_path_mapping"):
                 config.plex_videos_path_mapping = settings.get(
                     "plex_videos_path_mapping"
