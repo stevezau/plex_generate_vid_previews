@@ -658,6 +658,8 @@ def reprocess_job(job_id):
         "retry_attempt",
         "max_retries",
         "parent_job_id",
+        "webhook_retry_count",
+        "webhook_retry_delay",
     ):
         new_config.pop(key, None)
     new_job = job_manager.create_job(
