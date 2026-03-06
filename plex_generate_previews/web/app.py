@@ -154,6 +154,40 @@ def get_or_create_flask_secret(config_dir: str) -> str:
     return _derive_secret(random_seed, config_dir)
 
 
+def _requeue_interrupted_on_startup(config_dir: str) -> None:
+    """Auto-requeue jobs that were running or pending when the server last stopped.
+
+    Reads the ``auto_requeue_on_restart`` and ``requeue_max_age_minutes``
+    settings to decide whether and which jobs to re-create.  New jobs are
+    cloned from the originals and started via the normal async path.
+    """
+    try:
+        from .settings_manager import get_settings_manager
+
+        settings = get_settings_manager(config_dir)
+        if not settings.get("auto_requeue_on_restart", True):
+            logger.info("Auto-requeue on restart is disabled")
+            return
+
+        max_age = int(settings.get("requeue_max_age_minutes", 60))
+        job_manager = get_job_manager()
+        new_jobs = job_manager.requeue_interrupted_jobs(max_age_minutes=max_age)
+
+        if not new_jobs:
+            return
+
+        from .routes import _start_job_async
+
+        for job in new_jobs:
+            _start_job_async(job.id, job.config)
+
+        logger.info(
+            f"Auto-requeued {len(new_jobs)} interrupted job(s) on startup"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to auto-requeue interrupted jobs: {e}")
+
+
 def create_app(config_dir: str = None) -> Flask:
     """
     Create and configure the Flask application.
@@ -372,6 +406,9 @@ def create_app(config_dir: str = None) -> Flask:
 
     # Log token on startup
     log_token_on_startup()
+
+    # Auto-requeue jobs that were interrupted by the server restart
+    _requeue_interrupted_on_startup(config_dir)
 
     logger.info(f"Flask app created with config_dir: {config_dir}")
 

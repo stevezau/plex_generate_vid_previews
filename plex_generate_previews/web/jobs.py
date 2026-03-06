@@ -163,6 +163,7 @@ class JobManager:
 
     def _load_jobs(self) -> None:
         """Load jobs from persistent storage."""
+        self._interrupted_jobs: List[Job] = []
         if os.path.exists(self.jobs_file):
             try:
                 with open(self.jobs_file, "r") as f:
@@ -181,12 +182,20 @@ class JobManager:
                                 job.error = "Job was interrupted by server restart"
                                 job.completed_at = datetime.utcnow().isoformat()
                                 needs_save = True
+                                self._interrupted_jobs.append(job)
+                            elif job.status == JobStatus.PENDING:
+                                self._interrupted_jobs.append(job)
                             self._jobs[job.id] = job
                         except (TypeError, KeyError, ValueError) as job_error:
                             job_id = job_data.get("id", "unknown")
                             logger.warning(f"Failed to load job {job_id}: {job_error}")
                             continue
                 logger.info(f"Loaded {len(self._jobs)} jobs from {self.jobs_file}")
+                if self._interrupted_jobs:
+                    logger.info(
+                        f"Found {len(self._interrupted_jobs)} interrupted/pending job(s) "
+                        f"from previous run"
+                    )
                 if needs_save:
                     self._save_jobs()
             except (json.JSONDecodeError, IOError) as e:
@@ -363,6 +372,95 @@ class JobManager:
             logger.debug(f"Pruned {pruned} old terminal jobs")
         logger.info(f"Created job {job.id} for library {library_name}")
         return job
+
+    def requeue_interrupted_jobs(self, max_age_minutes: int = 60) -> List[Job]:
+        """Create new jobs for any that were interrupted by the last restart.
+
+        For each interrupted job (was running or pending when the server
+        stopped), a **new** job is created with the same configuration.
+        The original job is left in history for auditability.
+
+        Pending jobs that are superseded are cancelled so they don't run
+        alongside the new clone.
+
+        Args:
+            max_age_minutes: Only requeue jobs created within this many
+                minutes of the current time.  Older jobs are considered
+                stale and skipped.  Range: 5 – 1440 (1 day).
+
+        Returns:
+            List of newly created ``Job`` objects ready to be started.
+        """
+        interrupted = getattr(self, "_interrupted_jobs", [])
+        if not interrupted:
+            return []
+
+        max_age_minutes = max(5, min(1440, max_age_minutes))
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+        requeued: List[Job] = []
+
+        for orig in interrupted:
+            # Check age — skip stale jobs
+            try:
+                created = datetime.fromisoformat(
+                    orig.created_at.replace("Z", "+00:00")
+                )
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created < cutoff:
+                    logger.debug(
+                        f"Skipping requeue of job {orig.id[:8]} — "
+                        f"too old ({orig.created_at})"
+                    )
+                    continue
+            except (ValueError, AttributeError):
+                # Can't parse date — skip to be safe
+                continue
+
+            # Clone config, stripping retry metadata so it starts fresh
+            new_config = dict(orig.config or {})
+            for key in (
+                "is_retry",
+                "retry_delay",
+                "retry_attempt",
+                "max_retries",
+                "parent_job_id",
+            ):
+                new_config.pop(key, None)
+            new_config["requeued_from"] = orig.id
+
+            # Cancel stale pending jobs so they don't also run
+            if orig.status == JobStatus.PENDING:
+                with self._lock:
+                    orig.status = JobStatus.CANCELLED
+                    orig.error = "Superseded by auto-requeue after restart"
+                    orig.completed_at = datetime.now(timezone.utc).isoformat()
+
+            # Create the new job
+            new_job = self.create_job(
+                library_id=orig.library_id,
+                library_name=orig.library_name,
+                config=new_config,
+            )
+            self.add_log(
+                new_job.id,
+                f"INFO - Auto-requeued: original job {orig.id[:8]} was "
+                f"interrupted by server restart",
+            )
+            requeued.append(new_job)
+            logger.info(
+                f"Requeued job {orig.id[:8]} as {new_job.id[:8]} "
+                f"({orig.library_name})"
+            )
+
+        # Persist the cancelled pending jobs
+        if requeued:
+            with self._lock:
+                self._save_jobs()
+
+        # Clear the list so it's not processed again
+        self._interrupted_jobs = []
+        return requeued
 
     def get_job(self, job_id: str) -> Optional[Job]:
         """Get a job by ID."""

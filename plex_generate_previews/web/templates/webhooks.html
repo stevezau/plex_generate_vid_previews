@@ -113,6 +113,31 @@
             </div>
             <div class="form-text">Dedicated secret for webhook authentication. Leave empty to use the main API token.</div>
         </div>
+
+        <hr class="my-4">
+
+        <h6 class="mb-3"><i class="bi bi-arrow-repeat me-2"></i>Restart Recovery</h6>
+
+        <div class="mb-3">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="autoRequeueOnRestart" checked>
+                <label class="form-check-label" for="autoRequeueOnRestart">Auto-requeue interrupted jobs on restart</label>
+            </div>
+            <div class="form-text">
+                When the server restarts, automatically re-queue any jobs that were running or waiting.
+                Only jobs created within the configured time window are requeued; older jobs are left as-is.
+            </div>
+        </div>
+
+        <div class="mb-3" id="requeueMaxAgeGroup">
+            <label for="requeueMaxAge" class="form-label">
+                Max requeue age: <strong><span id="requeueMaxAgeValue">60</span> min</strong>
+            </label>
+            <input type="range" class="form-range" id="requeueMaxAge" min="5" max="1440" step="5" value="60">
+            <div class="form-text">
+                How old a job can be to qualify for automatic requeue after restart (5 min &ndash; 24 hours).
+            </div>
+        </div>
     </div>
 </div>
 
@@ -203,7 +228,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadWebhookSettings();
     loadHistory();
 
-    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRetryCount, #webhookRetryDelay, #webhookSecret').forEach(function(el) {
+    document.querySelectorAll('#webhookEnabled, #webhookDelay, #webhookRetryCount, #webhookRetryDelay, #webhookSecret, #autoRequeueOnRestart, #requeueMaxAge').forEach(function(el) {
         el.addEventListener('change', markDirty);
         el.addEventListener('input', markDirty);
     });
@@ -213,6 +238,13 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('webhookRetryDelay').addEventListener('input', function() {
         document.getElementById('retryDelayValue').textContent = this.value;
+    });
+    document.getElementById('requeueMaxAge').addEventListener('input', function() {
+        document.getElementById('requeueMaxAgeValue').textContent = this.value;
+    });
+    document.getElementById('autoRequeueOnRestart').addEventListener('change', function() {
+        document.getElementById('requeueMaxAgeGroup').style.opacity = this.checked ? '1' : '0.5';
+        document.getElementById('requeueMaxAge').disabled = !this.checked;
     });
 
     setInterval(loadHistory, 10000);
@@ -239,6 +271,14 @@ async function loadWebhookSettings() {
         } else         if (data.webhook_secret === '****') {
             document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
         }
+        // Restart recovery settings
+        const autoRequeue = data.auto_requeue_on_restart !== false;
+        document.getElementById('autoRequeueOnRestart').checked = autoRequeue;
+        const maxAge = Math.min(1440, Math.max(5, parseInt(data.requeue_max_age_minutes, 10) || 60));
+        document.getElementById('requeueMaxAge').value = maxAge;
+        document.getElementById('requeueMaxAgeValue').textContent = maxAge;
+        document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
+        document.getElementById('requeueMaxAge').disabled = !autoRequeue;
     } catch (e) {
         console.error('Failed to load webhook settings:', e);
     }
@@ -255,6 +295,8 @@ async function saveWebhookSettings() {
         webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
         webhook_retry_count: retryCount,
         webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
+        auto_requeue_on_restart: document.getElementById('autoRequeueOnRestart').checked,
+        requeue_max_age_minutes: parseInt(document.getElementById('requeueMaxAge').value, 10) || 60,
     };
 
     const secretVal = document.getElementById('webhookSecret').value;
