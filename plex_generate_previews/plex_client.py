@@ -357,6 +357,7 @@ def _resolve_item_media_type(section_type: str) -> Optional[str]:
         return "episode"
     return None
 
+
 def trigger_plex_partial_scan(
     plex_url: str,
     plex_token: str,
@@ -434,7 +435,9 @@ def trigger_plex_partial_scan(
                 if norm_candidate.startswith(loc_prefix):
                     # Determine the scan folder: use the top-level subfolder
                     # (series folder for TV, movie folder for movies).
-                    rel = candidate[len(loc_prefix.rstrip("/")):]  # e.g. /Show Name/Season 01/file.mkv
+                    rel = candidate[
+                        len(loc_prefix.rstrip("/")) :
+                    ]  # e.g. /Show Name/Season 01/file.mkv
                     parts = [p for p in rel.split("/") if p]
                     if len(parts) >= 2:
                         # Use the top-level subfolder (series or movie folder)
