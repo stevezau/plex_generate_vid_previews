@@ -113,13 +113,17 @@ class TestSettingsManagerProperties:
         """Test plex_verify_ssl reads env var with same truthy list as config.py."""
         for truthy in ("true", "1", "yes", "True", "YES"):
             monkeypatch.setenv("PLEX_VERIFY_SSL", truthy)
-            assert settings_manager.plex_verify_ssl is True, f"Expected True for {truthy!r}"
+            assert settings_manager.plex_verify_ssl is True, (
+                f"Expected True for {truthy!r}"
+            )
 
     def test_plex_verify_ssl_env_var_falsy(self, settings_manager, monkeypatch):
         """Test plex_verify_ssl treats non-truthy env values as False."""
         for falsy in ("false", "0", "no", "off", "anything"):
             monkeypatch.setenv("PLEX_VERIFY_SSL", falsy)
-            assert settings_manager.plex_verify_ssl is False, f"Expected False for {falsy!r}"
+            assert settings_manager.plex_verify_ssl is False, (
+                f"Expected False for {falsy!r}"
+            )
 
     def test_plex_verify_ssl_saved_overrides_env(self, settings_manager, monkeypatch):
         """Test saved setting takes precedence over env var."""
