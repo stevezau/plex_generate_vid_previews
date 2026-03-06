@@ -99,6 +99,11 @@ class TestSettingsManagerProperties:
         settings_manager.gpu_threads = 4
         assert settings_manager.gpu_threads == 4
 
+    def test_plex_verify_ssl_property(self, settings_manager):
+        """Test plex_verify_ssl property with bool conversion."""
+        settings_manager.plex_verify_ssl = False
+        assert settings_manager.plex_verify_ssl is False
+
     def test_cpu_threads_default_when_missing(self, settings_manager, monkeypatch):
         """Test cpu_threads defaults to 1 when key is not set."""
         monkeypatch.delenv("CPU_THREADS", raising=False)

@@ -113,12 +113,8 @@ def plex_server(config: Config):
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session = requests.Session()
 
-    # SSL verification: default True, opt out via PLEX_VERIFY_SSL=false
-    verify_ssl = os.environ.get("PLEX_VERIFY_SSL", "true").lower() not in (
-        "false",
-        "0",
-        "no",
-    )
+    # SSL verification defaults to True. Can be disabled via config/UI/env.
+    verify_ssl = bool(getattr(config, "plex_verify_ssl", True))
     session.verify = verify_ssl
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

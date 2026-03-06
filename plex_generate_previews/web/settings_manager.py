@@ -163,6 +163,18 @@ class SettingsManager:
         self.set("plex_config_folder", value)
 
     @property
+    def plex_verify_ssl(self) -> bool:
+        val = self.get("plex_verify_ssl")
+        if val is None:
+            env_val = os.environ.get("PLEX_VERIFY_SSL", "true").strip().lower()
+            return env_val not in ("false", "0", "no")
+        return bool(val)
+
+    @plex_verify_ssl.setter
+    def plex_verify_ssl(self, value: bool) -> None:
+        self.set("plex_verify_ssl", bool(value))
+
+    @property
     def media_path(self) -> Optional[str]:
         return self.get("media_path") or os.environ.get("MEDIA_PATH")
 

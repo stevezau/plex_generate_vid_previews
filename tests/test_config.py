@@ -618,6 +618,7 @@ class TestLoadConfig:
         assert config is not None
         assert config.plex_url == "http://localhost:32400"
         assert config.plex_token == "test_token"
+        assert config.plex_verify_ssl is True
 
     @patch("shutil.which")
     @patch("plex_generate_previews.logging_config.setup_logging")

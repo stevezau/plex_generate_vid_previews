@@ -380,6 +380,7 @@ class Config:
     plex_url: str
     plex_token: str
     plex_timeout: int
+    plex_verify_ssl: bool
     plex_libraries: List[str]
 
     # Media paths
@@ -1015,6 +1016,9 @@ def load_config(cli_args=None) -> Config:
     plex_timeout = get_value(
         cli_args, "plex_timeout", "plex_timeout", "PLEX_TIMEOUT", 60, int
     )
+    plex_verify_ssl = get_value(
+        cli_args, "plex_verify_ssl", "plex_verify_ssl", "PLEX_VERIFY_SSL", True, bool
+    )
 
     # Handle plex_libraries (special case for comma-separated values OR list from settings.json)
     plex_libraries_setting = ui_settings.get("selected_libraries", [])
@@ -1231,6 +1235,7 @@ def load_config(cli_args=None) -> Config:
         plex_url=plex_url,
         plex_token=plex_token,
         plex_timeout=plex_timeout,
+        plex_verify_ssl=plex_verify_ssl,
         plex_libraries=plex_libraries,
         plex_config_folder=plex_config_folder,
         plex_local_videos_path_mapping=plex_local_videos_path_mapping,
@@ -1262,6 +1267,7 @@ def load_config(cli_args=None) -> Config:
     logger.debug(f"PLEX_CONFIG_FOLDER = {config.plex_config_folder}")
     logger.debug(f"TMP_FOLDER = {config.tmp_folder}")
     logger.debug(f"PLEX_TIMEOUT = {config.plex_timeout}")
+    logger.debug(f"PLEX_VERIFY_SSL = {config.plex_verify_ssl}")
     logger.debug(
         f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}"
     )
