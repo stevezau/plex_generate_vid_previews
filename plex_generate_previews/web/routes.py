@@ -53,7 +53,49 @@ MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
 # Ensures only one processing job runs at a time regardless of trigger source
 # (scheduled job, webhook, or manual start).
-_job_execution_lock = threading.Lock()
+# When concurrent_jobs_enabled is True, up to max_concurrent_jobs may run.
+
+
+class _JobConcurrencyManager:
+    """Controls how many jobs may execute simultaneously.
+
+    Reads ``concurrent_jobs_enabled`` and ``max_concurrent_jobs`` from
+    :class:`SettingsManager` on every :meth:`try_acquire` call so that
+    changes in settings take effect immediately without a restart.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._running_count = 0
+
+    def try_acquire(self) -> bool:
+        """Try to reserve an execution slot.  Returns True on success."""
+        with self._lock:
+            max_jobs = self._get_max_concurrent()
+            if self._running_count < max_jobs:
+                self._running_count += 1
+                return True
+            return False
+
+    def release(self) -> None:
+        """Release a previously acquired execution slot."""
+        with self._lock:
+            self._running_count = max(0, self._running_count - 1)
+
+    @staticmethod
+    def _get_max_concurrent() -> int:
+        try:
+            from .settings_manager import get_settings_manager
+
+            settings = get_settings_manager()
+            if settings.get("concurrent_jobs_enabled", False):
+                return max(1, int(settings.get("max_concurrent_jobs", 2)))
+            return 1
+        except Exception:
+            return 1
+
+
+_job_concurrency = _JobConcurrencyManager()
 
 
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
@@ -408,8 +450,7 @@ def pause_processing():
     sm = get_settings_manager()
     job_manager = get_job_manager()
     sm.processing_paused = True
-    running = job_manager.get_running_job()
-    if running:
+    for running in job_manager.get_running_jobs():
         job_manager.request_pause(running.id)
     job_manager.emit_processing_paused_changed(True)
     logger.info("Global processing paused")
@@ -425,21 +466,18 @@ def resume_processing():
     sm = get_settings_manager()
     job_manager = get_job_manager()
     sm.processing_paused = False
-    running = job_manager.get_running_job()
-    if running:
+    for running in job_manager.get_running_jobs():
         job_manager.request_resume(running.id)
     job_manager.emit_processing_paused_changed(False)
     logger.info("Global processing resumed")
-    # If no job is running, start the next pending job (e.g. one that was queued while paused)
-    if not job_manager.get_running_job():
-        pending = sorted(
-            job_manager.get_pending_jobs(),
-            key=lambda j: j.created_at or "",
-        )
-        if pending:
-            next_job = pending[0]
-            _start_job_async(next_job.id, next_job.config or {})
-            logger.info(f"Started next pending job {next_job.id} after resume")
+    # Start pending jobs if there are available execution slots
+    pending = sorted(
+        job_manager.get_pending_jobs(),
+        key=lambda j: j.created_at or "",
+    )
+    for next_job in pending:
+        _start_job_async(next_job.id, next_job.config or {})
+        logger.info(f"Started next pending job {next_job.id} after resume")
     return jsonify({"paused": False})
 
 
@@ -998,13 +1036,14 @@ def get_system_status():
             gpus = _gpu_cache["result"] if _gpu_cache["result"] is not None else []
 
         job_manager = get_job_manager()
-        running_job = job_manager.get_running_job()
+        running_jobs = job_manager.get_running_jobs()
 
         return jsonify(
             {
                 "gpus": gpus,
                 "gpu_stats": [],
-                "running_job": running_job.to_dict() if running_job else None,
+                "running_job": running_jobs[0].to_dict() if running_jobs else None,
+                "running_jobs": [j.to_dict() for j in running_jobs],
                 "pending_jobs": len(job_manager.get_pending_jobs()),
             }
         )
@@ -1765,7 +1804,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
     def run_job():
         log_handler_id = None
-        _acquired_execution_lock = False
+        _acquired_execution_slot = False
         job_manager = None
         try:
             import os
@@ -1793,18 +1832,19 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 )
                 return
 
-            if not _job_execution_lock.acquire(blocking=False):
+            if not _job_concurrency.try_acquire():
                 merged = {**(job.config or {}), **(config_overrides or {})}
                 job_manager.update_job_config(job_id, merged)
-                running = job_manager.get_running_job()
-                if running:
-                    reason = f"another job ({running.id[:8]}) is currently running"
+                running_jobs = job_manager.get_running_jobs()
+                if running_jobs:
+                    ids = ", ".join(j.id[:8] for j in running_jobs)
+                    reason = f"max concurrent jobs reached (running: {ids})"
                 else:
                     reason = "a cancelled job is still winding down"
                 logger.info(f"Job {job_id} not started — {reason}; remains in queue")
                 return
 
-            _acquired_execution_lock = True
+            _acquired_execution_slot = True
 
             # Set up log capture for this job
             def log_sink(message):
@@ -2266,20 +2306,16 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     loguru_logger.remove(log_handler_id)
                 except Exception:
                     pass
-            if _acquired_execution_lock:
-                _job_execution_lock.release()
+            if _acquired_execution_slot:
+                _job_concurrency.release()
                 if job_manager is None:
                     job_manager = get_job_manager()
-                if (
-                    not job_manager.get_running_job()
-                    and not get_settings_manager().processing_paused
-                ):
+                if not get_settings_manager().processing_paused:
                     pending = sorted(
                         job_manager.get_pending_jobs(),
                         key=lambda j: j.created_at or "",
                     )
-                    if pending:
-                        next_job = pending[0]
+                    for next_job in pending:
                         _start_job_async(next_job.id, next_job.config or {})
                         logger.info(f"Started next queued job {next_job.id}")
 
