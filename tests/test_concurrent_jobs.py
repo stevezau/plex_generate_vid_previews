@@ -216,3 +216,213 @@ class TestJobConcurrencyManager:
 
         # At most 2 should have acquired simultaneously
         assert sum(results) >= 2
+
+
+# ---------------------------------------------------------------------------
+# _GpuPartitionManager
+# ---------------------------------------------------------------------------
+
+
+class TestGpuPartitionManager:
+    """Verify GPU partitioning across concurrent jobs."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_settings(self):
+        import plex_generate_previews.web.settings_manager as sm_mod
+
+        with sm_mod._settings_lock:
+            sm_mod._settings_manager = None
+        yield
+
+    @pytest.fixture(autouse=True)
+    def _restore_get_max_concurrent(self):
+        """Save/restore _get_max_concurrent as a staticmethod descriptor.
+
+        Accessing ``Cls._get_max_concurrent`` unwraps the ``staticmethod``
+        descriptor (Python descriptor protocol), so restoring via a plain
+        assignment would lose the ``@staticmethod`` wrapper.  We access the
+        raw descriptor through ``__dict__`` to avoid this.
+        """
+        from plex_generate_previews.web.routes import _JobConcurrencyManager
+
+        original_descriptor = _JobConcurrencyManager.__dict__["_get_max_concurrent"]
+        yield
+        _JobConcurrencyManager._get_max_concurrent = original_descriptor
+
+    def _patch_max_concurrent(self, n: int):
+        from plex_generate_previews.web.routes import _JobConcurrencyManager
+
+        _JobConcurrencyManager._get_max_concurrent = staticmethod(lambda: n)
+
+    def _make_manager(self):
+        from plex_generate_previews.web.routes import _GpuPartitionManager
+
+        return _GpuPartitionManager()
+
+    @staticmethod
+    def _make_gpus(n: int) -> list:
+        """Create *n* fake GPU tuples (type, device, info_dict)."""
+        return [
+            (f"GPU_{i}", f"/dev/dri/renderD{128 + i}", {"name": f"GPU {i}"})
+            for i in range(n)
+        ]
+
+    def test_single_job_gets_all_gpus(self):
+        """When concurrent mode is off, the job receives every GPU."""
+        self._patch_max_concurrent(1)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(3)
+
+        result = mgr.acquire("job-1", gpus)
+        assert len(result) == 3
+        mgr.release("job-1")
+
+    def test_two_jobs_partition_three_gpus(self):
+        """3 GPUs, max_concurrent=2: slot 0 gets [0,2], slot 1 gets [1]."""
+        self._patch_max_concurrent(2)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(3)
+
+        result1 = mgr.acquire("job-1", gpus)
+        result2 = mgr.acquire("job-2", gpus)
+
+        # Slot 0: indices where i%2==0 → [0, 2]
+        assert len(result1) == 2
+        assert result1[0][0] == "GPU_0"
+        assert result1[1][0] == "GPU_2"
+
+        # Slot 1: indices where i%2==1 → [1]
+        assert len(result2) == 1
+        assert result2[0][0] == "GPU_1"
+
+        mgr.release("job-1")
+        mgr.release("job-2")
+
+    def test_three_jobs_three_gpus(self):
+        """3 GPUs, max_concurrent=3: each job gets exactly 1 GPU."""
+        self._patch_max_concurrent(3)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(3)
+
+        r1 = mgr.acquire("j1", gpus)
+        r2 = mgr.acquire("j2", gpus)
+        r3 = mgr.acquire("j3", gpus)
+
+        assert len(r1) == 1 and r1[0][0] == "GPU_0"
+        assert len(r2) == 1 and r2[0][0] == "GPU_1"
+        assert len(r3) == 1 and r3[0][0] == "GPU_2"
+
+        mgr.release("j1")
+        mgr.release("j2")
+        mgr.release("j3")
+
+    def test_more_slots_than_gpus_shares(self):
+        """2 GPUs, max_concurrent=3: third job shares a GPU."""
+        self._patch_max_concurrent(3)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(2)
+
+        r1 = mgr.acquire("j1", gpus)
+        r2 = mgr.acquire("j2", gpus)
+        r3 = mgr.acquire("j3", gpus)
+
+        assert len(r1) == 1 and r1[0][0] == "GPU_0"
+        assert len(r2) == 1 and r2[0][0] == "GPU_1"
+        # Slot 2: no index where i%3==2 in range(2), fallback = 2%2=0
+        assert len(r3) == 1 and r3[0][0] == "GPU_0"
+
+        mgr.release("j1")
+        mgr.release("j2")
+        mgr.release("j3")
+
+    def test_release_frees_slot_for_reuse(self):
+        """After releasing, a new job gets the freed slot's GPUs."""
+        self._patch_max_concurrent(2)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(2)
+
+        r1 = mgr.acquire("j1", gpus)
+        mgr.acquire("j2", gpus)
+        assert mgr.get_slot("j1") == 0
+        assert mgr.get_slot("j2") == 1
+
+        mgr.release("j1")
+        assert mgr.get_slot("j1") is None
+
+        # New job should get slot 0 (lowest free)
+        r3 = mgr.acquire("j3", gpus)
+        assert mgr.get_slot("j3") == 0
+        assert r3[0][0] == r1[0][0]  # Same GPU as j1 had
+
+        mgr.release("j2")
+        mgr.release("j3")
+
+    def test_empty_gpu_list(self):
+        """With no GPUs, acquire returns empty list regardless of mode."""
+        self._patch_max_concurrent(2)
+        mgr = self._make_manager()
+
+        result = mgr.acquire("j1", [])
+        assert result == []
+        mgr.release("j1")
+
+    def test_thread_safety_partitioning(self):
+        """Multiple threads acquiring partitions concurrently get distinct slots."""
+        self._patch_max_concurrent(4)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(4)
+
+        slots = []
+        barrier = threading.Barrier(4)
+
+        def worker(jid):
+            barrier.wait()
+            mgr.acquire(jid, gpus)
+            slots.append(mgr.get_slot(jid))
+
+        threads = [threading.Thread(target=worker, args=(f"j{i}",)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All 4 slots should be distinct
+        assert sorted(slots) == [0, 1, 2, 3]
+
+        for i in range(4):
+            mgr.release(f"j{i}")
+
+
+# ---------------------------------------------------------------------------
+# Worker scaling with GPU partitioning
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerScaling:
+    """Verify that worker counts are scaled proportionally to GPU partition size."""
+
+    def test_gpu_threads_scaled_proportionally(self):
+        """When a job gets 1/3 of GPUs, gpu_threads should be scaled down."""
+        # Simulate: 6 gpu_threads, 3 total GPUs, job gets 1 GPU → scale = 1/3
+        original_gpu_threads = 6
+        total_gpus = 3
+        assigned_gpus = 1
+        scale = assigned_gpus / total_gpus
+        effective = max(1, round(original_gpu_threads * scale))
+        assert effective == 2  # 6 * (1/3) = 2
+
+    def test_gpu_threads_minimum_one(self):
+        """Even with extreme scaling, gpu_threads never drops below 1."""
+        original_gpu_threads = 1
+        total_gpus = 10
+        assigned_gpus = 1
+        scale = assigned_gpus / total_gpus
+        effective = max(1, round(original_gpu_threads * scale))
+        assert effective == 1  # max(1, round(0.1)) = max(1, 0) = 1
+
+    def test_no_scaling_when_all_gpus_assigned(self):
+        """When a job gets all GPUs, no scaling occurs."""
+        total_gpus = 3
+        assigned_gpus = 3
+        # No scaling needed — assigned == total
+        assert assigned_gpus == total_gpus

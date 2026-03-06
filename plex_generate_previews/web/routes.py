@@ -98,6 +98,65 @@ class _JobConcurrencyManager:
 _job_concurrency = _JobConcurrencyManager()
 
 
+class _GpuPartitionManager:
+    """Distributes GPUs across concurrent jobs to prevent resource contention.
+
+    When concurrent jobs are enabled each running job receives a disjoint
+    subset of the available GPUs.  GPUs are assigned round-robin across job
+    slots: slot *s* receives GPU indices where ``index % max_concurrent == s``.
+
+    When there are more concurrent slots than physical GPUs, multiple jobs
+    may share the same GPU device.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._job_slots: dict[str, int] = {}  # job_id -> slot_number
+
+    def acquire(self, job_id: str, all_gpus: list) -> list:
+        """Assign a GPU partition for *job_id*.
+
+        Returns the subset of *all_gpus* allocated to this job.
+        When concurrent mode is disabled or only one slot is configured,
+        returns *all_gpus* unchanged.
+        """
+        with self._lock:
+            max_concurrent = _JobConcurrencyManager._get_max_concurrent()
+
+            if max_concurrent <= 1 or not all_gpus:
+                return list(all_gpus)
+
+            # Find lowest available slot number
+            used_slots = set(self._job_slots.values())
+            slot = 0
+            while slot in used_slots:
+                slot += 1
+            self._job_slots[job_id] = slot
+
+            total = len(all_gpus)
+            # Partition: slot s gets GPUs where index % max_concurrent == s
+            indices = [i for i in range(total) if i % max_concurrent == slot]
+
+            if not indices and total > 0:
+                # More concurrent slots than GPUs — share via round-robin
+                indices = [slot % total]
+
+            return [all_gpus[i] for i in indices]
+
+    def release(self, job_id: str) -> None:
+        """Release the GPU partition held by *job_id*."""
+        with self._lock:
+            self._job_slots.pop(job_id, None)
+
+    def get_slot(self, job_id: str) -> int | None:
+        """Return the slot number assigned to *job_id*, or ``None``."""
+        with self._lock:
+            return self._job_slots.get(job_id)
+
+
+_gpu_partition = _GpuPartitionManager()
+
+
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
     """Return True if candidate_path is inside (or equal to) base_path.
 
@@ -1045,6 +1104,11 @@ def get_system_status():
                 "running_job": running_jobs[0].to_dict() if running_jobs else None,
                 "running_jobs": [j.to_dict() for j in running_jobs],
                 "pending_jobs": len(job_manager.get_pending_jobs()),
+                "gpu_partitions": {
+                    j.id: _gpu_partition.get_slot(j.id)
+                    for j in running_jobs
+                    if _gpu_partition.get_slot(j.id) is not None
+                },
             }
         )
     except Exception as e:
@@ -1984,6 +2048,32 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                 selected_gpus = detect_all_gpus()
 
+            # -- GPU partitioning for concurrent jobs -----------------------
+            # When multiple jobs run simultaneously, each receives a disjoint
+            # subset of GPUs so they don't contend for the same hardware
+            # encoders/decoders.  Worker counts are scaled proportionally.
+            all_detected_gpus = list(selected_gpus)
+            selected_gpus = _gpu_partition.acquire(job_id, all_detected_gpus)
+
+            if all_detected_gpus and len(selected_gpus) < len(all_detected_gpus):
+                scale = len(selected_gpus) / len(all_detected_gpus)
+                original_gpu_threads = config.gpu_threads
+                config.gpu_threads = max(1, round(config.gpu_threads * scale))
+                if config.cpu_threads > 0:
+                    config.cpu_threads = max(1, round(config.cpu_threads * scale))
+                if getattr(config, "fallback_cpu_threads", 0) > 0:
+                    config.fallback_cpu_threads = max(
+                        1, round(config.fallback_cpu_threads * scale)
+                    )
+                slot = _gpu_partition.get_slot(job_id)
+                logger.info(
+                    f"Job {job_id[:8]}: assigned {len(selected_gpus)}/"
+                    f"{len(all_detected_gpus)} GPU(s) (slot {slot}), "
+                    f"gpu_threads {original_gpu_threads}->{config.gpu_threads}"
+                )
+            elif selected_gpus:
+                logger.info(f"Job {job_id[:8]}: using all {len(selected_gpus)} GPU(s)")
+
             def _format_eta(seconds: float) -> str:
                 """Format seconds into human-readable ETA string (used for worker ETA from ffmpeg)."""
                 if seconds < 60:
@@ -2306,6 +2396,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     loguru_logger.remove(log_handler_id)
                 except Exception:
                     pass
+            _gpu_partition.release(job_id)
             if _acquired_execution_slot:
                 _job_concurrency.release()
                 if job_manager is None:
