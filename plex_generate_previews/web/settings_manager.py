@@ -165,10 +165,12 @@ class SettingsManager:
     @property
     def plex_verify_ssl(self) -> bool:
         val = self.get("plex_verify_ssl")
-        if val is None:
-            env_val = os.environ.get("PLEX_VERIFY_SSL", "true").strip().lower()
-            return env_val not in ("false", "0", "no")
-        return bool(val)
+        if val is not None:
+            return bool(val)
+        env_val = os.environ.get("PLEX_VERIFY_SSL", "").strip().lower()
+        if env_val:
+            return env_val in ("true", "1", "yes")
+        return True
 
     @plex_verify_ssl.setter
     def plex_verify_ssl(self, value: bool) -> None:
