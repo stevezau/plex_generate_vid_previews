@@ -357,6 +357,134 @@ def _resolve_item_media_type(section_type: str) -> Optional[str]:
         return "episode"
     return None
 
+def trigger_plex_partial_scan(
+    plex_url: str,
+    plex_token: str,
+    unresolved_paths: List[str],
+    path_mappings: Optional[List[Dict]] = None,
+) -> List[str]:
+    """Trigger targeted Plex library scans for unresolved webhook paths.
+
+    When webhook paths cannot be resolved to Plex items (because Plex hasn't
+    scanned the file yet), this function determines the correct library section
+    and parent folder for each unresolved path and issues a partial scan via
+    ``GET /library/sections/{id}/refresh?path={folder}``.
+
+    This is much faster than a full library scan and allows the subsequent
+    retry attempt to find the item in Plex's database.
+
+    Works for both movies and TV shows by matching the unresolved file path
+    against each library section's configured locations.
+
+    Args:
+        plex_url: Plex server URL (e.g. ``http://localhost:32400``).
+        plex_token: Plex authentication token.
+        unresolved_paths: File paths that could not be resolved to Plex items.
+            These are in Plex-path form (as seen by the Plex server).
+        path_mappings: Optional path mapping configuration. Used to expand
+            unresolved paths into Plex-native equivalents when the webhook
+            uses different mount points than Plex.
+
+    Returns:
+        List of paths for which a scan was successfully triggered.
+    """
+    if not unresolved_paths:
+        return []
+
+    scanned: List[str] = []
+
+    # Fetch library sections to match paths against section locations
+    try:
+        resp = requests.get(
+            f"{plex_url.rstrip('/')}/library/sections",
+            headers={"X-Plex-Token": plex_token, "Accept": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        sections = resp.json().get("MediaContainer", {}).get("Directory", [])
+    except Exception as e:
+        logger.warning(f"Could not fetch Plex library sections for partial scan: {e}")
+        return []
+
+    # Build a lookup: normalised location prefix -> (section_key, raw_location)
+    section_locations: List[Tuple[str, str, str]] = []
+    for section in sections:
+        section_key = str(section.get("key", ""))
+        for loc in section.get("Location", []):
+            loc_path = loc.get("path", "")
+            if loc_path:
+                norm = loc_path.rstrip("/") + "/"
+                section_locations.append((norm, section_key, loc_path))
+
+    # Sort longest prefix first so more-specific mounts match before broader ones
+    section_locations.sort(key=lambda t: len(t[0]), reverse=True)
+
+    for unresolved in unresolved_paths:
+        # Expand the unresolved path into all mapping candidates (e.g. webhook
+        # prefix -> plex prefix) so we can match against Plex section locations.
+        if path_mappings:
+            candidates = expand_path_mapping_candidates(unresolved, path_mappings)
+        else:
+            candidates = [unresolved]
+
+        triggered = False
+        for candidate in candidates:
+            norm_candidate = candidate.rstrip("/") + "/"
+            for loc_prefix, section_key, _raw_loc in section_locations:
+                if norm_candidate.startswith(loc_prefix):
+                    # Determine the scan folder: use the top-level subfolder
+                    # (series folder for TV, movie folder for movies).
+                    rel = candidate[len(loc_prefix.rstrip("/")):]  # e.g. /Show Name/Season 01/file.mkv
+                    parts = [p for p in rel.split("/") if p]
+                    if len(parts) >= 2:
+                        # Use the top-level subfolder (series or movie folder)
+                        scan_folder = loc_prefix.rstrip("/") + "/" + parts[0]
+                    else:
+                        # File is directly in the library root -- scan the root
+                        scan_folder = loc_prefix.rstrip("/")
+
+                    scan_url = (
+                        f"{plex_url.rstrip('/')}/library/sections/{section_key}/refresh"
+                    )
+                    try:
+                        scan_resp = requests.get(
+                            scan_url,
+                            params={"path": scan_folder},
+                            headers={"X-Plex-Token": plex_token},
+                            timeout=10,
+                        )
+                        if scan_resp.status_code == 200:
+                            logger.info(
+                                f"Triggered Plex partial scan for section {section_key}: {scan_folder}"
+                            )
+                            scanned.append(unresolved)
+                            triggered = True
+                            break
+                        else:
+                            logger.warning(
+                                f"Plex partial scan returned HTTP {scan_resp.status_code} "
+                                f"for section {section_key}, path {scan_folder}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to trigger Plex partial scan for {scan_folder}: {e}"
+                        )
+                    break  # Matched a section, don't try other candidates
+            if triggered:
+                break
+
+        if not triggered:
+            logger.debug(
+                f"No matching Plex library section found for unresolved path: {unresolved}"
+            )
+
+    if scanned:
+        logger.info(
+            f"Triggered Plex partial scans for {len(scanned)}/{len(unresolved_paths)} unresolved path(s)"
+        )
+
+    return scanned
+
 
 @dataclass
 class WebhookResolutionResult:
