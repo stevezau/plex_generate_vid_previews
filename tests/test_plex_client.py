@@ -73,6 +73,20 @@ class TestPlexServerConnection:
         # Verify session was configured with retry
         assert mock_session.called
 
+    @patch("plexapi.server.PlexServer")
+    @patch("requests.Session")
+    def test_plex_server_respects_ssl_verify_setting(
+        self, mock_session, mock_plex_server, mock_config
+    ):
+        """Test that session.verify follows config.plex_verify_ssl."""
+        mock_config.plex_verify_ssl = False
+        mock_plex_server.return_value = MagicMock()
+
+        plex_server(mock_config)
+
+        session_instance = mock_session.return_value
+        assert session_instance.verify is False
+
 
 class TestRetryPlexCall:
     """Test Plex API retry logic."""

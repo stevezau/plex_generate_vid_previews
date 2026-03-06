@@ -203,10 +203,11 @@ class PlexServerManager {
      * @param {string} token - The Plex token (optional, uses saved)
      * @returns {Promise<Array>}
      */
-    async getLibraries(url = null, token = null) {
+    async getLibraries(url = null, token = null, verifySsl = null) {
         const params = new URLSearchParams();
         if (url) params.append('url', url);
         if (token) params.append('token', token);
+        if (verifySsl !== null && verifySsl !== undefined) params.append('verify_ssl', verifySsl ? 'true' : 'false');
 
         const queryString = params.toString();
         const endpoint = queryString ? `/api/plex/libraries?${queryString}` : '/api/plex/libraries';
@@ -234,14 +235,14 @@ class PlexServerManager {
      * @param {string} token - The Plex token
      * @returns {Promise<{success: boolean, server_name: string|null, error: string|null}>}
      */
-    async testConnection(url = null, token = null) {
+    async testConnection(url = null, token = null, verifySsl = null) {
         const response = await fetch('/api/plex/test', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
             },
-            body: JSON.stringify({ url, token }),
+            body: JSON.stringify({ url, token, verify_ssl: verifySsl }),
         });
 
         return response.json();

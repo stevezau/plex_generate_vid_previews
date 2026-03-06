@@ -232,6 +232,13 @@
                         host (e.g. inside Docker use the container network IP or
                         <code>host.docker.internal</code>).
                     </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="setupPlexVerifySsl" checked>
+                        <label class="form-check-label" for="setupPlexVerifySsl">
+                            Verify Plex HTTPS certificate
+                        </label>
+                    </div>
+                    <div class="form-text">Disable only if your Plex server uses a self-signed certificate.</div>
                 </div>
             </div>
         </div>
@@ -615,10 +622,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function getServerUrl() {
+        const protocol = selectedServer.ssl ? 'https' : 'http';
         if (selectedServer.local) {
-            return `http://${selectedServer.host}:${selectedServer.port}`;
+            return `${protocol}://${selectedServer.host}:${selectedServer.port}`;
         }
-        return selectedServer.uri || `http://${selectedServer.host}:${selectedServer.port}`;
+        return selectedServer.uri || `${protocol}://${selectedServer.host}:${selectedServer.port}`;
     }
 
     document.getElementById('serverSelect').addEventListener('change', async function() {
@@ -644,6 +652,11 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('serverUrlApply').addEventListener('click', async function() {
         await loadLibraries();
     });
+    document.getElementById('setupPlexVerifySsl').addEventListener('change', async function() {
+        if (selectedServer) {
+            await loadLibraries();
+        }
+    });
 
     async function loadLibraries() {
         const loading = document.getElementById('libraryLoading');
@@ -655,14 +668,16 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             const url = document.getElementById('serverUrlInput').value.trim() || getServerUrl();
             const token = selectedServer.access_token;
+            const verifySsl = document.getElementById('setupPlexVerifySsl').checked;
 
             await settingsManager.save({
                 plex_url: url,
                 plex_name: selectedServer.name,
-                plex_token: token
+                plex_token: token,
+                plex_verify_ssl: verifySsl
             });
 
-            const libraries = await serverManager.getLibraries(url, token);
+            const libraries = await serverManager.getLibraries(url, token, verifySsl);
 
             loading.classList.add('d-none');
 
@@ -1083,6 +1098,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function loadSavedState() {
         try {
+            const settings = await settingsManager.get();
+            document.getElementById('setupPlexVerifySsl').checked = settings.plex_verify_ssl !== false;
+
             const status = await setupManager.getStatus();
 
             if (status.plex_authenticated) {
