@@ -2087,3 +2087,51 @@ class TestFetchLibrariesViaHTTP:
             verify_ssl=False,
         )
         assert mock_get.call_args.kwargs["verify"] is False
+
+
+class TestParamToBool:
+    """Test _param_to_bool uses the same truthy set as config.py."""
+
+    def test_none_returns_default(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        assert _param_to_bool(None, True) is True
+        assert _param_to_bool(None, False) is False
+
+    def test_bool_passthrough(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        assert _param_to_bool(True, False) is True
+        assert _param_to_bool(False, True) is False
+
+    def test_truthy_strings(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        for val in ("true", "1", "yes", "True", "YES", " true "):
+            assert _param_to_bool(val, False) is True, f"Expected True for {val!r}"
+
+    def test_falsy_strings(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        for val in ("false", "0", "no", "off", "anything", ""):
+            assert _param_to_bool(val, False) is False, f"Expected False for {val!r}"
+
+    @patch("requests.get")
+    def test_get_plex_libraries_passes_verify_ssl_override(self, mock_get, client):
+        """verify_ssl query param flows through to requests.get."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "https://plex:32400")
+        sm.set("plex_token", "tok")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"MediaContainer": {"Directory": []}}
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        resp = client.get(
+            "/api/plex/libraries?verify_ssl=false", headers=_api_headers()
+        )
+        assert resp.status_code == 200
+        assert mock_get.call_args.kwargs["verify"] is False

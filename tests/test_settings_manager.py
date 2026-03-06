@@ -104,6 +104,29 @@ class TestSettingsManagerProperties:
         settings_manager.plex_verify_ssl = False
         assert settings_manager.plex_verify_ssl is False
 
+    def test_plex_verify_ssl_defaults_true(self, settings_manager, monkeypatch):
+        """Test plex_verify_ssl defaults to True when unset."""
+        monkeypatch.delenv("PLEX_VERIFY_SSL", raising=False)
+        assert settings_manager.plex_verify_ssl is True
+
+    def test_plex_verify_ssl_env_var_truthy(self, settings_manager, monkeypatch):
+        """Test plex_verify_ssl reads env var with same truthy list as config.py."""
+        for truthy in ("true", "1", "yes", "True", "YES"):
+            monkeypatch.setenv("PLEX_VERIFY_SSL", truthy)
+            assert settings_manager.plex_verify_ssl is True, f"Expected True for {truthy!r}"
+
+    def test_plex_verify_ssl_env_var_falsy(self, settings_manager, monkeypatch):
+        """Test plex_verify_ssl treats non-truthy env values as False."""
+        for falsy in ("false", "0", "no", "off", "anything"):
+            monkeypatch.setenv("PLEX_VERIFY_SSL", falsy)
+            assert settings_manager.plex_verify_ssl is False, f"Expected False for {falsy!r}"
+
+    def test_plex_verify_ssl_saved_overrides_env(self, settings_manager, monkeypatch):
+        """Test saved setting takes precedence over env var."""
+        monkeypatch.setenv("PLEX_VERIFY_SSL", "false")
+        settings_manager.plex_verify_ssl = True
+        assert settings_manager.plex_verify_ssl is True
+
     def test_cpu_threads_default_when_missing(self, settings_manager, monkeypatch):
         """Test cpu_threads defaults to 1 when key is not set."""
         monkeypatch.delenv("CPU_THREADS", raising=False)
