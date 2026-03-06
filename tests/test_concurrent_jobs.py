@@ -426,3 +426,356 @@ class TestWorkerScaling:
         assigned_gpus = 3
         # No scaling needed — assigned == total
         assert assigned_gpus == total_gpus
+
+
+# ---------------------------------------------------------------------------
+# _GpuPartitionManager.rebalance()
+# ---------------------------------------------------------------------------
+
+
+class TestGpuPartitionRebalance:
+    """Verify GPU rebalancing when a job finishes."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_settings(self):
+        import plex_generate_previews.web.settings_manager as sm_mod
+
+        with sm_mod._settings_lock:
+            sm_mod._settings_manager = None
+        yield
+
+    @pytest.fixture(autouse=True)
+    def _restore_get_max_concurrent(self):
+        from plex_generate_previews.web.routes import _JobConcurrencyManager
+
+        original_descriptor = _JobConcurrencyManager.__dict__["_get_max_concurrent"]
+        yield
+        _JobConcurrencyManager._get_max_concurrent = original_descriptor
+
+    def _patch_max_concurrent(self, n: int):
+        from plex_generate_previews.web.routes import _JobConcurrencyManager
+
+        _JobConcurrencyManager._get_max_concurrent = staticmethod(lambda: n)
+
+    def _make_manager(self):
+        from plex_generate_previews.web.routes import _GpuPartitionManager
+
+        return _GpuPartitionManager()
+
+    @staticmethod
+    def _make_gpus(n: int) -> list:
+        return [
+            (f"GPU_{i}", f"/dev/dri/renderD{128 + i}", {"name": f"GPU {i}"})
+            for i in range(n)
+        ]
+
+    def test_rebalance_two_to_one_job(self):
+        """When one of two jobs finishes, the survivor gets all GPUs."""
+        self._patch_max_concurrent(2)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(4)
+
+        mgr.acquire("j1", gpus)  # slot 0 → GPUs [0,2]
+        mgr.acquire("j2", gpus)  # slot 1 → GPUs [1,3]
+
+        # j1 finishes
+        mgr.release("j1")
+        new_partitions = mgr.rebalance(gpus)
+
+        # j2 should now get all 4 GPUs (1 remaining job, divisor = 1)
+        assert "j2" in new_partitions
+        assert len(new_partitions["j2"]) == 4
+
+    def test_rebalance_three_to_two_jobs(self):
+        """When one of three jobs finishes, two survivors split GPUs evenly."""
+        self._patch_max_concurrent(3)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(6)
+
+        mgr.acquire("j1", gpus)  # slot 0 → GPUs [0,3]
+        mgr.acquire("j2", gpus)  # slot 1 → GPUs [1,4]
+        mgr.acquire("j3", gpus)  # slot 2 → GPUs [2,5]
+
+        # j2 finishes
+        mgr.release("j2")
+        new_partitions = mgr.rebalance(gpus)
+
+        # 2 remaining jobs, 6 GPUs → 3 each
+        assert len(new_partitions) == 2
+        all_assigned = []
+        for jid in new_partitions:
+            all_assigned.extend(new_partitions[jid])
+        # All 6 GPUs should be covered
+        assigned_names = sorted(g[0] for g in all_assigned)
+        assert assigned_names == [f"GPU_{i}" for i in range(6)]
+
+    def test_rebalance_empty_after_all_jobs_finish(self):
+        """Rebalance returns empty dict when no jobs remain."""
+        self._patch_max_concurrent(2)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(2)
+
+        mgr.acquire("j1", gpus)
+        mgr.release("j1")
+        result = mgr.rebalance(gpus)
+        assert result == {}
+
+    def test_rebalance_with_no_gpus(self):
+        """Rebalance handles empty GPU list gracefully."""
+        self._patch_max_concurrent(2)
+        mgr = self._make_manager()
+
+        mgr.acquire("j1", [])  # No GPUs
+        mgr.release("j1")
+        result = mgr.rebalance([])
+        assert result == {}
+
+    def test_rebalance_reassigns_slots_contiguously(self):
+        """After rebalance, slot numbers are contiguous starting from 0."""
+        self._patch_max_concurrent(3)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(3)
+
+        mgr.acquire("j1", gpus)  # slot 0
+        mgr.acquire("j2", gpus)  # slot 1
+        mgr.acquire("j3", gpus)  # slot 2
+
+        # j1 finishes (had slot 0)
+        mgr.release("j1")
+        mgr.rebalance(gpus)
+
+        # Remaining jobs should be reassigned to slots 0 and 1
+        assert mgr.get_slot("j2") in (0, 1)
+        assert mgr.get_slot("j3") in (0, 1)
+        assert mgr.get_slot("j2") != mgr.get_slot("j3")
+
+    def test_rebalance_preserves_relative_order(self):
+        """Jobs keep relative slot ordering even after rebalance."""
+        self._patch_max_concurrent(3)
+        mgr = self._make_manager()
+        gpus = self._make_gpus(3)
+
+        mgr.acquire("j1", gpus)  # slot 0
+        mgr.acquire("j2", gpus)  # slot 1
+        mgr.acquire("j3", gpus)  # slot 2
+
+        # Middle job finishes
+        mgr.release("j2")
+        mgr.rebalance(gpus)
+
+        # j1 had slot 0, j3 had slot 2 → j1 should get slot 0, j3 slot 1
+        assert mgr.get_slot("j1") == 0
+        assert mgr.get_slot("j3") == 1
+
+
+# ---------------------------------------------------------------------------
+# _rebalance_running_jobs integration
+# ---------------------------------------------------------------------------
+
+
+class TestRebalanceRunningJobs:
+    """Test the _rebalance_running_jobs function with mock WorkerPools."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_modules(self):
+        import plex_generate_previews.web.settings_manager as sm_mod
+        import plex_generate_previews.web.jobs as jobs_mod
+
+        with sm_mod._settings_lock:
+            sm_mod._settings_manager = None
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        yield
+
+    @pytest.fixture(autouse=True)
+    def _restore_get_max_concurrent(self):
+        from plex_generate_previews.web.routes import _JobConcurrencyManager
+
+        original_descriptor = _JobConcurrencyManager.__dict__["_get_max_concurrent"]
+        yield
+        _JobConcurrencyManager._get_max_concurrent = original_descriptor
+
+    def _patch_max_concurrent(self, n: int):
+        from plex_generate_previews.web.routes import _JobConcurrencyManager
+
+        _JobConcurrencyManager._get_max_concurrent = staticmethod(lambda: n)
+
+    @staticmethod
+    def _make_gpus(n: int) -> list:
+        return [
+            (f"GPU_{i}", f"/dev/dri/renderD{128 + i}", {"name": f"GPU {i}"})
+            for i in range(n)
+        ]
+
+    def test_rebalance_adds_workers_to_surviving_pool(self, tmp_path):
+        """After j1 finishes, j2's pool gets more GPUs and workers added."""
+        from unittest.mock import MagicMock
+        from plex_generate_previews.web.routes import (
+            _GpuPartitionManager,
+            _rebalance_running_jobs,
+            _gpu_cache,
+            _gpu_cache_lock,
+        )
+        from plex_generate_previews.web.jobs import JobManager
+
+        self._patch_max_concurrent(2)
+        gpus = self._make_gpus(4)
+
+        # Set up GPU cache
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = [
+                {"type": g[0], "device": g[1], "name": g[2].get("name", g[0])}
+                for g in gpus
+            ]
+
+        jm = JobManager(config_dir=str(tmp_path))
+        j1 = jm.create_job(library_name="Lib1")
+        j2 = jm.create_job(library_name="Lib2")
+        jm.start_job(j1.id)
+        jm.start_job(j2.id)
+
+        # Use our own partition manager to avoid global state leaks
+        partition_mgr = _GpuPartitionManager()
+
+        # Acquire partitions
+        gpu1 = partition_mgr.acquire(j1.id, gpus)
+        gpu2 = partition_mgr.acquire(j2.id, gpus)
+        assert len(gpu1) == 2
+        assert len(gpu2) == 2
+
+        # Set up mock pool for j2
+        mock_pool = MagicMock()
+        mock_pool.selected_gpus = list(gpu2)
+        mock_worker1 = MagicMock()
+        mock_worker1.worker_type = "GPU"
+        mock_worker2 = MagicMock()
+        mock_worker2.worker_type = "GPU"
+        mock_pool.workers = [mock_worker1, mock_worker2]
+        mock_pool.add_workers.return_value = 2
+
+        jm.set_active_worker_pool(j2.id, mock_pool)
+
+        # j1 finishes — release its partition
+        partition_mgr.release(j1.id)
+
+        # Rebalance — monkey-patch module-level _gpu_partition temporarily
+        import plex_generate_previews.web.routes as routes_mod
+
+        original_partition = routes_mod._gpu_partition
+        routes_mod._gpu_partition = partition_mgr
+
+        # Also patch get_job_manager to return our jm
+        from unittest.mock import patch
+
+        with patch(
+            "plex_generate_previews.web.routes.get_job_manager", return_value=jm
+        ):
+            _rebalance_running_jobs(j1.id)
+
+        routes_mod._gpu_partition = original_partition
+
+        # j2's pool should have been updated with more GPUs
+        assert len(mock_pool.selected_gpus) == 4
+        mock_pool.add_workers.assert_called_once_with("GPU", 2)
+
+        # Clean up
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = None
+
+    def test_rebalance_noop_when_no_gpu_gain(self, tmp_path):
+        """When there's no GPU gain, rebalance doesn't add workers."""
+        from unittest.mock import MagicMock, patch
+        from plex_generate_previews.web.routes import (
+            _GpuPartitionManager,
+            _rebalance_running_jobs,
+            _gpu_cache,
+            _gpu_cache_lock,
+        )
+        from plex_generate_previews.web.jobs import JobManager
+
+        self._patch_max_concurrent(1)  # Single job mode
+        gpus = self._make_gpus(2)
+
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = [
+                {"type": g[0], "device": g[1], "name": g[2].get("name", g[0])}
+                for g in gpus
+            ]
+
+        jm = JobManager(config_dir=str(tmp_path))
+        j1 = jm.create_job(library_name="Lib1")
+        jm.start_job(j1.id)
+
+        partition_mgr = _GpuPartitionManager()
+        partition_mgr.acquire(j1.id, gpus)
+
+        mock_pool = MagicMock()
+        mock_pool.selected_gpus = list(gpus)  # Already has all GPUs
+        jm.set_active_worker_pool(j1.id, mock_pool)
+
+        import plex_generate_previews.web.routes as routes_mod
+
+        original_partition = routes_mod._gpu_partition
+        routes_mod._gpu_partition = partition_mgr
+
+        with patch(
+            "plex_generate_previews.web.routes.get_job_manager", return_value=jm
+        ):
+            _rebalance_running_jobs("some-finished-job")
+
+        routes_mod._gpu_partition = original_partition
+
+        # No workers should have been added
+        mock_pool.add_workers.assert_not_called()
+
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = None
+
+    def test_rebalance_handles_missing_pool_gracefully(self, tmp_path):
+        """Rebalance doesn't crash if a job's pool is already cleaned up."""
+        from unittest.mock import patch
+        from plex_generate_previews.web.routes import (
+            _GpuPartitionManager,
+            _rebalance_running_jobs,
+            _gpu_cache,
+            _gpu_cache_lock,
+        )
+        from plex_generate_previews.web.jobs import JobManager
+
+        self._patch_max_concurrent(2)
+        gpus = self._make_gpus(2)
+
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = [
+                {"type": g[0], "device": g[1], "name": g[2].get("name", g[0])}
+                for g in gpus
+            ]
+
+        jm = JobManager(config_dir=str(tmp_path))
+        j1 = jm.create_job(library_name="Lib1")
+        j2 = jm.create_job(library_name="Lib2")
+        jm.start_job(j1.id)
+        jm.start_job(j2.id)
+
+        partition_mgr = _GpuPartitionManager()
+        partition_mgr.acquire(j1.id, gpus)
+        partition_mgr.acquire(j2.id, gpus)
+
+        # j2 has NO active pool (already cleaned up)
+        # This should not raise
+        partition_mgr.release(j1.id)
+
+        import plex_generate_previews.web.routes as routes_mod
+
+        original_partition = routes_mod._gpu_partition
+        routes_mod._gpu_partition = partition_mgr
+
+        with patch(
+            "plex_generate_previews.web.routes.get_job_manager", return_value=jm
+        ):
+            _rebalance_running_jobs(j1.id)  # Should not raise
+
+        routes_mod._gpu_partition = original_partition
+
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = None

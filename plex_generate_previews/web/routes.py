@@ -153,8 +153,108 @@ class _GpuPartitionManager:
         with self._lock:
             return self._job_slots.get(job_id)
 
+    def rebalance(self, all_gpus: list) -> dict[str, list]:
+        """Recalculate GPU partitions for all remaining jobs.
+
+        Call this **after** :meth:`release` so that the departing job's slot
+        is already freed.  Returns a dict mapping each remaining *job_id* to
+        its new (possibly larger) GPU subset.
+
+        The partitioning uses the *current* number of remaining jobs as the
+        divisor (not ``max_concurrent``), so that freed GPUs are spread
+        evenly among the survivors.
+        """
+        with self._lock:
+            if not self._job_slots or not all_gpus:
+                return {}
+
+            remaining_count = len(self._job_slots)
+            if remaining_count <= 0:
+                return {}
+
+            total = len(all_gpus)
+            result: dict[str, list] = {}
+
+            # Re-assign contiguous slot numbers 0..N-1 sorted by original slot
+            sorted_jobs = sorted(self._job_slots.items(), key=lambda kv: kv[1])
+            new_slots: dict[str, int] = {}
+            for new_idx, (jid, _old_slot) in enumerate(sorted_jobs):
+                new_slots[jid] = new_idx
+
+            self._job_slots = dict(new_slots)
+
+            for jid, slot in self._job_slots.items():
+                indices = [i for i in range(total) if i % remaining_count == slot]
+                if not indices and total > 0:
+                    indices = [slot % total]
+                result[jid] = [all_gpus[i] for i in indices]
+
+            return result
+
 
 _gpu_partition = _GpuPartitionManager()
+
+
+def _rebalance_running_jobs(finished_job_id: str) -> None:
+    """Redistribute freed GPUs to still-running jobs.
+
+    Called in the finally block after a job completes and its GPU partition is
+    released.  For each remaining running job whose partition grew, we update
+    the live :class:`WorkerPool`\'s ``selected_gpus`` and add new GPU workers
+    so they can pick up remaining queued items.
+    """
+    try:
+        job_manager = get_job_manager()
+
+        # Get the full GPU list from cache
+        with _gpu_cache_lock:
+            cached_gpus = _gpu_cache["result"]
+        if not cached_gpus:
+            return
+
+        all_gpus = [(g["type"], g["device"], g) for g in cached_gpus]
+        new_partitions = _gpu_partition.rebalance(all_gpus)
+
+        if not new_partitions:
+            return
+
+        for jid, new_gpu_list in new_partitions.items():
+            pool = job_manager.get_active_worker_pool(jid)
+            if pool is None:
+                continue
+
+            old_count = len(pool.selected_gpus)
+            new_count = len(new_gpu_list)
+
+            if new_count <= old_count:
+                continue
+
+            # Update the pool's GPU list so new workers target the right devices
+            pool.selected_gpus = new_gpu_list
+
+            # Add workers proportional to the GPU gain
+            delta_gpus = new_count - old_count
+            # Scale: if the original job had gpu_threads workers for old_count GPUs,
+            # add approximately (gpu_threads / old_count * delta_gpus) new workers.
+            # Use at least 1 new worker per gained GPU.
+            current_gpu_workers = sum(
+                1 for w in getattr(pool, "workers", []) if w.worker_type == "GPU"
+            )
+            if old_count > 0 and current_gpu_workers > 0:
+                workers_per_gpu = current_gpu_workers / old_count
+                new_workers = max(delta_gpus, round(workers_per_gpu * delta_gpus))
+            else:
+                new_workers = delta_gpus
+
+            added = pool.add_workers("GPU", new_workers)
+            slot = _gpu_partition.get_slot(jid)
+            logger.info(
+                f"Rebalance: job {jid[:8]} gained {delta_gpus} GPU(s) "
+                f"({old_count}->{new_count}, slot {slot}), "
+                f"added {added} GPU worker(s)"
+            )
+    except Exception as e:
+        logger.warning(f"GPU rebalancing failed (non-fatal): {e}")
 
 
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
@@ -2397,6 +2497,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 except Exception:
                     pass
             _gpu_partition.release(job_id)
+            # Rebalance: give freed GPUs to still-running jobs so they
+            # can scale up and process remaining queued items faster.
+            _rebalance_running_jobs(job_id)
             if _acquired_execution_slot:
                 _job_concurrency.release()
                 if job_manager is None:
