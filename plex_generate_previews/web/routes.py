@@ -53,7 +53,208 @@ MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
 # Ensures only one processing job runs at a time regardless of trigger source
 # (scheduled job, webhook, or manual start).
-_job_execution_lock = threading.Lock()
+# When concurrent_jobs_enabled is True, up to max_concurrent_jobs may run.
+
+
+class _JobConcurrencyManager:
+    """Controls how many jobs may execute simultaneously.
+
+    Reads ``concurrent_jobs_enabled`` and ``max_concurrent_jobs`` from
+    :class:`SettingsManager` on every :meth:`try_acquire` call so that
+    changes in settings take effect immediately without a restart.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._running_count = 0
+
+    def try_acquire(self) -> bool:
+        """Try to reserve an execution slot.  Returns True on success."""
+        with self._lock:
+            max_jobs = self._get_max_concurrent()
+            if self._running_count < max_jobs:
+                self._running_count += 1
+                return True
+            return False
+
+    def release(self) -> None:
+        """Release a previously acquired execution slot."""
+        with self._lock:
+            self._running_count = max(0, self._running_count - 1)
+
+    @staticmethod
+    def _get_max_concurrent() -> int:
+        try:
+            from .settings_manager import get_settings_manager
+
+            settings = get_settings_manager()
+            if settings.get("concurrent_jobs_enabled", False):
+                return max(1, int(settings.get("max_concurrent_jobs", 2)))
+            return 1
+        except Exception:
+            return 1
+
+
+_job_concurrency = _JobConcurrencyManager()
+
+
+class _GpuPartitionManager:
+    """Distributes GPUs across concurrent jobs to prevent resource contention.
+
+    When concurrent jobs are enabled each running job receives a disjoint
+    subset of the available GPUs.  GPUs are assigned round-robin across job
+    slots: slot *s* receives GPU indices where ``index % max_concurrent == s``.
+
+    When there are more concurrent slots than physical GPUs, multiple jobs
+    may share the same GPU device.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._job_slots: dict[str, int] = {}  # job_id -> slot_number
+
+    def acquire(self, job_id: str, all_gpus: list) -> list:
+        """Assign a GPU partition for *job_id*.
+
+        Returns the subset of *all_gpus* allocated to this job.
+        When concurrent mode is disabled or only one slot is configured,
+        returns *all_gpus* unchanged.
+        """
+        with self._lock:
+            max_concurrent = _JobConcurrencyManager._get_max_concurrent()
+
+            if max_concurrent <= 1 or not all_gpus:
+                return list(all_gpus)
+
+            # Find lowest available slot number
+            used_slots = set(self._job_slots.values())
+            slot = 0
+            while slot in used_slots:
+                slot += 1
+            self._job_slots[job_id] = slot
+
+            total = len(all_gpus)
+            # Partition: slot s gets GPUs where index % max_concurrent == s
+            indices = [i for i in range(total) if i % max_concurrent == slot]
+
+            if not indices and total > 0:
+                # More concurrent slots than GPUs — share via round-robin
+                indices = [slot % total]
+
+            return [all_gpus[i] for i in indices]
+
+    def release(self, job_id: str) -> None:
+        """Release the GPU partition held by *job_id*."""
+        with self._lock:
+            self._job_slots.pop(job_id, None)
+
+    def get_slot(self, job_id: str) -> int | None:
+        """Return the slot number assigned to *job_id*, or ``None``."""
+        with self._lock:
+            return self._job_slots.get(job_id)
+
+    def rebalance(self, all_gpus: list) -> dict[str, list]:
+        """Recalculate GPU partitions for all remaining jobs.
+
+        Call this **after** :meth:`release` so that the departing job's slot
+        is already freed.  Returns a dict mapping each remaining *job_id* to
+        its new (possibly larger) GPU subset.
+
+        The partitioning uses the *current* number of remaining jobs as the
+        divisor (not ``max_concurrent``), so that freed GPUs are spread
+        evenly among the survivors.
+        """
+        with self._lock:
+            if not self._job_slots or not all_gpus:
+                return {}
+
+            remaining_count = len(self._job_slots)
+            if remaining_count <= 0:
+                return {}
+
+            total = len(all_gpus)
+            result: dict[str, list] = {}
+
+            # Re-assign contiguous slot numbers 0..N-1 sorted by original slot
+            sorted_jobs = sorted(self._job_slots.items(), key=lambda kv: kv[1])
+            new_slots: dict[str, int] = {}
+            for new_idx, (jid, _old_slot) in enumerate(sorted_jobs):
+                new_slots[jid] = new_idx
+
+            self._job_slots = dict(new_slots)
+
+            for jid, slot in self._job_slots.items():
+                indices = [i for i in range(total) if i % remaining_count == slot]
+                if not indices and total > 0:
+                    indices = [slot % total]
+                result[jid] = [all_gpus[i] for i in indices]
+
+            return result
+
+
+_gpu_partition = _GpuPartitionManager()
+
+
+def _rebalance_running_jobs(finished_job_id: str) -> None:
+    """Redistribute freed GPUs to still-running jobs.
+
+    Called in the finally block after a job completes and its GPU partition is
+    released.  For each remaining running job whose partition grew, we update
+    the live :class:`WorkerPool`\'s ``selected_gpus`` and add new GPU workers
+    so they can pick up remaining queued items.
+    """
+    try:
+        job_manager = get_job_manager()
+
+        # Get the full GPU list from cache
+        with _gpu_cache_lock:
+            cached_gpus = _gpu_cache["result"]
+        if not cached_gpus:
+            return
+
+        all_gpus = [(g["type"], g["device"], g) for g in cached_gpus]
+        new_partitions = _gpu_partition.rebalance(all_gpus)
+
+        if not new_partitions:
+            return
+
+        for jid, new_gpu_list in new_partitions.items():
+            pool = job_manager.get_active_worker_pool(jid)
+            if pool is None:
+                continue
+
+            old_count = len(pool.selected_gpus)
+            new_count = len(new_gpu_list)
+
+            if new_count <= old_count:
+                continue
+
+            # Update the pool's GPU list so new workers target the right devices
+            pool.selected_gpus = new_gpu_list
+
+            # Add workers proportional to the GPU gain
+            delta_gpus = new_count - old_count
+            # Scale: if the original job had gpu_threads workers for old_count GPUs,
+            # add approximately (gpu_threads / old_count * delta_gpus) new workers.
+            # Use at least 1 new worker per gained GPU.
+            current_gpu_workers = sum(
+                1 for w in getattr(pool, "workers", []) if w.worker_type == "GPU"
+            )
+            if old_count > 0 and current_gpu_workers > 0:
+                workers_per_gpu = current_gpu_workers / old_count
+                new_workers = max(delta_gpus, round(workers_per_gpu * delta_gpus))
+            else:
+                new_workers = delta_gpus
+
+            added = pool.add_workers("GPU", new_workers)
+            slot = _gpu_partition.get_slot(jid)
+            logger.info(
+                f"Rebalance: job {jid[:8]} gained {delta_gpus} GPU(s) "
+                f"({old_count}->{new_count}, slot {slot}), "
+                f"added {added} GPU worker(s)"
+            )
+    except Exception as e:
+        logger.warning(f"GPU rebalancing failed (non-fatal): {e}")
 
 
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
@@ -408,8 +609,7 @@ def pause_processing():
     sm = get_settings_manager()
     job_manager = get_job_manager()
     sm.processing_paused = True
-    running = job_manager.get_running_job()
-    if running:
+    for running in job_manager.get_running_jobs():
         job_manager.request_pause(running.id)
     job_manager.emit_processing_paused_changed(True)
     logger.info("Global processing paused")
@@ -425,21 +625,18 @@ def resume_processing():
     sm = get_settings_manager()
     job_manager = get_job_manager()
     sm.processing_paused = False
-    running = job_manager.get_running_job()
-    if running:
+    for running in job_manager.get_running_jobs():
         job_manager.request_resume(running.id)
     job_manager.emit_processing_paused_changed(False)
     logger.info("Global processing resumed")
-    # If no job is running, start the next pending job (e.g. one that was queued while paused)
-    if not job_manager.get_running_job():
-        pending = sorted(
-            job_manager.get_pending_jobs(),
-            key=lambda j: j.created_at or "",
-        )
-        if pending:
-            next_job = pending[0]
-            _start_job_async(next_job.id, next_job.config or {})
-            logger.info(f"Started next pending job {next_job.id} after resume")
+    # Start pending jobs if there are available execution slots
+    pending = sorted(
+        job_manager.get_pending_jobs(),
+        key=lambda j: j.created_at or "",
+    )
+    for next_job in pending:
+        _start_job_async(next_job.id, next_job.config or {})
+        logger.info(f"Started next pending job {next_job.id} after resume")
     return jsonify({"paused": False})
 
 
@@ -998,14 +1195,20 @@ def get_system_status():
             gpus = _gpu_cache["result"] if _gpu_cache["result"] is not None else []
 
         job_manager = get_job_manager()
-        running_job = job_manager.get_running_job()
+        running_jobs = job_manager.get_running_jobs()
 
         return jsonify(
             {
                 "gpus": gpus,
                 "gpu_stats": [],
-                "running_job": running_job.to_dict() if running_job else None,
+                "running_job": running_jobs[0].to_dict() if running_jobs else None,
+                "running_jobs": [j.to_dict() for j in running_jobs],
                 "pending_jobs": len(job_manager.get_pending_jobs()),
+                "gpu_partitions": {
+                    j.id: _gpu_partition.get_slot(j.id)
+                    for j in running_jobs
+                    if _gpu_partition.get_slot(j.id) is not None
+                },
             }
         )
     except Exception as e:
@@ -1765,7 +1968,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
     def run_job():
         log_handler_id = None
-        _acquired_execution_lock = False
+        _acquired_execution_slot = False
         job_manager = None
         try:
             import os
@@ -1793,18 +1996,19 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 )
                 return
 
-            if not _job_execution_lock.acquire(blocking=False):
+            if not _job_concurrency.try_acquire():
                 merged = {**(job.config or {}), **(config_overrides or {})}
                 job_manager.update_job_config(job_id, merged)
-                running = job_manager.get_running_job()
-                if running:
-                    reason = f"another job ({running.id[:8]}) is currently running"
+                running_jobs = job_manager.get_running_jobs()
+                if running_jobs:
+                    ids = ", ".join(j.id[:8] for j in running_jobs)
+                    reason = f"max concurrent jobs reached (running: {ids})"
                 else:
                     reason = "a cancelled job is still winding down"
                 logger.info(f"Job {job_id} not started — {reason}; remains in queue")
                 return
 
-            _acquired_execution_lock = True
+            _acquired_execution_slot = True
 
             # Set up log capture for this job
             def log_sink(message):
@@ -1943,6 +2147,32 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 from ..gpu_detection import detect_all_gpus
 
                 selected_gpus = detect_all_gpus()
+
+            # -- GPU partitioning for concurrent jobs -----------------------
+            # When multiple jobs run simultaneously, each receives a disjoint
+            # subset of GPUs so they don't contend for the same hardware
+            # encoders/decoders.  Worker counts are scaled proportionally.
+            all_detected_gpus = list(selected_gpus)
+            selected_gpus = _gpu_partition.acquire(job_id, all_detected_gpus)
+
+            if all_detected_gpus and len(selected_gpus) < len(all_detected_gpus):
+                scale = len(selected_gpus) / len(all_detected_gpus)
+                original_gpu_threads = config.gpu_threads
+                config.gpu_threads = max(1, round(config.gpu_threads * scale))
+                if config.cpu_threads > 0:
+                    config.cpu_threads = max(1, round(config.cpu_threads * scale))
+                if getattr(config, "fallback_cpu_threads", 0) > 0:
+                    config.fallback_cpu_threads = max(
+                        1, round(config.fallback_cpu_threads * scale)
+                    )
+                slot = _gpu_partition.get_slot(job_id)
+                logger.info(
+                    f"Job {job_id[:8]}: assigned {len(selected_gpus)}/"
+                    f"{len(all_detected_gpus)} GPU(s) (slot {slot}), "
+                    f"gpu_threads {original_gpu_threads}->{config.gpu_threads}"
+                )
+            elif selected_gpus:
+                logger.info(f"Job {job_id[:8]}: using all {len(selected_gpus)} GPU(s)")
 
             def _format_eta(seconds: float) -> str:
                 """Format seconds into human-readable ETA string (used for worker ETA from ffmpeg)."""
@@ -2266,20 +2496,20 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     loguru_logger.remove(log_handler_id)
                 except Exception:
                     pass
-            if _acquired_execution_lock:
-                _job_execution_lock.release()
+            _gpu_partition.release(job_id)
+            # Rebalance: give freed GPUs to still-running jobs so they
+            # can scale up and process remaining queued items faster.
+            _rebalance_running_jobs(job_id)
+            if _acquired_execution_slot:
+                _job_concurrency.release()
                 if job_manager is None:
                     job_manager = get_job_manager()
-                if (
-                    not job_manager.get_running_job()
-                    and not get_settings_manager().processing_paused
-                ):
+                if not get_settings_manager().processing_paused:
                     pending = sorted(
                         job_manager.get_pending_jobs(),
                         key=lambda j: j.created_at or "",
                     )
-                    if pending:
-                        next_job = pending[0]
+                    for next_job in pending:
                         _start_job_async(next_job.id, next_job.config or {})
                         logger.info(f"Started next queued job {next_job.id}")
 

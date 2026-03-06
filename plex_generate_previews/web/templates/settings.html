@@ -194,6 +194,26 @@
                     </small>
                 </div>
 
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="concurrentJobsEnabled">
+                            <label class="form-check-label" for="concurrentJobsEnabled">
+                                Enable Concurrent Jobs
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            Allow multiple jobs to run simultaneously (e.g. webhook + scheduled scan)
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="maxConcurrentJobs" class="form-label">Max Concurrent Jobs</label>
+                        <input type="number" class="form-control" id="maxConcurrentJobs"
+                               min="1" max="8" value="2">
+                        <div class="form-text">Maximum number of jobs that can run at the same time</div>
+                    </div>
+                </div>
+
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">Thumbnail Interval</label>
@@ -374,6 +394,8 @@ async function loadSettings() {
         document.getElementById('gpuThreads').value = settings.gpu_threads ?? 1;
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
         document.getElementById('cpuFallbackThreads').value = settings.cpu_fallback_threads ?? 0;
+        document.getElementById('concurrentJobsEnabled').checked = !!settings.concurrent_jobs_enabled;
+        document.getElementById('maxConcurrentJobs').value = settings.max_concurrent_jobs ?? 2;
         document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
@@ -561,6 +583,8 @@ async function saveAllSettings() {
             gpu_threads: parseInt(document.getElementById('gpuThreads').value),
             cpu_threads: parseInt(document.getElementById('cpuThreads').value),
             cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
+            concurrent_jobs_enabled: document.getElementById('concurrentJobsEnabled').checked,
+            max_concurrent_jobs: parseInt(document.getElementById('maxConcurrentJobs').value),
             thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
             thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
             selected_libraries: libraries,

@@ -263,6 +263,27 @@ class SettingsManager:
         self.set("plex_name", value)
 
     @property
+    def concurrent_jobs_enabled(self) -> bool:
+        """When True, multiple jobs may execute simultaneously up to max_concurrent_jobs."""
+        return bool(self.get("concurrent_jobs_enabled", False))
+
+    @concurrent_jobs_enabled.setter
+    def concurrent_jobs_enabled(self, value: bool) -> None:
+        self.set("concurrent_jobs_enabled", bool(value))
+
+    @property
+    def max_concurrent_jobs(self) -> int:
+        """Maximum number of jobs that may run concurrently (only used when concurrent_jobs_enabled)."""
+        val = self.get("max_concurrent_jobs")
+        if val is None or val == "":
+            return 2
+        return max(1, int(val))
+
+    @max_concurrent_jobs.setter
+    def max_concurrent_jobs(self, value: int) -> None:
+        self.set("max_concurrent_jobs", max(1, int(value)))
+
+    @property
     def processing_paused(self) -> bool:
         """Global processing pause: when True, no new jobs start and dispatch stops (soft)."""
         return bool(self.get("processing_paused", False))
