@@ -91,6 +91,16 @@
                 </div>
 
                 <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="plexVerifySsl" checked>
+                        <label class="form-check-label" for="plexVerifySsl">
+                            Verify Plex HTTPS certificate
+                        </label>
+                    </div>
+                    <div class="form-text">Disable only if your Plex server uses a self-signed certificate.</div>
+                </div>
+
+                <div class="mb-3">
                     <label class="form-label">Plex Authentication</label>
                     <div class="d-flex gap-2">
                         <button class="btn btn-outline-primary" onclick="reAuthPlex()">
@@ -383,6 +393,7 @@ async function loadSettings() {
 
         // Populate form
         document.getElementById('plexUrl').value = settings.plex_url || '';
+        document.getElementById('plexVerifySsl').checked = settings.plex_verify_ssl !== false;
         document.getElementById('plexConfigFolder').value = settings.plex_config_folder || '/plex';
         renderPathMappingRows(settings.path_mappings || legacyToPathMappings(settings));
         renderExcludePathRows(settings.exclude_paths || []);
@@ -622,6 +633,7 @@ async function saveAllSettings() {
 
         const settings = {
             plex_url: document.getElementById('plexUrl').value,
+            plex_verify_ssl: document.getElementById('plexVerifySsl').checked,
             plex_config_folder: document.getElementById('plexConfigFolder').value,
             path_mappings: collectPathMappingRows(),
             exclude_paths: collectExcludePathRows(),
@@ -659,7 +671,8 @@ async function testConnection() {
     }
 
     try {
-        const result = await new PlexServerManager().testConnection(url);
+        const verifySsl = document.getElementById('plexVerifySsl').checked;
+        const result = await new PlexServerManager().testConnection(url, null, verifySsl);
 
         if (result.success) {
             showToast(`Connected to: ${result.server_name}`, 'success');

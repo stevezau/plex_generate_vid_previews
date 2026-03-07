@@ -27,6 +27,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import join_room, leave_room
 from loguru import logger
+import urllib3
 
 from ..media_processing import (
     _verify_tmp_folder_health,
@@ -54,6 +55,18 @@ MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 # Ensures only one processing job runs at a time regardless of trigger source
 # (scheduled job, webhook, or manual start).
 _job_execution_lock = threading.Lock()
+
+
+def _param_to_bool(value, default: bool) -> bool:
+    """Coerce a request parameter (query-string or JSON) to bool.
+
+    Uses the same truthy set as config.py ``get_value`` for consistency.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes")
 
 
 def _is_within_base(base_path: str, candidate_path: str) -> bool:
@@ -839,7 +852,10 @@ def run_schedule_now(schedule_id):
 
 
 def _fetch_libraries_via_http(
-    plex_url: str, plex_token: str, include_count: bool = False
+    plex_url: str,
+    plex_token: str,
+    include_count: bool = False,
+    verify_ssl: bool = True,
 ) -> list:
     """Fetch Plex libraries via direct HTTP request.
 
@@ -847,16 +863,21 @@ def _fetch_libraries_via_http(
         plex_url: Plex server URL
         plex_token: Plex authentication token
         include_count: Whether to include totalSize count
+        verify_ssl: Whether to verify the server's TLS certificate
 
     Returns:
         List of library dicts with id, name, type (and optionally count)
     """
     import requests
 
+    if not verify_ssl:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     response = requests.get(
         f"{plex_url.rstrip('/')}/library/sections",
         headers={"X-Plex-Token": plex_token, "Accept": "application/json"},
         timeout=10,
+        verify=verify_ssl,
     )
     response.raise_for_status()
     data = response.json()
@@ -886,14 +907,18 @@ def get_libraries():
     try:
         import requests as req_lib
 
+        from .settings_manager import get_settings_manager
+
+        settings = get_settings_manager()
+
         # Query params override saved settings (setup wizard flow)
         plex_url = request.args.get("url")
         plex_token = request.args.get("token")
+        verify_ssl = _param_to_bool(
+            request.args.get("verify_ssl"), settings.plex_verify_ssl
+        )
 
         if not plex_url or not plex_token:
-            from .settings_manager import get_settings_manager
-
-            settings = get_settings_manager()
             plex_url = plex_url or settings.plex_url
             plex_token = plex_token or settings.plex_token
 
@@ -937,7 +962,12 @@ def get_libraries():
                 ), 400
 
         # Use settings.json values (or query param overrides)
-        libraries = _fetch_libraries_via_http(plex_url, plex_token, include_count=True)
+        libraries = _fetch_libraries_via_http(
+            plex_url,
+            plex_token,
+            include_count=True,
+            verify_ssl=verify_ssl,
+        )
 
         return jsonify({"libraries": libraries})
 
@@ -1023,15 +1053,17 @@ def get_config():
         import os
 
         from ..config import get_cached_config
+        from .settings_manager import get_settings_manager
 
         config = get_cached_config()
         if config is None:
-            # Return what we can from environment variables
+            settings = get_settings_manager()
             return jsonify(
                 {
                     "plex_url": os.environ.get("PLEX_URL", ""),
                     "plex_token": "****" if os.environ.get("PLEX_TOKEN") else "",
                     "plex_config_folder": os.environ.get("PLEX_CONFIG_FOLDER", ""),
+                    "plex_verify_ssl": settings.plex_verify_ssl,
                     "config_error": "Configuration incomplete. Check required environment variables.",
                     "gpu_threads": int(os.environ.get("GPU_THREADS", 1)),
                     "cpu_threads": int(os.environ.get("CPU_THREADS", 1)),
@@ -1046,6 +1078,7 @@ def get_config():
                 "plex_url": config.plex_url or "",
                 "plex_token": "****" if config.plex_token else "",
                 "plex_config_folder": config.plex_config_folder or "",
+                "plex_verify_ssl": config.plex_verify_ssl,
                 "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping
                 or "",
                 "plex_videos_path_mapping": config.plex_videos_path_mapping or "",
@@ -1239,12 +1272,19 @@ def get_plex_libraries():
     # Use provided URL/token or saved values
     plex_url = request.args.get("url") or settings.plex_url
     plex_token = request.args.get("token") or settings.plex_token
+    verify_ssl = _param_to_bool(
+        request.args.get("verify_ssl"), settings.plex_verify_ssl
+    )
 
     if not plex_url or not plex_token:
         return jsonify({"error": "Plex URL and token required", "libraries": []}), 400
 
     try:
-        libraries = _fetch_libraries_via_http(plex_url, plex_token)
+        libraries = _fetch_libraries_via_http(
+            plex_url,
+            plex_token,
+            verify_ssl=verify_ssl,
+        )
         return jsonify({"libraries": libraries})
     except requests.ConnectionError:
         detail = f"Could not connect to Plex at {plex_url}"
@@ -1295,15 +1335,19 @@ def test_plex_connection():
 
     plex_url = data.get("url") or settings.plex_url
     plex_token = data.get("token") or settings.plex_token
+    verify_ssl = _param_to_bool(data.get("verify_ssl"), settings.plex_verify_ssl)
 
     if not plex_url or not plex_token:
         return jsonify({"success": False, "error": "URL and token required"}), 400
 
     try:
+        if not verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         response = requests.get(
             f"{plex_url.rstrip('/')}/",
             headers={"X-Plex-Token": plex_token, "Accept": "application/json"},
             timeout=10,
+            verify=verify_ssl,
         )
         response.raise_for_status()
         data = response.json()
@@ -1348,6 +1392,7 @@ def get_settings():
             "plex_url": settings.plex_url or "",
             "plex_token": "****" if settings.plex_token else "",
             "plex_name": settings.plex_name or "",
+            "plex_verify_ssl": settings.plex_verify_ssl,
             "plex_config_folder": settings.plex_config_folder or "/plex",
             "selected_libraries": settings.selected_libraries,
             "media_path": settings.media_path or "",
@@ -1388,6 +1433,7 @@ def save_settings():
         "plex_url",
         "plex_token",
         "plex_name",
+        "plex_verify_ssl",
         "plex_config_folder",
         "selected_libraries",
         "media_path",
@@ -1860,6 +1906,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 os.environ["PLEX_TOKEN"] = _job_settings.plex_token
             if _job_settings.plex_config_folder:
                 os.environ["PLEX_CONFIG_FOLDER"] = _job_settings.plex_config_folder
+            os.environ["PLEX_VERIFY_SSL"] = (
+                "true" if _job_settings.plex_verify_ssl else "false"
+            )
 
             # Create config with overrides
             config = load_config()

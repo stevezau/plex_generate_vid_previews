@@ -687,6 +687,7 @@ class TestSettingsAPI:
         assert "gpu_threads" in data
         assert "cpu_threads" in data
         assert "cpu_fallback_threads" in data
+        assert data["plex_verify_ssl"] is True
 
     def test_get_settings_returns_path_mappings(self, client):
         """GET /api/settings includes path_mappings when present."""
@@ -725,7 +726,12 @@ class TestSettingsAPI:
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
-            json={"gpu_threads": 2, "cpu_threads": 4, "cpu_fallback_threads": 1},
+            json={
+                "gpu_threads": 2,
+                "cpu_threads": 4,
+                "cpu_fallback_threads": 1,
+                "plex_verify_ssl": False,
+            },
         )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
@@ -736,12 +742,17 @@ class TestSettingsAPI:
         assert data["gpu_threads"] == 2
         assert data["cpu_threads"] == 4
         assert data["cpu_fallback_threads"] == 1
+        assert data["plex_verify_ssl"] is False
 
     def test_save_settings_ignores_unknown_fields(self, client):
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
-            json={"gpu_threads": 1, "unknown_field": "ignored"},
+            json={
+                "gpu_threads": 1,
+                "unknown_field": "ignored",
+                "plex_verify_ssl": False,
+            },
         )
         assert resp.status_code == 200
 
@@ -1968,11 +1979,16 @@ class TestPlexTestConnection:
         resp = client.post(
             "/api/plex/test",
             headers=_api_headers(),
-            json={"url": "http://plex:32400", "token": "test-token"},
+            json={
+                "url": "http://plex:32400",
+                "token": "test-token",
+                "verify_ssl": False,
+            },
         )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         assert resp.get_json()["server_name"] == "My Plex"
+        assert mock_get.call_args.kwargs["verify"] is False
 
     def test_plex_test_no_url_returns_400(self, client):
         from plex_generate_previews.web.settings_manager import get_settings_manager
@@ -2069,3 +2085,68 @@ class TestFetchLibrariesViaHTTP:
         assert result[0]["name"] == "Movies"
         assert result[0]["count"] == 50
         assert result[1]["name"] == "TV"
+        assert mock_get.call_args.kwargs["verify"] is True
+
+    @patch("requests.get")
+    def test_fetch_libraries_can_disable_ssl_verification(self, mock_get):
+        from plex_generate_previews.web.routes import _fetch_libraries_via_http
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"MediaContainer": {"Directory": []}}
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        _fetch_libraries_via_http(
+            "https://plex.example:32400",
+            "token",
+            verify_ssl=False,
+        )
+        assert mock_get.call_args.kwargs["verify"] is False
+
+
+class TestParamToBool:
+    """Test _param_to_bool uses the same truthy set as config.py."""
+
+    def test_none_returns_default(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        assert _param_to_bool(None, True) is True
+        assert _param_to_bool(None, False) is False
+
+    def test_bool_passthrough(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        assert _param_to_bool(True, False) is True
+        assert _param_to_bool(False, True) is False
+
+    def test_truthy_strings(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        for val in ("true", "1", "yes", "True", "YES", " true "):
+            assert _param_to_bool(val, False) is True, f"Expected True for {val!r}"
+
+    def test_falsy_strings(self):
+        from plex_generate_previews.web.routes import _param_to_bool
+
+        for val in ("false", "0", "no", "off", "anything", ""):
+            assert _param_to_bool(val, False) is False, f"Expected False for {val!r}"
+
+    @patch("requests.get")
+    def test_get_plex_libraries_passes_verify_ssl_override(self, mock_get, client):
+        """verify_ssl query param flows through to requests.get."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "https://plex:32400")
+        sm.set("plex_token", "tok")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"MediaContainer": {"Directory": []}}
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        resp = client.get(
+            "/api/plex/libraries?verify_ssl=false", headers=_api_headers()
+        )
+        assert resp.status_code == 200
+        assert mock_get.call_args.kwargs["verify"] is False
