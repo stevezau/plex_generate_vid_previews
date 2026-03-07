@@ -7,7 +7,7 @@ and duplicate filtering.
 
 import pytest
 import xml.etree.ElementTree as ET
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 import requests
 
 from plex_generate_previews.plex_client import (
@@ -16,6 +16,7 @@ from plex_generate_previews.plex_client import (
     filter_duplicate_locations,
     get_library_sections,
     get_media_items_by_paths,
+    trigger_plex_partial_scan,
     WebhookResolutionResult,
 )
 
@@ -73,6 +74,20 @@ class TestPlexServerConnection:
         # Verify session was configured with retry
         assert mock_session.called
 
+    @patch("plexapi.server.PlexServer")
+    @patch("requests.Session")
+    def test_plex_server_respects_ssl_verify_setting(
+        self, mock_session, mock_plex_server, mock_config
+    ):
+        """Test that session.verify follows config.plex_verify_ssl."""
+        mock_config.plex_verify_ssl = False
+        mock_plex_server.return_value = MagicMock()
+
+        plex_server(mock_config)
+
+        session_instance = mock_session.return_value
+        assert session_instance.verify is False
+
 
 class TestRetryPlexCall:
     """Test Plex API retry logic."""
@@ -118,6 +133,240 @@ class TestRetryPlexCall:
 
         # Should only try once (no retry for non-XML errors)
         assert mock_func.call_count == 1
+
+
+class TestTriggerPlexPartialScan:
+    """Test targeted Plex partial scan behavior for unresolved webhook paths."""
+
+    @patch("requests.get")
+    def test_empty_input_returns_empty_without_http_calls(self, mock_get):
+        """Empty unresolved path list should short-circuit."""
+        result = trigger_plex_partial_scan(
+            plex_url="http://plex:32400",
+            plex_token="token",
+            unresolved_paths=[],
+        )
+
+        assert result == []
+        mock_get.assert_not_called()
+
+    @patch("requests.get")
+    def test_longest_prefix_match_wins(self, mock_get):
+        """More specific section root should be chosen before a broader one."""
+        sections_response = MagicMock()
+        sections_response.raise_for_status = MagicMock()
+        sections_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [
+                    {"key": "1", "Location": [{"path": "/data"}]},
+                    {"key": "2", "Location": [{"path": "/data/tv"}]},
+                ]
+            }
+        }
+        refresh_response = MagicMock(status_code=200)
+        mock_get.side_effect = [sections_response, refresh_response]
+
+        result = trigger_plex_partial_scan(
+            plex_url="http://plex:32400",
+            plex_token="token",
+            unresolved_paths=["/data/tv/Show/Season 01/Episode 01.mkv"],
+        )
+
+        assert result == ["/data/tv/Show/Season 01/Episode 01.mkv"]
+        assert mock_get.call_args_list[1] == call(
+            "http://plex:32400/library/sections/2/refresh",
+            params={"path": "/data/tv/Show"},
+            headers={"X-Plex-Token": "token"},
+            timeout=10,
+            verify=True,
+        )
+
+    @patch("requests.get")
+    def test_path_mapping_expansion_triggers_scan_for_mapped_plex_path(self, mock_get):
+        """Webhook aliases should expand into Plex-native paths before scanning."""
+        sections_response = MagicMock()
+        sections_response.raise_for_status = MagicMock()
+        sections_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [
+                    {"key": "9", "Location": [{"path": "/data_16tb/tv"}]},
+                ]
+            }
+        }
+        refresh_response = MagicMock(status_code=200)
+        mock_get.side_effect = [sections_response, refresh_response]
+
+        result = trigger_plex_partial_scan(
+            plex_url="https://plex.example:32400",
+            plex_token="token",
+            unresolved_paths=["/data/tv/Example Show/Season 01/S01E01.mkv"],
+            path_mappings=[
+                {
+                    "plex_prefix": "/data_16tb",
+                    "local_prefix": "/mnt/media",
+                    "webhook_prefixes": ["/data"],
+                }
+            ],
+            verify_ssl=False,
+        )
+
+        assert result == ["/data/tv/Example Show/Season 01/S01E01.mkv"]
+        assert mock_get.call_args_list[0].kwargs["verify"] is False
+        assert mock_get.call_args_list[1] == call(
+            "https://plex.example:32400/library/sections/9/refresh",
+            params={"path": "/data_16tb/tv/Example Show"},
+            headers={"X-Plex-Token": "token"},
+            timeout=10,
+            verify=False,
+        )
+
+    @pytest.mark.parametrize(
+        ("unresolved_path", "location_path", "expected_scan_folder"),
+        [
+            (
+                "/data/tv/Test Show/Season 01/Test Show - S01E01.mkv",
+                "/data/tv",
+                "/data/tv/Test Show",
+            ),
+            (
+                "/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+                "/data/movies",
+                "/data/movies/Test Movie (2024)",
+            ),
+        ],
+    )
+    @patch("requests.get")
+    def test_scan_folder_targets_series_or_movie_root(
+        self,
+        mock_get,
+        unresolved_path,
+        location_path,
+        expected_scan_folder,
+    ):
+        """Partial scan should target the top-level show/movie folder."""
+        sections_response = MagicMock()
+        sections_response.raise_for_status = MagicMock()
+        sections_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [{"key": "3", "Location": [{"path": location_path}]}]
+            }
+        }
+        refresh_response = MagicMock(status_code=200)
+        mock_get.side_effect = [sections_response, refresh_response]
+
+        result = trigger_plex_partial_scan(
+            plex_url="http://plex:32400",
+            plex_token="token",
+            unresolved_paths=[unresolved_path],
+        )
+
+        assert result == [unresolved_path]
+        assert mock_get.call_args_list[1].kwargs["params"] == {
+            "path": expected_scan_folder
+        }
+
+    @patch("requests.get")
+    def test_sections_request_error_returns_empty(self, mock_get):
+        """Section lookup failures should be logged and treated as non-fatal."""
+        mock_get.side_effect = requests.RequestException("boom")
+
+        result = trigger_plex_partial_scan(
+            plex_url="http://plex:32400",
+            plex_token="token",
+            unresolved_paths=["/data/tv/Show/Season 01/Episode 01.mkv"],
+        )
+
+        assert result == []
+
+    @patch("requests.get")
+    def test_refresh_http_error_is_handled_gracefully(self, mock_get):
+        """Non-200 refresh responses should not be reported as scanned."""
+        sections_response = MagicMock()
+        sections_response.raise_for_status = MagicMock()
+        sections_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [{"key": "7", "Location": [{"path": "/data/movies"}]}]
+            }
+        }
+        refresh_response = MagicMock(status_code=500)
+        mock_get.side_effect = [sections_response, refresh_response]
+
+        result = trigger_plex_partial_scan(
+            plex_url="http://plex:32400",
+            plex_token="token",
+            unresolved_paths=["/data/movies/Broken Movie/Broken Movie.mkv"],
+        )
+
+        assert result == []
+
+    @patch("requests.get")
+    def test_multi_drive_scans_all_matching_candidates(self, mock_get):
+        """Expanded path mappings should scan every matching Plex drive root."""
+        sections_response = MagicMock()
+        sections_response.raise_for_status = MagicMock()
+        sections_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [
+                    {"key": "1", "Location": [{"path": "/drive1/tv"}]},
+                    {"key": "2", "Location": [{"path": "/drive2/tv"}]},
+                    {"key": "3", "Location": [{"path": "/drive3/tv"}]},
+                ]
+            }
+        }
+        mock_get.side_effect = [
+            sections_response,
+            MagicMock(status_code=200),
+            MagicMock(status_code=200),
+            MagicMock(status_code=200),
+        ]
+
+        result = trigger_plex_partial_scan(
+            plex_url="http://plex:32400",
+            plex_token="token",
+            unresolved_paths=["/data/tv/Test Show/Season 01/Test Show - S01E01.mkv"],
+            path_mappings=[
+                {
+                    "plex_prefix": "/drive1",
+                    "local_prefix": "/drive1",
+                    "webhook_prefixes": ["/data"],
+                },
+                {
+                    "plex_prefix": "/drive2",
+                    "local_prefix": "/drive2",
+                    "webhook_prefixes": ["/data"],
+                },
+                {
+                    "plex_prefix": "/drive3",
+                    "local_prefix": "/drive3",
+                    "webhook_prefixes": ["/data"],
+                },
+            ],
+        )
+
+        assert result == ["/data/tv/Test Show/Season 01/Test Show - S01E01.mkv"]
+        assert mock_get.call_args_list[1:] == [
+            call(
+                "http://plex:32400/library/sections/1/refresh",
+                params={"path": "/drive1/tv/Test Show"},
+                headers={"X-Plex-Token": "token"},
+                timeout=10,
+                verify=True,
+            ),
+            call(
+                "http://plex:32400/library/sections/2/refresh",
+                params={"path": "/drive2/tv/Test Show"},
+                headers={"X-Plex-Token": "token"},
+                timeout=10,
+                verify=True,
+            ),
+            call(
+                "http://plex:32400/library/sections/3/refresh",
+                params={"path": "/drive3/tv/Test Show"},
+                headers={"X-Plex-Token": "token"},
+                timeout=10,
+                verify=True,
+            ),
+        ]
 
 
 class TestFilterDuplicateLocations:

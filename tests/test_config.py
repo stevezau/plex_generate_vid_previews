@@ -11,8 +11,10 @@ from plex_generate_previews.config import (
     expand_path_mapping_candidates,
     get_config_value,
     get_path_mapping_pairs,
+    is_path_excluded,
     load_config,
     local_path_to_webhook_aliases,
+    normalize_exclude_paths,
     normalize_path_mappings,
     path_to_canonical_local,
     plex_path_to_local,
@@ -320,6 +322,93 @@ class TestNormalizePathMappings:
             assert result[0]["webhook_prefixes"] == []
 
 
+class TestNormalizeExcludePaths:
+    """Test exclude_paths normalization from settings."""
+
+    def test_normalize_exclude_paths_list_of_dicts(self):
+        """List of {value, type} is normalized."""
+        raw = [
+            {"value": "/mnt/media/archive", "type": "path"},
+            {"value": r".*\.iso$", "type": "regex"},
+        ]
+        result = normalize_exclude_paths(raw)
+        assert len(result) == 2
+        assert result[0] == {"value": "/mnt/media/archive", "type": "path"}
+        assert result[1] == {"value": r".*\.iso$", "type": "regex"}
+
+    def test_normalize_exclude_paths_list_of_strings(self):
+        """List of strings is treated as path prefix entries."""
+        raw = ["/mnt/foo", "/mnt/bar"]
+        result = normalize_exclude_paths(raw)
+        assert len(result) == 2
+        assert result[0] == {"value": "/mnt/foo", "type": "path"}
+        assert result[1] == {"value": "/mnt/bar", "type": "path"}
+
+    def test_normalize_exclude_paths_empty(self):
+        """Empty or missing returns empty list."""
+        assert normalize_exclude_paths(None) == []
+        assert normalize_exclude_paths([]) == []
+        assert normalize_exclude_paths({}) == []
+
+    def test_normalize_exclude_paths_skips_empty_value(self):
+        """Entries with empty value are skipped."""
+        raw = [{"value": "", "type": "path"}, {"value": "  ", "type": "regex"}]
+        assert normalize_exclude_paths(raw) == []
+
+    def test_normalize_exclude_paths_invalid_type_defaults_to_path(self):
+        """Invalid type is normalized to path."""
+        raw = [{"value": "/x", "type": "other"}]
+        result = normalize_exclude_paths(raw)
+        assert result[0]["type"] == "path"
+
+
+class TestIsPathExcluded:
+    """Test is_path_excluded (path prefix and regex)."""
+
+    def test_is_path_excluded_empty(self):
+        """No exclude list or empty path returns False."""
+        assert is_path_excluded("", []) is False
+        assert is_path_excluded("/mnt/foo", None) is False
+        assert is_path_excluded("/mnt/foo", []) is False
+
+    def test_is_path_excluded_path_prefix_match(self):
+        """Path prefix excludes subpaths."""
+        exclude = [{"value": "/mnt/media/archive", "type": "path"}]
+        assert is_path_excluded("/mnt/media/archive", exclude) is True
+        assert is_path_excluded("/mnt/media/archive/video.mkv", exclude) is True
+        assert is_path_excluded("/mnt/media/archive/sub/movie.mkv", exclude) is True
+        assert is_path_excluded("/mnt/media/other/video.mkv", exclude) is False
+        assert is_path_excluded("/mnt/media/archived/video.mkv", exclude) is False
+
+    def test_is_path_excluded_path_prefix_normalized(self):
+        """Trailing slashes are handled for prefix match."""
+        exclude = [{"value": "/mnt/media/foo/", "type": "path"}]
+        assert is_path_excluded("/mnt/media/foo/video.mkv", exclude) is True
+        assert is_path_excluded("/mnt/media/foo", exclude) is True
+
+    def test_is_path_excluded_regex_match(self):
+        """Regex type matches full path."""
+        exclude = [{"value": r".*\.iso$", "type": "regex"}]
+        assert is_path_excluded("/mnt/media/disc.iso", exclude) is True
+        assert is_path_excluded("/any/path/file.iso", exclude) is True
+        assert is_path_excluded("/mnt/media/disc.iso.bak", exclude) is False
+        assert is_path_excluded("/mnt/media/video.mkv", exclude) is False
+
+    def test_is_path_excluded_regex_invalid_skipped(self):
+        """Invalid regex does not match and does not raise."""
+        exclude = [{"value": "[invalid(regex", "type": "regex"}]
+        assert is_path_excluded("/mnt/foo", exclude) is False
+
+    def test_is_path_excluded_first_match_wins(self):
+        """First matching rule excludes."""
+        exclude = [
+            {"value": "/mnt/media/archive", "type": "path"},
+            {"value": r".*\.mkv$", "type": "regex"},
+        ]
+        assert is_path_excluded("/mnt/media/archive/video.mkv", exclude) is True
+        assert is_path_excluded("/mnt/other/video.mkv", exclude) is True
+
+
 class TestPathToCanonicalLocal:
     """Test path_to_canonical_local and plex_path_to_local."""
 
@@ -618,6 +707,7 @@ class TestLoadConfig:
         assert config is not None
         assert config.plex_url == "http://localhost:32400"
         assert config.plex_token == "test_token"
+        assert config.plex_verify_ssl is True
 
     @patch("shutil.which")
     @patch("plex_generate_previews.logging_config.setup_logging")

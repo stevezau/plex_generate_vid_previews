@@ -110,7 +110,7 @@ except Exception as e:
     print(f"WARNING: Could not validate MediaInfo library: {e}")
     print("Proceeding anyway, but errors may occur during processing")
 
-from .config import Config, plex_path_to_local  # noqa: E402
+from .config import Config, is_path_excluded, plex_path_to_local  # noqa: E402
 from .plex_client import retry_plex_call  # noqa: E402
 
 
@@ -1527,6 +1527,10 @@ def process_item(
                 media_file = sanitize_path(plex_path_to_local(plex_path, mappings))
             else:
                 media_file = sanitize_path(plex_path)
+
+            if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
+                logger.info(f"Skipping (excluded path): {media_file}")
+                continue
 
             # Validate bundle_hash has sufficient length (at least 2 characters)
             if not bundle_hash or len(bundle_hash) < 2:

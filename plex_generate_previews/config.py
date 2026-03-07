@@ -6,6 +6,7 @@ configuration object for the entire application.
 """
 
 import os
+import re
 import sys
 import shutil
 import subprocess
@@ -183,6 +184,71 @@ def _path_matches_prefix(path: str, prefix: str) -> bool:
         return False
     path = (path or "").strip()
     return path == norm or path.startswith(norm + "/")
+
+
+def normalize_exclude_paths(
+    raw: Optional[List[Any]],
+) -> List[Dict[str, str]]:
+    """Normalize exclude_paths from settings into list of {value, type} dicts.
+
+    Accepts list of dicts with value/type or list of strings (treated as path prefix).
+    """
+    if not raw or not isinstance(raw, list):
+        return []
+    out = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            value = (entry.get("value") or "").strip()
+            kind = (entry.get("type") or "path").strip().lower()
+            if not value:
+                continue
+            if kind not in ("path", "regex"):
+                kind = "path"
+            out.append({"value": value, "type": kind})
+        elif isinstance(entry, str):
+            value = entry.strip()
+            if value:
+                out.append({"value": value, "type": "path"})
+    return out
+
+
+def is_path_excluded(
+    local_path: str,
+    exclude_paths: Optional[List[Dict[str, str]]],
+) -> bool:
+    """Return True if local_path is excluded by any rule (path prefix or regex).
+
+    Args:
+        local_path: Resolved local file path (as this app sees it).
+        exclude_paths: List of {"value": str, "type": "path"|"regex"} from normalize_exclude_paths.
+
+    Returns:
+        True if the path should be skipped for preview generation.
+    """
+    if not local_path or not exclude_paths:
+        return False
+    path = os.path.normpath((local_path or "").strip()).replace("\\", "/")
+    if not path:
+        return False
+    for entry in exclude_paths:
+        value = (entry.get("value") or "").strip()
+        kind = (entry.get("type") or "path").strip().lower()
+        if not value:
+            continue
+        if kind == "regex":
+            try:
+                if re.search(value, path):
+                    return True
+            except re.error:
+                logger.warning(f"Invalid exclude regex, skipping: {value[:50]!r}")
+                continue
+        else:
+            prefix = os.path.normpath(value).replace("\\", "/").rstrip("/")
+            if not prefix:
+                continue
+            if path == prefix or path.startswith(prefix + "/"):
+                return True
+    return False
 
 
 def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
@@ -380,6 +446,7 @@ class Config:
     plex_url: str
     plex_token: str
     plex_timeout: int
+    plex_verify_ssl: bool
     plex_libraries: List[str]
 
     # Media paths
@@ -422,6 +489,8 @@ class Config:
 
     # Runtime-only file targets for webhook-triggered single-file processing.
     webhook_paths: Optional[List[str]] = None
+    # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
+    exclude_paths: Optional[List[Dict[str, str]]] = None
 
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
@@ -1015,6 +1084,9 @@ def load_config(cli_args=None) -> Config:
     plex_timeout = get_value(
         cli_args, "plex_timeout", "plex_timeout", "PLEX_TIMEOUT", 60, int
     )
+    plex_verify_ssl = get_value(
+        cli_args, "plex_verify_ssl", "plex_verify_ssl", "PLEX_VERIFY_SSL", True, bool
+    )
 
     # Handle plex_libraries (special case for comma-separated values OR list from settings.json)
     plex_libraries_setting = ui_settings.get("selected_libraries", [])
@@ -1065,6 +1137,7 @@ def load_config(cli_args=None) -> Config:
         path_mappings = _legacy_settings_to_path_mappings(
             plex_videos_path_mapping, plex_local_videos_path_mapping
         )
+    exclude_paths = normalize_exclude_paths(ui_settings.get("exclude_paths"))
 
     plex_bif_frame_interval = get_value(
         cli_args,
@@ -1231,11 +1304,13 @@ def load_config(cli_args=None) -> Config:
         plex_url=plex_url,
         plex_token=plex_token,
         plex_timeout=plex_timeout,
+        plex_verify_ssl=plex_verify_ssl,
         plex_libraries=plex_libraries,
         plex_config_folder=plex_config_folder,
         plex_local_videos_path_mapping=plex_local_videos_path_mapping,
         plex_videos_path_mapping=plex_videos_path_mapping,
         path_mappings=path_mappings,
+        exclude_paths=exclude_paths,
         plex_bif_frame_interval=plex_bif_frame_interval,
         thumbnail_quality=thumbnail_quality,
         regenerate_thumbnails=regenerate_thumbnails,
@@ -1262,6 +1337,7 @@ def load_config(cli_args=None) -> Config:
     logger.debug(f"PLEX_CONFIG_FOLDER = {config.plex_config_folder}")
     logger.debug(f"TMP_FOLDER = {config.tmp_folder}")
     logger.debug(f"PLEX_TIMEOUT = {config.plex_timeout}")
+    logger.debug(f"PLEX_VERIFY_SSL = {config.plex_verify_ssl}")
     logger.debug(
         f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}"
     )

@@ -232,6 +232,13 @@
                         host (e.g. inside Docker use the container network IP or
                         <code>host.docker.internal</code>).
                     </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="setupPlexVerifySsl" checked>
+                        <label class="form-check-label" for="setupPlexVerifySsl">
+                            Verify Plex HTTPS certificate
+                        </label>
+                    </div>
+                    <div class="form-text">Disable only if your Plex server uses a self-signed certificate.</div>
                 </div>
             </div>
         </div>
@@ -293,7 +300,17 @@
                         <i class="bi bi-plus-lg me-1"></i>Add another mapping
                     </button>
                 </div>
-                <div class="form-text">Each row links one Plex path to the path this app uses. Add “Path from Sonarr/Radarr” only when it’s different from Plex.</div>
+                <div class="form-text">Each row links one Plex path to the path this app uses. Add “Path from Sonarr/Radarr” only when it’s different from Plex.                </div>
+
+                <hr class="my-4">
+                <h6 class="mb-2">Exclude paths (optional)</h6>
+                <p class="text-muted small mb-2">Paths or folders to skip for preview generation. Path prefix or regex.</p>
+                <div id="setupExcludePathsContainer">
+                    <div class="exclude-path-rows mb-2"></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddExcludePathBtn">
+                        <i class="bi bi-plus-lg me-1"></i>Add exclude path
+                    </button>
+                </div>
 
                 <!-- Validation Results -->
                 <div id="pathValidation" class="mt-4 d-none">
@@ -535,8 +552,10 @@ document.addEventListener('DOMContentLoaded', function() {
         } else if (step === 3) {
             settingsManager.get().then(settings => {
                 setupRenderPathMappingRows(settings.path_mappings || setupLegacyToPathMappings(settings));
+                setupRenderExcludePathRows(settings.exclude_paths || []);
             }).catch(() => {
                 setupRenderPathMappingRows([]);
+                setupRenderExcludePathRows([]);
             });
         } else if (step === 4) {
             loadGpuInfo();
@@ -615,10 +634,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function getServerUrl() {
+        const protocol = selectedServer.ssl ? 'https' : 'http';
         if (selectedServer.local) {
-            return `http://${selectedServer.host}:${selectedServer.port}`;
+            return `${protocol}://${selectedServer.host}:${selectedServer.port}`;
         }
-        return selectedServer.uri || `http://${selectedServer.host}:${selectedServer.port}`;
+        return selectedServer.uri || `${protocol}://${selectedServer.host}:${selectedServer.port}`;
     }
 
     document.getElementById('serverSelect').addEventListener('change', async function() {
@@ -644,6 +664,11 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('serverUrlApply').addEventListener('click', async function() {
         await loadLibraries();
     });
+    document.getElementById('setupPlexVerifySsl').addEventListener('change', async function() {
+        if (selectedServer) {
+            await loadLibraries();
+        }
+    });
 
     async function loadLibraries() {
         const loading = document.getElementById('libraryLoading');
@@ -655,14 +680,16 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             const url = document.getElementById('serverUrlInput').value.trim() || getServerUrl();
             const token = selectedServer.access_token;
+            const verifySsl = document.getElementById('setupPlexVerifySsl').checked;
 
             await settingsManager.save({
                 plex_url: url,
                 plex_name: selectedServer.name,
-                plex_token: token
+                plex_token: token,
+                plex_verify_ssl: verifySsl
             });
 
-            const libraries = await serverManager.getLibraries(url, token);
+            const libraries = await serverManager.getLibraries(url, token, verifySsl);
 
             loading.classList.add('d-none');
 
@@ -795,11 +822,64 @@ document.addEventListener('DOMContentLoaded', function() {
         rows.forEach(r => container.appendChild(setupCreatePathMappingRow(r)));
     }
 
+    function setupRenderExcludePathRows(rows) {
+        const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            container.appendChild(setupCreateExcludePathRow({ value: '', type: 'path' }));
+            return;
+        }
+        rows.forEach(r => container.appendChild(setupCreateExcludePathRow({ value: r.value || '', type: (r.type || 'path') })));
+    }
+
+    function setupCreateExcludePathRow(row) {
+        const div = document.createElement('div');
+        div.className = 'exclude-path-row d-flex align-items-end gap-2 mb-2';
+        const typeVal = (row.type || 'path') === 'regex' ? 'regex' : 'path';
+        const valEsc = (row.value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+        div.innerHTML = `
+            <div class="flex-grow-1" style="flex-basis: 0;">
+                <label class="form-label small mb-0">Path or pattern</label>
+                <input type="text" class="form-control form-control-sm exclude-path-value" placeholder="e.g. /mnt/media/foo or .*\\.iso$" value="${valEsc}">
+            </div>
+            <div style="width: 140px;">
+                <label class="form-label small mb-0">Match type</label>
+                <select class="form-select form-select-sm exclude-path-type">
+                    <option value="path" ${typeVal === 'path' ? 'selected' : ''}>Path prefix</option>
+                    <option value="regex" ${typeVal === 'regex' ? 'selected' : ''}>Regex</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-outline-danger btn-sm exclude-path-remove flex-shrink-0" title="Remove"><i class="bi bi-dash-lg"></i></button>
+        `;
+        div.querySelector('.exclude-path-remove').addEventListener('click', function() {
+            div.remove();
+        });
+        return div;
+    }
+
+    function setupCollectExcludePathRows() {
+        const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
+        if (!container) return [];
+        const rows = [];
+        container.querySelectorAll('.exclude-path-row').forEach(rowEl => {
+            const value = (rowEl.querySelector('.exclude-path-value')?.value || '').trim();
+            if (!value) return;
+            const type = (rowEl.querySelector('.exclude-path-type')?.value || 'path') === 'regex' ? 'regex' : 'path';
+            rows.push({ value, type });
+        });
+        return rows;
+    }
+
     document.getElementById('step3Back').addEventListener('click', () => goToStep(2));
 
     document.getElementById('setupAddPathMappingBtn').addEventListener('click', function() {
         const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
         if (container) container.appendChild(setupCreatePathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+    });
+    document.getElementById('setupAddExcludePathBtn').addEventListener('click', function() {
+        const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
+        if (container) container.appendChild(setupCreateExcludePathRow({ value: '', type: 'path' }));
     });
 
     // Validate Paths button
@@ -877,7 +957,8 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('step3Next').addEventListener('click', async () => {
         await settingsManager.save({
             plex_config_folder: document.getElementById('plexConfigFolder').value,
-            path_mappings: setupCollectPathMappingRows()
+            path_mappings: setupCollectPathMappingRows(),
+            exclude_paths: setupCollectExcludePathRows()
         });
         goToStep(4);
     });
@@ -1083,6 +1164,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function loadSavedState() {
         try {
+            const settings = await settingsManager.get();
+            document.getElementById('setupPlexVerifySsl').checked = settings.plex_verify_ssl !== false;
+
             const status = await setupManager.getStatus();
 
             if (status.plex_authenticated) {
