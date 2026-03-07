@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from plex_generate_previews.web.app import (
+    _requeue_interrupted_on_startup,
     _derive_secret,
     get_cors_origins,
     get_or_create_flask_secret,
@@ -172,3 +173,53 @@ class TestWsgiModule:
         # Just verify the module file exists and is syntactically valid
         spec = importlib.util.find_spec("plex_generate_previews.web.wsgi")
         assert spec is not None
+
+
+class TestRequeueInterruptedOnStartup:
+    """Startup helper only requeues jobs when the setting is enabled."""
+
+    @patch("plex_generate_previews.web.routes._start_job_async")
+    @patch("plex_generate_previews.web.app.get_job_manager")
+    @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
+    def test_string_false_disables_requeue(
+        self, mock_get_settings_manager, mock_get_job_manager, mock_start_job
+    ):
+        """String 'false' disables startup requeue the same as a bool false."""
+        mock_get_settings_manager.return_value.get.side_effect = (
+            lambda key, default=None: {
+                "auto_requeue_on_restart": "false",
+                "requeue_max_age_minutes": 60,
+            }.get(key, default)
+        )
+
+        _requeue_interrupted_on_startup("/tmp/config")
+
+        mock_get_job_manager.assert_not_called()
+        mock_start_job.assert_not_called()
+
+    @patch("plex_generate_previews.web.routes._start_job_async")
+    @patch("plex_generate_previews.web.app.get_job_manager")
+    @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
+    def test_string_true_requeues_jobs(
+        self, mock_get_settings_manager, mock_get_job_manager, mock_start_job
+    ):
+        """String 'true' still enables startup requeue for persisted settings."""
+        mock_get_settings_manager.return_value.get.side_effect = (
+            lambda key, default=None: {
+                "auto_requeue_on_restart": "true",
+                "requeue_max_age_minutes": "45",
+            }.get(key, default)
+        )
+        requeued_job = type(
+            "RequeuedJob", (), {"id": "job-123", "config": {"foo": "bar"}}
+        )()
+        mock_get_job_manager.return_value.requeue_interrupted_jobs.return_value = [
+            requeued_job
+        ]
+
+        _requeue_interrupted_on_startup("/tmp/config")
+
+        mock_get_job_manager.return_value.requeue_interrupted_jobs.assert_called_once_with(
+            max_age_minutes=45
+        )
+        mock_start_job.assert_called_once_with("job-123", {"foo": "bar"})

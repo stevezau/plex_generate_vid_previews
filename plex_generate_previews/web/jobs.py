@@ -145,6 +145,7 @@ class JobManager:
 
         # Background retention timer
         self._retention_timer: Optional[threading.Timer] = None
+        self._interrupted_jobs: List[Job] = []
 
         # Load existing jobs from disk
         self._load_jobs()
@@ -163,7 +164,6 @@ class JobManager:
 
     def _load_jobs(self) -> None:
         """Load jobs from persistent storage."""
-        self._interrupted_jobs: List[Job] = []
         if os.path.exists(self.jobs_file):
             try:
                 with open(self.jobs_file, "r") as f:
@@ -180,7 +180,9 @@ class JobManager:
                                 )
                                 job.status = JobStatus.FAILED
                                 job.error = "Job was interrupted by server restart"
-                                job.completed_at = datetime.utcnow().isoformat()
+                                job.completed_at = datetime.now(
+                                    timezone.utc
+                                ).isoformat()
                                 needs_save = True
                                 self._interrupted_jobs.append(job)
                             elif job.status == JobStatus.PENDING:
@@ -391,20 +393,23 @@ class JobManager:
         Returns:
             List of newly created ``Job`` objects ready to be started.
         """
-        interrupted = getattr(self, "_interrupted_jobs", [])
-        if not interrupted:
+        if not self._interrupted_jobs:
             return []
 
         max_age_minutes = max(5, min(1440, max_age_minutes))
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
         requeued: List[Job] = []
 
-        for orig in interrupted:
+        for orig in self._interrupted_jobs:
+            if (orig.config or {}).get("requeued_from"):
+                logger.debug(
+                    f"Skipping requeue of job {orig.id[:8]} - already requeued"
+                )
+                continue
+
             # Check age — skip stale jobs
             try:
-                created = datetime.fromisoformat(
-                    orig.created_at.replace("Z", "+00:00")
-                )
+                created = datetime.fromisoformat(orig.created_at.replace("Z", "+00:00"))
                 if created.tzinfo is None:
                     created = created.replace(tzinfo=timezone.utc)
                 if created < cutoff:
@@ -449,8 +454,7 @@ class JobManager:
             )
             requeued.append(new_job)
             logger.info(
-                f"Requeued job {orig.id[:8]} as {new_job.id[:8]} "
-                f"({orig.library_name})"
+                f"Requeued job {orig.id[:8]} as {new_job.id[:8]} ({orig.library_name})"
             )
 
         # Persist the cancelled pending jobs

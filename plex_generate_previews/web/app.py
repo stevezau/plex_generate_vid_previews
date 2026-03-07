@@ -165,7 +165,13 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         from .settings_manager import get_settings_manager
 
         settings = get_settings_manager(config_dir)
-        if not settings.get("auto_requeue_on_restart", True):
+        raw_enabled = settings.get("auto_requeue_on_restart", True)
+        auto_requeue_enabled = (
+            raw_enabled
+            if isinstance(raw_enabled, bool)
+            else str(raw_enabled).strip().lower() in ("true", "1", "yes")
+        )
+        if not auto_requeue_enabled:
             logger.info("Auto-requeue on restart is disabled")
             return
 
@@ -181,9 +187,7 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         for job in new_jobs:
             _start_job_async(job.id, job.config)
 
-        logger.info(
-            f"Auto-requeued {len(new_jobs)} interrupted job(s) on startup"
-        )
+        logger.info(f"Auto-requeued {len(new_jobs)} interrupted job(s) on startup")
     except Exception as e:
         logger.warning(f"Failed to auto-requeue interrupted jobs: {e}")
 
