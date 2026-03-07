@@ -2183,6 +2183,36 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         )
                         return rj.id
 
+                    # Trigger targeted Plex partial scans for unresolved
+                    # paths *before* spawning retry jobs.  This nudges Plex to
+                    # index newly-arrived files so the next attempt can resolve
+                    # them.
+                    if (
+                        unresolved_paths
+                        and not is_retry
+                        and not (result.get("cancelled") or status_value == "cancelled")
+                    ):
+                        try:
+                            from ..plex_client import trigger_plex_partial_scan
+
+                            scan_results = trigger_plex_partial_scan(
+                                plex_url=config.plex_url,
+                                plex_token=config.plex_token,
+                                unresolved_paths=unresolved_paths,
+                                path_mappings=config.path_mappings,
+                                verify_ssl=config.plex_verify_ssl,
+                            )
+                            if scan_results:
+                                job_manager.add_log(
+                                    job_id,
+                                    f"INFO - Triggered Plex scan for "
+                                    f"{len(scan_results)} unresolved path(s)",
+                                )
+                        except Exception as scan_exc:  # noqa: BLE001
+                            logger.debug(
+                                f"Plex partial scan attempt failed (non-fatal): {scan_exc}"
+                            )
+
                     # Determine whether to spawn retries for unresolved paths.
                     # This must run regardless of whether processing had failures,
                     # so unresolved paths are never silently dropped.
