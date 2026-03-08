@@ -16,7 +16,17 @@ os.environ.setdefault(
 )
 os.environ.setdefault("PLEXAPI_HEADER_DEVICE_NAME", "PlexGeneratePreviews")
 
-from ._version import __version__ as __version__
+
+def _get_version() -> str:
+    """Return package version from metadata (when installed) or fallback for source."""
+    try:
+        import importlib.metadata
+        return importlib.metadata.version("plex-generate-previews")
+    except Exception:
+        return "0.0.0.dev0"
+
+
+__version__ = _get_version()
 
 __author__ = "stevezau"
 __description__ = "Generate video preview thumbnails for Plex Media Server"

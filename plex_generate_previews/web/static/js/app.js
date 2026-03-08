@@ -604,14 +604,14 @@ function updateLibraryList() {
     } else {
         for (const lib of libraries) {
             const icon = lib.type === 'movie' ? 'bi-film' : 'bi-tv';
-            let countText = `${escapeHtml(lib.count)} items`;
+            const typeLabel = lib.type === 'movie' ? 'Movies' : 'TV Shows';
 
             html += `
                 <div class="library-item">
                     <span class="library-name">
                         <i class="bi ${icon} me-2"></i>${escapeHtml(lib.name)}
                     </span>
-                    <span class="library-count">${countText}</span>
+                    <span class="library-count">${typeLabel}</span>
                 </div>
             `;
         }

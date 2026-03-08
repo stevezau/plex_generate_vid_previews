@@ -733,7 +733,9 @@ def get_media_items_by_paths(
                         if media_type == "movie"
                         else _build_episode_title(item)
                     )
-                    matched_items.append((item_key, title, media_type))
+                    matched_items.append(
+                        (item_key, plex_locations or [], title, media_type)
+                    )
         return pass_matches
 
     def _search_excluded_sections_by_file_path(target_paths: set[str]):
@@ -1030,6 +1032,8 @@ def get_media_items_by_paths(
         logger.info(
             f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"
         )
+    # Deduplicate by file location so multi-episode files are queued once (same as library scan).
+    matched_items = filter_duplicate_locations(matched_items)
     return WebhookResolutionResult(
         items=matched_items,
         unresolved_paths=unresolved_input_paths,

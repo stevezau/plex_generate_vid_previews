@@ -854,7 +854,6 @@ def run_schedule_now(schedule_id):
 def _fetch_libraries_via_http(
     plex_url: str,
     plex_token: str,
-    include_count: bool = False,
     verify_ssl: bool = True,
 ) -> list:
     """Fetch Plex libraries via direct HTTP request.
@@ -862,11 +861,10 @@ def _fetch_libraries_via_http(
     Args:
         plex_url: Plex server URL
         plex_token: Plex authentication token
-        include_count: Whether to include totalSize count
         verify_ssl: Whether to verify the server's TLS certificate
 
     Returns:
-        List of library dicts with id, name, type (and optionally count)
+        List of library dicts with id, name, type
     """
     import requests
 
@@ -885,14 +883,13 @@ def _fetch_libraries_via_http(
     libraries = []
     for section in data.get("MediaContainer", {}).get("Directory", []):
         if section.get("type") in ("movie", "show"):
-            lib = {
-                "id": str(section.get("key")),
-                "name": section.get("title"),
-                "type": section.get("type"),
-            }
-            if include_count:
-                lib["count"] = section.get("totalSize", 0)
-            libraries.append(lib)
+            libraries.append(
+                {
+                    "id": str(section.get("key")),
+                    "name": section.get("title"),
+                    "type": section.get("type"),
+                }
+            )
     return libraries
 
 
@@ -947,7 +944,6 @@ def get_libraries():
                                 "id": str(section.key),
                                 "name": section.title,
                                 "type": section.type,
-                                "count": section.totalSize,
                             }
                         )
 
@@ -965,7 +961,6 @@ def get_libraries():
         libraries = _fetch_libraries_via_http(
             plex_url,
             plex_token,
-            include_count=True,
             verify_ssl=verify_ssl,
         )
 
