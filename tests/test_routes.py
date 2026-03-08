@@ -2078,13 +2078,13 @@ class TestFetchLibrariesViaHTTP:
         }
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
-        result = _fetch_libraries_via_http(
-            "http://plex:32400", "token", include_count=True
-        )
+        result = _fetch_libraries_via_http("http://plex:32400", "token")
         assert len(result) == 2
         assert result[0]["name"] == "Movies"
-        assert result[0]["count"] == 50
+        assert result[0]["type"] == "movie"
         assert result[1]["name"] == "TV"
+        assert result[1]["type"] == "show"
+        assert "count" not in result[0]
         assert mock_get.call_args.kwargs["verify"] is True
 
     @patch("requests.get")
