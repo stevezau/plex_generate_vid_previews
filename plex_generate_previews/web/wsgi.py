@@ -4,7 +4,7 @@ WSGI entry point for gunicorn.
 Usage (production — via wrapper.sh):
     gunicorn \\
         --bind 0.0.0.0:8080 \\
-        --worker-class eventlet \\
+        --worker-class gthread \\
         --workers 1 \\
         "plex_generate_previews.web.wsgi:app"
 

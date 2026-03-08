@@ -40,7 +40,6 @@ dependencies = [
     "flask-limiter>=3.5.0,<4",
     "apscheduler>=3.10.0,<4",
     "gunicorn>=22.0.0,<24",
-    "eventlet>=0.35.0",
     "sqlalchemy>=2.0.0,<3",
 ]
 
@@ -75,9 +74,6 @@ plex-generate-previews = "plex_generate_previews.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["plex_generate_previews*"]
-
-[tool.setuptools.package-data]
-plex_generate_previews = ["fixtures/*.mp4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

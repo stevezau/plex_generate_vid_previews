@@ -106,15 +106,14 @@ Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
 
 ### Production Server
 
-In Docker, the web interface runs on **gunicorn** with the **eventlet** worker class:
+In Docker, the web interface runs on **gunicorn** with the **gthread** worker class:
 
-- **Native WebSocket support** via eventlet green threads
-- **Scalable real-time updates** — thousands of concurrent WebSocket connections
-- **No thread exhaustion** — green threads are lightweight coroutines, not OS threads
+- **WebSocket support** via Flask-SocketIO with threading async mode
+- **Real-time updates** — job progress and worker status over WebSocket
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| Worker class | `eventlet` | Async worker with green threads for WebSocket |
+| Worker class | `gthread` | Threaded worker; SocketIO uses threading async mode |
 | Workers | `1` | Single worker (required for in-process job state) |
 | Timeout | `300s` | Accommodates long-running FFmpeg processing |
 | Keep-alive | `65s` | Outlives typical reverse proxy timeouts (60s) |
@@ -354,6 +353,14 @@ locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
 **What does this tool do?**
 
 Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos. Plex's built-in generation is slow — this tool makes it 5-10x faster using GPU acceleration.
+
+**What Plex settings should I use?**
+
+In Plex Settings → Library, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation. Disabling it in Plex avoids duplicate work and prevents Plex from using CPU for thumbnails when you want this app to handle them.
+
+**Does this generate chapter thumbnails?**
+
+No. This tool only generates **video preview thumbnails** (BIF files for timeline scrubbing). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
 
 **Does this work on Windows?**
 

@@ -297,9 +297,9 @@ def get_library_sections(plex, config: Config, cancel_check=None):
                     show_title = m.grandparentTitle
                     season_episode = m.seasonEpisode.upper()
                     formatted_title = f"{show_title} {season_episode}"
-                media_with_locations.append(
-                    (m.key, m.locations, formatted_title, "episode")
-                )
+                    media_with_locations.append(
+                        (m.key, m.locations, formatted_title, "episode")
+                    )
                 media_with_locations = _filter_excluded_by_path(
                     media_with_locations, config
                 )

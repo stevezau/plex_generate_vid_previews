@@ -1057,7 +1057,6 @@ def load_config(cli_args=None) -> Config:
                     return default
             else:
                 return str(val) if val else default
-            return val
 
         # 3. Environment variables
         env_value = os.environ.get(env_key, "")

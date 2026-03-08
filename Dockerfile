@@ -70,8 +70,7 @@ WORKDIR /app
 ENV GIT_BRANCH=${GIT_BRANCH} \
     GIT_SHA=${GIT_SHA}
 
-# Copy application source (needed for Flask templates, static files, and fixtures
-# which are not yet included in package-data)
+# Copy application source (needed for Flask templates and static files)
 COPY pyproject.toml ./
 COPY plex_generate_previews/ ./plex_generate_previews/
 

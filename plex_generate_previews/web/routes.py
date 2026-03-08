@@ -926,7 +926,7 @@ def get_libraries():
             # Fall back to cached config for env var based config
             try:
                 from ..config import get_cached_config
-                from ..plex_client import get_plex_client
+                from ..plex_client import plex_server
 
                 config = get_cached_config()
                 if config is None:
@@ -937,7 +937,7 @@ def get_libraries():
                         }
                     ), 400
 
-                plex = get_plex_client(config)
+                plex = plex_server(config)
 
                 libraries = []
                 for section in plex.library.sections():

@@ -295,14 +295,12 @@ class Worker:
                 fallback_threads = getattr(config, "fallback_cpu_threads", 0)
                 if isinstance(fallback_threads, bool):
                     fallback_threads = int(fallback_threads)
-                elif isinstance(fallback_threads, int):
-                    fallback_threads = fallback_threads
                 elif isinstance(fallback_threads, str):
                     try:
                         fallback_threads = int(fallback_threads)
                     except ValueError:
                         fallback_threads = 0
-                else:
+                elif not isinstance(fallback_threads, int):
                     fallback_threads = 0
                 can_use_cpu_fallback = config.cpu_threads > 0 or fallback_threads > 0
                 if cpu_fallback_queue is not None and can_use_cpu_fallback:

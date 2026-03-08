@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Infrastructure
 
-- Production server: gunicorn with gthread workers and simple-websocket for native WebSocket support
+- Production server: gunicorn with gthread workers for WebSocket support
 - Dedicated `wsgi.py` module for gunicorn deployment
 - 530+ tests covering auth, routes, settings, scheduler, workers, media processing, and ETA
 - CI pipeline: GitHub Actions for linting (ruff), tests (pytest), and Docker builds
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `PLEX_URL` and `PLEX_TOKEN` environment variables are now optional (configured via UI)
 - Configuration priority: CLI args > settings.json > env vars > defaults
-- Web server uses gunicorn + gthread with simple-websocket (replaces Werkzeug dev server)
+- Web server uses gunicorn + gthread (replaces Werkzeug dev server)
 - SocketIO async mode set to `threading` for compatibility with gthread workers
 - Dashboard polls jobs every 5 seconds for real-time updates
 - GPU detection results cached to avoid blocking web UI on repeated job starts
