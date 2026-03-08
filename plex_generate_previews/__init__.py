@@ -21,6 +21,7 @@ def _get_version() -> str:
     """Return package version from metadata (when installed) or fallback for source."""
     try:
         import importlib.metadata
+
         return importlib.metadata.version("plex-generate-previews")
     except Exception:
         return "0.0.0.dev0"
