@@ -212,6 +212,22 @@
             </table>
         </div>
     </div>
+    <div class="card-footer d-none py-2 px-3" id="historyPaginationFooter">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div class="d-flex align-items-center gap-2">
+                <label class="form-label mb-0 small text-muted" for="historyPerPageSelect">Show</label>
+                <select class="form-select form-select-sm" id="historyPerPageSelect" style="width: auto;" onchange="changeHistoryPerPage(this.value)">
+                    <option value="10">10</option>
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                </select>
+                <span class="small text-muted" id="historyPaginationInfo"></span>
+            </div>
+            <nav aria-label="Webhook history pagination">
+                <ul class="pagination pagination-sm mb-0" id="historyPaginationControls"></ul>
+            </nav>
+        </div>
+    </div>
 </div>
 </div>
 </div>
@@ -224,6 +240,13 @@ document.addEventListener('DOMContentLoaded', function() {
     // Set webhook URLs from current origin
     document.getElementById('radarrUrl').value = window.location.origin + '/api/webhooks/radarr';
     document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
+
+    var savedHistoryPerPage = localStorage.getItem('historyPerPage');
+    if (savedHistoryPerPage) {
+        historyPerPage = parseInt(savedHistoryPerPage, 10) || 25;
+    }
+    var hpSelect = document.getElementById('historyPerPageSelect');
+    if (hpSelect) hpSelect.value = String(historyPerPage);
 
     loadWebhookSettings();
     loadHistory();
@@ -251,6 +274,9 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 let isDirty = false;
+let allHistoryEvents = [];
+let historyPage = 1;
+let historyPerPage = parseInt(localStorage.getItem('historyPerPage') || '25', 10);
 
 function markDirty() {
     isDirty = true;
@@ -322,69 +348,150 @@ async function saveWebhookSettings() {
 async function loadHistory() {
     try {
         const data = await apiGet('/api/webhooks/history');
-        const events = data.events || [];
-        const loading = document.getElementById('historyLoading');
-        const empty = document.getElementById('historyEmpty');
-        const table = document.getElementById('historyTable');
-        const tbody = document.getElementById('historyBody');
-
-        loading.classList.add('d-none');
-
-        if (events.length === 0) {
-            empty.classList.remove('d-none');
-            table.classList.add('d-none');
-            return;
-        }
-
-        empty.classList.add('d-none');
-        table.classList.remove('d-none');
-        tbody.innerHTML = '';
-
-        events.forEach(function(evt, idx) {
-            const tr = document.createElement('tr');
-            tr.id = 'history-row-' + idx;
-            const time = new Date(evt.timestamp);
-            const relative = timeAgo(time);
-
-            const sourceBadge = evt.source === 'radarr'
-                ? '<span class="badge source-badge radarr">Radarr</span>'
-                : '<span class="badge source-badge sonarr">Sonarr</span>';
-
-            const statusClass = evt.status || 'ignored';
-            const hasFiles = evt.status === 'triggered' && evt.files_preview && evt.files_preview.length > 0;
-            const pathCount = typeof evt.path_count === 'number' ? evt.path_count : (evt.files_preview ? evt.files_preview.length : 0);
-            let titleCell = escapeHtml(evt.title || '-');
-            if (hasFiles) {
-                const moreCount = pathCount > evt.files_preview.length ? pathCount - evt.files_preview.length : 0;
-                titleCell += ' <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="history-files-toggle-' + idx + '" onclick="toggleHistoryFiles(' + idx + ')" aria-expanded="false" aria-controls="history-detail-' + idx + '" title="Show files"><i class="bi bi-chevron-down"></i></button>';
-            }
-
-            tr.innerHTML =
-                '<td title="' + escapeHtml(time.toLocaleString()) + '">' + escapeHtml(relative) + '</td>' +
-                '<td>' + sourceBadge + '</td>' +
-                '<td>' + titleCell + '</td>' +
-                '<td><span class="badge status-badge ' + escapeHtml(statusClass) + '">' + escapeHtml(evt.status) + '</span></td>';
-            tbody.appendChild(tr);
-
-            if (hasFiles) {
-                const filesList = evt.files_preview
-                    .map(function(f) { return '<div class="text-muted">' + escapeHtml(f) + '</div>'; })
-                    .join('');
-                const overflow = pathCount > evt.files_preview.length
-                    ? '<div class="text-muted mt-1">(+' + (pathCount - evt.files_preview.length) + ' more)</div>'
-                    : '';
-                const detailTr = document.createElement('tr');
-                detailTr.id = 'history-detail-' + idx;
-                detailTr.className = 'd-none history-files-detail';
-                detailTr.setAttribute('aria-hidden', 'true');
-                detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
-                tbody.appendChild(detailTr);
-            }
-        });
+        allHistoryEvents = data.events || [];
+        renderHistoryPage();
     } catch (e) {
         console.error('Failed to load history:', e);
         document.getElementById('historyLoading').classList.add('d-none');
     }
+}
+
+function renderHistoryPage() {
+    const loading = document.getElementById('historyLoading');
+    const empty = document.getElementById('historyEmpty');
+    const table = document.getElementById('historyTable');
+    const tbody = document.getElementById('historyBody');
+
+    loading.classList.add('d-none');
+
+    if (allHistoryEvents.length === 0) {
+        empty.classList.remove('d-none');
+        table.classList.add('d-none');
+        renderHistoryPagination();
+        return;
+    }
+
+    empty.classList.add('d-none');
+    table.classList.remove('d-none');
+    tbody.innerHTML = '';
+
+    const total = allHistoryEvents.length;
+    const totalPages = Math.max(1, Math.ceil(total / historyPerPage));
+    if (historyPage > totalPages) historyPage = totalPages;
+    const start = (historyPage - 1) * historyPerPage;
+    const pageEvents = allHistoryEvents.slice(start, start + historyPerPage);
+
+    pageEvents.forEach(function(evt, localIdx) {
+        const idx = start + localIdx;
+        const tr = document.createElement('tr');
+        tr.id = 'history-row-' + idx;
+        const time = new Date(evt.timestamp);
+        const relative = timeAgo(time);
+
+        const sourceBadge = evt.source === 'radarr'
+            ? '<span class="badge source-badge radarr">Radarr</span>'
+            : '<span class="badge source-badge sonarr">Sonarr</span>';
+
+        const statusClass = evt.status || 'ignored';
+        const hasFiles = evt.status === 'triggered' && evt.files_preview && evt.files_preview.length > 0;
+        const pathCount = typeof evt.path_count === 'number' ? evt.path_count : (evt.files_preview ? evt.files_preview.length : 0);
+        let titleCell = escapeHtml(evt.title || '-');
+        if (hasFiles) {
+            titleCell += ' <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="history-files-toggle-' + idx + '" onclick="toggleHistoryFiles(' + idx + ')" aria-expanded="false" aria-controls="history-detail-' + idx + '" title="Show files"><i class="bi bi-chevron-down"></i></button>';
+        }
+
+        tr.innerHTML =
+            '<td title="' + escapeHtml(time.toLocaleString()) + '">' + escapeHtml(relative) + '</td>' +
+            '<td>' + sourceBadge + '</td>' +
+            '<td>' + titleCell + '</td>' +
+            '<td><span class="badge status-badge ' + escapeHtml(statusClass) + '">' + escapeHtml(evt.status) + '</span></td>';
+        tbody.appendChild(tr);
+
+        if (hasFiles) {
+            const filesList = evt.files_preview
+                .map(function(f) { return '<div class="text-muted">' + escapeHtml(f) + '</div>'; })
+                .join('');
+            const overflow = pathCount > evt.files_preview.length
+                ? '<div class="text-muted mt-1">(+' + (pathCount - evt.files_preview.length) + ' more)</div>'
+                : '';
+            const detailTr = document.createElement('tr');
+            detailTr.id = 'history-detail-' + idx;
+            detailTr.className = 'd-none history-files-detail';
+            detailTr.setAttribute('aria-hidden', 'true');
+            detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
+            tbody.appendChild(detailTr);
+        }
+    });
+
+    renderHistoryPagination();
+}
+
+function renderHistoryPagination() {
+    const footer = document.getElementById('historyPaginationFooter');
+    const info = document.getElementById('historyPaginationInfo');
+    const controls = document.getElementById('historyPaginationControls');
+    const perPageSelect = document.getElementById('historyPerPageSelect');
+    if (!footer) return;
+
+    const total = allHistoryEvents.length;
+    if (total === 0) {
+        footer.classList.add('d-none');
+        return;
+    }
+    footer.classList.remove('d-none');
+    perPageSelect.value = String(historyPerPage);
+
+    const totalPages = Math.max(1, Math.ceil(total / historyPerPage));
+    const start = (historyPage - 1) * historyPerPage + 1;
+    const end = Math.min(historyPage * historyPerPage, total);
+    info.textContent = 'Showing ' + start + '\u2013' + end + ' of ' + total;
+
+    var html = '';
+    html += '<li class="page-item ' + (historyPage <= 1 ? 'disabled' : '') + '">' +
+        '<a class="page-link" href="#" onclick="goToHistoryPage(' + (historyPage - 1) + '); return false;" aria-label="Previous">&lsaquo;</a></li>';
+
+    var maxVisible = 5;
+    var rangeStart = Math.max(1, historyPage - Math.floor(maxVisible / 2));
+    var rangeEnd = Math.min(totalPages, rangeStart + maxVisible - 1);
+    if (rangeEnd - rangeStart + 1 < maxVisible) {
+        rangeStart = Math.max(1, rangeEnd - maxVisible + 1);
+    }
+
+    if (rangeStart > 1) {
+        html += '<li class="page-item"><a class="page-link" href="#" onclick="goToHistoryPage(1); return false;">1</a></li>';
+        if (rangeStart > 2) {
+            html += '<li class="page-item disabled"><span class="page-link">&hellip;</span></li>';
+        }
+    }
+    for (var p = rangeStart; p <= rangeEnd; p++) {
+        html += '<li class="page-item ' + (p === historyPage ? 'active' : '') + '">' +
+            '<a class="page-link" href="#" onclick="goToHistoryPage(' + p + '); return false;">' + p + '</a></li>';
+    }
+    if (rangeEnd < totalPages) {
+        if (rangeEnd < totalPages - 1) {
+            html += '<li class="page-item disabled"><span class="page-link">&hellip;</span></li>';
+        }
+        html += '<li class="page-item"><a class="page-link" href="#" onclick="goToHistoryPage(' + totalPages + '); return false;">' + totalPages + '</a></li>';
+    }
+
+    html += '<li class="page-item ' + (historyPage >= totalPages ? 'disabled' : '') + '">' +
+        '<a class="page-link" href="#" onclick="goToHistoryPage(' + (historyPage + 1) + '); return false;" aria-label="Next">&rsaquo;</a></li>';
+
+    controls.innerHTML = html;
+}
+
+function goToHistoryPage(page) {
+    var totalPages = Math.max(1, Math.ceil(allHistoryEvents.length / historyPerPage));
+    if (page < 1 || page > totalPages) return;
+    historyPage = page;
+    renderHistoryPage();
+}
+
+function changeHistoryPerPage(value) {
+    historyPerPage = parseInt(value, 10) || 25;
+    historyPage = 1;
+    localStorage.setItem('historyPerPage', String(historyPerPage));
+    renderHistoryPage();
 }
 
 function toggleHistoryFiles(index) {

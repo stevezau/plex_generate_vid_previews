@@ -237,31 +237,6 @@ class JobManager:
         """Emit event when global processing pause state changes."""
         self._emit_event("processing_paused_changed", {"paused": paused})
 
-    # Maximum number of terminal-state jobs to keep on disk
-    _MAX_TERMINAL_JOBS = 50
-
-    def _prune_terminal_jobs(self) -> int:
-        """Remove oldest completed/failed/cancelled jobs when limit exceeded.
-
-        Returns:
-            Number of pruned jobs (caller can log outside the lock).
-        """
-        terminal = sorted(
-            (
-                j
-                for j in self._jobs.values()
-                if j.status
-                in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
-            ),
-            key=lambda j: j.completed_at or j.created_at,
-        )
-        excess = len(terminal) - self._MAX_TERMINAL_JOBS
-        if excess > 0:
-            for job in terminal[:excess]:
-                self._delete_job_log_file(job.id)
-                del self._jobs[job.id]
-        return max(excess, 0)
-
     def _delete_job_log_file(self, job_id: str) -> None:
         """Remove the persisted log file for a job if it exists. Caller must hold _lock."""
         path = os.path.join(self._job_logs_dir, f"{job_id}.log")
@@ -358,7 +333,6 @@ class JobManager:
         config: Optional[Dict[str, Any]] = None,
     ) -> Job:
         """Create a new job."""
-        pruned = 0
         with self._lock:
             job = Job(
                 id=str(uuid.uuid4()),
@@ -367,11 +341,8 @@ class JobManager:
                 config=config or {},
             )
             self._jobs[job.id] = job
-            pruned = self._prune_terminal_jobs()
             self._save_jobs()
             self._emit_event("job_created", job.to_dict())
-        if pruned:
-            logger.debug(f"Pruned {pruned} old terminal jobs")
         logger.info(f"Created job {job.id} for library {library_name}")
         return job
 

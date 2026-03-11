@@ -12,6 +12,10 @@ let processingPaused = false;
 const expandedJobFileRows = new Set();
 let cachedWorkerConfigCounts = null;
 let jobsLoadedOnce = false;
+let jobPage = 1;
+let jobPerPage = parseInt(localStorage.getItem('jobPerPage') || '50', 10);
+let jobTotalPages = 1;
+let jobTotal = 0;
 
 
 /**
@@ -104,11 +108,13 @@ async function copyToClipboard(text, successMessage = 'Copied to clipboard', err
 
 // Initialize dashboard
 function initDashboard() {
-    // Connect to SocketIO
     connectSocket();
 
-    // Load jobs first so worker status can check for running jobs
-    // without a race condition that briefly flashes config defaults.
+    const perPageSelect = document.getElementById('jobPerPageSelect');
+    if (perPageSelect) {
+        perPageSelect.value = String(jobPerPage);
+    }
+
     loadJobs().then(() => loadWorkerStatuses());
     refreshStatus();
     loadLibraries();
@@ -436,10 +442,16 @@ async function loadLibraries() {
 
 async function loadJobs() {
     try {
-        const data = await apiGet('/api/jobs');
+        const data = await apiGet(`/api/jobs?page=${jobPage}&per_page=${jobPerPage}`);
         jobs = data.jobs || [];
+        jobTotal = data.total || 0;
+        jobTotalPages = data.pages || 1;
+        if (jobPage > jobTotalPages) {
+            jobPage = jobTotalPages;
+        }
         jobsLoadedOnce = true;
         updateJobQueue();
+        renderJobPagination();
 
         // Update current job if there's a running one
         const runningJob = jobs.find(j => j.status === 'running');
@@ -675,10 +687,11 @@ function updateJobQueue() {
     const tbody = document.getElementById('jobQueue');
 
     if (jobs.length === 0) {
+        const msg = jobTotal === 0 ? 'No jobs in queue' : 'No jobs on this page';
         tbody.innerHTML = `
             <tr>
                 <td colspan="6" class="text-center text-muted py-4">
-                    No jobs in queue
+                    ${msg}
                 </td>
             </tr>
         `;
@@ -687,24 +700,14 @@ function updateJobQueue() {
 
     let html = '';
 
-    // Sort jobs: running first, then pending (oldest first = queue order), then terminal by created_at desc
-    const sortedJobs = [...jobs].sort((a, b) => {
-        if (a.status === 'running') return -1;
-        if (b.status === 'running') return 1;
-        if (a.status === 'pending' && b.status !== 'pending') return -1;
-        if (b.status === 'pending' && a.status !== 'pending') return 1;
-        // Pending: oldest first (queue order); terminal: newest first
-        if (a.status === 'pending') return new Date(a.created_at) - new Date(b.created_at);
-        return new Date(b.created_at) - new Date(a.created_at);
-    });
-    const activeJobIds = new Set(sortedJobs.map((job) => String(job.id)));
+    const activeJobIds = new Set(jobs.map((job) => String(job.id)));
     for (const expandedId of Array.from(expandedJobFileRows)) {
         if (!activeJobIds.has(expandedId)) {
             expandedJobFileRows.delete(expandedId);
         }
     }
 
-    for (const job of sortedJobs) {
+    for (const job of jobs) {
         const statusBadge = getStatusBadge(job.status, job.paused, job.error);
         const progress = job.progress.percent.toFixed(1);
         const created = formatDate(job.created_at);
@@ -782,6 +785,75 @@ function updateJobQueue() {
     }
 
     tbody.innerHTML = html;
+}
+
+function renderJobPagination() {
+    const footer = document.getElementById('jobPaginationFooter');
+    const info = document.getElementById('jobPaginationInfo');
+    const controls = document.getElementById('jobPaginationControls');
+    const perPageSelect = document.getElementById('jobPerPageSelect');
+
+    if (!footer) return;
+
+    if (jobTotal === 0) {
+        footer.classList.add('d-none');
+        return;
+    }
+    footer.classList.remove('d-none');
+
+    perPageSelect.value = String(jobPerPage);
+
+    const start = (jobPage - 1) * jobPerPage + 1;
+    const end = Math.min(jobPage * jobPerPage, jobTotal);
+    info.textContent = `Showing ${start}\u2013${end} of ${jobTotal}`;
+
+    let pagesHtml = '';
+    pagesHtml += `<li class="page-item ${jobPage <= 1 ? 'disabled' : ''}">
+        <a class="page-link" href="#" onclick="goToJobPage(${jobPage - 1}); return false;" aria-label="Previous">&lsaquo;</a></li>`;
+
+    const maxVisible = 5;
+    let rangeStart = Math.max(1, jobPage - Math.floor(maxVisible / 2));
+    let rangeEnd = Math.min(jobTotalPages, rangeStart + maxVisible - 1);
+    if (rangeEnd - rangeStart + 1 < maxVisible) {
+        rangeStart = Math.max(1, rangeEnd - maxVisible + 1);
+    }
+
+    if (rangeStart > 1) {
+        pagesHtml += `<li class="page-item"><a class="page-link" href="#" onclick="goToJobPage(1); return false;">1</a></li>`;
+        if (rangeStart > 2) {
+            pagesHtml += `<li class="page-item disabled"><span class="page-link">&hellip;</span></li>`;
+        }
+    }
+
+    for (let p = rangeStart; p <= rangeEnd; p++) {
+        pagesHtml += `<li class="page-item ${p === jobPage ? 'active' : ''}">
+            <a class="page-link" href="#" onclick="goToJobPage(${p}); return false;">${p}</a></li>`;
+    }
+
+    if (rangeEnd < jobTotalPages) {
+        if (rangeEnd < jobTotalPages - 1) {
+            pagesHtml += `<li class="page-item disabled"><span class="page-link">&hellip;</span></li>`;
+        }
+        pagesHtml += `<li class="page-item"><a class="page-link" href="#" onclick="goToJobPage(${jobTotalPages}); return false;">${jobTotalPages}</a></li>`;
+    }
+
+    pagesHtml += `<li class="page-item ${jobPage >= jobTotalPages ? 'disabled' : ''}">
+        <a class="page-link" href="#" onclick="goToJobPage(${jobPage + 1}); return false;" aria-label="Next">&rsaquo;</a></li>`;
+
+    controls.innerHTML = pagesHtml;
+}
+
+function goToJobPage(page) {
+    if (page < 1 || page > jobTotalPages) return;
+    jobPage = page;
+    loadJobs();
+}
+
+function changeJobPerPage(value) {
+    jobPerPage = parseInt(value, 10) || 50;
+    jobPage = 1;
+    localStorage.setItem('jobPerPage', String(jobPerPage));
+    loadJobs();
 }
 
 function updateCurrentJob(job) {

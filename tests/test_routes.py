@@ -274,7 +274,12 @@ class TestJobsAPI:
     def test_get_jobs_empty(self, client):
         resp = client.get("/api/jobs", headers=_api_headers())
         assert resp.status_code == 200
-        assert resp.get_json()["jobs"] == []
+        data = resp.get_json()
+        assert data["jobs"] == []
+        assert data["total"] == 0
+        assert data["page"] == 1
+        assert data["per_page"] == 50
+        assert data["pages"] == 1
 
     def test_create_job(self, client):
         """Test creating a job (mocking _start_job_async to avoid real processing)."""
@@ -392,6 +397,75 @@ class TestJobsAPI:
         resp = client.post("/api/jobs/clear", headers=_api_headers(), json={})
         assert resp.status_code == 200
         assert "cleared" in resp.get_json()
+
+    def test_get_jobs_pagination(self, client):
+        """Pagination returns correct slices and metadata."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            for _ in range(5):
+                client.post("/api/jobs", headers=_api_headers(), json={})
+
+        resp = client.get("/api/jobs?page=1&per_page=2", headers=_api_headers())
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert len(data["jobs"]) == 2
+        assert data["total"] == 5
+        assert data["page"] == 1
+        assert data["per_page"] == 2
+        assert data["pages"] == 3
+
+    def test_get_jobs_pagination_last_page(self, client):
+        """Last page may have fewer items than per_page."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            for _ in range(5):
+                client.post("/api/jobs", headers=_api_headers(), json={})
+
+        resp = client.get("/api/jobs?page=3&per_page=2", headers=_api_headers())
+        data = resp.get_json()
+        assert len(data["jobs"]) == 1
+        assert data["page"] == 3
+
+    def test_get_jobs_pagination_out_of_range(self, client):
+        """Page beyond total returns empty jobs list."""
+        resp = client.get("/api/jobs?page=99&per_page=10", headers=_api_headers())
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["jobs"] == []
+        assert data["page"] == 99
+
+    def test_get_jobs_unpaginated(self, client):
+        """page=0 returns all jobs without pagination."""
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            for _ in range(3):
+                client.post("/api/jobs", headers=_api_headers(), json={})
+
+        resp = client.get("/api/jobs?page=0", headers=_api_headers())
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert len(data["jobs"]) == 3
+        assert data["page"] == 0
+        assert data["pages"] == 1
+
+    def test_get_jobs_sort_order(self, client):
+        """Jobs are sorted: running first, pending oldest-first, terminal newest-first."""
+        from plex_generate_previews.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            r1 = client.post("/api/jobs", headers=_api_headers(), json={})
+            r2 = client.post("/api/jobs", headers=_api_headers(), json={})
+            r3 = client.post("/api/jobs", headers=_api_headers(), json={})
+
+        id1, id2, _id3 = r1.get_json()["id"], r2.get_json()["id"], r3.get_json()["id"]
+        jm.start_job(id1)
+        jm.complete_job(id1)
+        jm.start_job(id2)
+
+        resp = client.get("/api/jobs?page=0", headers=_api_headers())
+        jobs = resp.get_json()["jobs"]
+        statuses = [j["status"] for j in jobs]
+        assert statuses[0] == "running"
+        assert statuses[1] == "pending"
+        assert statuses[2] == "completed"
 
     def test_get_job_stats(self, client):
         resp = client.get("/api/jobs/stats", headers=_api_headers())

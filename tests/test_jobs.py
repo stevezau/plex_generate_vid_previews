@@ -215,35 +215,6 @@ class TestLogFileCleanup:
         assert n == 1
         assert not os.path.isfile(log_path)
 
-    def test_prune_terminal_jobs_removes_log_files(self, config_dir):
-        """Pruning old terminal jobs removes their log files."""
-        os.makedirs(config_dir, exist_ok=True)
-        jm = JobManager(config_dir=config_dir)
-        log_dir = os.path.join(config_dir, "logs", "jobs")
-
-        # Create exactly MAX_TERMINAL_JOBS completed jobs (no pruning yet)
-        max_terminal = jm._MAX_TERMINAL_JOBS
-        for i in range(max_terminal):
-            job = jm.create_job(library_name=f"Lib{i}")
-            jm.start_job(job.id)
-            jm.add_log(job.id, "INFO - x")
-            jm.complete_job(job.id)
-
-        assert (
-            len([f for f in os.listdir(log_dir) if f.endswith(".log")]) == max_terminal
-        )
-
-        # Create one more completed job — should trigger prune of the oldest
-        extra = jm.create_job(library_name="Extra")
-        jm.start_job(extra.id)
-        jm.add_log(extra.id, "INFO - x")
-        jm.complete_job(extra.id)
-
-        # Now there are max_terminal + 1 terminal jobs; next create prunes 1
-        jm.create_job(library_name="Trigger")
-        remaining_logs = [f for f in os.listdir(log_dir) if f.endswith(".log")]
-        assert len(remaining_logs) == max_terminal
-
     def test_clear_logs_removes_file(self, config_dir):
         """clear_logs deletes the job log file."""
         os.makedirs(config_dir, exist_ok=True)

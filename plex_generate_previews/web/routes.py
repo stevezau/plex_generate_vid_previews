@@ -11,6 +11,7 @@ For multi-worker deployments (e.g., gunicorn with multiple workers),
 configure Redis storage via RATELIMIT_STORAGE_URL environment variable.
 """
 
+import math
 import os
 import threading
 
@@ -309,11 +310,64 @@ def api_regenerate_token():
 @api.route("/jobs")
 @api_token_required
 def get_jobs():
-    """Get all jobs."""
+    """Get jobs with optional pagination.
+
+    Query params:
+        page: Page number (default 1). Use 0 to return all jobs unpaginated.
+        per_page: Items per page (default 50, max 200).
+
+    Returns:
+        JSON with ``jobs`` list and pagination metadata (``total``, ``page``,
+        ``per_page``, ``pages``).
+    """
     try:
         job_manager = get_job_manager()
-        jobs = [job.to_dict() for job in job_manager.get_all_jobs()]
-        return jsonify({"jobs": jobs})
+        all_jobs = job_manager.get_all_jobs()
+
+        running = [j for j in all_jobs if j.status == JobStatus.RUNNING]
+        pending = sorted(
+            (j for j in all_jobs if j.status == JobStatus.PENDING),
+            key=lambda j: j.created_at or "",
+        )
+        terminal = sorted(
+            (
+                j
+                for j in all_jobs
+                if j.status
+                in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+            ),
+            key=lambda j: j.completed_at or j.created_at or "",
+            reverse=True,
+        )
+        sorted_jobs = running + pending + terminal
+
+        page = request.args.get("page", 1, type=int)
+        per_page = min(request.args.get("per_page", 50, type=int), 200)
+        per_page = max(per_page, 1)
+
+        total = len(sorted_jobs)
+
+        if page == 0:
+            return jsonify({
+                "jobs": [j.to_dict() for j in sorted_jobs],
+                "total": total,
+                "page": 0,
+                "per_page": total,
+                "pages": 1,
+            })
+
+        page = max(page, 1)
+        pages = max(math.ceil(total / per_page), 1)
+        start = (page - 1) * per_page
+        page_jobs = sorted_jobs[start : start + per_page]
+
+        return jsonify({
+            "jobs": [j.to_dict() for j in page_jobs],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": pages,
+        })
     except Exception as e:
         logger.error(f"Failed to get jobs: {e}")
         return jsonify({"error": "Failed to retrieve jobs", "jobs": []}), 500
