@@ -171,7 +171,7 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
-> Note the extra "z" in Docker Hub: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/repository/docker/stevezzau/plex_generate_vid_previews)
+> Note the extra "z" in Docker Hub: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews)
 > (stevezau was taken)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
