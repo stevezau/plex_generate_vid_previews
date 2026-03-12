@@ -24,6 +24,7 @@
     .status-badge.disabled { background-color: rgba(108,117,125,0.2); color: var(--bs-secondary); }
     .source-badge.radarr { background-color: rgba(255,165,0,0.2); color: #ffa500; }
     .source-badge.sonarr { background-color: rgba(25,135,84,0.2); color: var(--bs-success); }
+    .source-badge.custom { background-color: rgba(111,66,193,0.2); color: #8b5cf6; }
 </style>
 {% endblock %}
 
@@ -60,6 +61,14 @@
         <div class="input-group mb-3">
             <input type="text" class="form-control webhook-url" id="sonarrUrl" readonly>
             <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('sonarrUrl')">
+                <i class="bi bi-clipboard"></i>
+            </button>
+        </div>
+
+        <label class="form-label">Custom Webhook URL <span class="text-muted small">(Tdarr, scripts, etc.)</span></label>
+        <div class="input-group mb-3">
+            <input type="text" class="form-control webhook-url" id="customUrl" readonly>
+            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('customUrl')">
                 <i class="bi bi-clipboard"></i>
             </button>
         </div>
@@ -178,6 +187,35 @@
                 </li>
                 <li>Click <strong>Test</strong> then <strong>Save</strong></li>
             </ol>
+
+            <h6 class="mt-3">Custom Webhook (Tdarr, scripts, etc.)</h6>
+            <p class="small text-muted mb-2">Use the custom endpoint to trigger preview generation from any tool that can send HTTP requests. The expected JSON payload is:</p>
+            <pre class="bg-dark p-2 rounded small mb-2"><code>{% raw %}{
+  "file_path": "/media/movies/Movie (2024)/Movie.mkv"
+}{% endraw %}</code></pre>
+            <p class="small text-muted mb-2">Or for multiple files:</p>
+            <pre class="bg-dark p-2 rounded small mb-2"><code>{% raw %}{
+  "file_paths": ["/media/tv/Show/S01E01.mkv", "/media/tv/Show/S01E02.mkv"],
+  "title": "Optional display label"
+}{% endraw %}</code></pre>
+            <p class="small text-muted mb-2">Send <code>{% raw %}{"eventType": "Test"}{% endraw %}</code> to verify connectivity without processing.</p>
+
+            <strong class="small">Tdarr Setup</strong>
+            <ol>
+                <li>Open your Tdarr <strong>Flow</strong> and add a <strong>Send Web Request</strong> plugin after your transcode step</li>
+                <li>Set <strong>Method</strong>: <code>POST</code></li>
+                <li>Set <strong>Request URL</strong>: copy the Custom Webhook URL above</li>
+                <li>Set <strong>Request Headers</strong>: <code>{% raw %}{"Content-Type": "application/json", "X-Auth-Token": "YOUR_TOKEN"}{% endraw %}</code></li>
+                <li>Set <strong>Request Body</strong>: <code>{% raw %}{"file_path": "{{{args.inputFileObj._id}}}"}{% endraw %}</code></li>
+                <li>Save the flow</li>
+            </ol>
+            <p class="small text-muted">The <code>{% raw %}{{{args.inputFileObj._id}}}{% endraw %}</code> template is replaced by Tdarr with the full file path of the transcoded file at runtime.</p>
+
+            <strong class="small">curl Example</strong>
+            <pre class="bg-dark p-2 rounded small mb-0"><code>{% raw %}curl -X POST "http://your-server:5000/api/webhooks/custom" \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"file_path": "/media/movies/Movie (2024)/Movie.mkv"}'{% endraw %}</code></pre>
         </div>
     </div>
 </div>
@@ -240,6 +278,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Set webhook URLs from current origin
     document.getElementById('radarrUrl').value = window.location.origin + '/api/webhooks/radarr';
     document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
+    document.getElementById('customUrl').value = window.location.origin + '/api/webhooks/custom';
 
     var savedHistoryPerPage = localStorage.getItem('historyPerPage');
     if (savedHistoryPerPage) {
@@ -388,9 +427,9 @@ function renderHistoryPage() {
         const time = new Date(evt.timestamp);
         const relative = timeAgo(time);
 
-        const sourceBadge = evt.source === 'radarr'
-            ? '<span class="badge source-badge radarr">Radarr</span>'
-            : '<span class="badge source-badge sonarr">Sonarr</span>';
+        var sourceBadgeClass = evt.source === 'radarr' ? 'radarr' : evt.source === 'custom' ? 'custom' : 'sonarr';
+        var sourceBadgeLabel = evt.source === 'radarr' ? 'Radarr' : evt.source === 'custom' ? 'Custom' : 'Sonarr';
+        const sourceBadge = '<span class="badge source-badge ' + sourceBadgeClass + '">' + sourceBadgeLabel + '</span>';
 
         const statusClass = evt.status || 'ignored';
         const hasFiles = evt.status === 'triggered' && evt.files_preview && evt.files_preview.length > 0;

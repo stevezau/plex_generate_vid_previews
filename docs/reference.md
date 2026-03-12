@@ -519,7 +519,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 
 ## Webhook Endpoints
 
-Inbound webhook endpoints for Radarr/Sonarr integration. Webhook endpoints accept `X-Auth-Token`, `Authorization: Bearer`, or a configured `webhook_secret`.
+Inbound webhook endpoints for Radarr/Sonarr/Custom integration. Webhook endpoints accept `X-Auth-Token`, `Authorization: Bearer`, or a configured `webhook_secret`.
 
 ### POST /api/webhooks/radarr
 
@@ -555,9 +555,46 @@ Same authentication and response patterns as Radarr.
 }
 ```
 
+### POST /api/webhooks/custom
+
+Receive a custom webhook payload from any external tool (Tdarr, scripts, etc.). Accepts one or more file paths to process.
+
+**Single file request:**
+
+```json
+{
+  "file_path": "/media/movies/Movie (2024)/Movie.mkv"
+}
+```
+
+**Multiple files request:**
+
+```json
+{
+  "file_paths": [
+    "/media/tv/Show/Season 01/S01E01.mkv",
+    "/media/tv/Show/Season 01/S01E02.mkv"
+  ],
+  "title": "Optional display label"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file_path` | string | One of `file_path` / `file_paths` | Single absolute file path |
+| `file_paths` | array of strings | One of `file_path` / `file_paths` | Multiple absolute file paths |
+| `title` | string | No | Display label for history/jobs |
+| `eventType` | string | No | Set to `"Test"` to verify connectivity |
+
+**Response (202):** `{"success": true, "message": "Processing queued for 1 file"}`
+
+**Test event:** `{"eventType": "Test"}` → **Response (200):** `{"success": true, "message": "Custom webhook configured successfully"}`
+
+**Error (400):** `{"success": false, "error": "Payload must include 'file_path' (string) or 'file_paths' (array of strings)"}`
+
 ### GET /api/webhooks/history
 
-Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files") and on the Webhooks page Recent Activity (expand triggered rows).
+Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files" / "Custom: N files") and on the Webhooks page Recent Activity (expand triggered rows).
 
 ```json
 {

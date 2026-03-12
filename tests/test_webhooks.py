@@ -1,5 +1,5 @@
 """
-Unit tests for Radarr/Sonarr webhook integration.
+Unit tests for Radarr/Sonarr/Custom webhook integration.
 
 Covers: authentication, event routing, debouncing, history endpoints,
 and the webhooks page route.
@@ -212,6 +212,146 @@ def test_radarr_webhook_grab_ignored(client):
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
     assert "Ignored" in resp.get_json()["message"]
+
+
+# ---------------------------------------------------------------------------
+# Custom Webhook Tests
+# ---------------------------------------------------------------------------
+
+
+def test_custom_webhook_test_event(client):
+    """POST Test event to custom endpoint → 200 with success message."""
+    payload = {"eventType": "Test"}
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "configured successfully" in data["message"]
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_custom_webhook_single_file_path(mock_schedule, client):
+    """POST with file_path string → 202 and schedules one job."""
+    payload = {"file_path": "/media/movies/Movie (2024)/Movie.mkv"}
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 202
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "1 file" in data["message"]
+    mock_schedule.assert_called_once_with(
+        "custom", "Movie.mkv", os.path.normpath("/media/movies/Movie (2024)/Movie.mkv")
+    )
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_custom_webhook_multiple_file_paths(mock_schedule, client):
+    """POST with file_paths array → 202 and schedules each path."""
+    payload = {
+        "file_paths": [
+            "/tv/Show/S01E01.mkv",
+            "/tv/Show/S01E02.mkv",
+        ]
+    }
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 202
+    data = resp.get_json()
+    assert data["success"] is True
+    assert "2 files" in data["message"]
+    assert mock_schedule.call_count == 2
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_custom_webhook_with_title(mock_schedule, client):
+    """POST with optional title uses it as display label."""
+    payload = {
+        "file_path": "/tv/Show/S01E01.mkv",
+        "title": "My Show S01E01",
+    }
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 202
+    mock_schedule.assert_called_once_with(
+        "custom", "My Show S01E01", os.path.normpath("/tv/Show/S01E01.mkv")
+    )
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_custom_webhook_deduplicates_paths(mock_schedule, client):
+    """POST with duplicate paths in file_path + file_paths → schedules only unique paths."""
+    payload = {
+        "file_path": "/movies/A.mkv",
+        "file_paths": ["/movies/A.mkv", "/movies/B.mkv"],
+    }
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 202
+    assert mock_schedule.call_count == 2
+
+
+def test_custom_webhook_missing_paths_returns_400(client):
+    """POST without file_path or file_paths → 400."""
+    payload = {"title": "No paths here"}
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["success"] is False
+    assert "file_path" in data["error"]
+
+
+def test_custom_webhook_empty_body_returns_400(client):
+    """POST with empty body → 400."""
+    resp = client.post(
+        "/api/webhooks/custom",
+        data="",
+        content_type="application/json",
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 400
+
+
+def test_custom_webhook_empty_file_paths_array_returns_400(client):
+    """POST with empty file_paths array → 400."""
+    payload = {"file_paths": []}
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 400
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_custom_webhook_disabled(mock_schedule, client, app):
+    """When webhook_enabled is False → 200 with disabled message."""
+    from plex_generate_previews.web.settings_manager import get_settings_manager
+
+    with app.app_context():
+        sm = get_settings_manager()
+        sm.set("webhook_enabled", False)
+
+    payload = {"file_path": "/movies/Test.mkv"}
+    resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
+    assert resp.status_code == 200
+    assert "disabled" in resp.get_json()["message"].lower()
+    mock_schedule.assert_not_called()
+
+
+def test_custom_webhook_no_auth(client):
+    """POST without token → 401."""
+    resp = client.post(
+        "/api/webhooks/custom",
+        json={"eventType": "Test"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 401
+
+
+def test_custom_webhook_appears_in_history(authed_client):
+    """Custom webhook events appear in history with source='custom'."""
+    authed_client.post(
+        "/api/webhooks/custom",
+        json={"eventType": "Test"},
+        headers=_auth_headers(),
+    )
+    resp = authed_client.get("/api/webhooks/history", headers=_auth_headers())
+    assert resp.status_code == 200
+    events = resp.get_json()["events"]
+    custom_events = [e for e in events if e["source"] == "custom"]
+    assert len(custom_events) >= 1
 
 
 # ---------------------------------------------------------------------------

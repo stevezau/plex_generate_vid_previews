@@ -251,12 +251,12 @@ The dashboard uses Flask-SocketIO with WebSocket for real-time job progress upda
 
 ## Webhook Integration
 
-Automatically generate preview thumbnails when Radarr or Sonarr imports new media. Webhooks trigger processing of **only the imported file(s)** after a configurable delay, giving Plex time to detect and index the new files.
+Automatically generate preview thumbnails when Radarr or Sonarr imports new media, or when any external tool (Tdarr, scripts, etc.) modifies a file. Webhooks trigger processing of **only the imported file(s)** after a configurable delay, giving Plex time to detect and index the new files.
 
 ### How It Works
 
-1. Radarr/Sonarr imports a file and sends a webhook POST to this app.
-2. The app **queues** the file and starts (or resets) a timer. Imports from the same source (Radarr or Sonarr) are batched together.
+1. Radarr/Sonarr imports a file (or an external tool sends a custom webhook) and a POST is sent to this app.
+2. The app **queues** the file and starts (or resets) a timer. Imports from the same source (Radarr, Sonarr, or Custom) are batched together.
 3. A batch is processed only after the **delay** (e.g. 60s) has passed with **no new** imports from that source. So if another file arrives 1 second before the batch would run, it is added to the queue and the timer resets — the batch runs 60 seconds after that file. Every file gets at least 60 seconds before we process it.
 4. This delay is important because **Plex needs time to add the new file to its library**. If we process too soon, Plex may not have indexed the file yet and the job can fail or skip the item.
 5. When the timer fires, the app resolves each queued path to a Plex item and processes only those items (no full-library scan), limited to libraries selected in Settings. Items that already have preview thumbnails are skipped automatically.
@@ -264,7 +264,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 ### Prerequisites
 
 - Plex Generate Previews running with the web UI accessible
-- Radarr and/or Sonarr installed and managing your media
+- Radarr and/or Sonarr installed and managing your media (for Radarr/Sonarr webhooks)
 
 ### Configure Radarr
 
@@ -294,6 +294,77 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
    - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
 7. Click **Test** then **Save**
 
+### Custom Webhook (Tdarr, scripts, etc.)
+
+The custom webhook endpoint lets any tool trigger preview generation by POSTing a file path. This is useful when an external tool (like Tdarr) modifies a media file after Sonarr/Radarr has already imported it — Plex detects the change and removes the old thumbnails, but Sonarr/Radarr won't send a new webhook since no import occurred.
+
+**Endpoint:** `POST /api/webhooks/custom`
+
+**Expected payload — single file:**
+
+```json
+{
+  "file_path": "/media/movies/Movie (2024)/Movie.mkv"
+}
+```
+
+**Expected payload — multiple files:**
+
+```json
+{
+  "file_paths": [
+    "/media/tv/Show/Season 01/S01E01.mkv",
+    "/media/tv/Show/Season 01/S01E02.mkv"
+  ],
+  "title": "Optional display label"
+}
+```
+
+**Test connectivity (no processing):**
+
+```json
+{
+  "eventType": "Test"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file_path` | string | One of `file_path` or `file_paths` required | Single absolute file path to process |
+| `file_paths` | array of strings | One of `file_path` or `file_paths` required | Multiple absolute file paths to process |
+| `title` | string | No | Display label shown in history/jobs (defaults to first file's basename) |
+| `eventType` | string | No | Set to `"Test"` to verify the connection without triggering processing |
+
+Authentication is the same as Radarr/Sonarr: use `X-Auth-Token` header, `Authorization: Bearer`, or Basic auth (password = token).
+
+#### Configure Tdarr
+
+Tdarr doesn't have built-in webhook support like Sonarr/Radarr. Instead, use the **Send Web Request** Flow plugin to POST to the custom endpoint after each transcode.
+
+1. Open the web UI and navigate to **Webhooks** — copy the **Custom Webhook URL**
+2. In Tdarr, open the **Flow** you want to trigger previews from
+3. Add a **Send Web Request** plugin after your transcode step
+4. Configure the plugin:
+   - **Method**: `POST`
+   - **Request URL**: paste the Custom Webhook URL (e.g. `http://your-server:5000/api/webhooks/custom`)
+   - **Request Headers**: `{"Content-Type": "application/json", "X-Auth-Token": "YOUR_TOKEN"}`
+   - **Request Body**: `{"file_path": "{{{args.inputFileObj._id}}}"}`
+5. Save the Flow
+
+The `{{{args.inputFileObj._id}}}` template variable is replaced by Tdarr at runtime with the full path of the transcoded file.
+
+> [!TIP]
+> If the webhook request fails (e.g. the server is temporarily down), add a **Reset Flow Error** plugin after the Send Web Request step so Tdarr doesn't mark the entire transcode as failed.
+
+#### curl Example
+
+```bash
+curl -X POST "http://your-server:5000/api/webhooks/custom" \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"file_path": "/media/movies/Movie (2024)/Movie.mkv"}'
+```
+
 ### Configuration
 All settings are configurable from the **Webhooks** page in the web UI.
 
@@ -315,7 +386,7 @@ By default, webhooks authenticate using your main API token. You can optionally 
 
 ### Batching and the delay
 
-When multiple files are imported in quick succession (e.g., a season pack), the app **queues** them per source (Radarr or Sonarr). Each new import **resets** the delay timer for that source. A batch runs only when the timer finally fires — i.e. when that many seconds have passed with no new imports. So every file in the batch has had at least that long for Plex to add it to the library before we process.
+When multiple files are imported in quick succession (e.g., a season pack), the app **queues** them per source (Radarr, Sonarr, or Custom). Each new import **resets** the delay timer for that source. A batch runs only when the timer finally fires — i.e. when that many seconds have passed with no new imports. So every file in the batch has had at least that long for Plex to add it to the library before we process.
 
 **Example:** Sonarr imports 10 episodes over 30 seconds with a 60s delay. The timer keeps resetting as each episode arrives. One job runs 60 seconds after the *last* episode and processes all 10 files. A file that arrived at 59 seconds is not processed in an earlier batch — it goes in this batch, and the batch runs 60 seconds after it, so Plex has time to index it.
 

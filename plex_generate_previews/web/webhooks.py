@@ -1,5 +1,5 @@
 """
-Webhook endpoints for Radarr/Sonarr integration.
+Webhook endpoints for Radarr/Sonarr/Custom integration.
 
 Receives JSON POST payloads on media import, delays for Plex indexing,
 debounces rapid imports, then triggers a job that processes only the
@@ -23,7 +23,7 @@ from .settings_manager import get_settings_manager
 
 webhooks_bp = Blueprint("webhooks_bp", __name__, url_prefix="/api/webhooks")
 
-# Debounce timers and payload batches keyed by source (radarr / sonarr).
+# Debounce timers and payload batches keyed by source (radarr / sonarr / custom).
 _pending_timers: dict[str, threading.Timer] = {}
 _pending_batches: dict[str, dict[str, object]] = {}
 _pending_lock = threading.Lock()
@@ -108,7 +108,7 @@ def _add_history_entry(
 
 
 def _debounce_key(source: str) -> str:
-    """Build a stable debounce key for source (Radarr vs Sonarr)."""
+    """Build a stable debounce key for source (radarr / sonarr / custom)."""
     return source
 
 
@@ -414,6 +414,98 @@ def sonarr_webhook():
         ),
         202,
     )
+
+
+@webhooks_bp.route("/custom", methods=["POST"])
+@_authenticate_webhook
+def custom_webhook():
+    """Receive custom webhook payloads (e.g. from Tdarr, scripts, or other tools).
+
+    Expected JSON body:
+        file_path  (str):        Single file path to process.
+        file_paths (list[str]):  Multiple file paths to process.
+        title      (str, opt):   Display label for history/jobs (defaults to first basename).
+        eventType  (str, opt):   Set to "Test" to verify connectivity without processing.
+
+    At least one of ``file_path`` or ``file_paths`` is required (unless eventType is "Test").
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        logger.warning("Webhook: Custom request ignored (invalid or missing JSON body)")
+        return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
+
+    event_type = str(data.get("eventType", "")).strip()
+
+    if event_type == "Test":
+        _add_history_entry("custom", "Test", "", "test")
+        return jsonify(
+            {"success": True, "message": "Custom webhook configured successfully"}
+        )
+
+    settings = get_settings_manager()
+    if not settings.get("webhook_enabled", True):
+        _add_history_entry("custom", event_type or "Custom", "", "disabled")
+        logger.info("Webhook: Custom event ignored (webhooks disabled)")
+        return jsonify({"success": True, "message": "Webhooks disabled"})
+
+    paths = _extract_custom_paths(data)
+    if not paths:
+        _add_history_entry("custom", "Custom", "", "ignored_no_path")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Payload must include 'file_path' (string) or 'file_paths' (array of strings)",
+                }
+            ),
+            400,
+        )
+
+    title = str(data.get("title", "")).strip() or os.path.basename(paths[0])
+
+    for path in paths:
+        _schedule_webhook_job("custom", title, path)
+
+    _add_history_entry("custom", "Custom", title, "queued")
+
+    noun = "file" if len(paths) == 1 else "files"
+    return (
+        jsonify(
+            {
+                "success": True,
+                "message": f"Processing queued for {len(paths)} {noun}",
+            }
+        ),
+        202,
+    )
+
+
+def _extract_custom_paths(data: dict) -> list[str]:
+    """Extract file paths from a custom webhook payload.
+
+    Accepts ``file_path`` (single string) or ``file_paths`` (list of strings).
+    Returns a de-duplicated list of non-empty, normalized paths.
+    """
+    raw_paths: list[str] = []
+
+    single = data.get("file_path")
+    if isinstance(single, str) and single.strip():
+        raw_paths.append(single.strip())
+
+    multi = data.get("file_paths")
+    if isinstance(multi, list):
+        for item in multi:
+            if isinstance(item, str) and item.strip():
+                raw_paths.append(item.strip())
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in raw_paths:
+        normalized = os.path.normpath(p)
+        if normalized not in seen:
+            seen.add(normalized)
+            unique.append(normalized)
+    return unique
 
 
 @webhooks_bp.route("/history")
