@@ -348,26 +348,30 @@ def get_jobs():
         total = len(sorted_jobs)
 
         if page == 0:
-            return jsonify({
-                "jobs": [j.to_dict() for j in sorted_jobs],
-                "total": total,
-                "page": 0,
-                "per_page": total,
-                "pages": 1,
-            })
+            return jsonify(
+                {
+                    "jobs": [j.to_dict() for j in sorted_jobs],
+                    "total": total,
+                    "page": 0,
+                    "per_page": total,
+                    "pages": 1,
+                }
+            )
 
         page = max(page, 1)
         pages = max(math.ceil(total / per_page), 1)
         start = (page - 1) * per_page
         page_jobs = sorted_jobs[start : start + per_page]
 
-        return jsonify({
-            "jobs": [j.to_dict() for j in page_jobs],
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "pages": pages,
-        })
+        return jsonify(
+            {
+                "jobs": [j.to_dict() for j in page_jobs],
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "pages": pages,
+            }
+        )
     except Exception as e:
         logger.error(f"Failed to get jobs: {e}")
         return jsonify({"error": "Failed to retrieve jobs", "jobs": []}), 500
