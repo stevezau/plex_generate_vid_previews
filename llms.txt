@@ -1,0 +1,116 @@
+# Plex Generate Previews
+
+> GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, D3D11VA, VideoToolbox) and parallel workers to generate previews 5-10x faster than Plex's built-in method. Distributed as a Docker image with a web UI dashboard.
+
+## Quick Start
+
+Run with Docker (Intel/AMD GPU via VAAPI):
+
+```
+docker run -d \
+  --name plex-generate-previews \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  --device /dev/dri:/dev/dri \
+  -e PUID=1000 -e PGID=1000 \
+  -v /path/to/media:/media:ro \
+  -v /path/to/plex/config:/plex:rw \
+  -v /path/to/app/config:/config:rw \
+  stevezzau/plex_generate_vid_previews:latest
+```
+
+For NVIDIA, replace `--device` with `--gpus all` and add `-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`.
+
+Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-previews | grep "Token:"`, and complete the setup wizard.
+
+## Features
+
+- Multi-GPU support: NVIDIA (CUDA), AMD (VAAPI), Intel (QuickSync/VAAPI), Windows (D3D11VA), macOS (VideoToolbox)
+- Parallel processing with configurable GPU and CPU worker threads
+- GPU-to-CPU fallback workers for unsupported codecs
+- Web dashboard for job management, scheduling, and settings
+- Cron and interval-based scheduling
+- Radarr/Sonarr/Tdarr webhook integration for automatic processing on media import
+- Custom webhook endpoint for any external tool
+- Library filtering to process specific Plex libraries
+- Adjustable thumbnail quality (1-10) and frame interval (1-60s)
+- Plex OAuth sign-in via setup wizard
+- Path mapping support for Docker volume differences
+- CLI mode for one-time batch processing
+- REST API with token authentication
+- WebSocket real-time progress updates
+- Rate limiting and CORS configuration
+
+## Volume Mounts
+
+- `/media` (ro) — media files
+- `/plex` (rw) — Plex application data where BIF files are stored
+- `/config` (rw) — app settings, schedules, job history
+
+## GPU Support
+
+| GPU      | Platform | Acceleration     | Docker Flag              |
+|----------|----------|------------------|--------------------------|
+| NVIDIA   | Linux    | CUDA/NVENC       | `--gpus all`             |
+| AMD      | Linux    | VAAPI            | `--device /dev/dri`      |
+| Intel    | Linux    | QuickSync/VAAPI  | `--device /dev/dri`      |
+| All      | Windows  | D3D11VA          | Native only              |
+| Apple    | macOS    | VideoToolbox     | Native only              |
+
+## Environment Variables
+
+| Variable                 | Default   | Description                                      |
+|--------------------------|-----------|--------------------------------------------------|
+| `PLEX_URL`               | (wizard)  | Plex server URL                                  |
+| `PLEX_TOKEN`             | (wizard)  | Plex authentication token                        |
+| `PLEX_CONFIG_FOLDER`     | (wizard)  | Path to Plex config folder                       |
+| `GPU_THREADS`            | 1         | GPU worker threads (0-32)                        |
+| `CPU_THREADS`            | 1         | CPU worker threads (0-32)                        |
+| `FALLBACK_CPU_THREADS`   | 0         | CPU fallback workers for GPU failures (0-32)     |
+| `THUMBNAIL_QUALITY`      | 4         | Preview quality 1-10 (2=highest)                 |
+| `PLEX_BIF_FRAME_INTERVAL`| 5         | Seconds between preview images (1-60)            |
+| `PLEX_LIBRARIES`         | All       | Comma-separated library names or IDs             |
+| `WEB_PORT`               | 8080      | Web server port                                  |
+| `WEB_AUTH_TOKEN`         | Auto      | Fixed authentication token                       |
+| `LOG_LEVEL`              | INFO      | DEBUG, INFO, WARNING, ERROR                      |
+| `PUID`                   | 1000      | User ID (Unraid: 99)                             |
+| `PGID`                   | 1000      | Group ID (Unraid: 100)                           |
+
+## REST API
+
+All endpoints require `X-Auth-Token` or `Authorization: Bearer` header except `/api/health` and `/api/setup/status`.
+
+Key endpoints:
+- `GET /api/health` — health check (no auth)
+- `GET /api/setup/status` — setup completion status (no auth)
+- `GET /api/settings` — current settings
+- `POST /api/settings` — update settings (partial)
+- `GET /api/jobs` — list jobs
+- `POST /api/jobs` — create job (`{"library_id": "1", "library_name": "Movies"}`)
+- `GET /api/jobs/{id}` — job details with worker status
+- `POST /api/jobs/{id}/cancel` — cancel job
+- `GET /api/schedules` — list schedules
+- `POST /api/schedules` — create schedule (cron or interval)
+- `POST /api/webhooks/radarr` — Radarr webhook receiver
+- `POST /api/webhooks/sonarr` — Sonarr webhook receiver
+- `POST /api/webhooks/custom` — custom webhook (`{"file_path": "..."}` or `{"file_paths": [...]}`)
+- `GET /api/webhooks/history` — recent webhook events
+- `GET /api/system/status` — system status (GPUs, workers, job counts)
+- `GET /api/libraries` — Plex libraries
+- `POST /api/processing/pause` — pause all processing
+- `POST /api/processing/resume` — resume processing
+
+## WebSocket
+
+Real-time updates via Socket.IO on the `/jobs` namespace. Events: `job_progress`, `job_complete`, `job_error`, `worker_update`.
+
+## Links
+
+- [GitHub Repository](https://github.com/stevezau/plex_generate_vid_previews)
+- [Docker Hub](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews)
+- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md)
+- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md)
+- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md)
+- [Docker Compose Example](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docker-compose.example.yml)
+- [Report a Bug](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug)
+- [Request a Feature](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement)
