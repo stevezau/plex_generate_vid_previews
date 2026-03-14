@@ -1799,7 +1799,7 @@ function _buildOutcomeTooltip(outcome) {
             lines.push(labels[keys[i]] + ': ' + count.toLocaleString());
         }
     }
-    return lines.join('&#10;');
+    return lines.length > 0 ? lines.join('&#10;') : 'No items processed';
 }
 
 function getStatusBadge(status, paused, error, outcome) {
