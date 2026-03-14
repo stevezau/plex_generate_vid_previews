@@ -1047,6 +1047,35 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
 
     if not physical_gpus:
         logger.debug("No physical GPUs found in /dev/dri")
+
+        # WSL2 with newer kernels (6.6+) may have no DRM devices in /dev/dri
+        # because CONFIG_DRM_VGEM is a loadable module instead of built-in.
+        # CUDA still works via /dev/dxg paravirtualization, so detect it directly.
+        if _is_wsl2() and _is_hwaccel_available("cuda"):
+            logger.info(
+                "  WSL2 detected with no DRM devices - attempting CUDA detection"
+            )
+            if _detect_nvidia_via_nvidia_smi() == "NVIDIA":
+                if _test_hwaccel_functionality("cuda"):
+                    gpu_name = get_gpu_name("NVIDIA", "cuda")
+                    gpu_info = {
+                        "name": gpu_name,
+                        "acceleration": "CUDA",
+                        "device_path": "cuda",
+                        "render_device": None,
+                        "card": "wsl2",
+                        "driver": "nvidia",
+                    }
+                    detected_gpus.append(("NVIDIA", "cuda", gpu_info))
+                    logger.warning(
+                        "  WSL2 NVIDIA GPU support is unofficial and may have limitations"
+                    )
+                    logger.info(f"  WSL2 NVIDIA CUDA working: {gpu_name}")
+                    return detected_gpus
+                else:
+                    logger.debug("  WSL2 CUDA functionality test failed")
+            else:
+                logger.debug("  WSL2 nvidia-smi did not detect NVIDIA GPU")
     else:
         logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
         for card_name, render_device, driver in physical_gpus:

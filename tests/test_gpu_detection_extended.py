@@ -981,3 +981,160 @@ class TestDetectAllGPUsEdgeCases:
         # Should detect NVIDIA with both CUDA and NVENC
         nvidia_gpus = [g for g in gpus if g[0] == "NVIDIA"]
         assert len(nvidia_gpus) >= 1
+
+
+class TestWSL2NoDRMDevices:
+    """Test WSL2 CUDA detection when /dev/dri has no card/renderD devices.
+
+    WSL2 kernels 6.6+ no longer load CONFIG_DRM_VGEM by default, so /dev/dri
+    may contain only a 'version' file. CUDA still works via /dev/dxg
+    paravirtualization, so detection should succeed without DRM entries.
+    """
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda", "vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_gpu_name",
+        return_value="NVIDIA GeForce RTX 5080",
+    )
+    def test_wsl2_no_drm_cuda_detected(
+        self,
+        _mock_name,
+        _mock_test,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """WSL2 + no DRM devices + CUDA available + nvidia-smi confirms -> GPU detected."""
+        gpus = detect_all_gpus()
+
+        assert len(gpus) == 1
+        gpu_type, gpu_device, gpu_info = gpus[0]
+        assert gpu_type == "NVIDIA"
+        assert gpu_device == "cuda"
+        assert gpu_info["acceleration"] == "CUDA"
+        assert gpu_info["render_device"] is None
+        assert gpu_info["card"] == "wsl2"
+        assert "RTX 5080" in gpu_info["name"]
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=[],
+    )
+    def test_wsl2_no_drm_no_cuda_hwaccel(
+        self,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """WSL2 + no DRM devices + CUDA not in FFmpeg hwaccels -> no GPU."""
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda"],
+    )
+    def test_not_wsl2_no_drm_no_detection(
+        self,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Not WSL2 + no DRM devices -> no GPU (even if CUDA is listed)."""
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="UNKNOWN",
+    )
+    def test_wsl2_no_drm_nvidia_smi_fails(
+        self,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """WSL2 + CUDA available + nvidia-smi returns UNKNOWN -> no GPU."""
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=False,
+    )
+    def test_wsl2_no_drm_cuda_test_fails(
+        self,
+        _mock_test,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """WSL2 + nvidia-smi confirms + CUDA functional test fails -> no GPU."""
+        gpus = detect_all_gpus()
+        assert gpus == []
