@@ -1003,6 +1003,64 @@ class TestLoadConfig:
     @patch("os.path.isdir")
     @patch("os.path.exists")
     @patch("plex_generate_previews.logging_config.setup_logging")
+    def test_load_config_validates_ffmpeg_threads(
+        self,
+        mock_logging,
+        mock_exists,
+        mock_isdir,
+        mock_listdir,
+        mock_access,
+        mock_statvfs,
+        mock_run,
+        mock_which,
+    ):
+        """Test validation rejects ffmpeg_threads outside 0-32."""
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_exists.return_value = True
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = lambda path: (
+            ["Cache", "Media"] if "Plex Media Server" in path else ["0", "1", "a", "b"]
+        )
+        mock_access.return_value = True
+        statvfs_result = MagicMock()
+        statvfs_result.f_frsize = 4096
+        statvfs_result.f_bavail = 1024 * 1024 * 250
+        mock_statvfs.return_value = statvfs_result
+
+        args = MagicMock()
+        args.plex_url = "http://localhost:32400"
+        args.plex_token = "token"
+        args.plex_config_folder = (
+            "/config/plex/Library/Application Support/Plex Media Server"
+        )
+        args.plex_timeout = None
+        args.plex_libraries = None
+        args.plex_local_videos_path_mapping = None
+        args.plex_videos_path_mapping = None
+        args.plex_bif_frame_interval = None
+        args.thumbnail_quality = None
+        args.regenerate_thumbnails = False
+        args.gpu_threads = None
+        args.cpu_threads = None
+        args.ffmpeg_threads = 50  # Invalid: > 32
+        args.gpu_selection = None
+        args.tmp_folder = "/tmp/plex_generate_previews"
+        args.log_level = None
+
+        config = load_config(args)
+
+        # Should fail validation due to invalid ffmpeg_threads
+        assert config is None
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    @patch("os.statvfs", create=True)
+    @patch("os.access")
+    @patch("os.listdir")
+    @patch("os.path.isdir")
+    @patch("os.path.exists")
+    @patch("plex_generate_previews.logging_config.setup_logging")
     def test_load_config_validates_gpu_selection(
         self,
         mock_logging,

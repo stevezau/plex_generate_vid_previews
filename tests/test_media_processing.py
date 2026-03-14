@@ -2411,3 +2411,142 @@ class TestHdrFormatNoneString:
         assert "tonemap" not in vf_value
         assert "fps=" in vf_value
         assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+
+
+class TestFfmpegThreadFlags:
+    """Test that FFmpeg thread cap flags are applied correctly."""
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("glob.glob")
+    def test_gpu_path_includes_thread_cap(
+        self,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """GPU processing should include -threads and -filter_threads flags."""
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        mock_config.ffmpeg_threads = 2
+        generate_images("/test/video.mp4", temp_dir, "NVIDIA", "cuda", mock_config)
+
+        args = mock_popen.call_args[0][0]
+        assert "-threads" in args
+        thread_idx = args.index("-threads")
+        assert args[thread_idx + 1] == "2"
+        assert "-filter_threads" in args
+        ft_idx = args.index("-filter_threads")
+        assert args[ft_idx + 1] == "2"
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("glob.glob")
+    def test_cpu_path_omits_thread_cap(
+        self,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """CPU-only processing should NOT include global -threads flag."""
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        mock_config.ffmpeg_threads = 2
+        generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
+
+        args = mock_popen.call_args[0][0]
+        # -threads:v should be present (video stream cap), but global -threads should not
+        assert "-threads:v" in args
+        # Check that the bare "-threads" flag (not "-threads:v") is absent
+        bare_threads = [
+            i for i, a in enumerate(args) if a == "-threads"
+        ]
+        assert len(bare_threads) == 0, "CPU path should not have global -threads cap"
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("glob.glob")
+    def test_gpu_path_zero_threads_omits_cap(
+        self,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """GPU processing with ffmpeg_threads=0 should omit -threads (auto)."""
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        mock_config.ffmpeg_threads = 0
+        generate_images("/test/video.mp4", temp_dir, "NVIDIA", "cuda", mock_config)
+
+        args = mock_popen.call_args[0][0]
+        bare_threads = [i for i, a in enumerate(args) if a == "-threads"]
+        assert len(bare_threads) == 0, "ffmpeg_threads=0 should omit global -threads"
+
+    @patch("subprocess.run")
+    def test_heuristic_probe_includes_thread_cap(self, mock_run, mock_config):
+        """The skip-frame probe should include -threads 2 and -filter_threads 2."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        heuristic_allows_skip(mock_config.ffmpeg_path, "/test/video.mp4")
+
+        args = mock_run.call_args[0][0]
+        assert "-threads" in args
+        thread_idx = args.index("-threads")
+        assert args[thread_idx + 1] == "2"
+        assert "-filter_threads" in args

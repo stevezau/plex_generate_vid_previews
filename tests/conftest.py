@@ -39,6 +39,7 @@ def mock_config():
     config.tmp_folder = "/tmp/plex_generate_previews"
     config.tmp_folder_created_by_us = False
     config.ffmpeg_path = "/usr/bin/ffmpeg"
+    config.ffmpeg_threads = 2
     config.log_level = "INFO"
     config.worker_pool_timeout = 30
     # None so get_library_sections filters by plex_libraries (titles), not by ID

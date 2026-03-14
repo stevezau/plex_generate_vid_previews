@@ -614,6 +614,10 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
         "explode",  # fail fast on decode issues
         "-skip_frame:v",
         "nokey",
+        "-threads",
+        "2",
+        "-filter_threads",
+        "2",
         "-threads:v",
         "1",
         "-i",
@@ -776,9 +780,23 @@ def generate_images(
             config.ffmpeg_path,
             "-loglevel",
             "info",
-            "-threads:v",
-            "1",
         ]
+
+        # Cap FFmpeg's global and filter-graph thread pools for GPU workers.
+        # GPU decode is offloaded to hardware, so the CPU threads are mostly
+        # idle overhead; capping them prevents thread oversubscription when
+        # running multiple workers.  CPU paths are left uncapped so software
+        # decode can use all available cores.
+        effective_gpu = gpu_override if gpu_override is not None else gpu
+        if effective_gpu is not None and config.ffmpeg_threads > 0:
+            args += [
+                "-threads",
+                str(config.ffmpeg_threads),
+                "-filter_threads",
+                str(config.ffmpeg_threads),
+            ]
+
+        args += ["-threads:v", "1"]
 
         # Vulkan device required by the libplacebo filter (DV Profile 5 tone mapping).
         # Works with software Vulkan (lavapipe) when no GPU is present.
@@ -787,7 +805,6 @@ def generate_images(
 
         # Add hardware acceleration for decoding (before -i flag)
         # Allow overriding GPU settings for CPU fallback
-        effective_gpu = gpu_override if gpu_override is not None else gpu
         effective_gpu_device_path = (
             gpu_device_path_override
             if gpu_device_path_override is not None

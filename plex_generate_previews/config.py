@@ -466,6 +466,7 @@ class Config:
     gpu_threads: int
     cpu_threads: int
     gpu_selection: str
+    ffmpeg_threads: int
 
     # System paths
     tmp_folder: str
@@ -856,6 +857,7 @@ def _validate_thread_config(
     gpu_threads: int,
     cpu_threads: int,
     fallback_cpu_threads: int,
+    ffmpeg_threads: int,
     gpu_selection: str,
     validation_errors: list,
 ) -> tuple[bool, str]:
@@ -866,6 +868,7 @@ def _validate_thread_config(
         gpu_threads: Number of GPU worker threads
         cpu_threads: Number of CPU worker threads
         fallback_cpu_threads: Number of CPU fallback worker threads
+        ffmpeg_threads: CPU usage limit per FFmpeg process for GPU jobs (0 = no limit)
         gpu_selection: GPU selection string
         validation_errors: List to append validation errors
 
@@ -886,6 +889,11 @@ def _validate_thread_config(
     if fallback_cpu_threads < 0 or fallback_cpu_threads > 32:
         validation_errors.append(
             f"FALLBACK_CPU_THREADS must be between 0-32 (got: {fallback_cpu_threads})"
+        )
+
+    if ffmpeg_threads < 0 or ffmpeg_threads > 32:
+        validation_errors.append(
+            f"FFMPEG_THREADS must be between 0-32 (got: {ffmpeg_threads})"
         )
 
     # Validate gpu_selection format
@@ -1179,6 +1187,9 @@ def load_config(cli_args=None) -> Config:
     gpu_selection = get_value(
         cli_args, "gpu_selection", "gpu_selection", "GPU_SELECTION", "all", str
     )
+    ffmpeg_threads = get_value(
+        cli_args, "ffmpeg_threads", "ffmpeg_threads", "FFMPEG_THREADS", 2, int
+    )
 
     # Use system temp directory (respects TMPDIR, TEMP, TMP env vars)
     tmp_folder = get_value(
@@ -1251,7 +1262,7 @@ def load_config(cli_args=None) -> Config:
         plex_bif_frame_interval, thumbnail_quality, plex_timeout, validation_errors
     )
     should_exit, thread_error = _validate_thread_config(
-        gpu_threads, cpu_threads, fallback_cpu_threads, gpu_selection, validation_errors
+        gpu_threads, cpu_threads, fallback_cpu_threads, ffmpeg_threads, gpu_selection, validation_errors
     )
     tmp_folder_created_by_us, _ = _validate_paths(tmp_folder, validation_errors)
 
@@ -1317,6 +1328,7 @@ def load_config(cli_args=None) -> Config:
         gpu_threads=gpu_threads,
         cpu_threads=cpu_threads,
         fallback_cpu_threads=fallback_cpu_threads,
+        ffmpeg_threads=ffmpeg_threads,
         gpu_selection=gpu_selection,
         tmp_folder=tmp_folder,
         tmp_folder_created_by_us=tmp_folder_created_by_us,
@@ -1345,6 +1357,7 @@ def load_config(cli_args=None) -> Config:
     logger.debug(f"GPU_THREADS = {config.gpu_threads}")
     logger.debug(f"CPU_THREADS = {config.cpu_threads}")
     logger.debug(f"FALLBACK_CPU_THREADS = {config.fallback_cpu_threads}")
+    logger.debug(f"FFMPEG_THREADS = {config.ffmpeg_threads}")
     logger.debug(f"GPU_SELECTION = {config.gpu_selection}")
     logger.debug(f"REGENERATE_THUMBNAILS = {config.regenerate_thumbnails}")
     logger.debug(f"SORT_BY = {config.sort_by}")

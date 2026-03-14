@@ -277,6 +277,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Number of CPU fallback worker threads when --cpu-threads=0 (default: 0)",
     )
     parser.add_argument(
+        "--ffmpeg-threads",
+        type=int,
+        help="Limit CPU usage per FFmpeg process for GPU jobs. Lower = less system load. 0 = no limit (default: 2)",
+    )
+    parser.add_argument(
         "--gpu-selection",
         help='GPU selection: "all" or comma-separated indices like "0,1,2" (default: all)',
     )

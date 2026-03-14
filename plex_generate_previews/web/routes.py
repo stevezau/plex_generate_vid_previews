@@ -1182,6 +1182,7 @@ def get_config():
                     "cpu_fallback_threads": int(
                         os.environ.get("FALLBACK_CPU_THREADS", 0)
                     ),
+                    "ffmpeg_threads": int(os.environ.get("FFMPEG_THREADS", 2)),
                 }
             )
 
@@ -1200,6 +1201,7 @@ def get_config():
                 "gpu_threads": config.gpu_threads,
                 "cpu_threads": config.cpu_threads,
                 "cpu_fallback_threads": config.fallback_cpu_threads,
+                "ffmpeg_threads": config.ffmpeg_threads,
                 "log_level": config.log_level,
             }
         )
@@ -1516,6 +1518,7 @@ def get_settings():
             "gpu_threads": settings.gpu_threads,
             "cpu_threads": settings.cpu_threads,
             "cpu_fallback_threads": settings.cpu_fallback_threads,
+            "ffmpeg_threads": settings.get("ffmpeg_threads", 2),
             "thumbnail_interval": settings.thumbnail_interval,
             "thumbnail_quality": settings.thumbnail_quality,
             "log_level": settings.get("log_level", "INFO"),
@@ -1558,6 +1561,7 @@ def save_settings():
         "gpu_threads",
         "cpu_threads",
         "cpu_fallback_threads",
+        "ffmpeg_threads",
         "thumbnail_interval",
         "thumbnail_quality",
         "log_level",
