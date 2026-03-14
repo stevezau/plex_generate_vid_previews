@@ -9,11 +9,9 @@ Covers:
 - JobProgress.outcome field serialization
 """
 
-import time
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from plex_generate_previews.media_processing import ProcessingResult, process_item
 from plex_generate_previews.web.jobs import JobManager, JobProgress
@@ -342,9 +340,8 @@ class TestMisconfigurationDetection:
         outcome["skipped_file_not_found"] = 10
 
         generated = outcome.get("generated", 0)
-        not_found = outcome.get("skipped_file_not_found", 0)
-
         assert generated > 0
+        assert outcome.get("skipped_file_not_found", 0) == 10
 
     def test_no_warning_when_all_exist(self):
         """When all items already have BIF files, no warning."""
