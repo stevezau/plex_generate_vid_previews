@@ -350,9 +350,7 @@ def get_library_sections(plex, config: Config, cancel_check=None):
             )
             return
 
-        media_with_lib = [
-            (k, t, mt, section.title) for k, t, mt in media
-        ]
+        media_with_lib = [(k, t, mt, section.title) for k, t, mt in media]
         yield section, media_with_lib
 
 

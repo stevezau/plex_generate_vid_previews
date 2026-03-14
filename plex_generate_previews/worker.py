@@ -331,7 +331,13 @@ class Worker:
                     # Preserve media info and job_id (set during assign_task)
                     try:
                         cpu_fallback_queue.put(
-                            (self.current_job_id, item_key, self.media_title, self.media_type, self.library_name)
+                            (
+                                self.current_job_id,
+                                item_key,
+                                self.media_title,
+                                self.media_type,
+                                self.library_name,
+                            )
                         )
                         self.requeued_to_cpu = True
                         ctx_logger.info(
@@ -408,7 +414,8 @@ class Worker:
             Dict mapping outcome keys to their delta (usually 0 or 1).
         """
         return {
-            key: self.outcome_counts.get(key, 0) - self._pre_task_outcome_counts.get(key, 0)
+            key: self.outcome_counts.get(key, 0)
+            - self._pre_task_outcome_counts.get(key, 0)
             for key in self.outcome_counts
         }
 
@@ -808,7 +815,11 @@ class WorkerPool:
             try:
                 item = self.cpu_fallback_queue.get_nowait()
                 # 4-tuple: (job_id, item_key, title, type) — item_key is at index 1
-                item_key = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
+                item_key = (
+                    item[1]
+                    if isinstance(item, (list, tuple)) and len(item) >= 2
+                    else item
+                )
                 logger.warning(
                     f"Draining unreachable fallback item {item_key} as failed "
                     "(no CPU workers available)"

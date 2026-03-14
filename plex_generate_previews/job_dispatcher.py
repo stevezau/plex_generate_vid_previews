@@ -304,9 +304,7 @@ class JobDispatcher:
     def _handle_cancellations(self) -> None:
         """Cancel trackers whose cancel_check returns True."""
         with self._trackers_lock:
-            active = [
-                t for t in self._trackers.values() if not t.done_event.is_set()
-            ]
+            active = [t for t in self._trackers.values() if not t.done_event.is_set()]
         for tracker in active:
             if tracker.is_cancelled() and not tracker.cancelled:
                 tracker.cancel()
@@ -454,9 +452,7 @@ class JobDispatcher:
                 plex, item_key
             )
 
-        progress_callback = partial(
-            self.worker_pool._update_worker_progress, worker
-        )
+        progress_callback = partial(self.worker_pool._update_worker_progress, worker)
         worker.assign_task(
             item_key,
             config,
@@ -537,13 +533,23 @@ class JobDispatcher:
                     item = self.worker_pool.cpu_fallback_queue.get_nowait()
                 except queue.Empty:
                     break
-                job_id = item[0] if isinstance(item, (list, tuple)) and len(item) >= 1 else None
-                item_key = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
+                job_id = (
+                    item[0]
+                    if isinstance(item, (list, tuple)) and len(item) >= 1
+                    else None
+                )
+                item_key = (
+                    item[1]
+                    if isinstance(item, (list, tuple)) and len(item) >= 2
+                    else item
+                )
                 with self._trackers_lock:
                     tracker = self._trackers.get(job_id) if job_id else None
                 if tracker and not tracker.done_event.is_set():
                     tracker.record_completion(
-                        success=False, worker_display_name="(drain)", title=str(item_key)
+                        success=False,
+                        worker_display_name="(drain)",
+                        title=str(item_key),
                     )
                 logger.warning(
                     f"Drained unreachable fallback item {item_key} as failed "
@@ -560,9 +566,7 @@ class JobDispatcher:
         """Emit worker status updates for all active trackers (throttled)."""
         now = time.time()
         with self._trackers_lock:
-            active = [
-                t for t in self._trackers.values() if not t.done_event.is_set()
-            ]
+            active = [t for t in self._trackers.values() if not t.done_event.is_set()]
         for tracker in active:
             if tracker.worker_callback and now - tracker._last_worker_update >= 1.0:
                 worker_statuses = self._build_worker_statuses()
@@ -573,9 +577,7 @@ class JobDispatcher:
         """Emit periodic progress updates for active trackers."""
         now = time.time()
         with self._trackers_lock:
-            active = [
-                t for t in self._trackers.values() if not t.done_event.is_set()
-            ]
+            active = [t for t in self._trackers.values() if not t.done_event.is_set()]
         for tracker in active:
             if tracker.progress_callback and now - tracker._last_progress_update >= 3.0:
                 tracker.progress_callback(
@@ -642,9 +644,7 @@ class JobDispatcher:
         """
         with self._trackers_lock:
             done_ids = [
-                jid
-                for jid, t in self._trackers.items()
-                if t.done_event.is_set()
+                jid for jid, t in self._trackers.items() if t.done_event.is_set()
             ]
             for jid in done_ids:
                 still_referenced = any(
@@ -673,9 +673,7 @@ class JobDispatcher:
     def _log_progress(self) -> None:
         """Log aggregate progress across all active jobs."""
         with self._trackers_lock:
-            active = [
-                t for t in self._trackers.values() if not t.done_event.is_set()
-            ]
+            active = [t for t in self._trackers.values() if not t.done_event.is_set()]
         if not active:
             return
         for tracker in active:

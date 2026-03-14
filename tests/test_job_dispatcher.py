@@ -27,6 +27,7 @@ from plex_generate_previews.worker import WorkerPool
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_config(cpu_threads=1, gpu_threads=0):
     config = MagicMock()
     config.cpu_threads = cpu_threads
@@ -37,10 +38,7 @@ def _make_config(cpu_threads=1, gpu_threads=0):
 
 
 def _make_gpu_list(n=1):
-    return [
-        ("nvidia", f"/dev/nvidia{i}", {"name": f"RTX 4090 #{i}"})
-        for i in range(n)
-    ]
+    return [("nvidia", f"/dev/nvidia{i}", {"name": f"RTX 4090 #{i}"}) for i in range(n)]
 
 
 def _fake_process_item(*args, **kwargs):
@@ -51,6 +49,7 @@ def _fake_process_item(*args, **kwargs):
 # ---------------------------------------------------------------------------
 # JobTracker unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestJobTracker:
     def test_record_completion_success(self):
@@ -136,6 +135,7 @@ class TestJobTracker:
 # JobDispatcher integration tests
 # ---------------------------------------------------------------------------
 
+
 class TestJobDispatcher:
     @pytest.fixture(autouse=True)
     def _reset(self):
@@ -178,15 +178,23 @@ class TestJobDispatcher:
         dispatcher = JobDispatcher(pool)
 
         items_a = [("/a/1", "A1", "movie"), ("/a/2", "A2", "movie")]
-        items_b = [("/b/1", "B1", "movie"), ("/b/2", "B2", "movie"), ("/b/3", "B3", "movie")]
+        items_b = [
+            ("/b/1", "B1", "movie"),
+            ("/b/2", "B2", "movie"),
+            ("/b/3", "B3", "movie"),
+        ]
 
         tracker_a = dispatcher.submit_items(
-            job_id="job-a", items=items_a,
-            config=_make_config(), plex=MagicMock(),
+            job_id="job-a",
+            items=items_a,
+            config=_make_config(),
+            plex=MagicMock(),
         )
         tracker_b = dispatcher.submit_items(
-            job_id="job-b", items=items_b,
-            config=_make_config(), plex=MagicMock(),
+            job_id="job-b",
+            items=items_b,
+            config=_make_config(),
+            plex=MagicMock(),
         )
 
         assert tracker_a.wait(timeout=10)
@@ -219,7 +227,11 @@ class TestJobDispatcher:
         )
         tracker_b = dispatcher.submit_items(
             job_id="job-b",
-            items=[("/b/1", "B1", "movie"), ("/b/2", "B2", "movie"), ("/b/3", "B3", "movie")],
+            items=[
+                ("/b/1", "B1", "movie"),
+                ("/b/2", "B2", "movie"),
+                ("/b/3", "B3", "movie"),
+            ],
             config=_make_config(),
             plex=MagicMock(),
         )
@@ -237,6 +249,7 @@ class TestJobDispatcher:
     @patch("plex_generate_previews.worker.process_item")
     def test_cancel_one_job_others_continue(self, mock_process):
         """Cancelling one job does not affect other jobs."""
+
         def slow_process(*args, **kwargs):
             time.sleep(0.15)
             return ProcessingResult.GENERATED
@@ -250,7 +263,11 @@ class TestJobDispatcher:
 
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=[("/a/1", "A1", "movie"), ("/a/2", "A2", "movie"), ("/a/3", "A3", "movie")],
+            items=[
+                ("/a/1", "A1", "movie"),
+                ("/a/2", "A2", "movie"),
+                ("/a/3", "A3", "movie"),
+            ],
             config=_make_config(),
             plex=MagicMock(),
             callbacks={"cancel_check": lambda: cancelled.is_set()},
@@ -367,8 +384,12 @@ class TestJobDispatcher:
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
         dispatcher = JobDispatcher(pool)
 
-        items = [("/k/1", "M1", "movie"), ("/k/2", "M2", "movie"),
-                 ("/k/3", "M3", "movie"), ("/k/4", "M4", "movie")]
+        items = [
+            ("/k/1", "M1", "movie"),
+            ("/k/2", "M2", "movie"),
+            ("/k/3", "M3", "movie"),
+            ("/k/4", "M4", "movie"),
+        ]
         tracker = dispatcher.submit_items(
             job_id="job-mix",
             items=items,
@@ -389,15 +410,19 @@ class TestJobDispatcher:
         dispatcher = JobDispatcher(pool)
 
         t1 = dispatcher.submit_items(
-            job_id="job-1", items=[("/k/1", "M1", "movie")],
-            config=_make_config(), plex=MagicMock(),
+            job_id="job-1",
+            items=[("/k/1", "M1", "movie")],
+            config=_make_config(),
+            plex=MagicMock(),
         )
         assert t1.wait(timeout=10)
         assert t1.get_result()["completed"] == 1
 
         t2 = dispatcher.submit_items(
-            job_id="job-2", items=[("/k/2", "M2", "movie"), ("/k/3", "M3", "movie")],
-            config=_make_config(), plex=MagicMock(),
+            job_id="job-2",
+            items=[("/k/2", "M2", "movie"), ("/k/3", "M3", "movie")],
+            config=_make_config(),
+            plex=MagicMock(),
         )
         assert t2.wait(timeout=10)
         assert t2.get_result()["completed"] == 2
@@ -420,7 +445,11 @@ class TestJobDispatcher:
 
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=[("/a/1", "A1", "movie"), ("/a/2", "A2", "movie"), ("/a/3", "A3", "movie")],
+            items=[
+                ("/a/1", "A1", "movie"),
+                ("/a/2", "A2", "movie"),
+                ("/a/3", "A3", "movie"),
+            ],
             config=_make_config(),
             plex=MagicMock(),
         )
@@ -461,6 +490,7 @@ class TestJobDispatcher:
     @patch("plex_generate_previews.worker.process_item")
     def test_drain_orphaned_fallback_routes_to_tracker(self, mock_process):
         """Draining orphan fallback items attributes failures to the correct tracker."""
+
         def gpu_codec_fail(*args, **kwargs):
             raise CodecNotSupportedError("unsupported codec")
 

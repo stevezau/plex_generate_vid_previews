@@ -54,7 +54,6 @@ PLEX_DATA_ROOT = os.path.realpath(os.environ.get("PLEX_DATA_ROOT", "/plex"))
 MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
 
-
 def _param_to_bool(value, default: bool) -> bool:
     """Coerce a request parameter (query-string or JSON) to bool.
 
@@ -812,33 +811,37 @@ def _build_idle_workers_from_config():
     for i in range(gpu_count):
         worker_id += 1
         gpu_name = gpu_infos[i]["name"] if i < len(gpu_infos) else "GPU"
-        display_name = (
-            f"{gpu_name} #{i + 1}" if gpu_count > 1 else gpu_name
+        display_name = f"{gpu_name} #{i + 1}" if gpu_count > 1 else gpu_name
+        statuses.append(
+            {
+                "worker_id": worker_id,
+                "worker_type": "GPU",
+                "worker_name": display_name,
+                **idle_entry,
+            }
         )
-        statuses.append({
-            "worker_id": worker_id,
-            "worker_type": "GPU",
-            "worker_name": display_name,
-            **idle_entry,
-        })
 
     for i in range(cpu_count):
         worker_id += 1
-        statuses.append({
-            "worker_id": worker_id,
-            "worker_type": "CPU",
-            "worker_name": f"CPU - Worker {i + 1}",
-            **idle_entry,
-        })
+        statuses.append(
+            {
+                "worker_id": worker_id,
+                "worker_type": "CPU",
+                "worker_name": f"CPU - Worker {i + 1}",
+                **idle_entry,
+            }
+        )
 
     for i in range(cpu_fb_count):
         worker_id += 1
-        statuses.append({
-            "worker_id": worker_id,
-            "worker_type": "CPU_FALLBACK",
-            "worker_name": f"CPU Fallback - Worker {i + 1}",
-            **idle_entry,
-        })
+        statuses.append(
+            {
+                "worker_id": worker_id,
+                "worker_type": "CPU_FALLBACK",
+                "worker_name": f"CPU Fallback - Worker {i + 1}",
+                **idle_entry,
+            }
+        )
 
     return statuses
 

@@ -537,11 +537,17 @@ def get_pending_webhooks():
             fire_at = batch.get("fire_at", 0)
             remaining = max(0, fire_at - now)
             titles = batch.get("titles", [])
-            pending.append({
-                "source": batch.get("source", key),
-                "file_count": len(batch.get("file_paths", set())),
-                "first_title": titles[0] if titles else "",
-                "fire_at": datetime.fromtimestamp(fire_at, tz=timezone.utc).isoformat() if fire_at else None,
-                "remaining_seconds": round(remaining, 1),
-            })
+            pending.append(
+                {
+                    "source": batch.get("source", key),
+                    "file_count": len(batch.get("file_paths", set())),
+                    "first_title": titles[0] if titles else "",
+                    "fire_at": datetime.fromtimestamp(
+                        fire_at, tz=timezone.utc
+                    ).isoformat()
+                    if fire_at
+                    else None,
+                    "remaining_seconds": round(remaining, 1),
+                }
+            )
     return jsonify({"pending": pending})
