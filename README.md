@@ -20,16 +20,6 @@
 
   <h1 align="center">Plex Generate Previews</h1>
 
-  <!-- CHANGE NOTIFICATION -->
-  <div align="center">
-
-  > ## ⚠️ NOTICE — Recent Breaking Changes
-  >
-  > - **Docker + Web UI** are now the **recommended** way to run Plex Generate Previews. The **CLI still works** (e.g. `plex-generate-previews --help`), but we recommend using the **Docker image and Web UI** for setup, scheduling, and job management.
-  > - **PyPI:** The package is **no longer published on PyPI**. Use **Docker** (or install from source) instead.
-
-  </div>
-
   <p align="center">
     GPU-accelerated video preview thumbnail generation for Plex Media Server
     <br />
@@ -71,29 +61,6 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 **The Problem:** Plex's built-in preview generation is painfully slow.
 
 **The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
-
-### How It Works
-
-```mermaid
-flowchart LR
-    subgraph Input
-        A[Plex Server] --> B[Library Query]
-    end
-
-    subgraph Processing
-        B --> C{GPU Available?}
-        C -->|Yes| D[GPU Workers]
-        C -->|No| E[CPU Workers]
-        D --> F[FFmpeg Extract]
-        E --> F
-    end
-
-    subgraph Output
-        F --> G[JPEG Frames]
-        G --> H[Pack BIF]
-        H --> I[index-sd.bif]
-    end
-```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
