@@ -272,12 +272,13 @@ class TestWorker:
         assert worker.failed == 0
         assert worker.requeued_to_cpu is True
 
-        # Task should be in fallback queue (4-tuple: job_id, key, title, type)
+        # Task should be in fallback queue (5-tuple: job_id, key, title, type, library_name)
         assert not fallback_queue.empty()
-        job_id, item_key, media_title, media_type = fallback_queue.get()
-        assert item_key == "test_key"
-        assert media_title == "AV1 Video"
-        assert media_type == "episode"
+        fallback_item = fallback_queue.get()
+        assert fallback_item[1] == "test_key"
+        assert fallback_item[2] == "AV1 Video"
+        assert fallback_item[3] == "episode"
+        assert fallback_item[4] == ""
 
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_gpu_codec_error_no_cpu_threads(self, mock_process):

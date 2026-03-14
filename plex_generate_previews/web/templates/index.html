@@ -34,15 +34,7 @@
 
                 <hr>
 
-                <!-- GPU Info -->
-                <h6 class="mb-2"><i class="bi bi-gpu-card me-2"></i>GPU Acceleration</h6>
-                <div id="gpuStatus" class="small text-muted mb-3">
-                    Detecting GPUs...
-                </div>
-
-                <hr>
-
-                <!-- Dynamic Status (replaced by app.js) -->
+                <!-- Dynamic Status (GPU info + processing state, replaced by app.js) -->
                 <div id="systemStatus"></div>
 
                 <hr>
@@ -165,6 +157,16 @@
                     <span>No active workers</span>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pending Webhooks Banner (populated by app.js) -->
+<div class="row d-none" id="pendingWebhooksRow">
+    <div class="col-12 mb-3">
+        <div class="alert alert-info mb-0 d-flex align-items-center" id="pendingWebhooksBanner">
+            <i class="bi bi-hourglass-split me-2"></i>
+            <span id="pendingWebhooksContent">Waiting for webhook...</span>
         </div>
     </div>
 </div>
@@ -557,66 +559,6 @@
             }
         } catch (error) {
             console.warn('Failed to check setup status:', error);
-        }
-    }
-
-    async function loadSystemStatus() {
-        try {
-            const response = await fetch('/api/system/status');
-            const data = await response.json();
-
-            // Update Plex status
-            const plexStatus = document.getElementById('plexStatus');
-            const plexInfo = document.getElementById('plexServerInfo');
-
-            // Get settings for server name
-            try {
-                const settings = await new SettingsManager().get();
-                if (settings.plex_name) {
-                    plexInfo.textContent = settings.plex_name;
-                    plexStatus.textContent = 'Connected';
-                    plexStatus.className = 'badge bg-success';
-                } else if (settings.plex_url) {
-                    plexInfo.textContent = settings.plex_url;
-                    plexStatus.textContent = 'Configured';
-                    plexStatus.className = 'badge bg-info';
-                } else {
-                    plexStatus.textContent = 'Not configured';
-                    plexStatus.className = 'badge bg-warning';
-                }
-            } catch (e) {
-                plexStatus.textContent = 'Unknown';
-                plexStatus.className = 'badge bg-secondary';
-            }
-
-            // Update GPU status
-            const gpuStatus = document.getElementById('gpuStatus');
-            if (data.gpus && data.gpus.length > 0) {
-                gpuStatus.innerHTML = data.gpus.map(g =>
-                    `<span class="badge bg-success me-1">${g.name}</span>`
-                ).join('');
-            } else {
-                gpuStatus.innerHTML = '<span class="text-muted">No GPU detected - using CPU</span>';
-            }
-
-            // Get config for workers
-            try {
-                const configResponse = await fetch('/api/system/config');
-                const config = await configResponse.json();
-
-                const gpuEl = document.getElementById('gpuWorkers');
-                const cpuEl = document.getElementById('cpuWorkers');
-                const cpuFallbackEl = document.getElementById('cpuFallbackWorkers');
-                if (gpuEl) gpuEl.textContent = config.gpu_threads ?? 0;
-                if (cpuEl) cpuEl.textContent = config.cpu_threads ?? 1;
-                if (cpuFallbackEl) cpuFallbackEl.textContent = config.cpu_fallback_threads ?? 0;
-                if (typeof refreshWorkerScaleButtons === 'function') refreshWorkerScaleButtons();
-            } catch (e) {
-                console.warn('Failed to load config:', e);
-            }
-
-        } catch (error) {
-            console.error('Failed to load system status:', error);
         }
     }
 

@@ -57,6 +57,9 @@ services:
       - PUID=1000
       - PGID=1000
 
+      # Timezone — ensures log timestamps and scheduled jobs use your local time
+      # - TZ=America/New_York
+
       # Optional: set a fixed auth token (otherwise check container logs)
       # - WEB_AUTH_TOKEN=your-password
 
@@ -67,6 +70,8 @@ services:
       - /path/to/plex/config:/plex:rw
       # App settings, schedules, and job history
       - /path/to/app/config:/config:rw
+      # Host timezone (works on all Linux variants)
+      - /etc/localtime:/etc/localtime:ro
 
 # =============================================================================
 # CONFIGURATION 2: CPU-Only
@@ -86,10 +91,14 @@ services:
       - CPU_THREADS=8
       - PUID=1000
       - PGID=1000
+      # Timezone — ensures log timestamps and scheduled jobs use your local time
+      # - TZ=America/New_York
     volumes:
       - /path/to/your/media:/media:ro
       - /path/to/plex/config:/plex:rw
       - /path/to/app/config:/config:rw
+      # Host timezone (works on all Linux variants)
+      - /etc/localtime:/etc/localtime:ro
 
 # =============================================================================
 # CONFIGURATION 3: Unraid
@@ -125,6 +134,9 @@ services:
       - PUID=99
       - PGID=100
 
+      # Timezone — ensures log timestamps and scheduled jobs use your local time
+      # - TZ=America/New_York
+
       # Optional: set a fixed auth token (otherwise check container logs)
       # - WEB_AUTH_TOKEN=your-password
 
@@ -135,3 +147,5 @@ services:
       - /mnt/user/appdata/plex/Library/Application Support/Plex Media Server:/plex:rw
       # App config storage
       - /mnt/user/appdata/plex-generate-previews:/config:rw
+      # Host timezone (works on all Linux variants)
+      - /etc/localtime:/etc/localtime:ro

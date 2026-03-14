@@ -88,6 +88,7 @@ class Worker:
         self.media_title = ""
         self.media_type = ""
         self.media_file = ""  # Actual file path being processed
+        self.library_name = ""
         self.title_max_width = 20
         self.progress_task_id = None
         self.ffmpeg_started = False  # Track if FFmpeg has started outputting progress
@@ -187,6 +188,7 @@ class Worker:
         title_max_width: int = 20,
         cpu_fallback_queue=None,
         job_id: Optional[str] = None,
+        library_name: str = "",
     ) -> None:
         """
         Assign a new task to this worker.
@@ -201,6 +203,7 @@ class Worker:
             title_max_width: Maximum width for title display
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
             job_id: Optional job identifier for multi-job dispatch routing
+            library_name: Library name the item belongs to
         """
         if self.is_busy:
             raise RuntimeError(f"{self.display_name} is already busy")
@@ -217,6 +220,7 @@ class Worker:
         self.media_title = media_title
         self.media_type = media_type
         self.media_file = ""  # Will be populated by progress callback
+        self.library_name = library_name
         self.title_max_width = title_max_width
         self.display_title = format_display_title(
             media_title, media_type, title_max_width
@@ -327,7 +331,7 @@ class Worker:
                     # Preserve media info and job_id (set during assign_task)
                     try:
                         cpu_fallback_queue.put(
-                            (self.current_job_id, item_key, self.media_title, self.media_type)
+                            (self.current_job_id, item_key, self.media_title, self.media_type, self.library_name)
                         )
                         self.requeued_to_cpu = True
                         ctx_logger.info(
@@ -418,9 +422,9 @@ class Worker:
             "current_duration": self.current_duration,
             "total_duration": self.total_duration,
             "remaining_time": self.remaining_time,
-            "worker_id": self.worker_id,  # Add worker ID for debugging
-            "worker_type": self.worker_type,  # Add worker type for debugging
-            # FFmpeg data for display
+            "worker_id": self.worker_id,
+            "worker_type": self.worker_type,
+            "library_name": self.library_name,
             "frame": self.frame,
             "fps": self.fps,
             "q": self.q,
@@ -696,16 +700,19 @@ class WorkerPool:
         """
         Assign a task from fallback queue to a CPU worker.
 
-        The fallback queue contains 4-tuples: (job_id, item_key, title, type).
+        The fallback queue contains 5-tuples: (job_id, item_key, title, type, library_name).
 
         Returns:
             True if task was assigned, False if queue was empty
         """
         try:
             fallback_item = self.cpu_fallback_queue.get_nowait()
-            job_id, item_key, media_title, media_type = fallback_item
+            job_id = fallback_item[0]
+            item_key = fallback_item[1]
+            media_title = fallback_item[2] if len(fallback_item) > 2 else None
+            media_type = fallback_item[3] if len(fallback_item) > 3 else None
+            library_name = fallback_item[4] if len(fallback_item) > 4 else ""
 
-            # Re-query Plex for media info if not available
             if media_title is None or media_type is None:
                 media_title, media_type = self._get_plex_media_info(plex, item_key)
 
@@ -720,6 +727,7 @@ class WorkerPool:
                 title_max_width=title_max_width,
                 cpu_fallback_queue=None,
                 job_id=job_id,
+                library_name=library_name,
             )
             logger.info(f"Dispatch: assigned fallback item to {worker.display_name}")
             return True
@@ -743,7 +751,9 @@ class WorkerPool:
         if not media_queue:
             return False
 
-        item_key, media_title, media_type = media_queue.popleft()
+        item = media_queue.popleft()
+        item_key, media_title, media_type = item[0], item[1], item[2]
+        library_name = item[3] if len(item) > 3 else ""
         progress_callback = partial(self._update_worker_progress, worker)
         cpu_fallback_queue = (
             self.cpu_fallback_queue if worker.worker_type == "GPU" else None
@@ -758,6 +768,7 @@ class WorkerPool:
             media_type=media_type,
             title_max_width=title_max_width,
             cpu_fallback_queue=cpu_fallback_queue,
+            library_name=library_name,
         )
         logger.info(
             f"Dispatch: assigned main queue item to {worker.display_name} (title={media_title!r})"
@@ -1029,6 +1040,7 @@ class WorkerPool:
                             "worker_name": display_name,
                             "status": "processing" if is_busy else "idle",
                             "current_title": worker.media_title if is_busy else "",
+                            "library_name": worker.library_name if is_busy else "",
                             "progress_percent": progress_data["progress_percent"]
                             if is_busy
                             else 0,

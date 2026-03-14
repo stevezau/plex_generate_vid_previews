@@ -2233,6 +2233,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         worker_name=worker_data["worker_name"],
                         status=worker_data["status"],
                         current_title=worker_data.get("current_title", ""),
+                        library_name=worker_data.get("library_name", ""),
                         progress_percent=worker_data.get("progress_percent", 0),
                         speed=worker_data.get("speed", "0.0x"),
                         eta=worker_eta,

@@ -41,6 +41,7 @@ class WorkerStatus:
     status: str = "idle"  # "idle", "processing"
     current_file: str = ""
     current_title: str = ""
+    library_name: str = ""
     progress_percent: float = 0.0
     speed: str = "0.0x"
     eta: str = ""

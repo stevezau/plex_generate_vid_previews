@@ -350,7 +350,10 @@ def get_library_sections(plex, config: Config, cancel_check=None):
             )
             return
 
-        yield section, media
+        media_with_lib = [
+            (k, t, mt, section.title) for k, t, mt in media
+        ]
+        yield section, media_with_lib
 
 
 def _normalize_path_for_match(path: str) -> str:

@@ -10,7 +10,9 @@ let schedules = [];
 let _lastNotifiedJobId = null;
 let processingPaused = false;
 const expandedJobFileRows = new Set();
+const expandedActiveJobFiles = new Set();
 let cachedWorkerConfigCounts = null;
+let _elapsedTimerInterval = null;
 let jobsLoadedOnce = false;
 let jobPage = 1;
 let jobPerPage = parseInt(localStorage.getItem('jobPerPage') || '50', 10);
@@ -122,15 +124,16 @@ function initDashboard() {
     loadJobStats();
     loadWorkerConfigCounts();
     loadProcessingState();
-    // Request notification permission
+    loadPendingWebhooks();
     requestNotificationPermission();
 
     // Set up auto-refresh
     // System status includes cached GPU detection — poll less frequently
     setInterval(refreshStatus, 120000);
     setInterval(loadJobStats, 10000);
-    setInterval(loadJobs, 5000);  // Poll jobs every 5 seconds
-    setInterval(loadWorkerStatuses, 1000);  // Poll workers every second
+    setInterval(loadJobs, 5000);
+    setInterval(loadWorkerStatuses, 1000);
+    setInterval(loadPendingWebhooks, 3000);
 }
 
 // SocketIO Connection
@@ -339,18 +342,6 @@ async function refreshStatus() {
     try {
         const status = await apiGet('/api/system/status');
         updateSystemStatus(status);
-
-        // Update the header GPU badges
-        const gpuStatus = document.getElementById('gpuStatus');
-        if (gpuStatus) {
-            if (status.gpus && status.gpus.length > 0) {
-                gpuStatus.innerHTML = status.gpus.map(g =>
-                    `<span class="badge bg-success me-1">${escapeHtml(g.name)}</span>`
-                ).join('');
-            } else {
-                gpuStatus.innerHTML = '<span class="text-muted">No GPU detected - using CPU</span>';
-            }
-        }
     } catch (error) {
         console.error('Failed to refresh system status:', error);
         const statusEl = document.getElementById('systemStatus');
@@ -429,7 +420,7 @@ async function loadLibraries() {
     try {
         const data = await apiGet('/api/libraries');
         libraries = data.libraries || [];
-        updateLibraryList();
+        await updateLibraryList();
         updateLibrarySelects();
     } catch (error) {
         console.error('Failed to load libraries:', error);
@@ -503,6 +494,33 @@ async function loadProcessingState() {
         renderGlobalPauseResume();
     } catch (error) {
         console.error('Failed to load processing state:', error);
+    }
+}
+
+async function loadPendingWebhooks() {
+    const row = document.getElementById('pendingWebhooksRow');
+    const content = document.getElementById('pendingWebhooksContent');
+    if (!row || !content) return;
+
+    try {
+        const data = await apiGet('/api/webhooks/pending');
+        const pending = data.pending || [];
+        if (pending.length === 0) {
+            row.classList.add('d-none');
+            return;
+        }
+        row.classList.remove('d-none');
+        const parts = pending.map(function (p) {
+            const remaining = Math.max(0, Math.ceil(p.remaining_seconds));
+            const source = escapeHtml(p.source || 'webhook');
+            const label = p.file_count === 1 && p.first_title
+                ? escapeHtml(p.first_title)
+                : `${p.file_count} file(s)`;
+            return `<strong>${source}</strong>: ${label} — starting in <strong>${remaining}s</strong>`;
+        });
+        content.innerHTML = parts.join(' &middot; ');
+    } catch (error) {
+        row.classList.add('d-none');
     }
 }
 
@@ -583,25 +601,50 @@ function updateSystemStatus(status) {
     document.getElementById('systemStatus').innerHTML = html;
 }
 
-function updateLibraryList() {
+async function updateLibraryList() {
     let html = '';
 
     if (libraries.length === 0) {
         html = '<div class="text-muted small">No libraries found</div>';
-    } else {
-        for (const lib of libraries) {
-            const icon = lib.type === 'movie' ? 'bi-film' : 'bi-tv';
-            const typeLabel = lib.type === 'movie' ? 'Movies' : 'TV Shows';
+        document.getElementById('libraryList').innerHTML = html;
+        return;
+    }
 
-            html += `
-                <div class="library-item">
-                    <span class="library-name">
-                        <i class="bi ${icon} me-2"></i>${escapeHtml(lib.name)}
-                    </span>
-                    <span class="library-count">${typeLabel}</span>
-                </div>
-            `;
+    // Determine which libraries are selected in settings
+    let selectedNames = [];
+    try {
+        if (typeof SettingsManager !== 'undefined') {
+            const settings = await new SettingsManager().get();
+            selectedNames = (settings.selected_libraries || []).map(function (s) {
+                return String(s).trim().toLowerCase();
+            }).filter(function (s) { return s.length > 0; });
         }
+    } catch (e) {
+        console.warn('Could not load selected_libraries for filter:', e);
+    }
+
+    const allSelected = selectedNames.length === 0;
+
+    if (allSelected) {
+        html += '<div class="text-muted small mb-2">All libraries selected</div>';
+    } else {
+        html += `<div class="text-muted small mb-2">${selectedNames.length} of ${libraries.length} selected &middot; <a href="/settings" class="text-decoration-none">Manage</a></div>`;
+    }
+
+    for (const lib of libraries) {
+        const icon = lib.type === 'movie' ? 'bi-film' : 'bi-tv';
+        const typeLabel = lib.type === 'movie' ? 'Movies' : 'TV Shows';
+        const isSelected = allSelected || selectedNames.includes(lib.name.toLowerCase());
+        const dimClass = isSelected ? '' : ' opacity-50';
+
+        html += `
+            <div class="library-item${dimClass}">
+                <span class="library-name">
+                    <i class="bi ${icon} me-2"></i>${escapeHtml(lib.name)}
+                </span>
+                <span class="library-count">${typeLabel}</span>
+            </div>
+        `;
     }
 
     document.getElementById('libraryList').innerHTML = html;
@@ -644,6 +687,26 @@ function toggleJobFiles(jobId) {
         icon.classList.toggle('bi-chevron-up', !isExpanded);
     }
     btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
+}
+
+function toggleActiveJobFiles(jobId) {
+    const filesDiv = document.getElementById('active-job-files-' + jobId);
+    const btn = filesDiv ? filesDiv.previousElementSibling : null;
+    if (!filesDiv) return;
+    const isExpanded = !filesDiv.classList.contains('d-none');
+    filesDiv.classList.toggle('d-none');
+    if (isExpanded) {
+        expandedActiveJobFiles.delete(jobId);
+    } else {
+        expandedActiveJobFiles.add(jobId);
+    }
+    if (btn) {
+        const icon = btn.querySelector('i');
+        if (icon) {
+            icon.classList.toggle('bi-chevron-down', isExpanded);
+            icon.classList.toggle('bi-chevron-up', !isExpanded);
+        }
+    }
 }
 
 function updateJobQueue() {
@@ -837,6 +900,7 @@ function updateActiveJobs(runningJobs) {
                 No jobs are currently running
             </div>
         `;
+        _stopElapsedTimer();
         refreshWorkerScaleButtons();
         return;
     }
@@ -853,20 +917,36 @@ function updateActiveJobs(runningJobs) {
             : '<span class="badge bg-primary pulse">Running</span>';
         const progress = job.progress.percent.toFixed(1);
 
-        let webhookFilesLine = '';
+        // Build collapsible file list (matching Job Queue pattern)
+        let webhookFilesHtml = '';
         const webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
             ? job.config.webhook_basenames
             : null;
-        if (webhookFiles && webhookFiles.length > 0) {
-            if (webhookFiles.length > 8) {
-                const preview = webhookFiles.slice(0, 8).map(function (b) { return escapeHtml(b); }).join(', ');
-                const pathCount = (job.config && typeof job.config.path_count === 'number') ? job.config.path_count : webhookFiles.length;
-                const overflowCount = pathCount > 8 ? pathCount - 8 : webhookFiles.length - 8;
-                webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${preview} (+${overflowCount} more)</span>`;
-            } else {
-                webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${webhookFiles.map(function (b) { return escapeHtml(b); }).join(', ')}</span>`;
-            }
+        if (webhookFiles && webhookFiles.length > 1) {
+            const filesId = `active-job-files-${jid}`;
+            const isExpanded = expandedActiveJobFiles.has(String(job.id));
+            const pathCount = (job.config && typeof job.config.path_count === 'number') ? job.config.path_count : webhookFiles.length;
+            const filesList = webhookFiles.map(function (b) { return `<div class="text-muted">${escapeHtml(b)}</div>`; }).join('');
+            const overflow = pathCount > webhookFiles.length
+                ? `<div class="text-muted mt-1">(+${pathCount - webhookFiles.length} more)</div>`
+                : '';
+            webhookFilesHtml = `
+                <div class="mt-1 small">
+                    <strong>Files:</strong> ${pathCount} file(s)
+                    <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" onclick="toggleActiveJobFiles('${jid}')"
+                            aria-expanded="${isExpanded}" title="Show files">
+                        <i class="bi ${isExpanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>
+                    </button>
+                    <div id="${filesId}" class="${isExpanded ? '' : 'd-none'} mt-1 ms-3">${filesList}${overflow}</div>
+                </div>`;
+        } else if (webhookFiles && webhookFiles.length === 1) {
+            webhookFilesHtml = `<br><strong>File:</strong> <span class="text-muted small">${escapeHtml(webhookFiles[0])}</span>`;
         }
+
+        // Start time and elapsed
+        const startedLine = job.started_at
+            ? `<span class="text-muted small"><i class="bi bi-clock me-1"></i>Started ${formatDate(job.started_at)} (<span data-elapsed-since="${escapeHtml(job.started_at)}">${formatElapsed(job.started_at)}</span>)</span>`
+            : '';
 
         html += `
         <div class="active-job-card mb-3 p-3 border rounded" id="active-job-${jid}">
@@ -883,8 +963,9 @@ function updateActiveJobs(runningJobs) {
                 </button>
             </div>
             <div class="mb-2 small">
-                <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${webhookFilesLine}
+                <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${webhookFilesHtml}
             </div>
+            ${startedLine ? `<div class="mb-2">${startedLine}</div>` : ''}
             <div class="progress" style="height: 24px;">
                 <div class="progress-bar progress-bar-striped progress-bar-animated"
                      role="progressbar" style="width: ${progress}%" id="activeJobProgress-${jid}">
@@ -899,6 +980,7 @@ function updateActiveJobs(runningJobs) {
     }
 
     container.innerHTML = html;
+    _ensureElapsedTimer();
     refreshWorkerScaleButtons();
 }
 
@@ -997,7 +1079,7 @@ function updateWorkerStatuses(workers, options = {}) {
                         </div>
                         ${worker.status === 'processing' ? `
                             <div class="small text-truncate mb-1" title="${escapeHtml(worker.current_title)}">
-                                ${escapeHtml(worker.current_title) || 'Processing...'}
+                                ${worker.library_name ? `<span class="text-muted">${escapeHtml(worker.library_name)}</span> <i class="bi bi-chevron-right small text-muted"></i> ` : ''}${escapeHtml(worker.current_title) || 'Processing...'}
                             </div>
                             <div class="progress" style="height: 6px;">
                                 <div class="progress-bar" style="width: ${progressPercent}%"></div>
@@ -1787,6 +1869,35 @@ function formatDate(dateStr) {
     if (!dateStr) return '-';
     const date = new Date(dateStr);
     return date.toLocaleString();
+}
+
+function formatElapsed(startDateStr) {
+    if (!startDateStr) return '';
+    const elapsed = Math.max(0, Math.floor((Date.now() - new Date(startDateStr).getTime()) / 1000));
+    const h = Math.floor(elapsed / 3600);
+    const m = Math.floor((elapsed % 3600) / 60);
+    const s = elapsed % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+}
+
+function _updateElapsedTimers() {
+    document.querySelectorAll('[data-elapsed-since]').forEach(function (el) {
+        el.textContent = formatElapsed(el.getAttribute('data-elapsed-since'));
+    });
+}
+
+function _ensureElapsedTimer() {
+    if (_elapsedTimerInterval) return;
+    _elapsedTimerInterval = setInterval(_updateElapsedTimers, 1000);
+}
+
+function _stopElapsedTimer() {
+    if (_elapsedTimerInterval) {
+        clearInterval(_elapsedTimerInterval);
+        _elapsedTimerInterval = null;
+    }
 }
 
 function showToast(title, message, type = 'info') {

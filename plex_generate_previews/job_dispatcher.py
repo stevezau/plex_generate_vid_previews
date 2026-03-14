@@ -383,7 +383,7 @@ class JobDispatcher:
             if not item:
                 break
 
-            job_id, item_key, media_title, media_type = item
+            job_id, item_key, media_title, media_type, library_name = item
             with self._trackers_lock:
                 tracker = self._trackers.get(job_id)
             if not tracker:
@@ -407,6 +407,7 @@ class JobDispatcher:
                 title_max_width=tracker.title_max_width,
                 cpu_fallback_queue=cpu_fallback_queue,
                 job_id=job_id,
+                library_name=library_name,
             )
             logger.info(
                 f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) "
@@ -427,18 +428,20 @@ class JobDispatcher:
         except queue.Empty:
             return False
 
-        job_id, item_key, media_title, media_type = fallback_item
+        job_id = fallback_item[0] if len(fallback_item) >= 1 else None
+        item_key = fallback_item[1] if len(fallback_item) >= 2 else fallback_item
+        media_title = fallback_item[2] if len(fallback_item) >= 3 else None
+        media_type = fallback_item[3] if len(fallback_item) >= 4 else None
+        library_name = fallback_item[4] if len(fallback_item) >= 5 else ""
 
         with self._trackers_lock:
             tracker = self._trackers.get(job_id) if job_id else None
 
-        # Determine config/plex — prefer tracker, fall back to first active
         if tracker:
             config = tracker.config
             plex = tracker.plex
             title_max_width = tracker.title_max_width
         else:
-            # Tracker may have been cleaned up; use any active tracker's config
             config, plex, title_max_width = self._fallback_config()
             if config is None:
                 logger.warning(
@@ -464,6 +467,7 @@ class JobDispatcher:
             title_max_width=title_max_width,
             cpu_fallback_queue=None,
             job_id=job_id,
+            library_name=library_name,
         )
         logger.info(
             f"Dispatch: assigned fallback item {media_title!r} to {worker.display_name}"
@@ -490,7 +494,7 @@ class JobDispatcher:
                     return True
         return False
 
-    def _get_next_item(self) -> Optional[Tuple[str, str, str, str]]:
+    def _get_next_item(self) -> Optional[Tuple[str, str, str, str, str]]:
         """Get the next item using FIFO drain-first scheduling.
 
         Always picks from the oldest active job first.  Workers only
@@ -499,7 +503,7 @@ class JobDispatcher:
         submission order.
 
         Returns:
-            (job_id, item_key, media_title, media_type) or None.
+            (job_id, item_key, media_title, media_type, library_name) or None.
         """
         with self._trackers_lock:
             for tracker in self._trackers.values():
@@ -509,8 +513,10 @@ class JobDispatcher:
                     continue
                 if not tracker.item_queue:
                     continue
-                item_key, media_title, media_type = tracker.item_queue.popleft()
-                return (tracker.job_id, item_key, media_title, media_type)
+                item = tracker.item_queue.popleft()
+                item_key, media_title, media_type = item[0], item[1], item[2]
+                library_name = item[3] if len(item) > 3 else ""
+                return (tracker.job_id, item_key, media_title, media_type, library_name)
         return None
 
     def _drain_orphaned_fallback_items(self) -> None:
@@ -616,6 +622,7 @@ class JobDispatcher:
                     "worker_name": display_name,
                     "status": "processing" if is_busy else "idle",
                     "current_title": worker.media_title if is_busy else "",
+                    "library_name": worker.library_name if is_busy else "",
                     "progress_percent": (
                         progress_data["progress_percent"] if is_busy else 0
                     ),

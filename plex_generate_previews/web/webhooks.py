@@ -213,6 +213,9 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         batch["file_paths"].add(normalized_path)
         batch["titles"].append(safe_title)
 
+        fire_at = datetime.now(timezone.utc).timestamp() + delay
+        batch["fire_at"] = fire_at
+
         timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
         timer.daemon = True
         _pending_timers[debounce_key] = timer
@@ -521,3 +524,24 @@ def clear_webhook_history():
     """Clear all webhook history."""
     _webhook_history.clear()
     return jsonify({"success": True})
+
+
+@webhooks_bp.route("/pending")
+@api_token_required
+def get_pending_webhooks():
+    """Return currently pending (debouncing) webhook batches with countdown info."""
+    now = datetime.now(timezone.utc).timestamp()
+    pending = []
+    with _pending_lock:
+        for key, batch in _pending_batches.items():
+            fire_at = batch.get("fire_at", 0)
+            remaining = max(0, fire_at - now)
+            titles = batch.get("titles", [])
+            pending.append({
+                "source": batch.get("source", key),
+                "file_count": len(batch.get("file_paths", set())),
+                "first_title": titles[0] if titles else "",
+                "fire_at": datetime.fromtimestamp(fire_at, tz=timezone.utc).isoformat() if fire_at else None,
+                "remaining_seconds": round(remaining, 1),
+            })
+    return jsonify({"pending": pending})

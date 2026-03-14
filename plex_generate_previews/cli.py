@@ -563,8 +563,10 @@ def run_processing(
         # Clear any previous failure records
         clear_failures()
 
-        # Calculate title width for display formatting
-        title_max_width = calculate_title_width()
+        # Calculate title width for display formatting.
+        # In headless mode (web UI), use a wide limit since there's no terminal
+        # column constraint; the browser has plenty of horizontal space.
+        title_max_width = 200 if headless else calculate_title_width()
 
         fallback_cpu_workers = (
             config.fallback_cpu_threads
