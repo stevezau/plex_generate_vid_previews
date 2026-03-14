@@ -614,6 +614,10 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
         "explode",  # fail fast on decode issues
         "-skip_frame:v",
         "nokey",
+        "-threads",
+        "2",
+        "-filter_threads",
+        "2",
         "-threads:v",
         "1",
         "-i",
@@ -764,6 +768,10 @@ def generate_images(
             config.ffmpeg_path,
             "-loglevel",
             "info",
+            "-threads",
+            "2",
+            "-filter_threads",
+            "2",
             "-threads:v",
             "1",
         ]
