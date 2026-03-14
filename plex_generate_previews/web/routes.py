@@ -2240,6 +2240,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                     result = result or {}
                     failures = get_failures()
+
+                    # Store outcome breakdown on the job for UI display
+                    outcome = result.get("outcome")
+                    if outcome:
+                        job_manager.set_job_outcome(job_id, outcome)
+
                     current_job = job_manager.get_job(job_id)
                     status_value = (
                         getattr(current_job.status, "value", current_job.status)

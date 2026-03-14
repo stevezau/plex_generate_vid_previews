@@ -204,23 +204,23 @@
                 </div>
                 <div class="row mb-4">
                     <div class="col-md-4 mb-3">
-                        <label for="ffmpegThreads" class="form-label">FFmpeg Threads (GPU)</label>
+                        <label for="ffmpegThreads" class="form-label">FFmpeg Threads (GPU Only)</label>
                         <input type="number" class="form-control" id="ffmpegThreads"
                                min="0" max="32" value="2">
                         <div class="form-text">
-                            Limits CPU usage per GPU job. Lower = less system load. 0 = no limit.
+                            Limits CPU usage per GPU job. Lower = less system load. 0 = no limit. Recommended: 2.
                         </div>
                     </div>
                 </div>
                 <div class="alert alert-secondary py-2 mb-4">
                     <small>
-                        Use <strong>CPU Workers = 0</strong> and
-                        <strong>CPU Fallback Workers &gt; 0</strong> to run GPU-only main processing
-                        while still recovering unsupported GPU files on CPU.
-                        If CPU Workers is greater than 0, fallback workers are not used.
-                        <strong>FFmpeg Threads</strong> limits how much CPU each GPU job uses,
-                        keeping your system responsive for Plex playback and other tasks.
-                        Only affects GPU processing &mdash; CPU-only jobs always use full power.
+                        <strong>CPU Fallback Workers</strong> &mdash; Set <em>CPU Workers = 0</em>
+                        and <em>CPU Fallback Workers &gt; 0</em> to process everything on GPU
+                        while still handling unsupported files on CPU.
+                        Ignored when CPU Workers is greater than 0.<br>
+                        <strong>FFmpeg Threads</strong> &mdash; Reduces CPU load per GPU job
+                        so Plex playback and other services stay responsive.
+                        Does not affect CPU-only jobs.
                         <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md#cpu-fallback-workers"
                            target="_blank" rel="noopener noreferrer">Learn more</a>.
                     </small>

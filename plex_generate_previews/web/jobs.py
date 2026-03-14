@@ -60,6 +60,7 @@ class JobProgress:
     speed: str = "0.0x"
     current_file: str = ""
     workers: List[WorkerStatus] = field(default_factory=list)
+    outcome: Optional[Dict[str, int]] = None
 
     def to_dict(self) -> dict:
         result = asdict(self)
@@ -515,6 +516,21 @@ class JobManager:
                     "job_progress",
                     {"job_id": job_id, "progress": job.progress.to_dict()},
                 )
+            return job
+
+    def set_job_outcome(
+        self, job_id: str, outcome: Dict[str, int]
+    ) -> Optional["Job"]:
+        """Store the processing outcome breakdown on a job.
+
+        Args:
+            job_id: Job identifier.
+            outcome: Dict mapping ProcessingResult values to counts.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.progress.outcome = outcome
             return job
 
     def complete_job(

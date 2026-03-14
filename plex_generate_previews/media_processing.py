@@ -16,11 +16,28 @@ import sys
 import tempfile
 import threading
 import time
+from enum import Enum
 from typing import List, Optional, Tuple
 
 from loguru import logger
 
 from .utils import sanitize_path
+
+
+class ProcessingResult(Enum):
+    """Outcome of processing a single media item.
+
+    Used to track what actually happened so callers can distinguish
+    real work (GENERATED) from various skip/failure reasons.
+    """
+
+    GENERATED = "generated"
+    SKIPPED_BIF_EXISTS = "skipped_bif_exists"
+    SKIPPED_FILE_NOT_FOUND = "skipped_file_not_found"
+    SKIPPED_EXCLUDED = "skipped_excluded"
+    SKIPPED_INVALID_HASH = "skipped_invalid_hash"
+    FAILED = "failed"
+    NO_MEDIA_PARTS = "no_media_parts"
 
 # If FFmpeg produces no progress output for this many seconds, the process is
 # killed to avoid hanging the worker indefinitely (e.g. unresponsive NAS).
@@ -1522,7 +1539,7 @@ def process_item(
     config: Config,
     plex,
     progress_callback=None,
-) -> None:
+) -> ProcessingResult:
     """
     Process a single media item: generate thumbnails and BIF file.
 
@@ -1542,28 +1559,48 @@ def process_item(
         config: Configuration object
         plex: Plex server instance
         progress_callback: Callback function for progress updates
+
+    Returns:
+        ProcessingResult indicating the outcome. When an item has multiple
+        media parts, the most significant outcome is returned (GENERATED
+        wins over any skip; FAILED wins over skips other than file-not-found).
     """
     try:
         data = retry_plex_call(plex.query, f"{item_key}/tree")
     except Exception as e:
         logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
         logger.error(f"Exception type: {type(e).__name__}")
-        # For connection errors, log more details
         if hasattr(e, "request") and e.request:
             logger.error(f"Request URL: {e.request.url}")
             logger.error(f"Request method: {e.request.method}")
-            # Sanitize headers to avoid leaking tokens
             safe_headers = {
                 k: ("****" if "token" in k.lower() else v)
                 for k, v in e.request.headers.items()
             }
             logger.error(f"Request headers: {safe_headers}")
-        return
+        return ProcessingResult.FAILED
+
+    # Priority order for choosing the "most significant" result across parts.
+    _RESULT_PRIORITY = {
+        ProcessingResult.GENERATED: 6,
+        ProcessingResult.FAILED: 5,
+        ProcessingResult.SKIPPED_FILE_NOT_FOUND: 4,
+        ProcessingResult.SKIPPED_INVALID_HASH: 3,
+        ProcessingResult.SKIPPED_EXCLUDED: 2,
+        ProcessingResult.SKIPPED_BIF_EXISTS: 1,
+        ProcessingResult.NO_MEDIA_PARTS: 0,
+    }
+
+    best_result = ProcessingResult.NO_MEDIA_PARTS
+
+    def _update_best(result: ProcessingResult) -> None:
+        nonlocal best_result
+        if _RESULT_PRIORITY[result] > _RESULT_PRIORITY[best_result]:
+            best_result = result
 
     for media_part in data.findall(".//MediaPart"):
         if "hash" in media_part.attrib:
             bundle_hash = media_part.attrib["hash"]
-            # Apply path mapping if configured (path_mappings: plex_prefix → local_prefix)
             plex_path = media_part.attrib["file"]
             mappings = getattr(config, "path_mappings", None) or []
             if mappings:
@@ -1573,18 +1610,20 @@ def process_item(
 
             if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
                 logger.info(f"Skipping (excluded path): {media_file}")
+                _update_best(ProcessingResult.SKIPPED_EXCLUDED)
                 continue
 
-            # Validate bundle_hash has sufficient length (at least 2 characters)
             if not bundle_hash or len(bundle_hash) < 2:
                 hash_value = f'"{bundle_hash}"' if bundle_hash else "(empty)"
                 logger.warning(
                     f"Skipping {media_file} due to invalid bundle hash from Plex: {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)"
                 )
+                _update_best(ProcessingResult.SKIPPED_INVALID_HASH)
                 continue
 
             if not os.path.isfile(media_file):
                 logger.warning(f"Skipping as file not found {media_file}")
+                _update_best(ProcessingResult.SKIPPED_FILE_NOT_FOUND)
                 continue
 
             try:
@@ -1595,6 +1634,7 @@ def process_item(
                 logger.error(
                     f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}"
                 )
+                _update_best(ProcessingResult.FAILED)
                 continue
 
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
@@ -1607,22 +1647,23 @@ def process_item(
                     logger.error(
                         f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}"
                     )
+                    _update_best(ProcessingResult.FAILED)
                     continue
 
             if os.path.isfile(index_bif):
                 logger.info(
                     f"Skipping {media_file} — BIF already exists at {index_bif}"
                 )
+                _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
                 continue
 
             if not os.path.isfile(index_bif):
                 logger.info(f"Generating BIF for {media_file} -> {index_bif}")
 
-                # Ensure directories exist
                 if not _ensure_directories(indexes_path, tmp_path, media_file):
+                    _update_best(ProcessingResult.FAILED)
                     continue
 
-                # Generate images and create BIF file
                 try:
                     _generate_and_save_bif(
                         media_file,
@@ -1633,19 +1674,20 @@ def process_item(
                         config,
                         progress_callback,
                     )
+                    _update_best(ProcessingResult.GENERATED)
                 except CodecNotSupportedError:
-                    # Re-raise so worker can handle codec errors
                     raise
                 except RuntimeError as e:
-                    # RuntimeError from _generate_and_save_bif means generation failed
-                    # Log and continue to next media part
                     logger.error(f"Error processing {media_file}: {str(e)}")
+                    _update_best(ProcessingResult.FAILED)
                     continue
                 except Exception as e:
                     logger.error(
                         f"Error processing {media_file}: {type(e).__name__}: {str(e)}"
                     )
+                    _update_best(ProcessingResult.FAILED)
                     continue
                 finally:
-                    # Always clean up temp directory (may already be cleaned up by _generate_and_save_bif)
                     _cleanup_temp_directory(tmp_path)
+
+    return best_result

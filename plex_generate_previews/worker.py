@@ -16,7 +16,7 @@ from typing import Any, List, Optional, Tuple
 from loguru import logger
 
 from .config import Config
-from .media_processing import CodecNotSupportedError, process_item
+from .media_processing import CodecNotSupportedError, ProcessingResult, process_item
 from .utils import format_display_title
 
 _job_thread_ids: set = set()
@@ -113,6 +113,7 @@ class Worker:
         self.completed = 0
         self.failed = 0
         self.requeued_to_cpu = False  # Set when GPU re-queues item to CPU fallback
+        self.outcome_counts = {r.value: 0 for r in ProcessingResult}
 
     def is_available(self) -> bool:
         """Check if this worker is available for a new task."""
@@ -280,11 +281,14 @@ class Worker:
         ctx_logger.info(f"{self.display_name} started: {display_name}")
 
         try:
-            process_item(
+            result = process_item(
                 item_key, self.gpu, self.gpu_device, config, plex, progress_callback
             )
-            # Mark as completed immediately (thread will finish after this)
-            self.completed += 1
+            self.outcome_counts[result.value] += 1
+            if result == ProcessingResult.FAILED:
+                self.failed += 1
+            else:
+                self.completed += 1
         except CodecNotSupportedError as e:
             # Codec not supported by GPU - re-queue for CPU worker
             if self.worker_type == "GPU":
@@ -1239,6 +1243,12 @@ class WorkerPool:
         total_completed = run_successful
         total_failed = run_failed
 
+        # Aggregate fine-grained outcome counts across all workers.
+        outcome = {r.value: 0 for r in ProcessingResult}
+        for worker in self._snapshot_workers():
+            for key, count in worker.outcome_counts.items():
+                outcome[key] += count
+
         if on_finish:
             on_finish(total_completed, total_failed, total_items)
 
@@ -1251,6 +1261,7 @@ class WorkerPool:
             "failed": total_failed,
             "total": total_items,
             "cancelled": cancellation_requested,
+            "outcome": outcome,
         }
 
     def _update_worker_progress(

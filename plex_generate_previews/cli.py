@@ -28,7 +28,7 @@ from rich.text import Text
 from .config import load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
 from .logging_config import setup_logging
-from .media_processing import clear_failures, log_failure_summary
+from .media_processing import ProcessingResult, clear_failures, log_failure_summary
 from .plex_client import get_library_sections, get_media_items_by_paths, plex_server
 from .utils import (
     calculate_title_width,
@@ -586,6 +586,14 @@ def run_processing(
         total_successful = 0
         total_failed = 0
         cancellation_requested = False
+        aggregate_outcome = {r.value: 0 for r in ProcessingResult}
+
+        def _merge_outcome(result_dict):
+            """Merge outcome counts from a worker pool result into the aggregate."""
+            outcome = result_dict.get("outcome")
+            if outcome:
+                for key, count in outcome.items():
+                    aggregate_outcome[key] = aggregate_outcome.get(key, 0) + count
 
         if headless:
             # Headless mode - no Rich console display
@@ -634,6 +642,7 @@ def run_processing(
                     cancellation_requested = (
                         cancellation_requested or result["cancelled"]
                     )
+                    _merge_outcome(result)
             else:
                 worker_pool = _create_worker_pool()
                 # Build a single queue across libraries so idle workers can
@@ -700,6 +709,7 @@ def run_processing(
                     cancellation_requested = (
                         cancellation_requested or result["cancelled"]
                     )
+                    _merge_outcome(result)
         else:
             # Interactive mode with Rich console display
             # Create progress displays
@@ -754,6 +764,7 @@ def run_processing(
                         cancellation_requested = (
                             cancellation_requested or result["cancelled"]
                         )
+                        _merge_outcome(result)
                         main_progress.remove_task(main_task)
                 else:
                     worker_pool = _create_worker_pool()
@@ -812,22 +823,61 @@ def run_processing(
                         cancellation_requested = (
                             cancellation_requested or result["cancelled"]
                         )
+                        _merge_outcome(result)
                         main_progress.remove_task(main_task)
                     else:
                         logger.info("No media items found across selected libraries")
 
+        # Build enhanced completion summary from outcome breakdown
+        generated = aggregate_outcome.get("generated", 0)
+        bif_exists = aggregate_outcome.get("skipped_bif_exists", 0)
+        not_found = aggregate_outcome.get("skipped_file_not_found", 0)
+        excluded = aggregate_outcome.get("skipped_excluded", 0)
+        invalid_hash = aggregate_outcome.get("skipped_invalid_hash", 0)
+        failed_count = aggregate_outcome.get("failed", 0)
+        no_parts = aggregate_outcome.get("no_media_parts", 0)
+
+        parts = []
+        if generated:
+            parts.append(f"{generated} generated")
+        if bif_exists:
+            parts.append(f"{bif_exists} already existed")
+        if not_found:
+            parts.append(f"{not_found} not found")
+        if excluded:
+            parts.append(f"{excluded} excluded")
+        if invalid_hash:
+            parts.append(f"{invalid_hash} invalid hash")
+        if failed_count:
+            parts.append(f"{failed_count} failed")
+        if no_parts:
+            parts.append(f"{no_parts} no media parts")
+
+        summary = ", ".join(parts) if parts else "no items processed"
+
         if cancellation_requested:
-            logger.info(
-                "Processing stopped by cancellation: "
-                f"{total_successful} successful, {total_failed} failed, {total_processed} processed"
-            )
+            logger.info(f"Processing stopped by cancellation: {summary}")
         else:
-            logger.info(
-                f"Successfully processed {total_processed} media items across all libraries"
+            logger.info(f"Processing complete: {summary}")
+
+        # Warn about likely misconfigured path mappings
+        if total_processed > 0 and not_found > 0 and generated == 0:
+            logger.warning("=" * 80)
+            logger.warning(
+                f"WARNING: {not_found} of {total_processed} items were skipped "
+                "because the media file was not found locally."
             )
+            logger.warning(
+                "This usually means your path mappings are incorrect. "
+                "Check your PLEX_LOCAL_VIDEOS_PATH_MAPPING and "
+                "PLEX_VIDEOS_PATH_MAPPING settings."
+            )
+            logger.warning("=" * 80)
 
         # Print failure summary at end of run
         log_failure_summary()
+
+        return_data["outcome"] = aggregate_outcome
 
         return return_data
 
