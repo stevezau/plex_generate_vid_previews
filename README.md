@@ -11,6 +11,7 @@
 [![MIT License][license-shield]][license-url]
 [![Docker Pulls][docker-shield]][docker-url]
 [![codecov][codecov-shield]][codecov-url]
+[![AI-Assisted][ai-shield]][ai-url]
 
 </div>
 
@@ -61,6 +62,9 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 **The Problem:** Plex's built-in preview generation is painfully slow.
 
 **The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
+
+> [!NOTE]
+> This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -265,6 +269,9 @@ Made with ❤️ by [stevezau](https://github.com/stevezau)
 [docker-url]: https://hub.docker.com/r/stevezzau/plex_generate_vid_previews
 [codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/plex_generate_vid_previews?style=for-the-badge
 [codecov-url]: https://codecov.io/gh/stevezau/plex_generate_vid_previews
+
+[ai-shield]: https://img.shields.io/badge/AI--Assisted-Cursor%20%2B%20Claude-blue?style=for-the-badge&logo=openai&logoColor=white
+[ai-url]: #-about
 
 [python-shield]: https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white
 [python-url]: https://python.org
