@@ -214,6 +214,33 @@ class TestWorker:
         assert worker.completed == 1
 
     @patch("plex_generate_previews.worker.process_item")
+    def test_last_task_outcome_delta(self, mock_process):
+        """Test that last_task_outcome_delta returns correct per-task delta."""
+        worker = Worker(0, "CPU")
+        config = MagicMock()
+        plex = MagicMock()
+
+        mock_process.side_effect = lambda *a, **kw: ProcessingResult.GENERATED
+
+        worker.assign_task("key1", config, plex, media_title="T1", media_type="movie")
+        worker.current_thread.join(timeout=2)
+        worker.check_completion()
+
+        delta = worker.last_task_outcome_delta()
+        assert delta["generated"] == 1
+        assert all(v == 0 for k, v in delta.items() if k != "generated")
+
+        # Second task — delta should reflect only the second task
+        mock_process.side_effect = lambda *a, **kw: ProcessingResult.SKIPPED_BIF_EXISTS
+        worker.assign_task("key2", config, plex, media_title="T2", media_type="movie")
+        worker.current_thread.join(timeout=2)
+        worker.check_completion()
+
+        delta2 = worker.last_task_outcome_delta()
+        assert delta2["skipped_bif_exists"] == 1
+        assert delta2["generated"] == 0
+
+    @patch("plex_generate_previews.worker.process_item")
     def test_worker_gpu_handles_codec_error(self, mock_process):
         """Test that GPU worker handles CodecNotSupportedError and adds to fallback queue."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
@@ -245,9 +272,9 @@ class TestWorker:
         assert worker.failed == 0
         assert worker.requeued_to_cpu is True
 
-        # Task should be in fallback queue
+        # Task should be in fallback queue (4-tuple: job_id, key, title, type)
         assert not fallback_queue.empty()
-        item_key, media_title, media_type = fallback_queue.get()
+        job_id, item_key, media_title, media_type = fallback_queue.get()
         assert item_key == "test_key"
         assert media_title == "AV1 Video"
         assert media_type == "episode"

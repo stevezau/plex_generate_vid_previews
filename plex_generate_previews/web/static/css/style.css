@@ -103,15 +103,6 @@ body {
     text-align: left;
 }
 
-/* Current job card */
-#currentJobCard .progress-info {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 0.5rem;
-    font-size: 0.875rem;
-    color: #adb5bd;
-}
-
 /* GPU cards */
 .gpu-card {
     background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 110, 253, 0.05));

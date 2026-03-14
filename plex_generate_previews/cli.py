@@ -536,6 +536,8 @@ def run_processing(
     cancel_check=None,
     pause_check=None,
     worker_pool_callback=None,
+    job_id=None,
+    on_dispatch_start=None,
 ):
     """Run the main processing workflow.
 
@@ -549,6 +551,9 @@ def run_processing(
         cancel_check: Optional callable returning True when processing should stop
         pause_check: Optional callable returning True when processing should pause dispatch
         worker_pool_callback: Optional callable receiving WorkerPool on create/cleanup
+        job_id: Optional job identifier for multi-job dispatch (web mode)
+        on_dispatch_start: Optional callable invoked once before the first batch of items
+            is dispatched (used by the web layer to transition PENDING -> RUNNING).
     """
     return_data = None
     try:
@@ -599,6 +604,61 @@ def run_processing(
             # Headless mode - no Rich console display
             logger.info("Running in headless mode (no console display)")
 
+            _dispatch_started = False
+
+            def _dispatch_items(items, library_name):
+                """Dispatch items via shared dispatcher (web) or local pool (CLI)."""
+                nonlocal worker_pool, _dispatch_started
+                if job_id:
+                    from .job_dispatcher import get_dispatcher
+
+                    # Reuse the dispatcher's existing pool if available;
+                    # only create a new pool on the very first job.
+                    existing = get_dispatcher()
+                    if existing is not None:
+                        worker_pool = existing.worker_pool
+                    elif worker_pool is None:
+                        worker_pool = _create_worker_pool()
+                    dispatcher = get_dispatcher(worker_pool)
+
+                    if not _dispatch_started and on_dispatch_start:
+                        on_dispatch_start()
+                        _dispatch_started = True
+
+                    callbacks = {
+                        "progress_callback": progress_callback,
+                        "worker_callback": worker_callback,
+                        "on_item_complete": item_complete_callback,
+                        "cancel_check": cancel_check,
+                        "pause_check": pause_check,
+                    }
+                    tracker = dispatcher.submit_items(
+                        job_id=job_id,
+                        items=items,
+                        config=config,
+                        plex=plex,
+                        title_max_width=title_max_width,
+                        library_name=library_name,
+                        callbacks=callbacks,
+                    )
+                    tracker.wait()
+                    return tracker.get_result()
+                else:
+                    if worker_pool is None:
+                        worker_pool = _create_worker_pool()
+                    return worker_pool.process_items_headless(
+                        items,
+                        config,
+                        plex,
+                        title_max_width,
+                        library_name=library_name,
+                        progress_callback=progress_callback,
+                        worker_callback=worker_callback,
+                        on_item_complete=item_complete_callback,
+                        cancel_check=cancel_check,
+                        pause_check=pause_check,
+                    )
+
             if getattr(config, "webhook_paths", None):
                 webhook_resolution = get_media_items_by_paths(
                     plex, config, config.webhook_paths
@@ -616,7 +676,6 @@ def run_processing(
                         "No Plex items matched webhook file paths; skipping processing"
                     )
                 else:
-                    worker_pool = _create_worker_pool()
                     if progress_callback:
                         progress_callback(
                             0,
@@ -624,17 +683,8 @@ def run_processing(
                             "Processing webhook-targeted media",
                         )
 
-                    result = worker_pool.process_items_headless(
-                        webhook_resolution.items,
-                        config,
-                        plex,
-                        title_max_width,
-                        library_name="Webhook Targets",
-                        progress_callback=progress_callback,
-                        worker_callback=worker_callback,
-                        on_item_complete=item_complete_callback,
-                        cancel_check=cancel_check,
-                        pause_check=pause_check,
+                    result = _dispatch_items(
+                        webhook_resolution.items, "Webhook Targets"
                     )
                     total_successful += result["completed"]
                     total_failed += result["failed"]
@@ -644,7 +694,6 @@ def run_processing(
                     )
                     _merge_outcome(result)
             else:
-                worker_pool = _create_worker_pool()
                 # Build a single queue across libraries so idle workers can
                 # continue with remaining items from subsequent libraries.
                 all_media_items = []
@@ -690,19 +739,7 @@ def run_processing(
                             f"Processing all selected libraries ({len(library_item_counts)})",
                         )
 
-                    # Process items without Rich progress displays
-                    result = worker_pool.process_items_headless(
-                        all_media_items,
-                        config,
-                        plex,
-                        title_max_width,
-                        library_name="All Libraries",
-                        progress_callback=progress_callback,
-                        worker_callback=worker_callback,
-                        on_item_complete=item_complete_callback,
-                        cancel_check=cancel_check,
-                        pause_check=pause_check,
-                    )
+                    result = _dispatch_items(all_media_items, "All Libraries")
                     total_successful += result["completed"]
                     total_failed += result["failed"]
                     total_processed += result["completed"] + result["failed"]
@@ -892,16 +929,19 @@ def run_processing(
         logger.error(f"Unexpected error in main execution: {e}")
         raise
     finally:
-        # Clean up worker pool
+        # In dispatcher mode the pool is shared across jobs; don't shut it
+        # down when an individual job finishes.  CLI mode (no job_id) owns
+        # its pool and must clean it up.
         try:
-            if "worker_pool" in locals() and worker_pool is not None:
+            if "worker_pool" in locals() and worker_pool is not None and not job_id:
                 worker_pool.shutdown()
         except Exception as worker_error:
             logger.warning(f"Failed to shutdown worker pool: {worker_error}")
         finally:
-            app_state.worker_pool = None
-            if worker_pool_callback:
-                worker_pool_callback(None)
+            if not job_id:
+                app_state.worker_pool = None
+                if worker_pool_callback:
+                    worker_pool_callback(None)
 
         # Clean up our working temp folder
         try:

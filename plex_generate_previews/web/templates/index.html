@@ -169,24 +169,21 @@
     </div>
 </div>
 
-<!-- Current Job Progress -->
+<!-- Active Jobs -->
 <div class="row">
     <div class="col-12 mb-4">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-activity me-2"></i>Current Job</span>
+                <span><i class="bi bi-activity me-2"></i>Active Jobs</span>
                 <div class="d-flex align-items-center gap-2">
                     <span id="globalPauseResumeCurrentJob"></span>
-                    <button class="btn btn-sm btn-outline-info me-2" id="viewLogsBtn" onclick="showLogsModal()" style="display: none;">
-                        <i class="bi bi-file-text me-1"></i>View Logs
-                    </button>
-                    <span class="badge bg-secondary" id="currentJobStatus">No active job</span>
+                    <span class="badge bg-secondary" id="activeJobsCount">No active jobs</span>
                 </div>
             </div>
-            <div class="card-body" id="currentJobCard">
+            <div class="card-body" id="activeJobsContainer">
                 <div class="text-muted text-center py-4">
                     <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-                    No job is currently running
+                    No jobs are currently running
                 </div>
             </div>
         </div>

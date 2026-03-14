@@ -53,9 +53,6 @@ from .scheduler import get_schedule_manager
 PLEX_DATA_ROOT = os.path.realpath(os.environ.get("PLEX_DATA_ROOT", "/plex"))
 MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
-# Ensures only one processing job runs at a time regardless of trigger source
-# (scheduled job, webhook, or manual start).
-_job_execution_lock = threading.Lock()
 
 
 def _param_to_bool(value, default: bool) -> bool:
@@ -126,16 +123,17 @@ def _safe_resolve_within(user_path: str, allowed_root: str) -> str | None:
 main = Blueprint("main", __name__)
 api = Blueprint("api", __name__, url_prefix="/api")
 
-# Cache for GPU detection results (GPUs don't change at runtime)
-_gpu_cache: dict = {"result": None, "timestamp": 0.0}
-_GPU_CACHE_TTL = 300  # 5 minutes
+# Cache for GPU detection results (GPUs don't change at runtime).
+# Detection runs once on first access; call clear_gpu_cache() to force re-scan.
+_gpu_cache: dict = {"result": None}
 _gpu_cache_lock = threading.Lock()
-_gpu_refresh_thread_started = False
 
 
-def _refresh_gpu_cache() -> None:
-    """Run GPU detection and update the cache. Runs in a background thread."""
-    import time
+def _ensure_gpu_cache() -> None:
+    """Run GPU detection once and cache the result. No-op if already cached."""
+    with _gpu_cache_lock:
+        if _gpu_cache["result"] is not None:
+            return
 
     try:
         from ..gpu_detection import detect_all_gpus
@@ -152,33 +150,11 @@ def _refresh_gpu_cache() -> None:
             )
         with _gpu_cache_lock:
             _gpu_cache["result"] = gpus
-            _gpu_cache["timestamp"] = time.monotonic()
-        logger.debug(f"GPU detection cache refreshed: {len(gpus)} GPU(s)")
+        logger.debug(f"GPU detection complete: {len(gpus)} GPU(s)")
     except Exception as e:
-        logger.warning(f"Background GPU detection failed: {e}")
-
-
-def _gpu_refresh_loop() -> None:
-    """Daemon thread: refresh GPU cache every _GPU_CACHE_TTL seconds."""
-    import time
-
-    while True:
-        _refresh_gpu_cache()
-        time.sleep(_GPU_CACHE_TTL)
-
-
-def _ensure_gpu_refresh_thread() -> None:
-    """Start the GPU cache refresh daemon thread if not already running."""
-    global _gpu_refresh_thread_started
-    if _gpu_refresh_thread_started:
-        return
-    with _gpu_cache_lock:
-        if _gpu_refresh_thread_started:
-            return
-        _gpu_refresh_thread_started = True
-    thread = threading.Thread(target=_gpu_refresh_loop, daemon=True)
-    thread.start()
-    logger.debug("GPU cache refresh thread started")
+        logger.warning(f"GPU detection failed: {e}")
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = []
 
 
 def clear_gpu_cache() -> None:
@@ -188,7 +164,6 @@ def clear_gpu_cache() -> None:
     """
     with _gpu_cache_lock:
         _gpu_cache["result"] = None
-        _gpu_cache["timestamp"] = 0.0
 
 
 # Initialize rate limiter
@@ -532,14 +507,13 @@ def get_processing_state():
 @api.route("/processing/pause", methods=["POST"])
 @api_token_required
 def pause_processing():
-    """Set global processing pause (no new jobs start; active job stops dispatch after current tasks)."""
+    """Set global processing pause (all running jobs pause dispatch after current tasks)."""
     from .settings_manager import get_settings_manager
 
     sm = get_settings_manager()
     job_manager = get_job_manager()
     sm.processing_paused = True
-    running = job_manager.get_running_job()
-    if running:
+    for running in job_manager.get_running_jobs():
         job_manager.request_pause(running.id)
     job_manager.emit_processing_paused_changed(True)
     logger.info("Global processing paused")
@@ -549,39 +523,31 @@ def pause_processing():
 @api.route("/processing/resume", methods=["POST"])
 @api_token_required
 def resume_processing():
-    """Clear global processing pause and start the next pending job if none is running."""
+    """Clear global processing pause and resume all running jobs."""
     from .settings_manager import get_settings_manager
 
     sm = get_settings_manager()
     job_manager = get_job_manager()
     sm.processing_paused = False
-    running = job_manager.get_running_job()
-    if running:
+    for running in job_manager.get_running_jobs():
         job_manager.request_resume(running.id)
     job_manager.emit_processing_paused_changed(False)
     logger.info("Global processing resumed")
-    # If no job is running, start the next pending job (e.g. one that was queued while paused)
-    if not job_manager.get_running_job():
-        pending = sorted(
-            job_manager.get_pending_jobs(),
-            key=lambda j: j.created_at or "",
-        )
-        if pending:
-            next_job = pending[0]
-            _start_job_async(next_job.id, next_job.config or {})
-            logger.info(f"Started next pending job {next_job.id} after resume")
+    # Start any pending jobs that were queued while paused
+    pending = sorted(
+        job_manager.get_pending_jobs(),
+        key=lambda j: j.created_at or "",
+    )
+    for pj in pending:
+        _start_job_async(pj.id, pj.config or {})
+        logger.info(f"Started pending job {pj.id} after resume")
     return jsonify({"paused": False})
 
 
 @api.route("/workers/add", methods=["POST"])
 @api_token_required
 def add_workers_global():
-    """Add workers to the currently running job (global scaling)."""
-    job_manager = get_job_manager()
-    running_job = job_manager.get_running_job()
-    if not running_job:
-        return jsonify({"error": "No job is currently running"}), 400
-
+    """Add workers to the shared worker pool."""
     data = request.get_json(silent=True) or {}
     worker_type = str(data.get("worker_type", "CPU")).upper()
     count = int(data.get("count", 1))
@@ -590,7 +556,7 @@ def add_workers_global():
     if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
-    worker_pool = job_manager.get_active_worker_pool(running_job.id)
+    worker_pool = _get_shared_worker_pool()
     if worker_pool is None:
         return jsonify({"error": "Worker pool is not available"}), 409
 
@@ -612,12 +578,7 @@ def add_workers_global():
 @api.route("/workers/remove", methods=["POST"])
 @api_token_required
 def remove_workers_global():
-    """Remove workers from the currently running job (global scaling)."""
-    job_manager = get_job_manager()
-    running_job = job_manager.get_running_job()
-    if not running_job:
-        return jsonify({"error": "No job is currently running"}), 400
-
+    """Remove workers from the shared worker pool."""
     data = request.get_json(silent=True) or {}
     worker_type = str(data.get("worker_type", "CPU")).upper()
     count = int(data.get("count", 1))
@@ -626,7 +587,7 @@ def remove_workers_global():
     if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
-    worker_pool = job_manager.get_active_worker_pool(running_job.id)
+    worker_pool = _get_shared_worker_pool()
     if worker_pool is None:
         return jsonify({"error": "Worker pool is not available"}), 409
 
@@ -643,13 +604,36 @@ def remove_workers_global():
     )
 
 
+def _get_shared_worker_pool():
+    """Get the shared worker pool from the job manager or dispatcher.
+
+    Checks the job manager first (active job pools), then falls back
+    to the dispatcher's persistent pool.
+
+    Returns:
+        WorkerPool or None if no pool exists.
+    """
+    pool = get_job_manager().get_active_worker_pool()
+    if pool is not None:
+        return pool
+    try:
+        from ..job_dispatcher import get_dispatcher
+
+        dispatcher = get_dispatcher()
+        if dispatcher is not None:
+            return dispatcher.worker_pool
+    except Exception:
+        pass
+    return None
+
+
 @api.route("/jobs/<job_id>/workers/add", methods=["POST"])
 @api_token_required
 def add_job_workers(job_id):
-    """Add workers to a running job."""
+    """Add workers to the shared pool (scoped by job for API symmetry)."""
     job_manager = get_job_manager()
-    running_job = job_manager.get_running_job()
-    if not running_job or running_job.id != job_id:
+    job = job_manager.get_job(job_id)
+    if not job or job.status != JobStatus.RUNNING:
         return jsonify({"error": "Job is not running"}), 400
 
     data = request.get_json(silent=True) or {}
@@ -660,7 +644,7 @@ def add_job_workers(job_id):
     if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
-    worker_pool = job_manager.get_active_worker_pool(job_id)
+    worker_pool = job_manager.get_active_worker_pool()
     if worker_pool is None:
         return jsonify({"error": "Worker pool is not available"}), 409
 
@@ -682,10 +666,10 @@ def add_job_workers(job_id):
 @api.route("/jobs/<job_id>/workers/remove", methods=["POST"])
 @api_token_required
 def remove_job_workers(job_id):
-    """Remove workers from a running job (idle now, busy when idle)."""
+    """Remove workers from the shared pool (scoped by job for API symmetry)."""
     job_manager = get_job_manager()
-    running_job = job_manager.get_running_job()
-    if not running_job or running_job.id != job_id:
+    job = job_manager.get_job(job_id)
+    if not job or job.status != JobStatus.RUNNING:
         return jsonify({"error": "Job is not running"}), 400
 
     data = request.get_json(silent=True) or {}
@@ -696,7 +680,7 @@ def remove_job_workers(job_id):
     if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
-    worker_pool = job_manager.get_active_worker_pool(job_id)
+    worker_pool = job_manager.get_active_worker_pool()
     if worker_pool is None:
         return jsonify({"error": "Worker pool is not available"}), 409
 
@@ -743,10 +727,18 @@ def get_job_logs(job_id):
 @api.route("/jobs/workers", methods=["GET"])
 @api_token_required
 def get_worker_statuses():
-    """Get status of all workers."""
+    """Get status of all workers.
+
+    Returns callback-driven statuses when a job is actively pushing
+    updates, otherwise falls back to querying the global dispatcher's
+    pool directly so workers are visible even when idle.
+    """
     try:
         job_manager = get_job_manager()
         workers = job_manager.get_worker_statuses()
+
+        if not workers:
+            workers = _get_dispatcher_worker_statuses()
 
         return jsonify(
             {"workers": [w.to_dict() if hasattr(w, "to_dict") else w for w in workers]}
@@ -756,6 +748,99 @@ def get_worker_statuses():
         return jsonify(
             {"error": "Failed to retrieve worker statuses", "workers": []}
         ), 500
+
+
+def _get_dispatcher_worker_statuses():
+    """Query the global dispatcher's pool for current worker statuses.
+
+    When a dispatcher exists, delegates to its ``_build_worker_statuses()``
+    (which acquires the progress lock for thread safety).  When no pool
+    exists yet (before the first job), builds synthetic idle entries from
+    the saved config so the UI always shows the configured workers.
+
+    Returns:
+        List of worker status dicts, or empty list on error.
+    """
+    try:
+        from ..job_dispatcher import get_dispatcher
+
+        dispatcher = get_dispatcher()
+        if dispatcher is not None:
+            return dispatcher._build_worker_statuses()
+    except Exception:
+        return []
+
+    return _build_idle_workers_from_config()
+
+
+def _build_idle_workers_from_config():
+    """Build idle worker status dicts from saved settings.
+
+    Used before any job has been submitted (no WorkerPool exists yet)
+    so the UI still shows the configured workers as idle.  Uses the
+    cached GPU detection results for real hardware names.
+
+    Returns:
+        List of worker status dicts.
+    """
+    try:
+        from .settings_manager import get_settings_manager
+
+        settings = get_settings_manager()
+        gpu_count = settings.gpu_threads
+        cpu_count = settings.cpu_threads
+        cpu_fb_count = settings.cpu_fallback_threads
+    except Exception:
+        return []
+
+    # Get real GPU names from the cached detection results
+    _ensure_gpu_cache()
+    with _gpu_cache_lock:
+        gpu_infos = _gpu_cache["result"] or []
+
+    idle_entry = {
+        "status": "idle",
+        "current_title": "",
+        "progress_percent": 0,
+        "speed": "0.0x",
+        "remaining_time": 0.0,
+    }
+
+    statuses = []
+    worker_id = 0
+
+    for i in range(gpu_count):
+        worker_id += 1
+        gpu_name = gpu_infos[i]["name"] if i < len(gpu_infos) else "GPU"
+        display_name = (
+            f"{gpu_name} #{i + 1}" if gpu_count > 1 else gpu_name
+        )
+        statuses.append({
+            "worker_id": worker_id,
+            "worker_type": "GPU",
+            "worker_name": display_name,
+            **idle_entry,
+        })
+
+    for i in range(cpu_count):
+        worker_id += 1
+        statuses.append({
+            "worker_id": worker_id,
+            "worker_type": "CPU",
+            "worker_name": f"CPU - Worker {i + 1}",
+            **idle_entry,
+        })
+
+    for i in range(cpu_fb_count):
+        worker_id += 1
+        statuses.append({
+            "worker_id": worker_id,
+            "worker_type": "CPU_FALLBACK",
+            "worker_name": f"CPU Fallback - Worker {i + 1}",
+            **idle_entry,
+        })
+
+    return statuses
 
 
 @api.route("/jobs/<job_id>", methods=["DELETE"])
@@ -1131,15 +1216,13 @@ def get_libraries():
 def get_system_status():
     """Get system status including GPU info.
 
-    GPU detection never runs in the request path. Results are refreshed in a
-    background daemon thread every _GPU_CACHE_TTL seconds. This handler always
-    returns cached results (or empty GPU list on first load) so it never blocks.
+    GPU detection runs lazily on first access and is cached for the lifetime
+    of the process. Call clear_gpu_cache() to force a re-scan.
     """
     try:
-        # Ensure background refresh thread is running (idempotent)
-        _ensure_gpu_refresh_thread()
+        _ensure_gpu_cache()
         with _gpu_cache_lock:
-            gpus = _gpu_cache["result"] if _gpu_cache["result"] is not None else []
+            gpus = _gpu_cache["result"] or []
 
         job_manager = get_job_manager()
         running_job = job_manager.get_running_job()
@@ -1935,7 +2018,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
     def run_job():
         log_handler_id = None
-        _acquired_execution_lock = False
         job_manager = None
         try:
             import os
@@ -1963,19 +2045,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 )
                 return
 
-            if not _job_execution_lock.acquire(blocking=False):
-                merged = {**(job.config or {}), **(config_overrides or {})}
-                job_manager.update_job_config(job_id, merged)
-                running = job_manager.get_running_job()
-                if running:
-                    reason = f"another job ({running.id[:8]}) is currently running"
-                else:
-                    reason = "a cancelled job is still winding down"
-                logger.info(f"Job {job_id} not started — {reason}; remains in queue")
-                return
-
-            _acquired_execution_lock = True
-
             # Set up log capture for this job
             def log_sink(message):
                 """Capture log messages for this job."""
@@ -1999,21 +2068,20 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 enqueue=True,
             )
 
-            job_manager.start_job(job_id)
             # Persist full run parameters (e.g. webhook_paths) so job can be reprocessed later.
             job = job_manager.get_job(job_id)
             if job and config_overrides:
                 merged = {**(job.config or {}), **(config_overrides or {})}
                 job_manager.update_job_config(job_id, merged)
-            job_manager.add_log(job_id, "INFO - Job started")
 
-            # Send initial progress update to show job is initializing
+            # Send progress update while still PENDING (works on any status).
+            # The job transitions to RUNNING later, when items are dispatched.
             job_manager.update_progress(
                 job_id,
                 percent=0,
                 processed_items=0,
                 total_items=0,
-                current_item="Querying Plex libraries...",
+                current_item="Initializing...",
             )
 
             # Push UI settings into environment so load_config() sees them.
@@ -2216,6 +2284,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         outcome = "success" if success else "failed"
                         logger.info(f"{display_name} completed: {title!r} ({outcome})")
 
+                    def _on_dispatch_start():
+                        """Transition PENDING -> RUNNING when items are dispatched."""
+                        job_manager.start_job(job_id)
+                        job_manager.add_log(job_id, "INFO - Job started")
+
                     result = run_processing(
                         config,
                         selected_gpus,
@@ -2235,6 +2308,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             if pool is not None
                             else job_manager.clear_active_worker_pool(job_id)
                         ),
+                        job_id=job_id,
+                        on_dispatch_start=_on_dispatch_start,
                     )
                     log_failure_summary()
 
@@ -2468,11 +2543,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 )
                             job_manager.complete_job(job_id)
             finally:
-                # Clear worker statuses when job ends
-                job_manager.clear_worker_statuses()
                 job_manager.clear_pause_flag(job_id)
                 job_manager.clear_cancellation_flag(job_id)
                 job_manager.clear_active_worker_pool(job_id)
+                # Only clear worker statuses when no other jobs are running;
+                # the pool is shared across concurrent jobs.
+                if not job_manager.get_running_jobs():
+                    job_manager.clear_worker_statuses()
 
                 # Cleanup working folder
                 import shutil
@@ -2513,22 +2590,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     loguru_logger.remove(log_handler_id)
                 except Exception:
                     pass
-            if _acquired_execution_lock:
-                _job_execution_lock.release()
-                if job_manager is None:
-                    job_manager = get_job_manager()
-                if (
-                    not job_manager.get_running_job()
-                    and not get_settings_manager().processing_paused
-                ):
-                    pending = sorted(
-                        job_manager.get_pending_jobs(),
-                        key=lambda j: j.created_at or "",
-                    )
-                    if pending:
-                        next_job = pending[0]
-                        _start_job_async(next_job.id, next_job.config or {})
-                        logger.info(f"Started next queued job {next_job.id}")
 
     thread = threading.Thread(target=run_job, daemon=True)
     thread.start()

@@ -316,7 +316,7 @@ class TestCPUFallbackQueue:
         """_check_fallback_queue_empty should report correctly."""
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         assert pool._check_fallback_queue_empty() is True
-        pool.cpu_fallback_queue.put(("/key/1", "Test", "movie"))
+        pool.cpu_fallback_queue.put((None, "/key/1", "Test", "movie"))
         assert pool._check_fallback_queue_empty() is False
 
 

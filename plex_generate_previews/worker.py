@@ -109,6 +109,14 @@ class Worker:
         # Track verbose logging
         self.last_verbose_log_time = 0
 
+        # Job tracking for multi-job dispatch
+        self.current_job_id: Optional[str] = None
+
+        # Pre-task baselines for per-task success/failure detection
+        self._pre_task_completed = 0
+        self._pre_task_failed = 0
+        self._pre_task_outcome_counts: dict = {}
+
         # Statistics
         self.completed = 0
         self.failed = 0
@@ -178,6 +186,7 @@ class Worker:
         media_type: str = "",
         title_max_width: int = 20,
         cpu_fallback_queue=None,
+        job_id: Optional[str] = None,
     ) -> None:
         """
         Assign a new task to this worker.
@@ -191,13 +200,20 @@ class Worker:
             media_type: Media type ('episode' or 'movie')
             title_max_width: Maximum width for title display
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
+            job_id: Optional job identifier for multi-job dispatch routing
         """
         if self.is_busy:
             raise RuntimeError(f"{self.display_name} is already busy")
 
+        # Snapshot pre-task baselines for per-task success/failure detection
+        self._pre_task_completed = self.completed
+        self._pre_task_failed = self.failed
+        self._pre_task_outcome_counts = dict(self.outcome_counts)
+
         # Reset all progress tracking to ensure clean state
         self.is_busy = True
         self.current_task = item_key
+        self.current_job_id = job_id
         self.media_title = media_title
         self.media_type = media_type
         self.media_file = ""  # Will be populated by progress callback
@@ -308,10 +324,10 @@ class Worker:
                     fallback_threads = 0
                 can_use_cpu_fallback = config.cpu_threads > 0 or fallback_threads > 0
                 if cpu_fallback_queue is not None and can_use_cpu_fallback:
-                    # Preserve media info (set during assign_task)
+                    # Preserve media info and job_id (set during assign_task)
                     try:
                         cpu_fallback_queue.put(
-                            (item_key, self.media_title, self.media_type)
+                            (self.current_job_id, item_key, self.media_title, self.media_type)
                         )
                         self.requeued_to_cpu = True
                         ctx_logger.info(
@@ -367,6 +383,30 @@ class Worker:
             return True
 
         return False
+
+    def last_task_succeeded(self) -> bool:
+        """Check whether the most recently completed task succeeded.
+
+        Compares current completed/failed counters against the pre-task
+        baselines captured when ``assign_task`` was called.
+        """
+        completed_delta = self.completed - self._pre_task_completed
+        failed_delta = self.failed - self._pre_task_failed
+        return completed_delta == 1 and failed_delta == 0
+
+    def last_task_outcome_delta(self) -> dict:
+        """Return the outcome count changes for the most recent task.
+
+        Compares current outcome_counts against the pre-task snapshot
+        captured when ``assign_task`` was called.
+
+        Returns:
+            Dict mapping outcome keys to their delta (usually 0 or 1).
+        """
+        return {
+            key: self.outcome_counts.get(key, 0) - self._pre_task_outcome_counts.get(key, 0)
+            for key in self.outcome_counts
+        }
 
     def get_progress_data(self) -> dict:
         """Get current progress data for main thread."""
@@ -656,12 +696,14 @@ class WorkerPool:
         """
         Assign a task from fallback queue to a CPU worker.
 
+        The fallback queue contains 4-tuples: (job_id, item_key, title, type).
+
         Returns:
             True if task was assigned, False if queue was empty
         """
         try:
             fallback_item = self.cpu_fallback_queue.get_nowait()
-            item_key, media_title, media_type = fallback_item
+            job_id, item_key, media_title, media_type = fallback_item
 
             # Re-query Plex for media info if not available
             if media_title is None or media_type is None:
@@ -677,6 +719,7 @@ class WorkerPool:
                 media_type=media_type,
                 title_max_width=title_max_width,
                 cpu_fallback_queue=None,
+                job_id=job_id,
             )
             logger.info(f"Dispatch: assigned fallback item to {worker.display_name}")
             return True
@@ -744,6 +787,8 @@ class WorkerPool:
         Called when the fallback queue has items but no CPU-capable workers
         remain to process them, preventing the dispatch loop from hanging.
 
+        Fallback items are 4-tuples: (job_id, item_key, title, type).
+
         Returns:
             Number of items drained.
         """
@@ -751,7 +796,8 @@ class WorkerPool:
         while not self.cpu_fallback_queue.empty():
             try:
                 item = self.cpu_fallback_queue.get_nowait()
-                item_key = item[0] if isinstance(item, (list, tuple)) else item
+                # 4-tuple: (job_id, item_key, title, type) — item_key is at index 1
+                item_key = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
                 logger.warning(
                     f"Draining unreachable fallback item {item_key} as failed "
                     "(no CPU workers available)"

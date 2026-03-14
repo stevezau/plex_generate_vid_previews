@@ -128,7 +128,7 @@ class JobManager:
         self.socketio = socketio
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.RLock()
-        self._current_job_id: Optional[str] = None
+        self._running_job_ids: set = set()
         self._on_progress_callbacks: List[Callable] = []
 
         # Job logs storage (in-memory for running jobs, plus file-backed under _job_logs_dir)
@@ -451,10 +451,26 @@ class JobManager:
         return [j for j in self._jobs.values() if j.status == JobStatus.PENDING]
 
     def get_running_job(self) -> Optional[Job]:
-        """Get the currently running job."""
-        if self._current_job_id:
-            return self._jobs.get(self._current_job_id)
+        """Get a currently running job (first found).
+
+        For backward compatibility. Prefer ``get_running_jobs`` when
+        multiple jobs may run concurrently.
+        """
+        with self._lock:
+            for jid in list(self._running_job_ids):
+                job = self._jobs.get(jid)
+                if job and job.status == JobStatus.RUNNING:
+                    return job
         return None
+
+    def get_running_jobs(self) -> List[Job]:
+        """Get all currently running jobs."""
+        with self._lock:
+            return [
+                self._jobs[jid]
+                for jid in self._running_job_ids
+                if jid in self._jobs and self._jobs[jid].status == JobStatus.RUNNING
+            ]
 
     def update_job_config(self, job_id: str, config: Dict[str, Any]) -> None:
         """Update stored config for a job (e.g. when start is deferred due to pause)."""
@@ -473,7 +489,7 @@ class JobManager:
                 job.status = JobStatus.RUNNING
                 job.paused = False
                 job.started_at = datetime.now(timezone.utc).isoformat()
-                self._current_job_id = job_id
+                self._running_job_ids.add(job_id)
                 self._pause_flags[job_id] = False
                 self._pause_events[job_id] = threading.Event()
                 self._pause_events[job_id].set()
@@ -583,8 +599,7 @@ class JobManager:
                         self._emit_event("job_completed", job.to_dict())
                         log_msg = f"Job {job_id} completed successfully"
 
-                    if self._current_job_id == job_id:
-                        self._current_job_id = None
+                    self._running_job_ids.discard(job_id)
                     self.clear_pause_flag(job_id)
                     self.clear_cancellation_flag(job_id)
                     self.clear_active_worker_pool(job_id)
@@ -604,8 +619,7 @@ class JobManager:
                 job.status = JobStatus.CANCELLED
                 job.paused = False
                 job.completed_at = datetime.now(timezone.utc).isoformat()
-                if self._current_job_id == job_id:
-                    self._current_job_id = None
+                self._running_job_ids.discard(job_id)
                 self.clear_pause_flag(job_id)
                 if not was_running:
                     self.clear_cancellation_flag(job_id)
@@ -622,7 +636,7 @@ class JobManager:
         deleted = False
         with self._lock:
             if job_id in self._jobs:
-                if self._current_job_id == job_id:
+                if job_id in self._running_job_ids:
                     return False  # Can't delete running job
                 self._delete_job_log_file(job_id)
                 if job_id in self._job_logs:
@@ -870,10 +884,20 @@ class JobManager:
         with self._lock:
             self._active_worker_pools[job_id] = worker_pool
 
-    def get_active_worker_pool(self, job_id: str) -> Optional[Any]:
-        """Get active worker pool for a job."""
+    def get_active_worker_pool(self, job_id: str = "") -> Optional[Any]:
+        """Get active worker pool for a job, or any running pool.
+
+        Args:
+            job_id: Specific job ID, or empty string to return any active pool.
+        """
         with self._lock:
-            return self._active_worker_pools.get(job_id)
+            if job_id:
+                return self._active_worker_pools.get(job_id)
+            # Return the first available pool (shared pool model)
+            for pool in self._active_worker_pools.values():
+                if pool is not None:
+                    return pool
+            return None
 
     def clear_active_worker_pool(self, job_id: str) -> None:
         """Clear active worker pool reference for a job."""

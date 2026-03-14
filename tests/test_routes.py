@@ -671,25 +671,25 @@ class TestJobsAPI:
         assert data["scheduled_removal"] == 0
         assert data["unavailable"] == 1
 
-    def test_workers_add_global_no_job_returns_400(self, client):
-        """POST /api/workers/add returns 400 when no job is running."""
+    def test_workers_add_global_no_pool_returns_409(self, client):
+        """POST /api/workers/add returns 409 when no worker pool exists."""
         resp = client.post(
             "/api/workers/add",
             headers=_api_headers(),
             json={"worker_type": "CPU", "count": 1},
         )
-        assert resp.status_code == 400
-        assert "running" in resp.get_json().get("error", "").lower()
+        assert resp.status_code == 409
+        assert "not available" in resp.get_json().get("error", "").lower()
 
-    def test_workers_remove_global_no_job_returns_400(self, client):
-        """POST /api/workers/remove returns 400 when no job is running."""
+    def test_workers_remove_global_no_pool_returns_409(self, client):
+        """POST /api/workers/remove returns 409 when no worker pool exists."""
         resp = client.post(
             "/api/workers/remove",
             headers=_api_headers(),
             json={"worker_type": "CPU", "count": 1},
         )
-        assert resp.status_code == 400
-        assert "running" in resp.get_json().get("error", "").lower()
+        assert resp.status_code == 409
+        assert "not available" in resp.get_json().get("error", "").lower()
 
     def test_workers_add_global_success(self, client):
         """POST /api/workers/add delegates to running job pool."""

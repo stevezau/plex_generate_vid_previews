@@ -170,7 +170,6 @@ function connectSocket() {
         console.log('Job started:', job);
         loadJobs();
         loadJobStats();
-        updateCurrentJob(job);
     });
 
     socket.on('job_progress', function(data) {
@@ -191,7 +190,7 @@ function connectSocket() {
         loadJobs();
         loadJobStats();
         loadWorkerStatuses();
-        clearCurrentJob();
+        removeActiveJob(job.id);
         if (job.error) {
             showToast('Job completed with warnings', job.error, 'warning');
             showNotification('Job completed with warnings', job.error, 'warning');
@@ -206,7 +205,7 @@ function connectSocket() {
         loadJobs();
         loadJobStats();
         loadWorkerStatuses();
-        clearCurrentJob();
+        removeActiveJob(job.id);
         showToast('Job Failed', `Job ${job.id.substring(0, 8)} failed: ${job.error}`, 'danger');
         showNotification('Job Failed', job.error || 'Unknown error', 'error');
     });
@@ -216,7 +215,7 @@ function connectSocket() {
         loadJobs();
         loadJobStats();
         loadWorkerStatuses();
-        clearCurrentJob();
+        removeActiveJob(job.id);
         showToast('Job Cancelled', `Job ${job.id.substring(0, 8)} cancelled`, 'warning');
     });
 
@@ -453,33 +452,9 @@ async function loadJobs() {
         updateJobQueue();
         renderJobPagination();
 
-        // Update current job if there's a running one
-        const runningJob = jobs.find(j => j.status === 'running');
-        if (runningJob) {
-            currentJobId = runningJob.id;
-            _lastNotifiedJobId = null;
-            updateCurrentJob(runningJob);
-            document.getElementById('viewLogsBtn').style.display = 'inline-block';
-        } else {
-            // Check if a job just completed (notify only once)
-            if (currentJobId && currentJobId !== _lastNotifiedJobId) {
-                const completedJob = jobs.find(j => j.id === currentJobId);
-                if (completedJob && completedJob.status !== 'running') {
-                    _lastNotifiedJobId = currentJobId;
-                    if (completedJob.status === 'completed') {
-                        if (completedJob.error) {
-                            showNotification('Job completed with warnings', completedJob.error, 'warning');
-                        } else {
-                            showNotification('Job Completed', `Job ${currentJobId.substring(0, 8)} finished successfully`, 'success');
-                        }
-                    } else if (completedJob.status === 'failed') {
-                        showNotification('Job Failed', `Job ${currentJobId.substring(0, 8)} failed: ${completedJob.error || 'Unknown error'}`, 'error');
-                    }
-                }
-            }
-            clearCurrentJob();
-            currentJobId = null;
-        }
+        // Update active jobs section (supports multiple running jobs)
+        const runningJobs = jobs.filter(j => j.status === 'running');
+        updateActiveJobs(runningJobs);
     } catch (error) {
         console.error('Failed to load jobs:', error);
         // Show empty state instead of error - jobs list may just be unavailable temporarily
@@ -671,18 +646,6 @@ function toggleJobFiles(jobId) {
     btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
 }
 
-function toggleCurrentJobFiles() {
-    const listEl = document.getElementById('currentJobFilesList');
-    const iconEl = document.getElementById('currentJobFilesIcon');
-    const btn = document.getElementById('currentJobFilesToggle');
-    if (!listEl || !iconEl || !btn) return;
-    const isExpanded = !listEl.classList.contains('d-none');
-    listEl.classList.toggle('d-none');
-    iconEl.classList.toggle('bi-chevron-down', isExpanded);
-    iconEl.classList.toggle('bi-chevron-up', !isExpanded);
-    btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
-}
-
 function updateJobQueue() {
     const tbody = document.getElementById('jobQueue');
 
@@ -861,122 +824,124 @@ function changeJobPerPage(value) {
     loadJobs();
 }
 
-function updateCurrentJob(job) {
-    const card = document.getElementById('currentJobCard');
-    const statusBadge = document.getElementById('currentJobStatus');
+function updateActiveJobs(runningJobs) {
+    const container = document.getElementById('activeJobsContainer');
+    const countBadge = document.getElementById('activeJobsCount');
 
-    const isPaused = !!job.paused;
-    statusBadge.textContent = isPaused ? 'Paused' : 'Running';
-    statusBadge.className = `badge ${isPaused ? 'bg-warning text-dark' : 'bg-primary pulse'}`;
-
-    const progress = job.progress.percent.toFixed(1);
-
-    const webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
-        ? job.config.webhook_basenames
-        : null;
-    const fileCount = webhookFiles ? webhookFiles.length : 0;
-    const pathCount = (job.config && typeof job.config.path_count === 'number') ? job.config.path_count : fileCount;
-    const showExpandableFiles = fileCount > 8;
-    const previewCount = 8;
-    let webhookFilesLine = '';
-    if (webhookFiles && webhookFiles.length > 0) {
-        if (showExpandableFiles) {
-            const preview = webhookFiles.slice(0, previewCount).map(function (b) { return escapeHtml(b); }).join(', ');
-            const overflowCount = pathCount > previewCount ? pathCount - previewCount : fileCount - previewCount;
-            webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${preview} (+${overflowCount} more)</span>
-                <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" onclick="toggleCurrentJobFiles()" id="currentJobFilesToggle" title="Show all files">
-                    <i class="bi bi-chevron-down" id="currentJobFilesIcon"></i>
-                </button>
-                <div id="currentJobFilesList" class="d-none small text-muted mt-1 ms-3" style="max-height: 12rem; overflow-y: auto;">${webhookFiles.map(function (b) { return escapeHtml(b); }).join('<br>')}</div>`;
-        } else {
-            webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${webhookFiles.map(function (b) { return escapeHtml(b); }).join(', ')}</span>`;
-        }
-    }
-    card.innerHTML = `
-        <div class="mb-3">
-            <strong>Job ID:</strong> <code>${escapeHtml(job.id)}</code>
-            <br>
-            <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${webhookFilesLine}
-        </div>
-        <div class="progress" style="height: 30px;">
-            <div class="progress-bar progress-bar-striped progress-bar-animated"
-                 role="progressbar" style="width: ${progress}%" id="currentJobProgress">
-                ${progress}%
+    if (!runningJobs || runningJobs.length === 0) {
+        countBadge.textContent = 'No active jobs';
+        countBadge.className = 'badge bg-secondary';
+        container.innerHTML = `
+            <div class="text-muted text-center py-4">
+                <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                No jobs are currently running
             </div>
-        </div>
-        <div class="progress-info mt-2">
-            <span id="currentJobItem">${escapeHtml(job.progress.current_item) || 'Starting...'}</span>
-            <span id="currentJobSpeed">${escapeHtml(job.progress.speed) || ''}</span>
-        </div>
-        <div class="mt-2 text-muted small">
-            <span id="currentJobItems">Items: ${escapeHtml(job.progress.processed_items) || 0} / ${escapeHtml(job.progress.total_items) || '?'}</span>
-        </div>
-        <div class="mt-3">
-            <button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')">
-                <i class="bi bi-x me-1"></i>Cancel
-            </button>
-        </div>
-    `;
+        `;
+        refreshWorkerScaleButtons();
+        return;
+    }
+
+    countBadge.textContent = `${runningJobs.length} running`;
+    countBadge.className = 'badge bg-primary pulse';
+
+    let html = '';
+    for (const job of runningJobs) {
+        const jid = escapeHtml(job.id);
+        const isPaused = !!job.paused;
+        const statusBadge = isPaused
+            ? '<span class="badge bg-warning text-dark">Paused</span>'
+            : '<span class="badge bg-primary pulse">Running</span>';
+        const progress = job.progress.percent.toFixed(1);
+
+        let webhookFilesLine = '';
+        const webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
+            ? job.config.webhook_basenames
+            : null;
+        if (webhookFiles && webhookFiles.length > 0) {
+            if (webhookFiles.length > 8) {
+                const preview = webhookFiles.slice(0, 8).map(function (b) { return escapeHtml(b); }).join(', ');
+                const pathCount = (job.config && typeof job.config.path_count === 'number') ? job.config.path_count : webhookFiles.length;
+                const overflowCount = pathCount > 8 ? pathCount - 8 : webhookFiles.length - 8;
+                webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${preview} (+${overflowCount} more)</span>`;
+            } else {
+                webhookFilesLine = `<br><strong>Files:</strong> <span class="text-muted small">${webhookFiles.map(function (b) { return escapeHtml(b); }).join(', ')}</span>`;
+            }
+        }
+
+        html += `
+        <div class="active-job-card mb-3 p-3 border rounded" id="active-job-${jid}">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                    <strong>Job:</strong> <code>${jid.substring(0, 8)}</code>
+                    <span class="ms-2">${statusBadge}</span>
+                    <button class="btn btn-sm btn-outline-info ms-2" onclick="showLogsModal('${jid}')" title="View Logs">
+                        <i class="bi bi-file-text"></i>
+                    </button>
+                </div>
+                <button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${jid}')">
+                    <i class="bi bi-x me-1"></i>Cancel
+                </button>
+            </div>
+            <div class="mb-2 small">
+                <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${webhookFilesLine}
+            </div>
+            <div class="progress" style="height: 24px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: ${progress}%" id="activeJobProgress-${jid}">
+                    ${progress}%
+                </div>
+            </div>
+            <div class="d-flex justify-content-between mt-1 small text-muted">
+                <span id="activeJobItem-${jid}">${escapeHtml(job.progress.current_item) || 'Starting...'}</span>
+                <span id="activeJobItems-${jid}">Items: ${job.progress.processed_items || 0} / ${job.progress.total_items || '?'}</span>
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
     refreshWorkerScaleButtons();
 }
 
+function removeActiveJob(jobId) {
+    const el = document.getElementById('active-job-' + jobId);
+    if (el) el.remove();
+
+    const container = document.getElementById('activeJobsContainer');
+    if (container && container.querySelectorAll('.active-job-card').length === 0) {
+        updateActiveJobs([]);
+    }
+}
+
 function updateJobProgress(jobId, progress) {
-    // Update current job card if this is the running job
-    const progressBar = document.getElementById('currentJobProgress');
+    const progressBar = document.getElementById('activeJobProgress-' + jobId);
     if (progressBar) {
         const percent = progress.percent.toFixed(1);
         progressBar.style.width = `${percent}%`;
         progressBar.textContent = `${percent}%`;
     }
 
-    const itemEl = document.getElementById('currentJobItem');
+    const itemEl = document.getElementById('activeJobItem-' + jobId);
     if (itemEl && progress.current_item) {
         itemEl.textContent = progress.current_item;
     }
 
-    const speedEl = document.getElementById('currentJobSpeed');
-    if (speedEl && progress.speed) {
-        speedEl.textContent = progress.speed;
-    }
-
-    // Update items count
-    const itemsEl = document.getElementById('currentJobItems');
+    const itemsEl = document.getElementById('activeJobItems-' + jobId);
     if (itemsEl) {
         itemsEl.textContent = `Items: ${progress.processed_items || 0} / ${progress.total_items || '?'}`;
     }
 
-    // Update job queue row
     const row = document.getElementById(`job-row-${jobId}`);
     if (row) {
-        const progressBar = row.querySelector('.progress-bar');
-        if (progressBar) {
+        const queueBar = row.querySelector('.progress-bar');
+        if (queueBar) {
             const percent = progress.percent.toFixed(1);
-            progressBar.style.width = `${percent}%`;
-            progressBar.textContent = `${percent}%`;
+            queueBar.style.width = `${percent}%`;
+            queueBar.textContent = `${percent}%`;
         }
     }
 }
 
-function clearCurrentJob() {
-    const card = document.getElementById('currentJobCard');
-    const statusBadge = document.getElementById('currentJobStatus');
-
-    statusBadge.textContent = 'No active job';
-    statusBadge.className = 'badge bg-secondary';
-
-    card.innerHTML = `
-        <div class="text-muted text-center py-4">
-            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-            No job is currently running
-        </div>
-    `;
-    // Hide logs button when no job
-    document.getElementById('viewLogsBtn').style.display = 'none';
-    refreshWorkerScaleButtons();
-}
-
 // Worker Status Functions
-let currentJobId = null;
 let logsRefreshInterval = null;
 
 function updateWorkerStatuses(workers, options = {}) {
@@ -1060,17 +1025,14 @@ async function loadWorkerStatuses() {
     try {
         const data = await apiGet('/api/jobs/workers');
         const workers = data.workers || [];
-        const hasRunningJob = jobs.some(j => j.status === 'running');
 
         if (workers.length === 0) {
-            if (hasRunningJob || !jobsLoadedOnce) {
-                // During startup/polls a running job can briefly report no
-                // worker telemetry; avoid replacing badges with config defaults.
-                // Also skip fallback on first load when we haven't fetched jobs
-                // yet — prevents a brief flash of config defaults (e.g. "1").
+            if (!jobsLoadedOnce) {
+                // First load — avoid flash of config defaults before jobs are fetched.
                 updateWorkerStatuses([], { keepBadgeCounts: true });
                 return;
             }
+            // No pool exists yet (no job has ever run); show config defaults.
             const fallbackCounts = await loadWorkerConfigCounts(false);
             updateWorkerStatuses([], { fallbackCounts });
             return;
@@ -1079,22 +1041,10 @@ async function loadWorkerStatuses() {
         updateWorkerStatuses(workers);
     } catch (error) {
         console.error('Failed to load worker statuses:', error);
-        // If not an auth error, show empty state (no workers) rather than error
         const container = document.getElementById('workerStatusContainer');
         if (container && !error.message.includes('Authentication')) {
-            // Check if there's a running job - if so, show error; if not, show empty state
-            const runningJob = jobs.find(j => j.status === 'running');
-            if (runningJob) {
-                container.innerHTML = `
-                    <div class="text-warning text-center py-3">
-                        <i class="bi bi-exclamation-triangle me-2"></i>Worker status temporarily unavailable
-                    </div>
-                `;
-            } else {
-                // No running job, so no workers expected - show idle state
-                const fallbackCounts = await loadWorkerConfigCounts(false);
-                updateWorkerStatuses([], { fallbackCounts });
-            }
+            const fallbackCounts = await loadWorkerConfigCounts(false);
+            updateWorkerStatuses([], { fallbackCounts });
         }
     }
 }
@@ -1104,7 +1054,7 @@ let _rawLogs = [];
 let _logsModalJobId = null;
 
 function showLogsModal(jobId) {
-    const targetId = jobId || currentJobId || _lastNotifiedJobId;
+    const targetId = jobId || _lastNotifiedJobId;
     if (!targetId) return;
     _logsModalJobId = targetId;
 
@@ -1172,7 +1122,7 @@ function colorizeLogLine(line) {
 }
 
 async function refreshLogs() {
-    const targetId = _logsModalJobId || currentJobId;
+    const targetId = _logsModalJobId;
     if (!targetId) return;
 
     try {
@@ -1266,7 +1216,7 @@ function downloadLogs() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `job-${currentJobId || 'unknown'}-logs.txt`;
+    a.download = `job-${_logsModalJobId || 'unknown'}-logs.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1594,29 +1544,25 @@ async function scaleWorkersGlobal(workerType, direction) {
         if (badgeEl) badgeEl.textContent = String(newCount);
         refreshWorkerScaleButtons();
 
-        const hasRunningJob = jobs.some(j => j.status === 'running');
-        if (hasRunningJob) {
-            const endpoint = direction > 0 ? 'add' : 'remove';
-            try {
-                const result = await apiPost(`/api/workers/${endpoint}`, {
-                    worker_type: workerType,
-                    count: 1
-                });
-                await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
-                if (endpoint === 'add') {
-                    showToast('Workers Updated', `Added ${result.added} ${workerType} worker(s)`, 'success');
+        const endpoint = direction > 0 ? 'add' : 'remove';
+        try {
+            const result = await apiPost(`/api/workers/${endpoint}`, {
+                worker_type: workerType,
+                count: 1
+            });
+            await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
+            if (endpoint === 'add') {
+                showToast('Workers Updated', `Added ${result.added} ${workerType} worker(s)`, 'success');
+            } else {
+                const scheduled = result.scheduled_removal || 0;
+                if (scheduled > 0) {
+                    showToast('Workers Updated', `Removed ${result.removed} ${workerType}; ${scheduled} scheduled after current tasks`, 'warning');
                 } else {
-                    const scheduled = result.scheduled_removal || 0;
-                    if (scheduled > 0) {
-                        showToast('Workers Updated', `Removed ${result.removed} ${workerType}; ${scheduled} scheduled after current tasks`, 'warning');
-                    } else {
-                        showToast('Workers Updated', `Removed ${result.removed} ${workerType} worker(s)`, 'info');
-                    }
+                    showToast('Workers Updated', `Removed ${result.removed} ${workerType} worker(s)`, 'info');
                 }
-            } catch (scaleErr) {
-                console.warn('Live worker scaling failed (setting saved):', scaleErr);
             }
-        } else {
+        } catch (scaleErr) {
+            // No live pool yet -- setting was saved; next job will use it.
             showToast('Setting Saved', `${workerType} workers set to ${newCount}`, 'success');
         }
     } catch (error) {
