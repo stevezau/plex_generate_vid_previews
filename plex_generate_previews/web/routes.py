@@ -2431,11 +2431,17 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 error_msg = "; ".join(error_parts)
                             job_manager.add_log(job_id, f"WARNING - {error_msg}")
                             # Use hard failure (red badge) for processing errors,
-                            # exhausted retries, or all files not found; warning otherwise.
+                            # exhausted retries, all files not found, or nothing
+                            # resolved from webhooks; warning otherwise.
                             all_not_found = (
                                 outcome
                                 and outcome.get("generated", 0) == 0
                                 and outcome.get("skipped_file_not_found", 0) > 0
+                            )
+                            nothing_resolved = (
+                                total_paths > 0
+                                and resolved_count == 0
+                                and not spawned_retry_id
                             )
                             is_hard_failure = (
                                 bool(failures)
@@ -2445,6 +2451,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                     and not spawned_retry_id
                                 )
                                 or all_not_found
+                                or nothing_resolved
                             )
                             if is_hard_failure:
                                 job_manager.complete_job(job_id, error=error_msg)
