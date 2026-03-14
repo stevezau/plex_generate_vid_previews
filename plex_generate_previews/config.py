@@ -548,6 +548,9 @@ def show_docker_help():
         "  CPU_THREADS                 Number of CPU worker threads (default: 1)"
     )
     logger.info(
+        "  FFMPEG_THREADS              Limits CPU usage per GPU job, 0 = no limit (default: 2)"
+    )
+    logger.info(
         '  GPU_SELECTION               GPU selection: "all" or comma-separated indices (default: all)'
     )
     logger.info(

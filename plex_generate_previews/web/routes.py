@@ -2386,6 +2386,27 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 )
                             error_parts.append(f"{len(failures)} failed file(s)")
 
+                        # Detect misconfigured path mappings from outcome data
+                        if outcome:
+                            not_found = outcome.get(
+                                "skipped_file_not_found", 0
+                            )
+                            generated = outcome.get("generated", 0)
+                            total_outcome = sum(outcome.values())
+                            if (
+                                total_outcome > 0
+                                and not_found > 0
+                                and generated == 0
+                            ):
+                                msg = (
+                                    f"{not_found} of {total_outcome} items skipped "
+                                    "(file not found locally) — check path mapping configuration"
+                                )
+                                job_manager.add_log(
+                                    job_id, f"WARNING - {msg}"
+                                )
+                                error_parts.append(msg)
+
                         if spawned_retry_id:
                             error_parts.append(
                                 f"{len(unresolved_paths)} sent for retry"
@@ -2417,10 +2438,21 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             else:
                                 error_msg = "; ".join(error_parts)
                             job_manager.add_log(job_id, f"WARNING - {error_msg}")
-                            # Use hard failure (red badge) for processing errors or
-                            # exhausted retries; warning (amber badge) otherwise.
-                            is_hard_failure = bool(failures) or (
-                                is_retry and unresolved_paths and not spawned_retry_id
+                            # Use hard failure (red badge) for processing errors,
+                            # exhausted retries, or all files not found; warning otherwise.
+                            all_not_found = (
+                                outcome
+                                and outcome.get("generated", 0) == 0
+                                and outcome.get("skipped_file_not_found", 0) > 0
+                            )
+                            is_hard_failure = (
+                                bool(failures)
+                                or (
+                                    is_retry
+                                    and unresolved_paths
+                                    and not spawned_retry_id
+                                )
+                                or all_not_found
                             )
                             if is_hard_failure:
                                 job_manager.complete_job(job_id, error=error_msg)

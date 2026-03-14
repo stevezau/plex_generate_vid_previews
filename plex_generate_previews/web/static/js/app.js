@@ -708,7 +708,7 @@ function updateJobQueue() {
     }
 
     for (const job of jobs) {
-        const statusBadge = getStatusBadge(job.status, job.paused, job.error);
+        const statusBadge = getStatusBadge(job.status, job.paused, job.error, job.progress && job.progress.outcome);
         const progress = job.progress.percent.toFixed(1);
         const created = formatDate(job.created_at);
         let actionButtons = '';
@@ -785,6 +785,11 @@ function updateJobQueue() {
     }
 
     tbody.innerHTML = html;
+
+    // Initialize Bootstrap tooltips on status badges
+    tbody.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+        new bootstrap.Tooltip(el);
+    });
 }
 
 function renderJobPagination() {
@@ -1774,21 +1779,62 @@ async function deleteSchedule(scheduleId) {
 }
 
 // Helper Functions
-function getStatusBadge(status, paused = false, error = null) {
+function _buildOutcomeTooltip(outcome) {
+    if (!outcome || typeof outcome !== 'object') return '';
+    var labels = {
+        'generated': 'Generated',
+        'skipped_bif_exists': 'Already existed',
+        'skipped_file_not_found': 'File not found',
+        'skipped_excluded': 'Excluded',
+        'skipped_invalid_hash': 'Invalid hash',
+        'failed': 'Failed',
+        'no_media_parts': 'No media parts'
+    };
+    var lines = [];
+    var keys = ['generated', 'skipped_bif_exists', 'skipped_file_not_found',
+                'skipped_excluded', 'skipped_invalid_hash', 'failed', 'no_media_parts'];
+    for (var i = 0; i < keys.length; i++) {
+        var count = outcome[keys[i]];
+        if (count && count > 0) {
+            lines.push(labels[keys[i]] + ': ' + count.toLocaleString());
+        }
+    }
+    return lines.join('&#10;');
+}
+
+function getStatusBadge(status, paused, error, outcome) {
+    if (paused === undefined) paused = false;
+    if (error === undefined) error = null;
+    if (outcome === undefined) outcome = null;
+
+    var tooltipText = _buildOutcomeTooltip(outcome);
+    var tooltipAttrs = tooltipText
+        ? ' data-bs-toggle="tooltip" data-bs-placement="top" data-bs-html="false" title="' + tooltipText + '"'
+        : '';
+
     if (status === 'running' && paused) {
-        return '<span class="badge bg-warning text-dark">Paused</span>';
+        return '<span class="badge bg-warning text-dark"' + tooltipAttrs + '>Paused</span>';
     }
     if (status === 'completed' && error) {
-        return '<span class="badge bg-warning text-dark">Completed with warnings</span>';
+        return '<span class="badge bg-warning text-dark"' + tooltipAttrs + '>Completed with warnings</span>';
     }
-    const badges = {
-        'pending': '<span class="badge bg-secondary">Pending</span>',
-        'running': '<span class="badge bg-primary pulse">Running</span>',
-        'completed': '<span class="badge bg-success">Completed</span>',
-        'failed': '<span class="badge bg-danger">Failed</span>',
-        'cancelled': '<span class="badge bg-warning text-dark">Cancelled</span>'
+    var badgeMap = {
+        'pending': 'bg-secondary',
+        'running': 'bg-primary pulse',
+        'completed': 'bg-success',
+        'failed': 'bg-danger',
+        'cancelled': 'bg-warning text-dark'
     };
-    return badges[status] || `<span class="badge bg-secondary">${status}</span>`;
+    var labelMap = {
+        'pending': 'Pending',
+        'running': 'Running',
+        'completed': 'Completed',
+        'failed': 'Failed',
+        'cancelled': 'Cancelled'
+    };
+    var cls = badgeMap[status] || 'bg-secondary';
+    var label = labelMap[status] || status;
+    return '<span class="badge ' + cls + '"' + tooltipAttrs + '>' + label + '</span>';
 }
 
 function formatDate(dateStr) {

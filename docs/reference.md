@@ -53,6 +53,7 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 | `GPU_THREADS` | `--gpu-threads` | Yes | `1` | Number of GPU worker threads (0–32) |
 | `CPU_THREADS` | `--cpu-threads` | Yes | `1` | Number of CPU worker threads (0–32) |
 | `FALLBACK_CPU_THREADS` | `--fallback-cpu-threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `CPU_THREADS=0`) |
+| `FFMPEG_THREADS` | `--ffmpeg-threads` | Yes | `2` | Limits CPU usage per GPU job (0–32, 0 = no limit). Recommended: 2 |
 | `GPU_SELECTION` | `--gpu-selection` | No | `all` | GPU selection: `all` or `0,1,2` |
 | `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
 | `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Yes | `5` | Interval between preview images (1–60 s) |
