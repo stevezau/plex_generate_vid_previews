@@ -694,20 +694,31 @@ def generate_images(
     base_scale = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
     vf_parameters = f"fps=fps={fps_value}:round=up,{base_scale}"
 
+    # Track whether the filter chain requires Vulkan (libplacebo).
+    use_libplacebo = False
+
     # Check if we have HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
         hdr_fmt = media_info.video_tracks[0].hdr_format
         if hdr_fmt != "None" and hdr_fmt is not None:
             if _is_dv_no_backward_compat(hdr_fmt):
-                # Dolby Vision without backward-compatible HDR layer (e.g.
-                # Profile 5 IPT-PQ).  zscale cannot tonemap this content and
-                # will crash with "no path between colorspaces".  Use the
-                # basic fps+scale chain from the start.
+                # DV Profile 5 (IPT-PQ) — use libplacebo for proper tone
+                # mapping.  libplacebo handles DV RPU metadata natively
+                # (apply_dolbyvision is enabled by default).  If
+                # libplacebo/Vulkan is unavailable, FFmpeg will fail and the
+                # existing DV-safe retry path falls back to basic fps+scale.
                 logger.info(
-                    f"Dolby Vision without backward-compatible HDR detected for {video_file}; "
-                    f"skipping zscale/tonemap (hdr_format={hdr_fmt!r})"
+                    f"Dolby Vision Profile 5 detected for {video_file}; "
+                    f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                 )
-                # vf_parameters already set to the base SDR chain — keep it.
+                use_libplacebo = True
+                vf_parameters = (
+                    f"fps=fps={fps_value}:round=up,"
+                    f"format=yuv420p10,hwupload,"
+                    f"libplacebo=colorspace=bt709:color_primaries=bt709"
+                    f":color_trc=bt709:tonemapping=hable:format=yuv420p,"
+                    f"hwdownload,format=yuv420p,{base_scale}"
+                )
             else:
                 # Standard HDR (HDR10, HLG, DV+HDR10 compat, etc.) — use
                 # zscale/tonemap to convert to SDR.
@@ -755,6 +766,7 @@ def generate_images(
         gpu_override: Optional[str] = None,
         gpu_device_path_override: Optional[str] = None,
         vf_override: Optional[str] = None,
+        init_vulkan: bool = False,
     ) -> tuple:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
@@ -767,6 +779,11 @@ def generate_images(
             "-threads:v",
             "1",
         ]
+
+        # Vulkan device required by the libplacebo filter (DV Profile 5 tone mapping).
+        # Works with software Vulkan (lavapipe) when no GPU is present.
+        if init_vulkan:
+            args += ["-init_hw_device", "vulkan"]
 
         # Add hardware acceleration for decoding (before -i flag)
         # Allow overriding GPU settings for CPU fallback
@@ -1012,7 +1029,9 @@ def generate_images(
     os.makedirs(output_folder, exist_ok=True)
 
     # First attempt
-    rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial)
+    rc, seconds, speed, stderr_lines = _run_ffmpeg(
+        use_skip_initial, init_vulkan=use_libplacebo
+    )
     stderr_lines_all: List[str] = list(stderr_lines) if stderr_lines else []
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
@@ -1032,7 +1051,9 @@ def generate_images(
                 os.remove(img)
             except Exception:
                 pass
-        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False)
+        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(
+            use_skip=False, init_vulkan=use_libplacebo
+        )
         # Update rc and stderr_lines to retry results for codec error detection
         rc = retry_rc
         stderr_lines = retry_stderr_lines
@@ -1045,20 +1066,25 @@ def generate_images(
     did_dv_safe_retry = False
 
     # Dolby Vision / HDR colorspace errors can abort FFmpeg when the
-    # zscale/tonemap filter chain encounters unsupported transfer
-    # characteristics (e.g. DV Profile 5 IPT-PQ) or RPU parsing failures.
+    # zscale/tonemap or libplacebo filter chain encounters unsupported
+    # transfer characteristics or RPU parsing failures.
     # On both CPU and GPU, retry once with a DV-safe filter chain that
-    # avoids zscale/tonemap entirely.
+    # avoids zscale/tonemap/libplacebo entirely.
     if rc != 0 and image_count == 0:
         is_dv_rpu = _detect_dolby_vision_rpu_error(stderr_lines_all)
         is_zscale = _detect_zscale_colorspace_error(stderr_lines_all)
-        if is_dv_rpu or is_zscale:
+        # libplacebo failure: if the libplacebo chain was active and FFmpeg
+        # failed, fall back to the basic fps+scale chain regardless of the
+        # specific error message (Vulkan not available, driver issue, etc.).
+        is_libplacebo_fail = use_libplacebo and not is_dv_rpu and not is_zscale
+        if is_dv_rpu or is_zscale or is_libplacebo_fail:
             did_dv_safe_retry = True
-            diag_label = (
-                "Dolby Vision RPU parsing error"
-                if is_dv_rpu
-                else "zscale colorspace conversion error"
-            )
+            if is_dv_rpu:
+                diag_label = "Dolby Vision RPU parsing error"
+            elif is_zscale:
+                diag_label = "zscale colorspace conversion error"
+            else:
+                diag_label = "libplacebo tone mapping error"
             stderr_excerpt_source = (
                 stderr_lines_all if stderr_lines_all else stderr_lines
             )

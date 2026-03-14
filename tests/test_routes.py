@@ -747,6 +747,114 @@ class TestJobsAPI:
 
 
 # ---------------------------------------------------------------------------
+# Manual Trigger API
+# ---------------------------------------------------------------------------
+
+
+class TestManualTriggerAPI:
+    """Test POST /api/jobs/manual endpoint."""
+
+    def test_manual_trigger_valid_path(self, client, tmp_path):
+        """Valid file path creates a job and returns 201."""
+        test_file = tmp_path / "movie.mkv"
+        test_file.touch()
+
+        with patch("plex_generate_previews.web.routes._start_job_async") as mock_start:
+            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(tmp_path)):
+                resp = client.post(
+                    "/api/jobs/manual",
+                    headers=_api_headers(),
+                    json={"file_paths": [str(test_file)]},
+                )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert "id" in data
+        assert "Manual:" in data.get("library_name", "")
+        mock_start.assert_called_once()
+        config_overrides = mock_start.call_args[0][1]
+        assert str(test_file) in config_overrides["webhook_paths"]
+
+    def test_manual_trigger_no_paths(self, client):
+        """Empty file_paths returns 400."""
+        resp = client.post(
+            "/api/jobs/manual",
+            headers=_api_headers(),
+            json={"file_paths": []},
+        )
+        assert resp.status_code == 400
+        assert "required" in resp.get_json()["error"].lower()
+
+    def test_manual_trigger_missing_body(self, client):
+        """Missing JSON body returns 400."""
+        resp = client.post(
+            "/api/jobs/manual",
+            headers=_api_headers(),
+            json={},
+        )
+        assert resp.status_code == 400
+
+    def test_manual_trigger_path_outside_media_root(self, client, tmp_path):
+        """Path traversal outside MEDIA_ROOT returns 400."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(media_root)):
+                resp = client.post(
+                    "/api/jobs/manual",
+                    headers=_api_headers(),
+                    json={"file_paths": ["/etc/passwd"]},
+                )
+        assert resp.status_code == 400
+        assert "outside" in resp.get_json()["error"].lower()
+
+    def test_manual_trigger_requires_auth(self, client):
+        """Unauthenticated request returns 401."""
+        resp = client.post(
+            "/api/jobs/manual",
+            json={"file_paths": ["/media/test.mkv"]},
+        )
+        assert resp.status_code == 401
+
+    def test_manual_trigger_force_regenerate(self, client, tmp_path):
+        """force_regenerate flag is passed through to config overrides."""
+        test_file = tmp_path / "movie.mkv"
+        test_file.touch()
+
+        with patch("plex_generate_previews.web.routes._start_job_async") as mock_start:
+            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(tmp_path)):
+                resp = client.post(
+                    "/api/jobs/manual",
+                    headers=_api_headers(),
+                    json={
+                        "file_paths": [str(test_file)],
+                        "force_regenerate": True,
+                    },
+                )
+        assert resp.status_code == 201
+        config_overrides = mock_start.call_args[0][1]
+        assert config_overrides["force_generate"] is True
+
+    def test_manual_trigger_multiple_paths(self, client, tmp_path):
+        """Multiple file paths produce a job labeled with file count."""
+        f1 = tmp_path / "a.mkv"
+        f2 = tmp_path / "b.mkv"
+        f1.touch()
+        f2.touch()
+
+        with patch("plex_generate_previews.web.routes._start_job_async"):
+            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(tmp_path)):
+                resp = client.post(
+                    "/api/jobs/manual",
+                    headers=_api_headers(),
+                    json={"file_paths": [str(f1), str(f2)]},
+                )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert "2 files" in data.get("library_name", "")
+
+
+# ---------------------------------------------------------------------------
 # Settings API
 # ---------------------------------------------------------------------------
 

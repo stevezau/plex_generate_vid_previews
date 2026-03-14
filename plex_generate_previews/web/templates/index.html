@@ -90,6 +90,9 @@
                     <button class="btn btn-primary" onclick="showNewJobModal()">
                         <i class="bi bi-play-fill me-2"></i>Start New Job
                     </button>
+                    <button class="btn btn-outline-primary" onclick="showManualTriggerModal()">
+                        <i class="bi bi-file-earmark-play me-2"></i>Manual Trigger
+                    </button>
                     <a href="/settings" class="btn btn-outline-secondary">
                         <i class="bi bi-gear me-2"></i>Settings
                     </a>
@@ -355,6 +358,40 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" onclick="startNewJob()">
+                    <i class="bi bi-play-fill me-1"></i>Start Job
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Manual Trigger Modal -->
+<div class="modal fade" id="manualTriggerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-file-earmark-play me-2"></i>Manual Trigger</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="manualTriggerForm">
+                    <div class="mb-3">
+                        <label class="form-label" for="manualFilePaths">File Paths</label>
+                        <textarea class="form-control font-monospace" id="manualFilePaths" rows="5"
+                            placeholder="/media/movies/Movie (2024)/Movie (2024).mkv"></textarea>
+                        <div class="form-text">Enter one file path per line (absolute paths as seen by the container).</div>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="manualForceRegenerate">
+                        <label class="form-check-label" for="manualForceRegenerate">
+                            <i class="bi bi-arrow-repeat me-1"></i>Force regenerate (overwrite existing BIF)
+                        </label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="startManualJob()">
                     <i class="bi bi-play-fill me-1"></i>Start Job
                 </button>
             </div>

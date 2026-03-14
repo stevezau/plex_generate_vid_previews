@@ -1446,6 +1446,42 @@ async function startNewJob() {
     showToast('Error', 'Failed to start job: ' + lastError.message, 'danger');
 }
 
+function showManualTriggerModal() {
+    document.getElementById('manualFilePaths').value = '';
+    document.getElementById('manualForceRegenerate').checked = false;
+    new bootstrap.Modal(document.getElementById('manualTriggerModal')).show();
+}
+
+async function startManualJob() {
+    const raw = document.getElementById('manualFilePaths').value.trim();
+    if (!raw) {
+        showToast('Error', 'Please enter at least one file path', 'warning');
+        return;
+    }
+
+    const paths = raw.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+    if (paths.length === 0) {
+        showToast('Error', 'Please enter at least one file path', 'warning');
+        return;
+    }
+
+    const forceRegenerate = document.getElementById('manualForceRegenerate').checked;
+
+    try {
+        await apiPost('/api/jobs/manual', {
+            file_paths: paths,
+            force_regenerate: forceRegenerate
+        });
+        bootstrap.Modal.getInstance(document.getElementById('manualTriggerModal')).hide();
+        loadJobs();
+        loadJobStats();
+        const label = paths.length === 1 ? paths[0].split('/').pop() : `${paths.length} files`;
+        showToast('Job Started', `Processing ${label}`, 'success');
+    } catch (error) {
+        showToast('Error', 'Failed to start manual job: ' + error.message, 'danger');
+    }
+}
+
 async function cancelJob(jobId) {
     if (!confirm('Are you sure you want to cancel this job?')) return;
 

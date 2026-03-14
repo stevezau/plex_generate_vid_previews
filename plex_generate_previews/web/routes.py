@@ -424,6 +424,65 @@ def create_job():
     return jsonify(job.to_dict()), 201
 
 
+@api.route("/jobs/manual", methods=["POST"])
+@api_token_required
+def create_manual_job():
+    """Create a job that processes specific file paths.
+
+    Accepts a JSON body with ``file_paths`` (list of absolute media paths)
+    and an optional ``force_regenerate`` flag.  Paths are validated against
+    MEDIA_ROOT to prevent directory traversal.
+
+    Returns:
+        201 with job dict on success, 400 on validation failure.
+    """
+    data = request.get_json() or {}
+    raw_paths = data.get("file_paths") or []
+    force_regenerate = _param_to_bool(data.get("force_regenerate"), False)
+
+    if not raw_paths:
+        return jsonify({"error": "file_paths is required and must not be empty"}), 400
+
+    # Validate and resolve every path against MEDIA_ROOT.
+    resolved_paths: list[str] = []
+    for raw in raw_paths:
+        path_str = str(raw).strip()
+        if not path_str:
+            continue
+        resolved = _safe_resolve_within(path_str, MEDIA_ROOT)
+        if resolved is None:
+            return jsonify(
+                {"error": f"Path is outside allowed media root: {path_str}"}
+            ), 400
+        resolved_paths.append(resolved)
+
+    if not resolved_paths:
+        return jsonify({"error": "No valid file paths provided"}), 400
+
+    # Build a human-friendly label for the job list.
+    if len(resolved_paths) == 1:
+        label = f"Manual: {os.path.basename(resolved_paths[0])}"
+    else:
+        label = f"Manual: {len(resolved_paths)} files"
+
+    job_manager = get_job_manager()
+    job = job_manager.create_job(
+        library_name=label,
+        config={
+            "webhook_paths": resolved_paths,
+            "force_generate": force_regenerate,
+        },
+    )
+
+    config_overrides = {
+        "webhook_paths": resolved_paths,
+        "force_generate": force_regenerate,
+    }
+    _start_job_async(job.id, config_overrides)
+
+    return jsonify(job.to_dict()), 201
+
+
 @api.route("/jobs/<job_id>/cancel", methods=["POST"])
 @api_token_required
 def cancel_job(job_id):

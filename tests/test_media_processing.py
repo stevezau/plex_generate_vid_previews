@@ -1675,7 +1675,7 @@ class TestProactiveDVSkip:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_generate_images_dv_profile5_skips_zscale_tonemap(
+    def test_generate_images_dv_profile5_uses_libplacebo(
         self,
         mock_detect,
         mock_glob,
@@ -1690,7 +1690,7 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV Profile 5 should proactively use fps+scale only — no zscale/tonemap."""
+        """DV Profile 5 should use libplacebo tone mapping with Vulkan init."""
         # Arrange — heuristic probe succeeds (allows skip)
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -1728,18 +1728,131 @@ class TestProactiveDVSkip:
             "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
         )
 
-        # Assert — success, and vf contains only fps+scale, NO zscale/tonemap
+        # Assert — success with libplacebo filter chain
         assert success is True
         assert image_count >= 1
         assert mock_popen.call_count == 1
 
         first_args = mock_popen.call_args_list[0][0][0]
+
+        # Vulkan init must be present for libplacebo
+        assert "-init_hw_device" in first_args
+        vulkan_idx = first_args.index("-init_hw_device")
+        assert first_args[vulkan_idx + 1] == "vulkan"
+
+        # Filter chain must contain libplacebo with BT.709 SDR output
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
-        assert "fps=" in vf_value
+        assert "libplacebo" in vf_value
+        assert "colorspace=bt709" in vf_value
+        assert "color_primaries=bt709" in vf_value
+        assert "color_trc=bt709" in vf_value
+        assert "hwupload" in vf_value
+        assert "hwdownload" in vf_value
         assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+        # Must NOT contain zscale/tonemap
         assert "zscale" not in vf_value
-        assert "tonemap" not in vf_value
+        assert "tonemap=tonemap" not in vf_value
+
+
+class TestLibplaceboFallback:
+    """Test that libplacebo failure triggers the DV-safe retry with basic fps+scale."""
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_libplacebo_failure_falls_back(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """When libplacebo FFmpeg call fails, retry with basic fps+scale chain."""
+        # Arrange — heuristic probe fails (no skip)
+        mock_run.return_value = MagicMock(returncode=1, stderr="")
+
+        # MediaInfo: DV Profile 5
+        mock_info = MagicMock()
+        mock_info.video_tracks = [
+            MagicMock(hdr_format="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU")
+        ]
+        mock_mediainfo.parse.return_value = mock_info
+
+        # First FFmpeg call (libplacebo) fails, second (DV-safe) succeeds
+        mock_proc_fail = MagicMock()
+        mock_proc_fail.poll.side_effect = [None, 0]
+        mock_proc_fail.returncode = 1
+
+        mock_proc_ok = MagicMock()
+        mock_proc_ok.poll.side_effect = [None, 0]
+        mock_proc_ok.returncode = 0
+
+        mock_popen.side_effect = [mock_proc_fail, mock_proc_ok]
+
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = []
+        mock_detect.return_value = False
+
+        img1 = f"{temp_dir}/img-000001.jpg"
+        ts1 = f"{temp_dir}/0000000000.jpg"
+
+        call_count = [0]
+
+        def glob_side_effect(pattern):
+            if "img*.jpg" in pattern:
+                call_count[0] += 1
+                # First img count (after libplacebo fail) returns 0,
+                # second (after DV-safe retry) returns 1
+                if call_count[0] <= 1:
+                    return []
+                return [img1]
+            if pattern.endswith("*.jpg"):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
+
+        # Act
+        success, image_count, hw_used, seconds, speed = generate_images(
+            "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
+        )
+
+        # Assert — success after DV-safe retry
+        assert success is True
+        assert image_count >= 1
+        assert mock_popen.call_count == 2
+
+        # First call should have libplacebo + vulkan init
+        first_args = mock_popen.call_args_list[0][0][0]
+        assert "-init_hw_device" in first_args
+        vf1_idx = first_args.index("-vf")
+        assert "libplacebo" in first_args[vf1_idx + 1]
+
+        # Second call (DV-safe retry) should be basic fps+scale, no vulkan
+        second_args = mock_popen.call_args_list[1][0][0]
+        assert "-init_hw_device" not in second_args
+        vf2_idx = second_args.index("-vf")
+        vf2_value = second_args[vf2_idx + 1]
+        assert "libplacebo" not in vf2_value
+        assert "zscale" not in vf2_value
+        assert "fps=" in vf2_value
+        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf2_value
 
 
 class TestZscaleErrorRetry:
