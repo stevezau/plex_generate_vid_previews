@@ -8,6 +8,8 @@ to BIF generation with all components working together.
 from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
 
+from plex_generate_previews.media_processing import ProcessingResult
+
 
 class TestFullPipeline:
     """Test complete processing pipeline."""
@@ -68,6 +70,7 @@ class TestFullPipeline:
         # Mock process_item to simulate some processing time
         def mock_process_fn(*args, **kwargs):
             time.sleep(0.01)  # Small delay to simulate work
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
 
@@ -114,6 +117,7 @@ class TestFullPipeline:
             call_count[0] += 1
             if call_count[0] % 2 == 0:
                 raise Exception("Processing failed")
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = process_with_errors
 
@@ -226,6 +230,7 @@ class TestWorkerPoolIntegration:
         # Simulate variable processing times
         def variable_process(*args, **kwargs):
             time.sleep(0.01)  # Small delay to simulate work
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = variable_process
 

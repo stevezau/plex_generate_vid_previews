@@ -877,6 +877,7 @@ def run_processing(
         # Print failure summary at end of run
         log_failure_summary()
 
+        return_data = return_data or {}
         return_data["outcome"] = aggregate_outcome
 
         return return_data

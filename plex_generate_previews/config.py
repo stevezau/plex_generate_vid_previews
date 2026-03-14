@@ -1265,7 +1265,12 @@ def load_config(cli_args=None) -> Config:
         plex_bif_frame_interval, thumbnail_quality, plex_timeout, validation_errors
     )
     should_exit, thread_error = _validate_thread_config(
-        gpu_threads, cpu_threads, fallback_cpu_threads, ffmpeg_threads, gpu_selection, validation_errors
+        gpu_threads,
+        cpu_threads,
+        fallback_cpu_threads,
+        ffmpeg_threads,
+        gpu_selection,
+        validation_errors,
     )
     tmp_folder_created_by_us, _ = _validate_paths(tmp_folder, validation_errors)
 

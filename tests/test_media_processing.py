@@ -2496,9 +2496,7 @@ class TestFfmpegThreadFlags:
         # -threads:v should be present (video stream cap), but global -threads should not
         assert "-threads:v" in args
         # Check that the bare "-threads" flag (not "-threads:v") is absent
-        bare_threads = [
-            i for i, a in enumerate(args) if a == "-threads"
-        ]
+        bare_threads = [i for i, a in enumerate(args) if a == "-threads"]
         assert len(bare_threads) == 0, "CPU path should not have global -threads cap"
 
     @patch("plex_generate_previews.media_processing.MediaInfo")

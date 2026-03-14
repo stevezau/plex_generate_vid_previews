@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from plex_generate_previews.media_processing import ProcessingResult
 from plex_generate_previews.worker import Worker, WorkerPool
 
 
@@ -29,11 +30,13 @@ def _make_gpu_list(n: int = 1) -> List[Tuple[str, str, dict]]:
 def _fake_process_item(item_key, gpu, gpu_device, config, plex, progress_callback=None):
     """Simulate FFmpeg processing with a tiny sleep."""
     time.sleep(0.02)
+    return ProcessingResult.GENERATED
 
 
 def _slow_process_item(item_key, gpu, gpu_device, config, plex, progress_callback=None):
     """Simulate slow processing for shutdown/cancellation tests."""
     time.sleep(0.5)
+    return ProcessingResult.GENERATED
 
 
 def _very_slow_process_item(
@@ -49,6 +52,7 @@ def _very_slow_process_item(
             remaining_time=30.0,
         )
     time.sleep(2.3)
+    return ProcessingResult.GENERATED
 
 
 def _failing_process_item(
@@ -257,6 +261,7 @@ class TestWorkerPoolProcessing:
             if call_count["n"] % 2 == 0:
                 raise RuntimeError("fail on even")
             time.sleep(0.01)
+            return ProcessingResult.GENERATED
 
         with patch("plex_generate_previews.worker.process_item", alternating_process):
             pool.process_items_headless(items, mock_config, mock_plex)
@@ -294,6 +299,7 @@ class TestCPUFallbackQueue:
                 raise CodecNotSupportedError("HEVC not supported")
             # CPU worker -> success
             time.sleep(0.01)
+            return ProcessingResult.GENERATED
 
         items = [("/key/1", "Codec Test", "movie")]
 

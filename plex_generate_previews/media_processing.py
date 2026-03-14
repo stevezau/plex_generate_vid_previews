@@ -39,6 +39,18 @@ class ProcessingResult(Enum):
     FAILED = "failed"
     NO_MEDIA_PARTS = "no_media_parts"
 
+
+# When a media item has multiple parts, the most significant outcome wins.
+_RESULT_PRIORITY = {
+    ProcessingResult.GENERATED: 6,
+    ProcessingResult.FAILED: 5,
+    ProcessingResult.SKIPPED_FILE_NOT_FOUND: 4,
+    ProcessingResult.SKIPPED_INVALID_HASH: 3,
+    ProcessingResult.SKIPPED_EXCLUDED: 2,
+    ProcessingResult.SKIPPED_BIF_EXISTS: 1,
+    ProcessingResult.NO_MEDIA_PARTS: 0,
+}
+
 # If FFmpeg produces no progress output for this many seconds, the process is
 # killed to avoid hanging the worker indefinitely (e.g. unresponsive NAS).
 FFMPEG_STALL_TIMEOUT_SEC = 300
@@ -1579,17 +1591,6 @@ def process_item(
             }
             logger.error(f"Request headers: {safe_headers}")
         return ProcessingResult.FAILED
-
-    # Priority order for choosing the "most significant" result across parts.
-    _RESULT_PRIORITY = {
-        ProcessingResult.GENERATED: 6,
-        ProcessingResult.FAILED: 5,
-        ProcessingResult.SKIPPED_FILE_NOT_FOUND: 4,
-        ProcessingResult.SKIPPED_INVALID_HASH: 3,
-        ProcessingResult.SKIPPED_EXCLUDED: 2,
-        ProcessingResult.SKIPPED_BIF_EXISTS: 1,
-        ProcessingResult.NO_MEDIA_PARTS: 0,
-    }
 
     best_result = ProcessingResult.NO_MEDIA_PARTS
 

@@ -518,9 +518,7 @@ class JobManager:
                 )
             return job
 
-    def set_job_outcome(
-        self, job_id: str, outcome: Dict[str, int]
-    ) -> Optional["Job"]:
+    def set_job_outcome(self, job_id: str, outcome: Dict[str, int]) -> Optional["Job"]:
         """Store the processing outcome breakdown on a job.
 
         Args:

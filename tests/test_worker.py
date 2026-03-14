@@ -11,7 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.media_processing import CodecNotSupportedError
+from plex_generate_previews.media_processing import (
+    CodecNotSupportedError,
+    ProcessingResult,
+)
 from plex_generate_previews.worker import Worker, WorkerPool
 
 
@@ -49,7 +52,7 @@ class TestWorker:
         plex = MagicMock()
 
         # Mock process_item to return quickly
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
 
         worker.assign_task(
             "test_key",
@@ -86,7 +89,7 @@ class TestWorker:
         config = MagicMock()
         plex = MagicMock()
 
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
 
         worker.assign_task(
             "test_key", config, plex, media_title="Test", media_type="movie"
@@ -189,6 +192,7 @@ class TestWorker:
         def mock_process_fn(*args, **kwargs):
             call_count[0] += 1
             time.sleep(0.1)  # Longer sleep to ensure thread is alive when checked
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
 
@@ -401,7 +405,7 @@ class TestWorkerPool:
     def test_worker_pool_process_items(self, mock_process):
         """Test processing items with worker pool."""
         # Track if mock was called
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
 
         selected_gpus = []
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=selected_gpus)
@@ -486,7 +490,10 @@ class TestWorkerPool:
     @patch("plex_generate_previews.worker.process_item")
     def test_dynamic_remove_does_not_stall_completion(self, mock_process):
         """Dynamic worker removal should not trap processing at 100%."""
-        mock_process.side_effect = lambda *args, **kwargs: time.sleep(0.01)
+        mock_process.side_effect = lambda *args, **kwargs: (
+            time.sleep(0.01),
+            ProcessingResult.GENERATED,
+        )[-1]
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
         config = MagicMock()
         plex = MagicMock()
@@ -517,7 +524,10 @@ class TestWorkerPool:
     @patch("plex_generate_previews.worker.process_item")
     def test_dynamic_gpu_removal_does_not_stall_completion(self, mock_process):
         """Dynamic GPU worker removal during active processing must not stall at 100%."""
-        mock_process.side_effect = lambda *args, **kwargs: time.sleep(0.01)
+        mock_process.side_effect = lambda *args, **kwargs: (
+            time.sleep(0.01),
+            ProcessingResult.GENERATED,
+        )[-1]
         selected_gpus = [
             ("NVIDIA", "cuda", {"name": "GPU0"}),
             ("NVIDIA", "cuda", {"name": "GPU1"}),
@@ -555,7 +565,7 @@ class TestWorkerPool:
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):
         """Pause check should delay task dispatch until resumed."""
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         plex = MagicMock()
@@ -585,7 +595,7 @@ class TestWorkerPool:
     @patch("plex_generate_previews.worker.process_item")
     def test_no_dispatch_while_paused(self, mock_process):
         """No new task is assigned while pause_check returns True; first assignment after unpause."""
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         plex = MagicMock()
@@ -629,7 +639,7 @@ class TestWorkerPool:
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_stats_are_per_library(self, mock_process):
         """Returned processing stats should be scoped to one library call."""
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
@@ -671,6 +681,7 @@ class TestWorkerPool:
         # Simulate slow processing
         def slow_process(*args, **kwargs):
             time.sleep(0.05)
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = slow_process
 
@@ -707,6 +718,7 @@ class TestWorkerPool:
             call_count[0] += 1
             if call_count[0] % 2 == 0:
                 raise Exception("Processing failed")
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = failing_process
 
@@ -735,7 +747,7 @@ class TestWorkerPool:
     @patch("plex_generate_previews.media_processing.process_item")
     def test_worker_pool_progress_updates(self, mock_process):
         """Test that progress callbacks work correctly."""
-        mock_process.return_value = None
+        mock_process.return_value = ProcessingResult.GENERATED
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
 
@@ -783,7 +795,7 @@ class TestWorkerPool:
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported by GPU")
             # Second call from CPU worker - succeed
-            return None
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
 
@@ -836,7 +848,7 @@ class TestWorkerPool:
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported")
             # CPU workers succeed
-            return None
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
 
@@ -882,7 +894,7 @@ class TestWorkerPool:
             # GPU worker raises codec error
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported")
-            return None
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
 
@@ -922,7 +934,7 @@ class TestWorkerProgressCount:
             time.sleep(0.01)
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported by GPU")
-            return None
+            return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
 
@@ -981,6 +993,7 @@ class TestWorkerProgressCount:
 
         # Second task: succeed normally → requeued_to_cpu should reset
         mock_process.side_effect = None
+        mock_process.return_value = ProcessingResult.GENERATED
         worker.assign_task(
             "key2",
             config,

@@ -321,6 +321,7 @@ class Worker:
                         ctx_logger.error(
                             f"Failed to add {item_key} to fallback queue: {queue_error}"
                         )
+                        self.outcome_counts["failed"] += 1
                         self.failed += 1
                 else:
                     if config.cpu_threads == 0 and fallback_threads == 0:
@@ -329,6 +330,7 @@ class Worker:
                             "(CPU_THREADS=0 and FALLBACK_CPU_THREADS=0); "
                             f"skipping {display_name}"
                         )
+                    self.outcome_counts["failed"] += 1
                     self.failed += 1
                 # Do NOT mark as completed here - CPU worker will mark it when actually processed
             else:
@@ -339,11 +341,13 @@ class Worker:
                 ctx_logger.error(
                     "Codec errors should not occur on CPU workers - file may be corrupted"
                 )
+                self.outcome_counts["failed"] += 1
                 self.failed += 1
         except Exception as e:
             ctx_logger.error(
                 f"{self.display_name} failed to process {display_name}: {e}"
             )
+            self.outcome_counts["failed"] += 1
             self.failed += 1
 
     def check_completion(self) -> bool:

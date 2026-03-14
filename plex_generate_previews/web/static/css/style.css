@@ -97,6 +97,12 @@ body {
     color: #000;
 }
 
+/* Tooltip content: preserve newlines for multi-line outcome breakdowns */
+.tooltip-inner {
+    white-space: pre-line;
+    text-align: left;
+}
+
 /* Current job card */
 #currentJobCard .progress-info {
     display: flex;

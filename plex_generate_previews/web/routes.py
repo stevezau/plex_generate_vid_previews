@@ -2388,23 +2388,15 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                         # Detect misconfigured path mappings from outcome data
                         if outcome:
-                            not_found = outcome.get(
-                                "skipped_file_not_found", 0
-                            )
+                            not_found = outcome.get("skipped_file_not_found", 0)
                             generated = outcome.get("generated", 0)
                             total_outcome = sum(outcome.values())
-                            if (
-                                total_outcome > 0
-                                and not_found > 0
-                                and generated == 0
-                            ):
+                            if total_outcome > 0 and not_found > 0 and generated == 0:
                                 msg = (
                                     f"{not_found} of {total_outcome} items skipped "
                                     "(file not found locally) — check path mapping configuration"
                                 )
-                                job_manager.add_log(
-                                    job_id, f"WARNING - {msg}"
-                                )
+                                job_manager.add_log(job_id, f"WARNING - {msg}")
                                 error_parts.append(msg)
 
                         if spawned_retry_id:
