@@ -446,6 +446,22 @@ Yes! Set `--gpu-threads 0` and `--cpu-threads 4` (or higher) for CPU-only proces
 - **Web mode** (default): runs a dashboard at port 8080 for managing jobs and schedules
 - **CLI mode** (`--cli`): runs one-time processing and exits
 
+**Is Docker required? Is there a standalone .exe?**
+
+Yes, Docker is required. There is no standalone executable. See [Getting Started](getting-started.md) for Docker installation and setup.
+
+**Does Plex need to run in Docker too?**
+
+No. Plex can run bare-metal, in Docker, or any other way. This tool just needs network access to the Plex API and read/write access to the Plex application data directory (where BIF files are stored).
+
+**Can I run this on a different machine than my Plex server?**
+
+Yes, as long as the tool can reach the Plex API over the network and both machines have access to the media files and Plex config directory (e.g. via NFS or SMB mounts). See [Networking](getting-started.md#networking) for setup details.
+
+**Does this work with Jellyfin or Emby?**
+
+No. This tool is Plex-only — it generates Plex-specific BIF files and uses the Plex API to discover libraries and media items.
+
 ### GPUs
 
 **How do I know which GPUs are detected?**
@@ -466,6 +482,21 @@ Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-select
 | Intel iGPU | Great for low-power setups, common on Unraid |
 | AMD | Good VAAPI support on Linux |
 | CPU-only | Works everywhere, slower |
+
+### HDR / Tone Mapping
+
+**Does it handle HDR content correctly?**
+
+Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating thumbnails:
+
+| Format | Status |
+|--------|--------|
+| HDR10 | Fully tone mapped |
+| HLG | Fully tone mapped |
+| Dolby Vision Profile 7/8 (with HDR10 compatible base layer) | Fully tone mapped |
+| Dolby Vision Profile 5 (no backward-compatible layer) | Supported via `libplacebo` ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172)) |
+
+Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
 
 ### Performance
 
@@ -503,6 +534,14 @@ Path mapping issue. See [Path Mappings](reference.md#path-mappings).
 
 Use [Authentication Token](getting-started.md#authentication-token).
 
+**Does GPU passthrough work with Docker Desktop on Windows?**
+
+Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, use the CLI or run natively with D3D11VA instead of Docker.
+
+**Windows: paths in config must use forward slashes**
+
+On Windows, use forward slashes (`/`) in all path configuration (environment variables, `.env` files, CLI flags). Backslashes (`\`) will cause path resolution failures.
+
 ### Processing
 
 **Can I process specific libraries only?**
@@ -531,6 +570,18 @@ The ETA calculation is designed to be **accurate, not fast**:
 4. **During processing**: ETA counts down and adjusts in real-time as processing rate varies
 
 Early ETA guesses based on incomplete data are wildly inaccurate. The "Calculating..." phase filters out this noise.
+
+**What is the Sonarr/Radarr path column for?**
+
+Only relevant if you use [webhook integration](guides.md#webhook-integration). When Sonarr/Radarr fire a webhook, they include the file path as *they* see it inside their container, which may differ from the path inside this tool's container. The path column translates between them. For example:
+
+| Container | Might see the file as |
+|-----------|----------------------|
+| Plex | `/data/tv/Show/episode.mkv` |
+| Sonarr | `/tv/Show/episode.mkv` |
+| This tool | `/mnt/media/tv/Show/episode.mkv` |
+
+If you are not using webhooks, or all containers use the same media paths, leave it blank.
 
 ---
 
