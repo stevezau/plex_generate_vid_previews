@@ -43,6 +43,8 @@ docker run -d \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
+Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
+
 > [!NOTE]
 > No environment variables are required for first-time setup. Plex connection, libraries, GPU/CPU threads, and path mappings are all configured in the Setup Wizard and **Settings**. Environment variables are optional overrides (see [Reference](reference.md)).
 
@@ -501,7 +503,7 @@ See `.devcontainer/` for the full configuration.
 
 **Don't Use `init: true`**
 
-This container uses s6-overlay. Adding `init: true` in docker-compose will break it.
+This container uses s6-overlay (a built-in process manager). Adding `init: true` in docker-compose conflicts with it and will prevent the container from starting.
 
 **Use IP address for Plex when needed**
 

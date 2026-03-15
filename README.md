@@ -60,6 +60,7 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 | **Docker Ready** | Pre-built images with GPU support |
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
+| **Smart Skipping** | Automatically skips files that already have thumbnails |
 | **Radarr/Sonarr** | Webhook integration for auto-processing on import |
 
 ---
@@ -91,6 +92,8 @@ docker run -d \
   -v /path/to/app/config:/config:rw \
   stevezzau/plex_generate_vid_previews:latest
 ```
+
+Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
 
 Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard.
 

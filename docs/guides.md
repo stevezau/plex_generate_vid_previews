@@ -439,7 +439,7 @@ Yes! Windows supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD
 
 **Can I use this without a GPU?**
 
-Yes! Set `--gpu-threads 0` and `--cpu-threads 4` (or higher) for CPU-only processing.
+Yes! In **Settings**, set **GPU Workers** to `0` and **CPU Workers** to your desired value (e.g. `4` or `8`).
 
 **What's the difference between web mode and CLI mode?**
 
@@ -448,7 +448,7 @@ Yes! Set `--gpu-threads 0` and `--cpu-threads 4` (or higher) for CPU-only proces
 
 **Is Docker required? Is there a standalone .exe?**
 
-Yes, Docker is required. There is no standalone executable. See [Getting Started](getting-started.md) for Docker installation and setup.
+Docker is the recommended and supported way to run this tool. There is no standalone executable. Advanced users can install from source on Linux (requires Python 3.10+, FFmpeg, and mediainfo), but this is not officially supported. See [Getting Started](getting-started.md) for Docker setup.
 
 **Does Plex need to run in Docker too?**
 
@@ -524,7 +524,7 @@ Lower numbers = higher quality but larger file sizes.
 
 **Why does my container fail to start?**
 
-Most common cause: using `init: true` in docker-compose. Remove it — this container uses s6-overlay.
+Most common cause: using `init: true` in docker-compose. Remove it -- this container uses s6-overlay (a built-in process manager) and `init: true` conflicts with it.
 
 **Why can't the container find my files?**
 
