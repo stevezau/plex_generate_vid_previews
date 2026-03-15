@@ -158,7 +158,7 @@ plex_generate_previews/
 └── web/                   # Flask web app
     ├── wsgi.py            # Gunicorn entry point
     ├── app.py             # App factory, SocketIO init
-    ├── routes.py          # HTTP routes + API endpoints
+    ├── routes/            # HTTP routes + API endpoints (modular package)
     ├── auth.py            # Token authentication
     ├── jobs.py            # Job state management + SocketIO events
     ├── settings_manager.py# Persistent settings (JSON)
@@ -171,7 +171,7 @@ plex_generate_previews/
 
 ### Adding a New API Endpoint
 
-1. Add route in `web/routes.py`:
+1. Add route in the appropriate `web/routes/api_*.py` module:
    ```python
    @api.route('/new-endpoint')
    @api_token_required

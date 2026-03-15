@@ -6,10 +6,11 @@ temporary directories, and helper functions for mocking FFmpeg and Plex.
 """
 
 import os
-import pytest
 import tempfile
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
 
 
 @pytest.fixture

@@ -8,8 +8,9 @@ XSS mitigation, and secret file permissions.
 import json
 import os
 import stat
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.fixture
@@ -131,7 +132,7 @@ class TestPathTraversalPrevention:
 
         # Set PLEX_DATA_ROOT to tmp_path so the path is allowed
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
 
         # Path with traversal components should be resolved
@@ -157,7 +158,7 @@ class TestPathTraversalPrevention:
         outside.mkdir()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(allowed_root)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(allowed_root)
         )
 
         response = client.post(
@@ -180,7 +181,7 @@ class TestPathTraversalPrevention:
         secret.mkdir()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(allowed_root)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(allowed_root)
         )
 
         response = client.post(
@@ -217,7 +218,7 @@ class TestInformationExposurePrevention:
     def test_get_jobs_error_no_leak(self, client, auth_headers):
         """Error in get_jobs does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.get_job_manager",
+            "plex_generate_previews.web.routes.api_jobs.get_job_manager",
             side_effect=RuntimeError("Database connection refused on port 5432"),
         ):
             response = client.get("/api/jobs", headers=auth_headers)
@@ -229,7 +230,7 @@ class TestInformationExposurePrevention:
     def test_get_worker_statuses_error_no_leak(self, client, auth_headers):
         """Error in get_worker_statuses does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.get_job_manager",
+            "plex_generate_previews.web.routes.api_jobs.get_job_manager",
             side_effect=RuntimeError("Internal memory error at 0xdeadbeef"),
         ):
             response = client.get("/api/jobs/workers", headers=auth_headers)
@@ -240,7 +241,7 @@ class TestInformationExposurePrevention:
     def test_get_job_stats_error_no_leak(self, client, auth_headers):
         """Error in get_job_stats does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.get_job_manager",
+            "plex_generate_previews.web.routes.api_jobs.get_job_manager",
             side_effect=RuntimeError("SQLAlchemy pool overflow"),
         ):
             response = client.get("/api/jobs/stats", headers=auth_headers)
@@ -251,7 +252,7 @@ class TestInformationExposurePrevention:
     def test_get_system_status_error_no_leak(self, client, auth_headers):
         """Error in get_system_status does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.get_job_manager",
+            "plex_generate_previews.web.routes.api_system.get_job_manager",
             side_effect=RuntimeError(
                 "nvidia-smi binary not found at /usr/bin/nvidia-smi"
             ),

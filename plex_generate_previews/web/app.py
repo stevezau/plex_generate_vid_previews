@@ -1,5 +1,4 @@
-"""
-Flask application factory for the web interface.
+"""Flask application factory for the web interface.
 
 Creates and configures the Flask application with SocketIO support.
 """
@@ -30,8 +29,7 @@ csrf = CSRFProtect()
 
 
 def run_scheduled_job(library_id=None, library_name="", config=None):
-    """
-    Callback for running scheduled jobs.
+    """Callback for running scheduled jobs.
 
     Must be at module level (not inside create_app) so APScheduler
     can pickle it for the SQLAlchemy jobstore.
@@ -40,6 +38,7 @@ def run_scheduled_job(library_id=None, library_name="", config=None):
         library_id: Plex library section ID
         library_name: Human-readable library name
         config: Job configuration dict
+
     """
     # Get job manager - uses singleton pattern
     job_manager = get_job_manager()
@@ -64,8 +63,7 @@ def run_scheduled_job(library_id=None, library_name="", config=None):
 
 
 def get_cors_origins() -> str:
-    """
-    Get CORS allowed origins from environment.
+    """Get CORS allowed origins from environment.
 
     Defaults to ``"*"`` (allow all) because this tool is typically accessed
     over a LAN via IP address, Docker bridge, or hostname — not just
@@ -77,6 +75,7 @@ def get_cors_origins() -> str:
 
     Returns:
         CORS origins string or ``"*"``
+
     """
     explicit = os.environ.get("CORS_ORIGINS")
     if explicit:
@@ -95,13 +94,13 @@ def _derive_secret(seed: bytes, config_dir: str) -> str:
 
     Returns:
         Hex-encoded derived secret key.
+
     """
     return hmac.new(seed, config_dir.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def get_or_create_flask_secret(config_dir: str) -> str:
-    """
-    Get Flask secret key from environment or persistent seed file.
+    """Get Flask secret key from environment or persistent seed file.
 
     The seed file stores random bytes — *not* the secret itself.
     The actual secret is derived at runtime via HMAC-SHA256(seed, config_dir)
@@ -117,6 +116,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
 
     Returns:
         Flask secret key string
+
     """
     # Check environment variable first
     env_secret = os.environ.get("FLASK_SECRET_KEY")
@@ -193,14 +193,14 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
 
 
 def create_app(config_dir: str = None) -> Flask:
-    """
-    Create and configure the Flask application.
+    """Create and configure the Flask application.
 
     Args:
         config_dir: Configuration directory path (default: /config or CONFIG_DIR env)
 
     Returns:
         Configured Flask application
+
     """
     if config_dir is None:
         config_dir = os.environ.get("CONFIG_DIR", "/config")
@@ -392,6 +392,14 @@ def create_app(config_dir: str = None) -> Flask:
 
         return None
 
+    @app.after_request
+    def set_security_headers(response):
+        """Add standard security headers to every response."""
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
+
     # Start scheduler
     schedule_manager.start()
 
@@ -404,7 +412,7 @@ def create_app(config_dir: str = None) -> Flask:
             if schedule_manager.scheduler.running:
                 schedule_manager.scheduler.shutdown(wait=False)
         except Exception:
-            pass
+            logger.debug("Scheduler shutdown error during exit", exc_info=True)
 
     atexit.register(_shutdown_scheduler)
 
@@ -420,8 +428,7 @@ def create_app(config_dir: str = None) -> Flask:
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
-    """
-    Run the web server with SocketIO.
+    """Run the web server with SocketIO.
 
     In production (Docker), use gunicorn via ``wrapper.sh`` instead.
     This function is kept for local development and tests.
@@ -430,6 +437,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
         host: Host to bind to
         port: Port to listen on
         debug: Enable debug mode
+
     """
     app = create_app()
 

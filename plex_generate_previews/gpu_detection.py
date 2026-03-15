@@ -1,18 +1,18 @@
-"""
-GPU detection for video processing acceleration.
+"""GPU detection for video processing acceleration.
 
 Detects available GPU hardware and returns appropriate configuration
 for FFmpeg hardware acceleration. Supports NVIDIA, AMD, Intel, Apple (macOS), and Windows GPUs.
 """
 
 import os
-import subprocess
 import platform
 import re
-from typing import Tuple, Optional, List
+import subprocess
+from typing import List, Optional, Tuple
+
 from loguru import logger
 
-from .utils import is_windows, is_macos
+from .utils import is_macos, is_windows
 
 # Minimum required FFmpeg version
 MIN_FFMPEG_VERSION = (7, 0, 0)  # FFmpeg 7.0.0+ for better hardware acceleration support
@@ -78,11 +78,11 @@ DRIVER_VENDOR_MAP = {
 
 
 def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
-    """
-    Get FFmpeg version as a tuple of integers.
+    """Get FFmpeg version as a tuple of integers.
 
     Returns:
         Optional[Tuple[int, int, int]]: Version tuple (major, minor, patch) or None if failed
+
     """
     try:
         result = subprocess.run(
@@ -152,11 +152,11 @@ def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
 
 
 def _check_ffmpeg_version() -> bool:
-    """
-    Check if FFmpeg version meets minimum requirements.
+    """Check if FFmpeg version meets minimum requirements.
 
     Returns:
         bool: True if version is sufficient, False otherwise
+
     """
     version = _get_ffmpeg_version()
     if version is None:
@@ -179,11 +179,11 @@ def _check_ffmpeg_version() -> bool:
 
 
 def _get_ffmpeg_hwaccels() -> List[str]:
-    """
-    Get list of available FFmpeg hardware accelerators.
+    """Get list of available FFmpeg hardware accelerators.
 
     Returns:
         List[str]: Available hardware accelerators
+
     """
     try:
         result = subprocess.run(
@@ -211,14 +211,14 @@ def _get_ffmpeg_hwaccels() -> List[str]:
 
 
 def _is_hwaccel_available(hwaccel: str) -> bool:
-    """
-    Check if a specific hardware acceleration is available.
+    """Check if a specific hardware acceleration is available.
 
     Args:
         hwaccel: Hardware acceleration type to check
 
     Returns:
         bool: True if available, False otherwise
+
     """
     available_hwaccels = _get_ffmpeg_hwaccels()
     is_available = hwaccel in available_hwaccels
@@ -232,8 +232,7 @@ def _is_hwaccel_available(hwaccel: str) -> bool:
 
 
 def _check_device_access(device_path: str) -> tuple[bool, str]:
-    """
-    Check if a device is accessible (exists and readable).
+    """Check if a device is accessible (exists and readable).
 
     Args:
         device_path: Path to device to check
@@ -243,6 +242,7 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
             'accessible' - device exists and is readable
             'not_found' - device does not exist
             'permission_denied' - device exists but is not readable
+
     """
     if not os.path.exists(device_path):
         logger.debug(f"✗ Device does not exist: {device_path}")
@@ -277,8 +277,7 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
 def _test_hwaccel_functionality(
     hwaccel: str, device_path: Optional[str] = None
 ) -> bool:
-    """
-    Test if hardware acceleration actually works by running a simple FFmpeg command.
+    """Test if hardware acceleration actually works by running a simple FFmpeg command.
 
     Args:
         hwaccel: Hardware acceleration type to test
@@ -286,6 +285,7 @@ def _test_hwaccel_functionality(
 
     Returns:
         bool: True if hardware acceleration works, False otherwise
+
     """
     try:
         # For VAAPI, check device accessibility first
@@ -449,8 +449,7 @@ def _test_hwaccel_functionality(
 
 
 def _is_wsl2() -> bool:
-    """
-    Detect if running on Windows Subsystem for Linux 2 (WSL2).
+    """Detect if running on Windows Subsystem for Linux 2 (WSL2).
 
     WSL2 has limited hardware access due to virtualization, which can affect
     GPU detection via lspci. This function helps identify WSL2 environments
@@ -458,6 +457,7 @@ def _is_wsl2() -> bool:
 
     Returns:
         bool: True if running on WSL2, False otherwise
+
     """
     if platform.system() != "Linux":
         return False
@@ -479,11 +479,11 @@ def _is_wsl2() -> bool:
 
 
 def _get_apple_gpu_name() -> str:
-    """
-    Get Apple GPU name from system_profiler.
+    """Get Apple GPU name from system_profiler.
 
     Returns:
         str: GPU name or fallback description
+
     """
     try:
         result = subprocess.run(
@@ -512,11 +512,11 @@ def _get_apple_gpu_name() -> str:
 
 
 def _get_gpu_devices() -> List[Tuple[str, str, str]]:
-    """
-    Get all GPU devices with their render devices and driver information.
+    """Get all GPU devices with their render devices and driver information.
 
     Returns:
         List[Tuple[str, str, str]]: List of (card_name, render_device, driver) tuples
+
     """
     devices = []
     drm_dir = "/sys/class/drm"
@@ -588,14 +588,14 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
 
 
 def _get_gpu_vendor_from_driver(driver_name: str) -> str:
-    """
-    Map driver name to GPU vendor using DRIVER_VENDOR_MAP.
+    """Map driver name to GPU vendor using DRIVER_VENDOR_MAP.
 
     Args:
         driver_name: Linux driver name (e.g., 'i915', 'nvidia', 'amdgpu')
 
     Returns:
         str: GPU vendor ('NVIDIA', 'AMD', 'INTEL', 'ARM', 'VIDEOCORE', or 'UNKNOWN')
+
     """
     vendor = DRIVER_VENDOR_MAP.get(driver_name, "UNKNOWN")
 
@@ -630,8 +630,7 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
 
 
 def _detect_nvidia_via_nvidia_smi() -> str:
-    """
-    Detect NVIDIA GPU using nvidia-smi as fallback when driver detection fails.
+    """Detect NVIDIA GPU using nvidia-smi as fallback when driver detection fails.
 
     This is useful in WSL2 environments where lspci cannot detect GPU vendors
     due to hardware virtualization, but nvidia-smi works correctly via the
@@ -639,6 +638,7 @@ def _detect_nvidia_via_nvidia_smi() -> str:
 
     Returns:
         str: 'NVIDIA' if NVIDIA GPU is detected, 'UNKNOWN' otherwise
+
     """
     try:
         # Check if nvidia-smi is available and can query GPU information
@@ -686,14 +686,14 @@ def _detect_nvidia_via_nvidia_smi() -> str:
 
 
 def _detect_gpu_type_from_lspci() -> str:
-    """
-    Detect GPU type using lspci as fallback when driver detection fails.
+    """Detect GPU type using lspci as fallback when driver detection fails.
 
     This is a non-critical optional enhancement. If lspci is not available
     or fails for any reason, it safely returns 'UNKNOWN' without logging errors.
 
     Returns:
         str: GPU type ('AMD', 'INTEL', 'NVIDIA', 'ARM', or 'UNKNOWN')
+
     """
     try:
         result = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
@@ -781,8 +781,7 @@ def _log_system_info() -> None:
 
 
 def _parse_lspci_gpu_name(gpu_type: str) -> str:
-    """
-    Parse GPU name from lspci output to get a user-friendly GPU model name.
+    """Parse GPU name from lspci output to get a user-friendly GPU model name.
 
     This is a non-critical optional enhancement. If lspci is not available,
     it silently falls back to a generic name like "INTEL GPU" or "AMD GPU".
@@ -793,6 +792,7 @@ def _parse_lspci_gpu_name(gpu_type: str) -> str:
 
     Returns:
         str: GPU name or fallback description (never fails, always returns a string)
+
     """
     try:
         result = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
@@ -818,8 +818,7 @@ def _parse_lspci_gpu_name(gpu_type: str) -> str:
 
 
 def _get_pci_address_from_drm_device(gpu_device: str) -> Optional[str]:
-    """
-    Resolve a Linux DRM device (e.g., /dev/dri/renderD128) to its PCI address.
+    """Resolve a Linux DRM device (e.g., /dev/dri/renderD128) to its PCI address.
 
     This uses sysfs and works even when multiple GPUs share the same driver/API.
 
@@ -828,6 +827,7 @@ def _get_pci_address_from_drm_device(gpu_device: str) -> Optional[str]:
 
     Returns:
         Optional[str]: PCI address like '0000:06:00.0' if resolvable; otherwise None.
+
     """
     if not gpu_device or not gpu_device.startswith("/dev/dri/"):
         return None
@@ -853,14 +853,14 @@ def _get_pci_address_from_drm_device(gpu_device: str) -> Optional[str]:
 
 
 def _get_lspci_device_name_for_pci_address(pci_address: str) -> Optional[str]:
-    """
-    Get a user-friendly GPU device name for a specific PCI address via lspci.
+    """Get a user-friendly GPU device name for a specific PCI address via lspci.
 
     Args:
         pci_address: PCI address like '0000:06:00.0'
 
     Returns:
         Optional[str]: Parsed device name, or None if lspci is unavailable or parsing fails.
+
     """
     if not pci_address:
         return None
@@ -888,8 +888,7 @@ def _get_lspci_device_name_for_pci_address(pci_address: str) -> Optional[str]:
 
 
 def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
-    """
-    Extract GPU model name from system.
+    """Extract GPU model name from system.
 
     Args:
         gpu_type: Type of GPU ('NVIDIA', 'AMD', 'INTEL', 'APPLE')
@@ -897,6 +896,7 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
 
     Returns:
         str: GPU model name or fallback description
+
     """
     try:
         if gpu_type == "NVIDIA":
@@ -945,8 +945,7 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
 def format_gpu_info(
     gpu_type: str, gpu_device: str, gpu_name: str, acceleration: str = None
 ) -> str:
-    """
-    Format GPU information for display.
+    """Format GPU information for display.
 
     Args:
         gpu_type: Type of GPU
@@ -956,6 +955,7 @@ def format_gpu_info(
 
     Returns:
         str: Formatted GPU description
+
     """
     # Use acceleration field if provided (more accurate than guessing from GPU type)
     if acceleration:
@@ -984,8 +984,7 @@ def format_gpu_info(
 def _test_acceleration_method(
     vendor: str, acceleration: str, device_path: Optional[str] = None
 ) -> bool:
-    """
-    Test if a specific acceleration method works for a GPU vendor.
+    """Test if a specific acceleration method works for a GPU vendor.
 
     Args:
         vendor: GPU vendor ('NVIDIA', 'AMD', 'INTEL', etc.)
@@ -994,6 +993,7 @@ def _test_acceleration_method(
 
     Returns:
         bool: True if acceleration method works
+
     """
     accel_lower = acceleration.lower()
 
@@ -1032,11 +1032,11 @@ def _test_acceleration_method(
 
 
 def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
-    """
-    Detect Linux GPUs from /dev/dri devices.
+    """Detect Linux GPUs from /dev/dri devices.
 
     Returns:
         List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
+
     """
     detected_gpus = []
     detected_vendors = set()  # Track which vendors we've already detected
@@ -1230,11 +1230,11 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
 
 
 def _detect_windows_gpus() -> List[Tuple[str, str, dict]]:
-    """
-    Detect Windows GPUs using D3D11VA.
+    """Detect Windows GPUs using D3D11VA.
 
     Returns:
         List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
+
     """
     detected_gpus = []
 
@@ -1260,11 +1260,11 @@ def _detect_windows_gpus() -> List[Tuple[str, str, dict]]:
 
 
 def _detect_macos_gpus() -> List[Tuple[str, str, dict]]:
-    """
-    Detect macOS GPUs using VideoToolbox.
+    """Detect macOS GPUs using VideoToolbox.
 
     Returns:
         List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
+
     """
     detected_gpus = []
 
@@ -1288,8 +1288,7 @@ def _detect_macos_gpus() -> List[Tuple[str, str, dict]]:
 
 
 def detect_all_gpus() -> List[Tuple[str, str, dict]]:
-    """
-    Detect all available GPU hardware using FFmpeg capability detection.
+    """Detect all available GPU hardware using FFmpeg capability detection.
 
     Checks FFmpeg's available hardware acceleration capabilities and returns
     all working GPUs instead of just the first one.
@@ -1299,6 +1298,7 @@ def detect_all_gpus() -> List[Tuple[str, str, dict]]:
             - gpu_type: 'NVIDIA', 'AMD', 'INTEL', 'APPLE', 'WINDOWS_GPU'
             - gpu_device: Device path or info string
             - gpu_info_dict: Dictionary with GPU details (name, vram, etc.)
+
     """
     logger.debug("=== Starting Multi-GPU Detection ===")
     _log_system_info()

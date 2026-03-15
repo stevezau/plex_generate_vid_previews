@@ -1,5 +1,4 @@
-"""
-Version check module.
+"""Version check module.
 
 Behavior:
 - Dev Docker image (GIT_BRANCH and GIT_SHA set): compare baked commit to GitHub
@@ -11,15 +10,16 @@ Behavior:
 import os
 import re
 import subprocess
-import requests
 from typing import Optional, Tuple
+
+import requests
 from loguru import logger
+
 from .utils import is_docker_environment
 
 
 def get_current_version() -> str:
-    """
-    Get the current version from package metadata.
+    """Get the current version from package metadata.
 
     Priority order:
     1. Local _version.py (when running from source)
@@ -28,31 +28,28 @@ def get_current_version() -> str:
 
     Returns:
         str: Current version string (e.g., "2.1.2")
+
     """
     try:
-        # First, try to get version from local _version.py (running from source)
         from . import __version__
 
         return __version__
-    except Exception:
+    except (ImportError, AttributeError):
         pass
 
     try:
-        # Fall back to installed package metadata (pip install)
         import importlib.metadata
 
         return importlib.metadata.version("plex-generate-previews")
     except Exception:
-        pass
+        logger.debug("importlib.metadata version lookup failed", exc_info=True)
 
-    # Final fallback - return a default version
     logger.debug("Could not determine current version, using fallback")
     return "0.0.0"
 
 
 def parse_version(version_str: str) -> Tuple[int, int, int]:
-    """
-    Parse a semantic version string into comparable tuple.
+    """Parse a semantic version string into comparable tuple.
 
     Args:
         version_str: Version string like "2.0.0", "1.5.3", "2.1.1.post14"
@@ -62,6 +59,7 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
 
     Raises:
         ValueError: If version string format is invalid
+
     """
     # Remove any 'v' prefix and extract version parts
     clean_version = version_str.lstrip("v")
@@ -81,11 +79,11 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
 
 
 def get_latest_github_release() -> Optional[str]:
-    """
-    Query GitHub API for the latest release version.
+    """Query GitHub API for the latest release version.
 
     Returns:
         str: Latest release version string, or None if failed
+
     """
     try:
         # GitHub API endpoint for latest release
@@ -134,8 +132,7 @@ def get_latest_github_release() -> Optional[str]:
 
 
 def get_git_commit_sha() -> Optional[str]:
-    """
-    Get current Git commit SHA if running from a git checkout.
+    """Get current Git commit SHA if running from a git checkout.
 
     Checks in this order:
     1. Current working directory (if user ran from git checkout)
@@ -143,6 +140,7 @@ def get_git_commit_sha() -> Optional[str]:
 
     Returns:
         str: Full 40-char SHA of current commit, or None if not in git repo
+
     """
     # Try current working directory first (user might have cd'd into git repo)
     for check_dir in [os.getcwd(), os.path.dirname(__file__)]:
@@ -166,8 +164,7 @@ def get_git_commit_sha() -> Optional[str]:
 
 
 def get_git_branch() -> Optional[str]:
-    """
-    Get current Git branch if running from a git checkout.
+    """Get current Git branch if running from a git checkout.
 
     Checks in this order:
     1. Current working directory (if user ran from git checkout)
@@ -175,6 +172,7 @@ def get_git_branch() -> Optional[str]:
 
     Returns:
         str: Branch name (e.g., "main", "dev"), or None if not in git repo
+
     """
     # Try current working directory first (user might have cd'd into git repo)
     for check_dir in [os.getcwd(), os.path.dirname(__file__)]:
@@ -198,14 +196,14 @@ def get_git_branch() -> Optional[str]:
 
 
 def get_branch_head_sha(branch: str) -> Optional[str]:
-    """
-    Query GitHub API for the latest commit SHA on a branch.
+    """Query GitHub API for the latest commit SHA on a branch.
 
     Args:
         branch: Branch name (e.g., "dev")
 
     Returns:
         str: Full 40-char SHA of branch head, or None if failed
+
     """
     try:
         url = f"https://api.github.com/repos/stevezau/plex_generate_vid_previews/branches/{branch}"
@@ -241,15 +239,13 @@ def get_branch_head_sha(branch: str) -> Optional[str]:
 
 
 def check_for_updates() -> None:
-    """
-    Check for available updates and log appropriate messages.
+    """Check for available updates and log appropriate messages.
 
     Detection logic:
     1. Dev Docker: Check GIT_BRANCH + GIT_SHA env vars, compare commits
     2. Git checkout: Check for .git directory, compare commits on current branch
     3. Release/Pip/Zip: Compare package version with latest GitHub release
     """
-
     try:
         # Path 1: Dev Docker image - commit-aware check when metadata present
         git_branch = (os.environ.get("GIT_BRANCH") or "").strip()

@@ -12,8 +12,8 @@ from unittest.mock import patch
 import pytest
 
 from plex_generate_previews.web.app import (
-    _requeue_interrupted_on_startup,
     _derive_secret,
+    _requeue_interrupted_on_startup,
     get_cors_origins,
     get_or_create_flask_secret,
     run_scheduled_job,

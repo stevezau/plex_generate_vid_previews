@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from plex_generate_previews.config import normalize_path_mappings
-
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.settings_manager import reset_settings_manager
 
@@ -283,7 +282,7 @@ class TestJobsAPI:
 
     def test_create_job(self, client):
         """Test creating a job (mocking _start_job_async to avoid real processing)."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             resp = client.post(
                 "/api/jobs", headers=_api_headers(), json={"library_name": "Movies"}
             )
@@ -294,7 +293,7 @@ class TestJobsAPI:
 
     def test_create_job_ignores_credential_overrides(self, client):
         """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
-        with patch("plex_generate_previews.web.routes._start_job_async") as mock_start:
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
@@ -311,7 +310,7 @@ class TestJobsAPI:
         assert mock_start.call_args[0][0]  # job_id present
 
     def test_get_specific_job(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post(
                 "/api/jobs", headers=_api_headers(), json={"library_name": "TV"}
             )
@@ -325,7 +324,7 @@ class TestJobsAPI:
         assert resp.status_code == 404
 
     def test_cancel_job(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
@@ -335,7 +334,7 @@ class TestJobsAPI:
         assert any("Cancellation requested by user" in line for line in logs)
 
     def test_complete_job_does_not_override_cancelled_status(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -352,7 +351,7 @@ class TestJobsAPI:
         assert resp.get_json()["status"] == "cancelled"
 
     def test_delete_job(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         # Cancel first so it can be deleted (only non-running jobs)
@@ -372,7 +371,7 @@ class TestJobsAPI:
 
     def test_clear_jobs_with_status_filter(self, client):
         """Test clearing only specific statuses."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             r1 = client.post("/api/jobs", headers=_api_headers(), json={})
             r2 = client.post("/api/jobs", headers=_api_headers(), json={})
             r3 = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -400,7 +399,7 @@ class TestJobsAPI:
 
     def test_get_jobs_pagination(self, client):
         """Pagination returns correct slices and metadata."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             for _ in range(5):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -415,7 +414,7 @@ class TestJobsAPI:
 
     def test_get_jobs_pagination_last_page(self, client):
         """Last page may have fewer items than per_page."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             for _ in range(5):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -434,7 +433,7 @@ class TestJobsAPI:
 
     def test_get_jobs_unpaginated(self, client):
         """page=0 returns all jobs without pagination."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             for _ in range(3):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -450,7 +449,7 @@ class TestJobsAPI:
         from plex_generate_previews.web.jobs import get_job_manager
 
         jm = get_job_manager()
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             r1 = client.post("/api/jobs", headers=_api_headers(), json={})
             r2 = client.post("/api/jobs", headers=_api_headers(), json={})
             r3 = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -481,7 +480,7 @@ class TestJobsAPI:
         assert isinstance(data["workers"], list)
 
     def test_get_job_logs(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
@@ -493,7 +492,7 @@ class TestJobsAPI:
 
     def test_get_job_logs_returns_retention_flag_when_log_cleared(self, client, app):
         """When job exists but log file was removed by retention, API returns log_cleared_by_retention."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         from plex_generate_previews.web.jobs import get_job_manager
@@ -511,7 +510,7 @@ class TestJobsAPI:
 
     def test_pause_resume_job(self, client):
         """Per-job pause/resume routes delegate to global processing pause/resume."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -571,7 +570,7 @@ class TestJobsAPI:
             get_settings_manager().processing_paused = False
 
     def test_scale_workers_add_remove(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -611,7 +610,7 @@ class TestJobsAPI:
 
     def test_scale_workers_remove_busy_workers_returns_scheduled_removal(self, client):
         """Remove endpoint returns scheduled_removal when workers are busy (deferred removal)."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -644,7 +643,7 @@ class TestJobsAPI:
         self, client
     ):
         """Remove endpoint returns unavailable when requesting more than existing workers."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -693,7 +692,7 @@ class TestJobsAPI:
 
     def test_workers_add_global_success(self, client):
         """POST /api/workers/add delegates to running job pool."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -718,7 +717,7 @@ class TestJobsAPI:
 
     def test_workers_remove_global_success(self, client):
         """POST /api/workers/remove delegates to running job pool."""
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -759,8 +758,8 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(tmp_path)):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -798,8 +797,8 @@ class TestManualTriggerAPI:
         media_root = tmp_path / "media"
         media_root.mkdir()
 
-        with patch("plex_generate_previews.web.routes._start_job_async"):
-            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(media_root)):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(media_root)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -821,8 +820,8 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(tmp_path)):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -842,8 +841,8 @@ class TestManualTriggerAPI:
         f1.touch()
         f2.touch()
 
-        with patch("plex_generate_previews.web.routes._start_job_async"):
-            with patch("plex_generate_previews.web.routes.MEDIA_ROOT", str(tmp_path)):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -1044,7 +1043,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.config.load_config", return_value=mock_config
             ),
             patch(
-                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                "plex_generate_previews.media_processing._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1107,7 +1106,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.config.load_config", return_value=mock_config
             ),
             patch(
-                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                "plex_generate_previews.media_processing._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1168,7 +1167,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.config.load_config", return_value=mock_config
             ),
             patch(
-                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                "plex_generate_previews.media_processing._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1222,7 +1221,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.config.load_config", return_value=mock_config
             ),
             patch(
-                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                "plex_generate_previews.media_processing._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1271,7 +1270,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.config.load_config", return_value=mock_config
             ),
             patch(
-                "plex_generate_previews.web.routes._verify_tmp_folder_health",
+                "plex_generate_previews.media_processing._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1476,7 +1475,7 @@ class TestPathValidation:
         """New-format path_mappings: invalid local_prefix returns validation error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1507,7 +1506,7 @@ class TestPathValidation:
         """path_mappings row with null byte in local_prefix returns invalid path error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1534,7 +1533,7 @@ class TestPathValidation:
         """Legacy: only plex_videos_path_mapping set returns Local Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1556,7 +1555,7 @@ class TestPathValidation:
         """Legacy: only plex_local_videos_path_mapping set returns Plex Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1746,7 +1745,7 @@ class TestReprocessJob:
     """Test /api/jobs/<id>/reprocess endpoint."""
 
     def test_reprocess_completed_job(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post(
                 "/api/jobs", headers=_api_headers(), json={"library_name": "Movies"}
             )
@@ -1758,7 +1757,7 @@ class TestReprocessJob:
         jm.start_job(job_id)
         jm.complete_job(job_id)
 
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 201
         assert resp.get_json()["id"] != job_id
@@ -1768,7 +1767,7 @@ class TestReprocessJob:
         assert resp.status_code == 404
 
     def test_reprocess_running_job_rejected(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1790,7 +1789,7 @@ class TestWorkerScalingValidation:
     """Test worker scaling edge cases and validation."""
 
     def test_add_workers_zero_count_rejected(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1807,7 +1806,7 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_add_workers_invalid_type_rejected(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1824,7 +1823,7 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_add_workers_no_pool_returns_409(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1841,7 +1840,7 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 409
 
     def test_remove_workers_zero_count_rejected(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1858,7 +1857,7 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_global_add_workers_invalid_type(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1877,7 +1876,7 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_global_remove_workers_zero_count(self, client):
-        with patch("plex_generate_previews.web.routes._start_job_async"):
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
@@ -1909,7 +1908,7 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1926,7 +1925,7 @@ class TestValidatePathsBranches:
     ):
         """Plex directory missing Media subfolder."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1942,7 +1941,7 @@ class TestValidatePathsBranches:
         """Plex directory has Media but missing localhost subfolder."""
         (tmp_path / "Media").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1962,7 +1961,7 @@ class TestValidatePathsBranches:
         media_dir.mkdir(parents=True)
         (media_dir / "a").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1980,7 +1979,7 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1995,7 +1994,7 @@ class TestValidatePathsBranches:
         """Path traversal attempt is rejected."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -2012,7 +2011,7 @@ class TestValidatePathsBranches:
         """Legacy local_media_path with null byte is rejected via the path_mappings branch."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -2033,7 +2032,7 @@ class TestValidatePathsBranches:
     ):
         """Null byte in plex_config_folder is rejected."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -2102,7 +2101,7 @@ class TestPageRoutesAdditional:
 class TestLibrariesAPI:
     """Test /api/libraries endpoint."""
 
-    @patch("plex_generate_previews.web.routes._fetch_libraries_via_http")
+    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
     def test_get_libraries_with_settings(self, mock_fetch, client):
         """Libraries are fetched via HTTP when plex_url/token are set in settings."""
         from plex_generate_previews.web.settings_manager import get_settings_manager
@@ -2211,7 +2210,7 @@ class TestPlexTestConnection:
 class TestPlexLibrariesAPI:
     """Test /api/plex/libraries endpoint."""
 
-    @patch("plex_generate_previews.web.routes._fetch_libraries_via_http")
+    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
     def test_get_plex_libraries(self, mock_fetch, client):
         from plex_generate_previews.web.settings_manager import get_settings_manager
 

@@ -1,5 +1,4 @@
-"""
-Webhook endpoints for Radarr/Sonarr/Custom integration.
+"""Webhook endpoints for Radarr/Sonarr/Custom integration.
 
 Receives JSON POST payloads on media import, delays for Plex indexing,
 debounces rapid imports, then triggers a job that processes only the
@@ -49,8 +48,8 @@ def _authenticate_webhook(f):
                 )
                 if ":" in decoded:
                     _, token = decoded.split(":", 1)
-            except Exception:
-                pass
+            except (ValueError, UnicodeDecodeError):
+                logger.debug("Failed to decode Basic auth header")
 
         if not token:
             token = request.headers.get("X-Auth-Token", "")
@@ -159,6 +158,7 @@ def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:
 
     Returns:
         Series title with SxxExx suffix when episode data is present.
+
     """
     if not series_title:
         series_title = "Unknown"

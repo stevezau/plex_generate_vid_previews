@@ -1,5 +1,4 @@
-"""
-Worker classes for processing media items using threading.
+"""Worker classes for processing media items using threading.
 
 Provides Worker and WorkerPool classes that use threading instead of
 multiprocessing for better simplicity and performance with FFmpeg tasks.
@@ -53,8 +52,7 @@ class Worker:
         gpu_index: Optional[int] = None,
         gpu_name: Optional[str] = None,
     ):
-        """
-        Initialize a worker.
+        """Initialize a worker.
 
         Args:
             worker_id: Unique identifier for this worker
@@ -63,6 +61,7 @@ class Worker:
             gpu_device: GPU device path
             gpu_index: Index of the assigned GPU hardware
             gpu_name: Human-readable GPU name for display
+
         """
         self.worker_id = worker_id
         self.worker_type = worker_type
@@ -190,8 +189,7 @@ class Worker:
         job_id: Optional[str] = None,
         library_name: str = "",
     ) -> None:
-        """
-        Assign a new task to this worker.
+        """Assign a new task to this worker.
 
         Args:
             item_key: Plex media item key to process
@@ -204,6 +202,7 @@ class Worker:
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
             job_id: Optional job identifier for multi-job dispatch routing
             library_name: Library name the item belongs to
+
         """
         if self.is_busy:
             raise RuntimeError(f"{self.display_name} is already busy")
@@ -270,8 +269,7 @@ class Worker:
         progress_callback=None,
         cpu_fallback_queue=None,
     ) -> None:
-        """
-        Process a media item in the background thread.
+        """Process a media item in the background thread.
 
         Args:
             item_key: Plex media item key
@@ -279,6 +277,7 @@ class Worker:
             plex: Plex server instance
             progress_callback: Callback function for progress updates
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
+
         """
         register_job_thread()
 
@@ -377,11 +376,11 @@ class Worker:
             self.failed += 1
 
     def check_completion(self) -> bool:
-        """
-        Check if this worker has completed its current task.
+        """Check if this worker has completed its current task.
 
         Returns:
             bool: True if task completed, False if still running
+
         """
         if not self.is_busy:
             return False  # Worker is available, not completing
@@ -412,6 +411,7 @@ class Worker:
 
         Returns:
             Dict mapping outcome keys to their delta (usually 0 or 1).
+
         """
         return {
             key: self.outcome_counts.get(key, 0)
@@ -452,8 +452,7 @@ class Worker:
 
     @staticmethod
     def find_available(workers: List["Worker"]) -> Optional["Worker"]:
-        """
-        Find the first available worker.
+        """Find the first available worker.
 
         GPU workers are prioritized (they come first in the array).
 
@@ -462,6 +461,7 @@ class Worker:
 
         Returns:
             Worker: First available worker, or None if all are busy
+
         """
         for worker in workers:
             if worker.is_available():
@@ -479,14 +479,14 @@ class WorkerPool:
         selected_gpus: List[Tuple[str, str, dict]],
         fallback_cpu_workers: int = 0,
     ):
-        """
-        Initialize worker pool.
+        """Initialize worker pool.
 
         Args:
             gpu_workers: Number of GPU workers to create
             cpu_workers: Number of CPU workers to create
             selected_gpus: List of (gpu_type, gpu_device, gpu_info) tuples for GPU workers
             fallback_cpu_workers: Number of fallback-only CPU workers to create
+
         """
         self.workers = []
         self._workers_lock = threading.RLock()
@@ -588,6 +588,7 @@ class WorkerPool:
 
         Returns:
             {"removed": int, "scheduled": int, "unavailable": int}
+
         """
         if count <= 0:
             return {"removed": 0, "scheduled": 0, "unavailable": 0}
@@ -651,14 +652,14 @@ class WorkerPool:
         return retired
 
     def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
-        """
-        Find an available worker.
+        """Find an available worker.
 
         Args:
             cpu_only: If True, only look for CPU workers
 
         Returns:
             First available worker matching criteria, or None
+
         """
         with self._workers_lock:
             if cpu_only:
@@ -680,11 +681,11 @@ class WorkerPool:
             return None
 
     def _get_plex_media_info(self, plex, item_key: str) -> Tuple[str, str]:
-        """
-        Re-query Plex for media information if not available.
+        """Re-query Plex for media information if not available.
 
         Returns:
             Tuple of (media_title, media_type)
+
         """
         try:
             from .plex_client import retry_plex_call
@@ -704,13 +705,13 @@ class WorkerPool:
     def _assign_fallback_task(
         self, worker: "Worker", config: Config, plex, title_max_width: int
     ) -> bool:
-        """
-        Assign a task from fallback queue to a CPU worker.
+        """Assign a task from fallback queue to a CPU worker.
 
         The fallback queue contains 5-tuples: (job_id, item_key, title, type, library_name).
 
         Returns:
             True if task was assigned, False if queue was empty
+
         """
         try:
             fallback_item = self.cpu_fallback_queue.get_nowait()
@@ -749,11 +750,11 @@ class WorkerPool:
         plex,
         title_max_width: int,
     ) -> bool:
-        """
-        Assign a task from main queue to a worker.
+        """Assign a task from main queue to a worker.
 
         Returns:
             True if task was assigned, False if queue was empty
+
         """
         if not media_queue:
             return False
@@ -783,14 +784,14 @@ class WorkerPool:
         return True
 
     def _check_fallback_queue_empty(self) -> bool:
-        """
-        Check if fallback queue is empty without consuming items.
+        """Check if fallback queue is empty without consuming items.
 
         Uses qsize() for advisory check — acceptable since this is only
         used for exit-condition heuristics, not synchronization.
 
         Returns:
             True if queue is empty, False if it has items
+
         """
         return self.cpu_fallback_queue.qsize() == 0
 
@@ -809,6 +810,7 @@ class WorkerPool:
 
         Returns:
             Number of items drained.
+
         """
         drained = 0
         while not self.cpu_fallback_queue.empty():
@@ -845,8 +847,7 @@ class WorkerPool:
         title_max_width: int = 20,
         library_name: str = "",
     ) -> dict:
-        """
-        Process all media items using available workers with Rich progress display.
+        """Process all media items using available workers with Rich progress display.
 
         Uses dynamic task assignment - workers pull tasks as they become available.
 
@@ -859,6 +860,7 @@ class WorkerPool:
             main_task_id: ID of the main progress task to update
             title_max_width: Maximum width for title display
             library_name: Name of the library section being processed
+
         """
         # Create progress tasks for each worker in the worker progress instance
         for worker in self._snapshot_workers():
@@ -956,8 +958,7 @@ class WorkerPool:
         cancel_check=None,
         pause_check=None,
     ) -> dict:
-        """
-        Process all media items using available workers in headless mode (no Rich display).
+        """Process all media items using available workers in headless mode (no Rich display).
 
         Uses dynamic task assignment - workers pull tasks as they become available.
         This is used for web/background execution where Rich console is not available.
@@ -973,6 +974,7 @@ class WorkerPool:
             on_item_complete: Optional callback(display_name, title, success) when a worker finishes an item
             cancel_check: Optional callable returning True when processing should stop
             pause_check: Optional callable returning True when dispatch should pause
+
         """
         last_worker_update = time.time()
         last_progress_update = time.time()
@@ -1103,8 +1105,7 @@ class WorkerPool:
         cancel_check: Optional[Any] = None,
         pause_check: Optional[Any] = None,
     ) -> dict:
-        """
-        Core processing loop shared by process_items and process_items_headless.
+        """Core processing loop shared by process_items and process_items_headless.
 
         Handles queue management, task assignment, exit-condition checking, and
         adaptive sleeping. Progress reporting is delegated to the caller via callbacks.
@@ -1121,6 +1122,7 @@ class WorkerPool:
             on_item_complete: Optional. Called as on_item_complete(display_name, title, success)
                 when a worker finishes an item (not called for GPU→CPU handoffs; CPU completion is reported when CPU finishes).
             cancel_check: Optional callable returning True when processing should stop
+
         """
         media_queue = deque(media_items)  # O(1) popleft
         completed_tasks = 0

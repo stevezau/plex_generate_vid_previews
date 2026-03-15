@@ -16,7 +16,6 @@ import pytest
 from plex_generate_previews.media_processing import ProcessingResult
 from plex_generate_previews.worker import Worker, WorkerPool
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

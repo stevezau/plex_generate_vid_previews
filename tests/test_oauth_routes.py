@@ -5,6 +5,7 @@ Tests the OAuth authentication flow and settings API endpoints.
 """
 
 import json
+
 import pytest
 
 
@@ -248,7 +249,7 @@ class TestAuthTokenFunctions:
     def test_set_auth_token_success(self, mock_auth_config, monkeypatch):
         """Test setting a valid token succeeds."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from plex_generate_previews.web.auth import set_auth_token, get_auth_token
+        from plex_generate_previews.web.auth import get_auth_token, set_auth_token
 
         result = set_auth_token("my-new-secure-token")
         assert result["success"] is True

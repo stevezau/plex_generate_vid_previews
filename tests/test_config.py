@@ -5,8 +5,10 @@ Tests configuration loading, validation, path checking,
 FFmpeg detection, and environment-specific behavior.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from plex_generate_previews.config import (
     expand_path_mapping_candidates,
     get_config_value,

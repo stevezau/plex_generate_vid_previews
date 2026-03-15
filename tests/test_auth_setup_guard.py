@@ -1,6 +1,7 @@
 """Tests for @setup_or_auth_required decorator in web.auth."""
 
 import json
+
 import pytest
 
 from plex_generate_previews.web.settings_manager import get_settings_manager

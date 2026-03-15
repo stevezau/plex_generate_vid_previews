@@ -11,11 +11,12 @@ Tests Windows-specific functionality including:
 
 import os
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from plex_generate_previews.utils import sanitize_path, is_windows
 from plex_generate_previews.config import load_config
+from plex_generate_previews.utils import is_windows, sanitize_path
 
 
 class TestWindowsPlatformDetection:
@@ -189,8 +190,9 @@ class TestWindowsGPUValidation:
         self, mock_logger, mock_detect_gpus, mock_is_windows
     ):
         """Test that GPU threads work on Windows when GPU detected."""
-        from plex_generate_previews.cli import detect_and_select_gpus
         from types import SimpleNamespace
+
+        from plex_generate_previews.cli import detect_and_select_gpus
 
         # Simulate Windows GPU detected
         mock_detect_gpus.return_value = [
@@ -225,8 +227,9 @@ class TestWindowsGPUValidation:
         self, mock_logger, mock_detect_gpus, mock_is_windows
     ):
         """Test that when GPU threads requested but no GPU detected on Windows, it exits with error."""
-        from plex_generate_previews.cli import detect_and_select_gpus
         from types import SimpleNamespace
+
+        from plex_generate_previews.cli import detect_and_select_gpus
 
         # Simulate no GPU detected
         mock_detect_gpus.return_value = []

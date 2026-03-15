@@ -5,15 +5,16 @@ Comprehensive tests for multi-GPU detection, hwaccel testing,
 and device enumeration using extensive mocking.
 """
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from plex_generate_previews.gpu_detection import (
-    detect_all_gpus,
-    _is_hwaccel_available,
-    _test_hwaccel_functionality,
-    _test_acceleration_method,
-    _get_gpu_devices,
-    get_gpu_name,
     _get_ffmpeg_hwaccels,
+    _get_gpu_devices,
+    _is_hwaccel_available,
+    _test_acceleration_method,
+    _test_hwaccel_functionality,
+    detect_all_gpus,
+    get_gpu_name,
 )
 
 
@@ -758,6 +759,7 @@ class TestNvidiaSmiDetection:
     @patch("subprocess.run")
     def test_detect_nvidia_via_nvidia_smi_timeout(self, mock_run):
         from subprocess import TimeoutExpired
+
         from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
 
         mock_run.side_effect = TimeoutExpired("nvidia-smi", 5)
@@ -828,6 +830,7 @@ class TestLspciEdgeCases:
     @patch("subprocess.run")
     def test_lspci_timeout(self, mock_run):
         from subprocess import TimeoutExpired
+
         from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
 
         mock_run.side_effect = TimeoutExpired("lspci", 5)

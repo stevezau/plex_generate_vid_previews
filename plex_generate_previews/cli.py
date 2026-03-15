@@ -1,5 +1,4 @@
-"""
-Command-line interface for Plex Video Preview Generator.
+"""Command-line interface for Plex Video Preview Generator.
 
 Main entry point that orchestrates all components: configuration,
 GPU detection, Plex connection, and worker pool management.
@@ -33,8 +32,6 @@ from .plex_client import get_library_sections, get_media_items_by_paths, plex_se
 from .utils import (
     calculate_title_width,
     is_windows,
-)
-from .utils import (
     setup_working_directory as create_working_directory,
 )
 from .version_check import check_for_updates
@@ -48,6 +45,7 @@ class ApplicationState:
     """Global application state for signal handling and cleanup."""
 
     def __init__(self):
+        """Initialize application state."""
         self.config = None
         self.console = console
         self.shutting_down = False
@@ -94,9 +92,9 @@ class ApplicationState:
                 # Fallback: direct terminal escape sequence
                 try:
                     print("\033[?25h", end="", flush=True)
-                    print()  # Ensure we're on a new line
+                    print()
                 except Exception:
-                    pass
+                    logger.debug("Terminal cursor restore failed", exc_info=True)
 
         # Clean up working tmp folder if it exists
         try:
@@ -136,6 +134,7 @@ class AnimatedBarColumn(BarColumn):
         complete_style="red",
         finished_style="green",
     ):
+        """Initialize animated progress bar."""
         super().__init__(bar_width=bar_width, style=style)
         self.complete_style = complete_style
         self.finished_style = finished_style
@@ -189,6 +188,7 @@ class FFmpegDataColumn(ProgressColumn):
     """Custom column to display FFmpeg data for worker progress bars."""
 
     def render(self, task):
+        """Render FFmpeg data columns for a task."""
         # Get FFmpeg data from task fields
         frame = task.fields.get("frame", 0)
         fps = task.fields.get("fps", 0)
@@ -554,6 +554,7 @@ def run_processing(
         job_id: Optional job identifier for multi-job dispatch (web mode)
         on_dispatch_start: Optional callable invoked once before the first batch of items
             is dispatched (used by the web layer to transition PENDING -> RUNNING).
+
     """
     return_data = None
     try:
@@ -960,13 +961,11 @@ def run_processing(
         # Final terminal cleanup to ensure cursor is visible
         try:
             console.show_cursor(True)
-            # Force Rich to restore the terminal to its original state
             if hasattr(console, "_live"):
                 console._live = None
-            # Ensure we're on a fresh line
             console.print()
         except Exception:
-            pass
+            logger.debug("Console cursor restore failed", exc_info=True)
 
 
 def main() -> None:

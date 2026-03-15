@@ -12,7 +12,6 @@ Covers:
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-
 from plex_generate_previews.media_processing import ProcessingResult, process_item
 from plex_generate_previews.web.jobs import JobManager, JobProgress
 from plex_generate_previews.worker import Worker

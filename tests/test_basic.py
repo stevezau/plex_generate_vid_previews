@@ -4,7 +4,7 @@ Basic functionality tests for plex_generate_previews.
 
 import subprocess
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class TestBasicFunctionality:
@@ -12,8 +12,9 @@ class TestBasicFunctionality:
 
     def test_package_imports(self):
         """Test that the package can be imported."""
-        import plex_generate_previews
         import re
+
+        import plex_generate_previews
 
         assert hasattr(plex_generate_previews, "__version__")
         # Version should be in PEP 440 format (e.g., "2.0.0", "2.1.2.post0", "0.0.0+unknown", "2.3.1.dev5+g1234abc")
@@ -134,8 +135,8 @@ class TestGPUDetection:
     def test_ffmpeg_version_check(self):
         """Test FFmpeg version checking."""
         from plex_generate_previews.gpu_detection import (
-            _get_ffmpeg_version,
             _check_ffmpeg_version,
+            _get_ffmpeg_version,
         )
 
         # Test version parsing

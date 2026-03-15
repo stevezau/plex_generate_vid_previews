@@ -1,22 +1,22 @@
-"""
-Plex Media Server client and API interactions.
+"""Plex Media Server client and API interactions.
 
 Handles Plex server connection, XML parsing monkey patch for debugging,
 library querying, and duplicate location filtering.
 """
 
+import http.client
 import os
 import time
 import urllib.parse
-import http.client
 import xml.etree.ElementTree
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
+
 import requests
 import urllib3
+from loguru import logger
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from loguru import logger
 
 from .config import (
     Config,
@@ -29,8 +29,7 @@ from .config import (
 
 
 def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
-    """
-    Retry a Plex API call if it fails due to XML parsing errors.
+    """Retry a Plex API call if it fails due to XML parsing errors.
 
     This handles cases where Plex returns incomplete XML due to being busy.
 
@@ -46,6 +45,7 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
 
     Raises:
         Exception: If all retries fail
+
     """
     last_exception = None
 
@@ -93,8 +93,7 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
 
 
 def plex_server(config: Config):
-    """
-    Create Plex server connection with retry strategy and XML debugging.
+    """Create Plex server connection with retry strategy and XML debugging.
 
     Args:
         config: Configuration object
@@ -105,6 +104,7 @@ def plex_server(config: Config):
     Raises:
         ConnectionError: If unable to connect to Plex server
         requests.exceptions.RequestException: If connection fails after retries
+
     """
     # Plex Interface with retry strategy
     retry_strategy = Retry(
@@ -158,8 +158,7 @@ def plex_server(config: Config):
 
 
 def filter_duplicate_locations(media_items):
-    """
-    Filter out duplicate media items based on file locations.
+    """Filter out duplicate media items based on file locations.
 
     This function prevents processing the same video file multiple times
     when it appears in multiple episodes (common with multi-part episodes).
@@ -170,6 +169,7 @@ def filter_duplicate_locations(media_items):
 
     Returns:
         list: Filtered list of tuples (key, title, media_type) without duplicates
+
     """
     seen_locations = set()
     filtered_items = []
@@ -213,8 +213,7 @@ def _filter_excluded_by_path(media_items: List[tuple], config: Config) -> List[t
 
 
 def get_library_sections(plex, config: Config, cancel_check=None):
-    """
-    Get all library sections from Plex server.
+    """Get all library sections from Plex server.
 
     Args:
         plex: Plex server instance
@@ -223,6 +222,7 @@ def get_library_sections(plex, config: Config, cancel_check=None):
 
     Yields:
         tuple: (section, media_items) for each library
+
     """
     import time
 
@@ -417,6 +417,7 @@ def trigger_plex_partial_scan(
 
     Returns:
         List of paths for which a scan was successfully triggered.
+
     """
     if not unresolved_paths:
         return []
@@ -550,6 +551,7 @@ def get_media_items_by_paths(
 
     Returns:
         WebhookResolutionResult with items (matched), unresolved_paths, and skipped_paths.
+
     """
     mappings = getattr(config, "path_mappings", None) or []
     normalized_targets = set()

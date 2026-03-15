@@ -1,5 +1,4 @@
-"""
-Settings manager for persistent configuration.
+"""Settings manager for persistent configuration.
 
 Manages user-configurable settings stored in /config/settings.json.
 These settings override environment variables when set.
@@ -7,11 +6,11 @@ These settings override environment variables when set.
 
 import json
 import os
-import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
 
@@ -19,6 +18,7 @@ class SettingsManager:
     """Manages persistent settings stored in a JSON file."""
 
     def __init__(self, config_dir: str = None):
+        """Initialize settings manager with config directory."""
         if config_dir is None:
             config_dir = os.environ.get("CONFIG_DIR", "/config")
         self.config_dir = Path(config_dir)
@@ -46,31 +46,19 @@ class SettingsManager:
             self._settings = {}
 
     def _save(self) -> None:
-        """Save settings to file atomically.
-
-        Writes to a temporary file first, then replaces the target to
-        avoid corruption if the process is killed mid-write.
-        """
+        """Save settings to file atomically."""
         try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(dir=str(self.config_dir), suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(self._settings, f, indent=2)
-                os.replace(tmp_path, str(self.settings_file))
-            except BaseException:
-                os.unlink(tmp_path)
-                raise
-            try:
-                self.settings_file.chmod(0o600)
-            except OSError:
-                pass
+            from ..utils import atomic_json_save
+
+            atomic_json_save(
+                str(self.settings_file), self._settings, permissions=0o600
+            )
             logger.debug(f"Saved settings to {self.settings_file}")
             try:
                 from ..config import clear_config_cache
 
                 clear_config_cache()
-            except Exception:
+            except (ImportError, AttributeError):
                 pass
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
@@ -92,15 +80,9 @@ class SettingsManager:
     def _save_setup_state(self) -> None:
         """Save setup wizard state to file atomically."""
         try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(dir=str(self.config_dir), suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(self._setup_state, f, indent=2)
-                os.replace(tmp_path, str(self.setup_state_file))
-            except BaseException:
-                os.unlink(tmp_path)
-                raise
+            from ..utils import atomic_json_save
+
+            atomic_json_save(str(self.setup_state_file), self._setup_state)
             logger.debug(f"Saved setup state to {self.setup_state_file}")
         except Exception as e:
             logger.error(f"Failed to save setup state: {e}")
@@ -138,6 +120,7 @@ class SettingsManager:
     # Convenience methods for common settings
     @property
     def plex_url(self) -> Optional[str]:
+        """Plex server URL from settings or environment."""
         return self.get("plex_url") or os.environ.get("PLEX_URL")
 
     @plex_url.setter
@@ -146,6 +129,7 @@ class SettingsManager:
 
     @property
     def plex_token(self) -> Optional[str]:
+        """Plex authentication token from settings or environment."""
         return self.get("plex_token") or os.environ.get("PLEX_TOKEN")
 
     @plex_token.setter
@@ -154,6 +138,7 @@ class SettingsManager:
 
     @property
     def plex_config_folder(self) -> Optional[str]:
+        """Plex configuration folder path."""
         return self.get("plex_config_folder") or os.environ.get(
             "PLEX_CONFIG_FOLDER", "/plex"
         )
@@ -164,6 +149,7 @@ class SettingsManager:
 
     @property
     def plex_verify_ssl(self) -> bool:
+        """Whether to verify Plex server TLS certificates."""
         val = self.get("plex_verify_ssl")
         if val is not None:
             return bool(val)
@@ -178,6 +164,7 @@ class SettingsManager:
 
     @property
     def media_path(self) -> Optional[str]:
+        """Local media root path."""
         return self.get("media_path") or os.environ.get("MEDIA_PATH")
 
     @media_path.setter
@@ -186,6 +173,7 @@ class SettingsManager:
 
     @property
     def plex_videos_path_mapping(self) -> Optional[str]:
+        """Plex-side path prefix for path mapping."""
         return self.get("plex_videos_path_mapping") or os.environ.get(
             "PLEX_VIDEOS_PATH_MAPPING"
         )
@@ -196,6 +184,7 @@ class SettingsManager:
 
     @property
     def plex_local_videos_path_mapping(self) -> Optional[str]:
+        """Local-side path prefix for path mapping."""
         return self.get("plex_local_videos_path_mapping") or os.environ.get(
             "PLEX_LOCAL_VIDEOS_PATH_MAPPING"
         )
@@ -206,6 +195,7 @@ class SettingsManager:
 
     @property
     def thumbnail_interval(self) -> int:
+        """Seconds between thumbnail captures."""
         return int(
             self.get("thumbnail_interval") or os.environ.get("THUMBNAIL_INTERVAL", "2")
         )
@@ -216,6 +206,7 @@ class SettingsManager:
 
     @property
     def gpu_threads(self) -> int:
+        """Number of GPU worker threads."""
         val = self.get("gpu_threads")
         if val is None or val == "":
             return int(os.environ.get("GPU_THREADS", "1"))
@@ -227,6 +218,7 @@ class SettingsManager:
 
     @property
     def cpu_threads(self) -> int:
+        """Number of CPU worker threads."""
         val = self.get("cpu_threads")
         if val is None or val == "":
             return int(os.environ.get("CPU_THREADS", "1"))
@@ -238,6 +230,7 @@ class SettingsManager:
 
     @property
     def cpu_fallback_threads(self) -> int:
+        """Number of CPU fallback worker threads."""
         val = self.get("cpu_fallback_threads")
         if val is None or val == "":
             return int(os.environ.get("FALLBACK_CPU_THREADS", "0"))
@@ -375,6 +368,7 @@ class SettingsManager:
         Args:
             step: Current step number (1-4)
             data: Step-specific data to save
+
         """
         with self._lock:
             self._setup_state = {

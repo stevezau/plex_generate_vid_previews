@@ -1,5 +1,4 @@
-"""
-Multi-job dispatcher for concurrent job processing.
+"""Multi-job dispatcher for concurrent job processing.
 
 Provides a persistent dispatch loop and shared worker pool so multiple jobs
 can run simultaneously.  Items are dispatched using FIFO drain-first
@@ -35,6 +34,7 @@ class JobTracker:
         title_max_width: Max display width for titles.
         library_name: Library name for log prefixes.
         callbacks: Dict of per-job callback functions.
+
     """
 
     def __init__(
@@ -47,6 +47,7 @@ class JobTracker:
         library_name: str = "",
         callbacks: Optional[Dict[str, Any]] = None,
     ):
+        """Initialize tracker for a single job."""
         self.job_id = job_id
         self.config = config
         self.plex = plex
@@ -104,6 +105,7 @@ class JobTracker:
             success: Whether the item succeeded.
             worker_display_name: Display name of the worker for logging.
             title: Media title for logging.
+
         """
         if success:
             self.successful += 1
@@ -141,6 +143,7 @@ class JobTracker:
 
         Returns:
             True if completed, False if timed out.
+
         """
         return self.done_event.wait(timeout)
 
@@ -164,9 +167,11 @@ class JobDispatcher:
 
     Args:
         worker_pool: The shared WorkerPool instance.
+
     """
 
     def __init__(self, worker_pool: WorkerPool):
+        """Initialize dispatcher with shared worker pool."""
         self.worker_pool = worker_pool
         self._trackers: Dict[str, JobTracker] = {}
         self._trackers_lock = threading.RLock()
@@ -198,6 +203,7 @@ class JobDispatcher:
 
         Returns:
             JobTracker that callers can wait() on for completion.
+
         """
         tracker = JobTracker(
             job_id=job_id,
@@ -420,6 +426,7 @@ class JobDispatcher:
 
         Returns:
             True if a task was assigned.
+
         """
         try:
             fallback_item = self.worker_pool.cpu_fallback_queue.get_nowait()
@@ -500,6 +507,7 @@ class JobDispatcher:
 
         Returns:
             (job_id, item_key, media_title, media_type, library_name) or None.
+
         """
         with self._trackers_lock:
             for tracker in self._trackers.values():
@@ -705,6 +713,7 @@ def get_dispatcher(worker_pool: Optional[WorkerPool] = None) -> Optional[JobDisp
 
     Returns:
         The global JobDispatcher, or None if no pool has been provided yet.
+
     """
     global _dispatcher
     with _dispatcher_lock:

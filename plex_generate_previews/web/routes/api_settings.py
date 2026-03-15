@@ -1,0 +1,418 @@
+"""Settings and setup wizard API routes."""
+
+import os
+
+from flask import jsonify, request
+from loguru import logger
+
+from ..auth import api_token_required, setup_or_auth_required
+from . import api
+from ._helpers import (
+    MEDIA_ROOT,
+    PLEX_DATA_ROOT,
+    _safe_resolve_within,
+)
+
+
+# ============================================================================
+# Settings
+# ============================================================================
+
+
+@api.route("/settings")
+@setup_or_auth_required
+def get_settings():
+    """Get all settings."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+
+    return jsonify(
+        {
+            "plex_url": settings.plex_url or "",
+            "plex_token": "****" if settings.plex_token else "",
+            "plex_name": settings.plex_name or "",
+            "plex_verify_ssl": settings.plex_verify_ssl,
+            "plex_config_folder": settings.plex_config_folder or "/plex",
+            "selected_libraries": settings.selected_libraries,
+            "media_path": settings.media_path or "",
+            "plex_videos_path_mapping": settings.plex_videos_path_mapping or "",
+            "plex_local_videos_path_mapping": settings.plex_local_videos_path_mapping
+            or "",
+            "path_mappings": settings.get("path_mappings", []),
+            "exclude_paths": settings.get("exclude_paths", []),
+            "gpu_threads": settings.gpu_threads,
+            "cpu_threads": settings.cpu_threads,
+            "cpu_fallback_threads": settings.cpu_fallback_threads,
+            "ffmpeg_threads": settings.get("ffmpeg_threads", 2),
+            "thumbnail_interval": settings.thumbnail_interval,
+            "thumbnail_quality": settings.thumbnail_quality,
+            "log_level": settings.get("log_level", "INFO"),
+            "log_rotation_size": settings.get("log_rotation_size", "10 MB"),
+            "log_retention_count": settings.get("log_retention_count", 5),
+            "job_history_days": settings.get("job_history_days", 30),
+            "webhook_enabled": settings.get("webhook_enabled", True),
+            "webhook_delay": settings.get("webhook_delay", 60),
+            "webhook_retry_count": settings.get("webhook_retry_count", 3),
+            "webhook_retry_delay": settings.get("webhook_retry_delay", 30),
+            "webhook_secret": "****" if settings.get("webhook_secret") else "",
+            "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
+            "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 60),
+        }
+    )
+
+
+@api.route("/settings", methods=["POST"])
+@setup_or_auth_required
+def save_settings():
+    """Save settings."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    data = request.get_json() or {}
+
+    allowed_fields = [
+        "plex_url",
+        "plex_token",
+        "plex_name",
+        "plex_verify_ssl",
+        "plex_config_folder",
+        "selected_libraries",
+        "media_path",
+        "plex_videos_path_mapping",
+        "plex_local_videos_path_mapping",
+        "path_mappings",
+        "exclude_paths",
+        "gpu_threads",
+        "cpu_threads",
+        "cpu_fallback_threads",
+        "ffmpeg_threads",
+        "thumbnail_interval",
+        "thumbnail_quality",
+        "log_level",
+        "log_rotation_size",
+        "log_retention_count",
+        "job_history_days",
+        "webhook_enabled",
+        "webhook_delay",
+        "webhook_retry_count",
+        "webhook_retry_delay",
+        "webhook_secret",
+        "auto_requeue_on_restart",
+        "requeue_max_age_minutes",
+    ]
+
+    updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+    if updates:
+        settings.update(updates)
+        logger.info(f"Settings updated: {list(updates.keys())}")
+
+        log_fields = {"log_level", "log_rotation_size", "log_retention_count"}
+        if log_fields & updates.keys():
+            from ...logging_config import setup_logging
+
+            setup_logging(
+                log_level=settings.get("log_level", "INFO"),
+                rotation=settings.get("log_rotation_size", "10 MB"),
+                retention=settings.get("log_retention_count", 5),
+            )
+
+    return jsonify({"success": True})
+
+
+@api.route("/settings/log-level", methods=["PUT"])
+@api_token_required
+def update_log_level():
+    """Hot-reload log level at runtime."""
+    from ...logging_config import setup_logging
+    from ..settings_manager import get_settings_manager
+
+    data = request.get_json() or {}
+    level = (data.get("log_level") or "INFO").upper()
+
+    valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    if level not in valid_levels:
+        return jsonify(
+            {"error": f"Invalid log level. Must be one of {valid_levels}"}
+        ), 400
+
+    sm = get_settings_manager()
+    sm.set("log_level", level)
+
+    rotation = sm.get("log_rotation_size", "10 MB")
+    retention = sm.get("log_retention_count", 5)
+    setup_logging(log_level=level, rotation=rotation, retention=retention)
+    logger.info(f"Log level changed to {level}")
+
+    return jsonify({"success": True, "log_level": level})
+
+
+# ============================================================================
+# Setup Wizard
+# ============================================================================
+
+
+@api.route("/setup/status")
+def get_setup_status():
+    """Check if setup is complete (no auth required for setup check)."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+
+    return jsonify(
+        {
+            "configured": settings.is_configured(),
+            "setup_complete": settings.is_setup_complete(),
+            "current_step": settings.get_setup_step(),
+            "plex_authenticated": settings.is_plex_authenticated(),
+        }
+    )
+
+
+@api.route("/setup/state")
+@setup_or_auth_required
+def get_setup_state():
+    """Get current setup wizard state."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    state = settings.get_setup_state()
+
+    return jsonify(
+        {
+            "step": state.get("step", 1),
+            "data": state.get("data", {}),
+        }
+    )
+
+
+@api.route("/setup/state", methods=["POST"])
+@setup_or_auth_required
+def save_setup_state():
+    """Save setup wizard progress."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    data = request.get_json() or {}
+
+    step = data.get("step", 1)
+    step_data = data.get("data", {})
+
+    settings.set_setup_state(step, step_data)
+
+    return jsonify({"success": True})
+
+
+@api.route("/setup/complete", methods=["POST"])
+@setup_or_auth_required
+def complete_setup():
+    """Mark setup as complete."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    settings.complete_setup()
+
+    return jsonify({"success": True, "redirect": "/"})
+
+
+@api.route("/setup/token-info", methods=["GET"])
+@setup_or_auth_required
+def get_setup_token_info():
+    """Get information about the current authentication token for setup wizard."""
+    from ..auth import get_token_info
+
+    return jsonify(get_token_info())
+
+
+@api.route("/setup/set-token", methods=["POST"])
+@setup_or_auth_required
+def set_setup_token():
+    """Set a custom authentication token during setup."""
+    from ..auth import set_auth_token
+
+    data = request.get_json() or {}
+    new_token = data.get("token", "")
+    confirm_token = data.get("confirm_token", "")
+
+    if new_token != confirm_token:
+        return jsonify({"success": False, "error": "Tokens do not match."}), 400
+
+    result = set_auth_token(new_token)
+
+    if not result["success"]:
+        return jsonify(result), 400
+
+    return jsonify(result)
+
+
+@api.route("/setup/validate-paths", methods=["POST"])
+@setup_or_auth_required
+def validate_paths():
+    """Validate path configuration (path_mappings or legacy plex/local pair)."""
+    from ...config import normalize_path_mappings
+
+    data = request.get_json() or {}
+    plex_data_path = data.get("plex_config_folder", "/plex")
+    path_mappings = normalize_path_mappings(data)
+    plex_media_path = data.get("plex_videos_path_mapping", "")
+    local_media_path = data.get("plex_local_videos_path_mapping", "")
+
+    result = {"valid": True, "errors": [], "warnings": [], "info": []}
+
+    # Validate Plex Data Path
+    if not plex_data_path:
+        result["errors"].append("Plex Data Path is required")
+        result["valid"] = False
+    else:
+        if "\x00" in plex_data_path:
+            result["errors"].append("Invalid Plex Data Path")
+            result["valid"] = False
+            return jsonify(result)
+
+        resolved_plex_data_path = _safe_resolve_within(plex_data_path, PLEX_DATA_ROOT)
+
+        if resolved_plex_data_path is None:
+            canonical_root = os.path.realpath(PLEX_DATA_ROOT)
+            result["errors"].append(
+                f"Plex Data Path must be within the configured root: {canonical_root}"
+            )
+            result["valid"] = False
+            return jsonify(result)
+
+        if not os.path.exists(resolved_plex_data_path):
+            result["errors"].append(
+                f"Plex data folder not found: {resolved_plex_data_path}"
+            )
+            result["valid"] = False
+        else:
+            media_path = os.path.join(resolved_plex_data_path, "Media")
+            localhost_path = os.path.join(media_path, "localhost")
+
+            if not os.path.exists(media_path):
+                result["errors"].append(
+                    f'Plex data folder ({resolved_plex_data_path}): missing "Media" subfolder'
+                )
+                result["valid"] = False
+            elif not os.path.exists(localhost_path):
+                result["errors"].append(
+                    f'Plex data folder ({resolved_plex_data_path}): missing "Media/localhost" subfolder'
+                )
+                result["valid"] = False
+            else:
+                try:
+                    contents = os.listdir(localhost_path)
+                    hex_dirs = [
+                        d for d in contents if len(d) == 1 and d in "0123456789abcdef"
+                    ]
+                    if len(hex_dirs) >= 10:
+                        result["info"].append(
+                            f"✓ Plex data folder ({resolved_plex_data_path}): valid structure ({len(hex_dirs)} hash directories)"
+                        )
+                    else:
+                        result["warnings"].append(
+                            f"Plex data folder ({resolved_plex_data_path}): structure looks incomplete ({len(hex_dirs)}/16 hash directories)"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not verify Plex structure: {e}")
+                    result["warnings"].append(
+                        f"Plex data folder ({resolved_plex_data_path}): could not verify structure"
+                    )
+
+            if os.access(resolved_plex_data_path, os.W_OK):
+                result["info"].append(
+                    f"✓ Plex data folder ({resolved_plex_data_path}): write permissions OK"
+                )
+            else:
+                result["errors"].append(
+                    f"Plex data folder ({resolved_plex_data_path}): no write permission — check PUID/PGID"
+                )
+                result["valid"] = False
+
+    # Validate Path Mapping (path_mappings rows or legacy pair)
+    if path_mappings:
+        for i, row in enumerate(path_mappings):
+            plex_prefix = (row.get("plex_prefix") or "").strip()
+            local_prefix = (row.get("local_prefix") or "").strip()
+            row_label = f"Row {i + 1}"
+            path_desc = (
+                f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
+            )
+            if "\x00" in local_prefix:
+                result["errors"].append(f"{row_label} ({path_desc}): invalid path")
+                result["valid"] = False
+                continue
+            if not local_prefix:
+                continue
+            resolved = _safe_resolve_within(local_prefix, MEDIA_ROOT)
+            if resolved is None:
+                result["errors"].append(
+                    f"{row_label} ({path_desc}): path must be inside the allowed media folder"
+                )
+                result["valid"] = False
+            elif not os.path.exists(resolved):
+                result["errors"].append(f"{row_label} ({path_desc}): folder not found")
+                result["valid"] = False
+            else:
+                try:
+                    contents = os.listdir(resolved)
+                    result["info"].append(
+                        f"✓ {row_label} ({path_desc}): accessible ({len(contents)} items)"
+                    )
+                except Exception as e:
+                    logger.error(f"Cannot read mapping local path: {e}")
+                    result["errors"].append(
+                        f"{row_label} ({path_desc}): cannot read folder"
+                    )
+                    result["valid"] = False
+    elif plex_media_path or local_media_path:
+        if plex_media_path and not local_media_path:
+            result["errors"].append(
+                "Local Media Path is required when Plex Media Path is set"
+            )
+            result["valid"] = False
+        elif local_media_path and not plex_media_path:
+            result["errors"].append(
+                "Plex Media Path is required when Local Media Path is set"
+            )
+            result["valid"] = False
+        elif local_media_path:
+            if "\x00" in local_media_path:
+                result["errors"].append("Invalid Local Media Path")
+                result["valid"] = False
+                return jsonify(result)
+            resolved_local_media = _safe_resolve_within(local_media_path, MEDIA_ROOT)
+            if resolved_local_media is None:
+                result["errors"].append(
+                    "Invalid Local Media Path (must be within the configured media root)"
+                )
+                result["valid"] = False
+                return jsonify(result)
+            if not os.path.exists(resolved_local_media):
+                result["errors"].append(
+                    f"Local media path ({resolved_local_media}): folder not found"
+                )
+                result["valid"] = False
+            else:
+                try:
+                    contents = os.listdir(resolved_local_media)
+                    if len(contents) == 0:
+                        result["warnings"].append(
+                            f"Local media path ({resolved_local_media}): folder is empty"
+                        )
+                    else:
+                        result["info"].append(
+                            f"✓ Local media path ({resolved_local_media}): accessible ({len(contents)} items)"
+                        )
+                except Exception as e:
+                    logger.error(f"Cannot read Local Media Path: {e}")
+                    result["errors"].append(
+                        f"Local media path ({resolved_local_media}): cannot read folder"
+                    )
+                    result["valid"] = False
+    else:
+        result["info"].append(
+            "No path mapping configured (media mounted at same path as Plex)"
+        )
+
+    return jsonify(result)

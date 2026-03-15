@@ -9,12 +9,12 @@ Requires flask-socketio's built-in test client (no browser needed).
 
 import json
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from plex_generate_previews.web.app import create_app, socketio
 from plex_generate_previews.web.settings_manager import reset_settings_manager
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

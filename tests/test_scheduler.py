@@ -1,9 +1,9 @@
 """Tests for plex_generate_previews.web.scheduler."""
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock
 
 from plex_generate_previews.web.scheduler import (
     ScheduleManager,

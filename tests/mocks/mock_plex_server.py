@@ -6,8 +6,8 @@ Run standalone: python -m tests.mocks.mock_plex_server
 """
 
 import os
-from flask import Flask, jsonify, request, Response
 
+from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 

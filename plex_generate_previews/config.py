@@ -1,5 +1,4 @@
-"""
-Configuration management for Plex Video Preview Generator.
+"""Configuration management for Plex Video Preview Generator.
 
 Handles environment variable loading, validation, and provides a centralized
 configuration object for the entire application.
@@ -7,12 +6,13 @@ configuration object for the entire application.
 
 import os
 import re
-import sys
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -26,8 +26,7 @@ if "ROCM_PATH" not in os.environ:
 def get_config_value(
     cli_args, field_name: str, env_key: str, default, value_type: type = str
 ):
-    """
-    Get configuration value with proper precedence: CLI args > env vars > defaults.
+    """Get configuration value with proper precedence: CLI args > env vars > defaults.
 
     Args:
         cli_args: CLI arguments object or None
@@ -38,6 +37,7 @@ def get_config_value(
 
     Returns:
         The configuration value converted to the specified type
+
     """
     cli_value = None
     if cli_args is not None:
@@ -99,6 +99,7 @@ def get_path_mapping_pairs(
 
     Returns:
         List of (plex_root, local_root) tuples to try in order.
+
     """
     plex_list = [s.strip() for s in (plex_mapping or "").split(";") if s.strip()]
     local_list = [s.strip() for s in (local_mapping or "").split(";") if s.strip()]
@@ -148,6 +149,7 @@ def normalize_path_mappings(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     Returns:
         List of mapping dicts: {"plex_prefix", "local_prefix", "webhook_prefixes"}.
+
     """
     raw = settings.get("path_mappings")
     if isinstance(raw, list) and len(raw) > 0:
@@ -224,6 +226,7 @@ def is_path_excluded(
 
     Returns:
         True if the path should be skipped for preview generation.
+
     """
     if not local_path or not exclude_paths:
         return False
@@ -264,6 +267,7 @@ def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> s
 
     Returns:
         Path in the form this app can use for file access / comparison.
+
     """
     if not path or not path_mappings:
         return path or ""
@@ -304,6 +308,7 @@ def expand_path_mapping_candidates(
 
     Returns:
         Ordered unique list of candidate paths. The original input path is first.
+
     """
     if not path:
         return []
@@ -370,6 +375,7 @@ def local_path_to_webhook_aliases(
 
     Returns:
         List of paths in webhook form (e.g. [/data/Movies/foo.mkv]).
+
     """
     if not path or not path_mappings:
         return []
@@ -403,6 +409,7 @@ def split_library_selectors(values: Any) -> Tuple[List[str], List[str]]:
     Returns:
         Tuple of (`library_ids`, `library_titles`) with duplicates removed while
         preserving order.
+
     """
     if not isinstance(values, list):
         return [], []
@@ -598,8 +605,7 @@ def _validate_plex_config(
     missing_params: list,
     validation_errors: list,
 ) -> None:
-    """
-    Validate Plex server configuration parameters.
+    """Validate Plex server configuration parameters.
 
     Args:
         plex_url: Plex server URL
@@ -607,6 +613,7 @@ def _validate_plex_config(
         plex_config_folder: Path to Plex config folder
         missing_params: List to append missing parameter errors
         validation_errors: List to append validation errors
+
     """
     # Check basic required parameters first
     if not plex_url:
@@ -830,14 +837,14 @@ def _validate_processing_config(
     plex_timeout: int,
     validation_errors: list,
 ) -> None:
-    """
-    Validate processing configuration parameters.
+    """Validate processing configuration parameters.
 
     Args:
         plex_bif_frame_interval: Frame interval in seconds
         thumbnail_quality: Thumbnail quality (1-10)
         plex_timeout: Plex API timeout in seconds
         validation_errors: List to append validation errors
+
     """
     # Validate numeric ranges
     if plex_bif_frame_interval < 1 or plex_bif_frame_interval > 60:
@@ -864,8 +871,7 @@ def _validate_thread_config(
     gpu_selection: str,
     validation_errors: list,
 ) -> tuple[bool, str]:
-    """
-    Validate thread configuration parameters.
+    """Validate thread configuration parameters.
 
     Args:
         gpu_threads: Number of GPU worker threads
@@ -877,6 +883,7 @@ def _validate_thread_config(
 
     Returns:
         tuple: (should_exit, error_message) - (True, message) if both threads are 0, (False, "") otherwise
+
     """
     # Validate thread counts
     if gpu_threads < 0 or gpu_threads > 32:
@@ -930,8 +937,7 @@ def _validate_thread_config(
 
 
 def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, bool]:
-    """
-    Validate path configuration and create tmp folder if needed.
+    """Validate path configuration and create tmp folder if needed.
 
     Args:
         tmp_folder: Temporary folder path
@@ -939,6 +945,7 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
 
     Returns:
         tuple: (tmp_folder_created_by_us, success) - whether we created the folder and if validation passed
+
     """
     tmp_folder_created_by_us = False
 
@@ -983,8 +990,7 @@ _cached_config_mtime: Optional[float] = None
 
 
 def get_cached_config(cli_args=None):
-    """
-    Return config, using cache if settings.json has not changed since last load.
+    """Return config, using cache if settings.json has not changed since last load.
 
     Use this for read-only config access (e.g. API that returns current config).
     Full validation (FFmpeg, Plex, paths) runs only on cache miss or when
@@ -992,6 +998,7 @@ def get_cached_config(cli_args=None):
 
     Returns:
         Config or None: Same as load_config().
+
     """
     global _cached_config, _cached_config_mtime
     settings_path = os.path.join(
@@ -1015,8 +1022,7 @@ def clear_config_cache() -> None:
 
 
 def load_config(cli_args=None) -> Config:
-    """
-    Load and validate configuration from CLI arguments, settings.json, and environment variables.
+    """Load and validate configuration from CLI arguments, settings.json, and environment variables.
     Precedence: CLI args > settings.json > env vars > defaults
 
     Args:
@@ -1027,6 +1033,7 @@ def load_config(cli_args=None) -> Config:
 
     Raises:
         SystemExit: If required configuration is missing or invalid
+
     """
     # Load .env file so environment variables are available
     load_dotenv()
@@ -1083,10 +1090,6 @@ def load_config(cli_args=None) -> Config:
 
         # 4. Default
         return default
-
-    # Extract CLI values (None if not provided)
-    if cli_args is None:
-        cli_args = None  # Empty namespace
 
     # Load configuration with precedence: CLI args > settings.json > env vars > defaults
     plex_url = get_value(cli_args, "plex_url", "plex_url", "PLEX_URL", "", str)

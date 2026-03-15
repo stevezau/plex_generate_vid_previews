@@ -346,7 +346,7 @@ Tdarr doesn't have built-in webhook support like Sonarr/Radarr. Instead, use the
 3. Add a **Send Web Request** plugin after your transcode step
 4. Configure the plugin:
    - **Method**: `POST`
-   - **Request URL**: paste the Custom Webhook URL (e.g. `http://your-server:5000/api/webhooks/custom`)
+   - **Request URL**: paste the Custom Webhook URL (e.g. `http://your-server:8080/api/webhooks/custom`)
    - **Request Headers**: `{"Content-Type": "application/json", "X-Auth-Token": "YOUR_TOKEN"}`
    - **Request Body**: `{"file_path": "{{{args.inputFileObj._id}}}"}`
 5. Save the Flow
@@ -359,7 +359,7 @@ The `{{{args.inputFileObj._id}}}` template variable is replaced by Tdarr at runt
 #### curl Example
 
 ```bash
-curl -X POST "http://your-server:5000/api/webhooks/custom" \
+curl -X POST "http://your-server:8080/api/webhooks/custom" \
   -H "Content-Type: application/json" \
   -H "X-Auth-Token: YOUR_TOKEN" \
   -d '{"file_path": "/media/movies/Movie (2024)/Movie.mkv"}'

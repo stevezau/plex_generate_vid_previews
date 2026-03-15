@@ -5,19 +5,20 @@ Tests Plex server connection, retry logic, library queries,
 and duplicate filtering.
 """
 
-import pytest
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, call, patch
+
+import pytest
 import requests
 
 from plex_generate_previews.plex_client import (
-    plex_server,
-    retry_plex_call,
+    WebhookResolutionResult,
     filter_duplicate_locations,
     get_library_sections,
     get_media_items_by_paths,
+    plex_server,
+    retry_plex_call,
     trigger_plex_partial_scan,
-    WebhookResolutionResult,
 )
 
 

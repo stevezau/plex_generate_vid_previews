@@ -1,19 +1,20 @@
-"""
-Utility functions for Plex Video Preview Generator.
+"""Utility functions for Plex Video Preview Generator.
 
 Contains general-purpose utility functions that can be reused across
 different modules in the application.
 """
 
+import json
 import os
 import shutil
+import tempfile
 import time
 import uuid
+from typing import Any
 
 
 def calculate_title_width():
-    """
-    Calculate optimal title width based on terminal size.
+    """Calculate optimal title width based on terminal size.
 
     Calculates the maximum number of characters that can be used for
     displaying media titles in the progress bars, accounting for all
@@ -21,6 +22,7 @@ def calculate_title_width():
 
     Returns:
         int: Maximum characters for title display (20-50 range)
+
     """
     terminal_width = shutil.get_terminal_size().columns
 
@@ -46,8 +48,7 @@ def calculate_title_width():
 
 
 def format_display_title(title: str, media_type: str, title_max_width: int) -> str:
-    """
-    Format and truncate display title based on media type.
+    """Format and truncate display title based on media type.
 
     Args:
         title: The media title to format
@@ -56,6 +57,7 @@ def format_display_title(title: str, media_type: str, title_max_width: int) -> s
 
     Returns:
         str: Formatted and truncated title
+
     """
     if media_type == "episode":
         # For episodes, ensure S01E01 format is always visible
@@ -114,8 +116,7 @@ def is_macos() -> bool:
 
 
 def sanitize_path(path: str) -> str:
-    """
-    Sanitize file path for cross-platform compatibility.
+    """Sanitize file path for cross-platform compatibility.
 
     On Windows:
     - Converts forward slashes to backslashes
@@ -130,6 +131,7 @@ def sanitize_path(path: str) -> str:
 
     Returns:
         str: Sanitized file path
+
     """
     if os.name == "nt":
         # Handle UNC paths: //server/share -> \\server\share
@@ -142,9 +144,43 @@ def sanitize_path(path: str) -> str:
     return os.path.normpath(path)
 
 
-def setup_working_directory(tmp_folder: str) -> str:
+def atomic_json_save(filepath: str, data: Any, *, permissions: int = None) -> None:
+    """Write JSON data to a file atomically.
+
+    Writes to a temporary file in the same directory first, then replaces
+    the target. This prevents corruption if the process is killed mid-write.
+
+    Args:
+        filepath: Destination file path.
+        data: JSON-serializable data to write.
+        permissions: Optional octal file permissions (e.g. 0o600).
+
+    Raises:
+        IOError: If the write or replace fails.
+
     """
-    Create and set up a unique working temporary directory.
+    parent = os.path.dirname(filepath) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, filepath)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    if permissions is not None:
+        try:
+            os.chmod(filepath, permissions)
+        except OSError:
+            pass
+
+
+def setup_working_directory(tmp_folder: str) -> str:
+    """Create and set up a unique working temporary directory.
 
     Args:
         tmp_folder: Base temporary folder path
@@ -154,6 +190,7 @@ def setup_working_directory(tmp_folder: str) -> str:
 
     Raises:
         OSError: If directory creation fails
+
     """
     # Create a unique subfolder for this run to avoid conflicts
     unique_id = f"plex_previews_{int(time.time())}_{str(uuid.uuid4())[:8]}"

@@ -22,7 +22,6 @@ from plex_generate_previews.media_processing import (
 )
 from plex_generate_previews.worker import WorkerPool
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -1,6 +1,3 @@
-<!-- Back to top link -->
-<a id="readme-top"></a>
-
 <!-- PROJECT SHIELDS -->
 <div align="center">
 
@@ -24,38 +21,20 @@
   <p align="center">
     GPU-accelerated video preview thumbnail generation for Plex Media Server
     <br />
-    <a href="docs/README.md"><strong>Explore the docs »</strong></a>
+    <a href="docs/README.md"><strong>Explore the docs</strong></a>
     <br />
     <br />
-    <a href="#-quick-start">Quick Start</a>
-    ·
+    <a href="#quick-start">Quick Start</a>
+    &middot;
     <a href="https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug">Report Bug</a>
-    ·
+    &middot;
     <a href="https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement">Request Feature</a>
   </p>
 </div>
 
-<!-- TABLE OF CONTENTS -->
-<details>
-  <summary>📑 Table of Contents</summary>
-  <ol>
-    <li><a href="#-about">About</a></li>
-    <li><a href="#-features">Features</a></li>
-    <li><a href="#-screenshots">Screenshots</a></li>
-    <li><a href="#-quick-start">Quick Start</a></li>
-    <li><a href="#-installation">Installation</a></li>
-    <li><a href="#-gpu-support">GPU Support</a></li>
-    <li><a href="#-documentation">Documentation</a></li>
-    <li><a href="#-built-with">Built With</a></li>
-    <li><a href="#-contributing">Contributing</a></li>
-    <li><a href="#-license">License</a></li>
-    <li><a href="#-acknowledgments">Acknowledgments</a></li>
-  </ol>
-</details>
-
 ---
 
-## 🎯 About
+## About
 
 Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos in Plex.
 
@@ -66,30 +45,26 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## ✨ Features
+## Features
 
 | Feature | Description |
 |---------|-------------|
-| 🚀 **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
-| ⚡ **Parallel Processing** | Configurable GPU and CPU worker threads |
-| 🔁 **GPU→CPU Fallback** | Optional fallback-only CPU workers for GPU decode failures |
-| 🎮 **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| 📚 **Library Filtering** | Process specific Plex libraries |
-| 🎨 **Quality Control** | Adjustable thumbnail quality (1-10) |
-| 🐳 **Docker Ready** | Pre-built images with GPU support |
-| 🌐 **Web Dashboard** | Manage jobs, schedules, and status |
-| ⏱️ **Scheduling** | Cron and interval-based automation |
-| 📡 **Radarr/Sonarr** | Webhook integration for auto-processing on import |
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+| **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
+| **Parallel Processing** | Configurable GPU and CPU worker threads |
+| **GPU to CPU Fallback** | Optional fallback-only CPU workers for GPU decode failures |
+| **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
+| **Library Filtering** | Process specific Plex libraries |
+| **Quality Control** | Adjustable thumbnail quality (1-10) |
+| **Docker Ready** | Pre-built images with GPU support |
+| **Web Dashboard** | Manage jobs, schedules, and status |
+| **Scheduling** | Cron and interval-based automation |
+| **Radarr/Sonarr** | Webhook integration for auto-processing on import |
 
 ---
 
-## 📸 Screenshots
+## Screenshots
 
 | Home | Settings | Webhooks |
 |:----:|:--------:|:--------:|
@@ -97,11 +72,9 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 *Web UI: dashboard and job management, configuration and GPU detection, Radarr/Sonarr webhook setup.*
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ### Docker (Recommended)
 
@@ -126,11 +99,9 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - [Getting Started](docs/getting-started.md)
 - [Configuration & API Reference](docs/reference.md)
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## 📦 Installation
+## Installation
 
 | Method | Best For | Guide |
 |--------|----------|-------|
@@ -145,11 +116,9 @@ For Docker Compose, Unraid, and GPU-specific setup:
 > Note the extra "z" in Docker Hub: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews)
 > (stevezau was taken)
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## 🎮 GPU Support
+## GPU Support
 
 | GPU Type | Platform | Acceleration | Docker |
 |----------|----------|--------------|--------|
@@ -179,24 +148,20 @@ This keeps normal jobs on GPU workers and only uses CPU when a GPU worker report
 > `CPU Fallback Workers` is only used when `CPU Workers=0`.
 > If `CPU Workers>0`, regular CPU workers already handle fallback work.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## 📚 Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [📖 Documentation Hub](docs/README.md) | Start here — architecture diagrams |
-| [⚡ Getting Started](docs/getting-started.md) | Docker, GPU, Unraid, devcontainer |
-| [⚙️ Reference](docs/reference.md) | Configuration options & REST API |
-| [📘 Guides](docs/guides.md) | Web interface, webhooks, FAQ, troubleshooting |
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+| [Documentation Hub](docs/README.md) | Start here — architecture diagrams |
+| [Getting Started](docs/getting-started.md) | Docker, GPU, Unraid, devcontainer |
+| [Reference](docs/reference.md) | Configuration options & REST API |
+| [Guides](docs/guides.md) | Web interface, webhooks, FAQ, troubleshooting |
 
 ---
 
-## 🛠️ Built With
+## Built With
 
 <div align="center">
 
@@ -208,11 +173,9 @@ This keeps normal jobs on GPU workers and only uses CPU when a GPU worker report
 
 </div>
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please:
 
@@ -222,35 +185,29 @@ Contributions are welcome! Please:
 4. Push to branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## 📄 License
+## License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for details.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
-- [Plex](https://www.plex.tv/) for the amazing media server
+- [Plex](https://www.plex.tv/) for the media server
 - [FFmpeg](https://ffmpeg.org/) for video processing
 - [LinuxServer.io](https://www.linuxserver.io/) for the Docker base image
 - [Rich](https://github.com/Textualize/rich) for beautiful terminal output
 - All contributors and users
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ---
 
 <div align="center">
 
-Made with ❤️ by [stevezau](https://github.com/stevezau)
+Made with care by [stevezau](https://github.com/stevezau)
 
-⭐ Star this repo if you find it useful!
+Star this repo if you find it useful!
 
 </div>
 
@@ -271,7 +228,7 @@ Made with ❤️ by [stevezau](https://github.com/stevezau)
 [codecov-url]: https://codecov.io/gh/stevezau/plex_generate_vid_previews
 
 [ai-shield]: https://img.shields.io/badge/AI--Assisted-Cursor%20%2B%20Claude-blue?style=for-the-badge&logo=openai&logoColor=white
-[ai-url]: #-about
+[ai-url]: #about
 
 [python-shield]: https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white
 [python-url]: https://python.org

@@ -2,8 +2,8 @@
 Tests for the __main__.py entry point module
 """
 
-import sys
 import subprocess
+import sys
 from unittest import mock
 
 
@@ -33,6 +33,7 @@ def test_main_module_calls_cli_main(mock_main):
     """Test that __main__ calls cli.main when executed"""
     # Import and execute the __main__ module
     import importlib
+
     import plex_generate_previews.__main__
 
     # Reload to ensure fresh execution context

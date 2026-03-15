@@ -7,15 +7,15 @@ and working directory setup.
 
 import os
 import tempfile
-from unittest.mock import patch
 from collections import namedtuple
+from unittest.mock import patch
 
 from plex_generate_previews.utils import (
     calculate_title_width,
     format_display_title,
-    sanitize_path,
     is_docker_environment,
     is_windows,
+    sanitize_path,
     setup_working_directory,
 )
 

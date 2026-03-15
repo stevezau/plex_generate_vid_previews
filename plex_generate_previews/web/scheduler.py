@@ -1,5 +1,4 @@
-"""
-Scheduling system for the web interface.
+"""Scheduling system for the web interface.
 
 Uses APScheduler with SQLite storage for persistent scheduled jobs.
 """
@@ -9,13 +8,13 @@ import os
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Callable
+from typing import Callable, Dict, List, Optional
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from loguru import logger
 
 
@@ -27,8 +26,7 @@ def execute_scheduled_job(
     library_name: str = "",
     config: Optional[dict] = None,
 ) -> None:
-    """
-    Execute a scheduled job - module-level function for APScheduler pickling.
+    """Execute a scheduled job - module-level function for APScheduler pickling.
 
     This function must be at module level (not a class method) because
     APScheduler's SQLAlchemy jobstore needs to pickle it.
@@ -38,6 +36,7 @@ def execute_scheduled_job(
         library_id: Plex library section ID
         library_name: Human-readable library name
         config: Job configuration dict
+
     """
     logger.info(f"Executing scheduled job: {schedule_id} for library: {library_name}")
 
@@ -58,8 +57,7 @@ def execute_scheduled_job(
 
 
 class ScheduleManager:
-    """
-    Manages scheduled jobs using APScheduler.
+    """Manages scheduled jobs using APScheduler.
 
     Provides CRUD operations for schedules with cron expression support
     and persistent storage via SQLite.
@@ -68,6 +66,7 @@ class ScheduleManager:
     def __init__(
         self, config_dir: str = "/config", run_job_callback: Optional[Callable] = None
     ):
+        """Initialize schedule manager with config directory and optional callback."""
         self.config_dir = config_dir
         self.db_path = os.path.join(config_dir, "scheduler.db")
         self.schedules_file = os.path.join(config_dir, "schedules.json")
@@ -111,8 +110,9 @@ class ScheduleManager:
     def _save_schedules(self) -> None:
         """Save schedule metadata to persistent storage."""
         try:
-            with open(self.schedules_file, "w") as f:
-                json.dump({"schedules": self._schedules}, f, indent=2)
+            from ..utils import atomic_json_save
+
+            atomic_json_save(self.schedules_file, {"schedules": self._schedules})
         except IOError as e:
             logger.error(f"Failed to save schedules: {e}")
 
@@ -162,8 +162,7 @@ class ScheduleManager:
         config: Optional[dict] = None,
         enabled: bool = True,
     ) -> dict:
-        """
-        Create a new schedule.
+        """Create a new schedule.
 
         Args:
             name: Human-readable name for the schedule
@@ -176,6 +175,7 @@ class ScheduleManager:
 
         Returns:
             Schedule metadata dict
+
         """
         schedule_id = str(uuid.uuid4())
 
@@ -268,11 +268,11 @@ class ScheduleManager:
             schedule["trigger_type"] = "interval"
             schedule["trigger_value"] = str(interval_minutes)
 
-        # Remove existing job
+        # Remove existing job (may not exist if schedule was disabled)
         try:
             self.scheduler.remove_job(schedule_id)
         except Exception:
-            pass
+            logger.debug(f"No existing scheduler job to remove for {schedule_id}")
 
         # Re-add job if enabled
         if schedule["enabled"]:
@@ -308,11 +308,11 @@ class ScheduleManager:
         if schedule_id not in self._schedules:
             return False
 
-        # Remove from scheduler
+        # Remove from scheduler (may not exist if schedule was disabled)
         try:
             self.scheduler.remove_job(schedule_id)
         except Exception:
-            pass
+            logger.debug(f"No existing scheduler job to remove for {schedule_id}")
 
         del self._schedules[schedule_id]
         self._save_schedules()
@@ -324,26 +324,24 @@ class ScheduleManager:
         """Get a schedule by ID."""
         schedule = self._schedules.get(schedule_id)
         if schedule:
-            # Update next_run from scheduler
             try:
                 job = self.scheduler.get_job(schedule_id)
                 if job and job.next_run_time:
                     schedule["next_run"] = job.next_run_time.isoformat()
             except Exception:
-                pass
+                logger.debug(f"Could not fetch next_run for schedule {schedule_id}")
         return schedule
 
     def get_all_schedules(self) -> List[dict]:
         """Get all schedules."""
         schedules = []
         for schedule_id, schedule in self._schedules.items():
-            # Update next_run from scheduler
             try:
                 job = self.scheduler.get_job(schedule_id)
                 if job and job.next_run_time:
                     schedule["next_run"] = job.next_run_time.isoformat()
             except Exception:
-                pass
+                logger.debug(f"Could not fetch next_run for schedule {schedule_id}")
             schedules.append(schedule)
         return schedules
 

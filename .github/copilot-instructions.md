@@ -28,7 +28,7 @@ plex_generate_previews/
 └── web/                # Flask app with SocketIO, auth, scheduler
     ├── wsgi.py         # Gunicorn entry point
     ├── app.py         # App factory, SocketIO init (async_mode=threading)
-    ├── routes.py       # HTTP routes + API endpoints
+    ├── routes/         # HTTP routes + API endpoints (modular package)
     ├── auth.py         # Token authentication
     ├── jobs.py         # Job state management + SocketIO events
     ├── settings_manager.py # Persistent settings (JSON file)

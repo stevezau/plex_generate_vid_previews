@@ -83,7 +83,7 @@ graph TB
     subgraph Web["Web Interface"]
         W[wsgi.py / gunicorn] --> L[Flask + SocketIO]
         L --> M[auth.py]
-        L --> R[routes.py]
+        L --> R["routes/"]
         L --> JM[jobs.py]
         L --> N[scheduler.py]
         L --> SM[settings_manager.py]

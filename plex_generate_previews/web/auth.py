@@ -1,5 +1,4 @@
-"""
-Token-based authentication for the web interface.
+"""Token-based authentication for the web interface.
 
 Generates and validates authentication tokens, with support for
 environment variable override and persistent storage.
@@ -10,9 +9,8 @@ import os
 import secrets
 from functools import wraps
 
-from flask import request, jsonify, session, redirect, url_for
+from flask import jsonify, redirect, request, session, url_for
 from loguru import logger
-
 
 # Default config directory
 CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
@@ -42,18 +40,17 @@ def load_auth_config() -> dict:
 
 def save_auth_config(config: dict) -> None:
     """Save authentication configuration to file."""
+    from ..utils import atomic_json_save
+
     os.makedirs(os.path.dirname(AUTH_FILE), exist_ok=True)
     try:
-        with open(AUTH_FILE, "w") as f:
-            json.dump(config, f, indent=2)
-        os.chmod(AUTH_FILE, 0o600)
+        atomic_json_save(AUTH_FILE, config, permissions=0o600)
     except IOError as e:
         logger.error(f"Failed to save auth config: {e}")
 
 
 def get_auth_token() -> str:
-    """
-    Get the authentication token.
+    """Get the authentication token.
 
     Priority:
     1. WEB_AUTH_TOKEN environment variable
@@ -112,14 +109,14 @@ def is_token_env_controlled() -> bool:
 
 
 def set_auth_token(new_token: str) -> dict:
-    """
-    Set a custom authentication token.
+    """Set a custom authentication token.
 
     Args:
         new_token: The new token to set (minimum 8 characters)
 
     Returns:
         dict with 'success' bool and optional 'error' message
+
     """
     # Check if controlled by environment variable
     if is_token_env_controlled():
@@ -142,11 +139,11 @@ def set_auth_token(new_token: str) -> dict:
 
 
 def get_token_info() -> dict:
-    """
-    Get information about the current token for display in setup wizard.
+    """Get information about the current token for display in setup wizard.
 
     Returns:
         dict with token info (masked for security) and control status
+
     """
     env_controlled = is_token_env_controlled()
     token = get_auth_token()
@@ -246,8 +243,7 @@ def setup_or_auth_required(f):
 
 
 def log_token_on_startup() -> None:
-    """
-    Log authentication token information on startup.
+    """Log authentication token information on startup.
 
     Tokens are never logged in full for security reasons.
     """

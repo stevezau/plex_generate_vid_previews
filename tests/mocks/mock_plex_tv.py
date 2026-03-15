@@ -9,9 +9,9 @@ import html
 import os
 import time
 import uuid
-from flask import Flask, jsonify, request, Response
-from flask_cors import CORS
 
+from flask import Flask, Response, jsonify, request
+from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for OAuth popup testing

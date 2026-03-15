@@ -1,5 +1,4 @@
-"""
-Media processing functions for video thumbnail generation.
+"""Media processing functions for video thumbnail generation.
 
 Handles FFmpeg execution, BIF file generation, and all media processing
 logic including HDR detection, skip frame heuristics, and GPU acceleration.
@@ -73,6 +72,7 @@ def record_failure(
         exit_code: FFmpeg return code (0 if not FFmpeg-related).
         reason: Short human-readable reason string.
         worker_type: 'GPU', 'CPU', or '' if unknown.
+
     """
     with _failure_lock:
         _failures.append(
@@ -120,32 +120,29 @@ try:
     # Test that native library is available
     MediaInfo.can_parse()
 except ImportError:
-    print("ERROR: pymediainfo Python package not found.")
-    print("Please install: pip install pymediainfo")
+    logger.error("pymediainfo Python package not found. Please install: pip install pymediainfo")
     sys.exit(1)
 except OSError as e:
     if "libmediainfo" in str(e).lower():
-        print("ERROR: MediaInfo native library not found.")
-        print("Please install MediaInfo:")
-        if sys.platform == "darwin":  # macOS
-            print("  macOS: brew install media-info")
+        logger.error("MediaInfo native library not found. Please install MediaInfo:")
+        if sys.platform == "darwin":
+            logger.error("  macOS: brew install media-info")
         elif sys.platform.startswith("linux"):
-            print("  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev")
-            print("  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel")
+            logger.error("  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev")
+            logger.error("  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel")
         else:
-            print("  See: https://mediaarea.net/en/MediaInfo/Download")
+            logger.error("  See: https://mediaarea.net/en/MediaInfo/Download")
         sys.exit(1)
 except Exception as e:
-    print(f"WARNING: Could not validate MediaInfo library: {e}")
-    print("Proceeding anyway, but errors may occur during processing")
+    logger.warning(f"Could not validate MediaInfo library: {e}")
+    logger.warning("Proceeding anyway, but errors may occur during processing")
 
 from .config import Config, is_path_excluded, plex_path_to_local  # noqa: E402
 from .plex_client import retry_plex_call  # noqa: E402
 
 
 class CodecNotSupportedError(Exception):
-    """
-    Exception raised when a video codec is not supported by GPU hardware.
+    """Exception raised when a video codec is not supported by GPU hardware.
 
     This exception signals that the file should be processed by a CPU worker
     instead of attempting CPU fallback within the GPU worker thread.
@@ -166,6 +163,7 @@ def _diagnose_ffmpeg_exit_code(returncode: int) -> str:
 
     Returns:
         str: Diagnostic classification string
+
     """
     if returncode == 0:
         return "success"
@@ -208,6 +206,7 @@ def _save_ffmpeg_failure_log(
         video_file: Path to the media file that failed.
         returncode: FFmpeg exit code.
         stderr_lines: Complete FFmpeg stderr output lines.
+
     """
     log_dir = os.path.join(
         os.environ.get("CONFIG_DIR", "/config"), "logs", "ffmpeg_failures"
@@ -250,8 +249,7 @@ def _save_ffmpeg_failure_log(
 
 
 def _detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
-    """
-    Detect FFmpeg Dolby Vision RPU parsing failures that can abort processing.
+    """Detect FFmpeg Dolby Vision RPU parsing failures that can abort processing.
 
     This is intentionally narrow to avoid false positives. It matches a small
     allow-list of known fatal signatures from upstream FFmpeg/libdovi output.
@@ -261,6 +259,7 @@ def _detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
 
     Returns:
         bool: True if the Dolby Vision RPU error is detected
+
     """
     if not stderr_lines:
         return False
@@ -289,6 +288,7 @@ def _verify_tmp_folder_health(
     Returns:
         Tuple of ``(is_healthy, messages)`` where messages contains warning
         and error diagnostics suitable for logging.
+
     """
     messages: List[str] = []
 
@@ -341,6 +341,7 @@ def _detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
 
     Returns:
         bool: True if a zscale colorspace error is detected
+
     """
     if not stderr_lines:
         return False
@@ -397,6 +398,7 @@ def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
     Returns:
         bool: ``True`` if content is DV without backward compat (unsafe for
               zscale/tonemap), ``False`` otherwise.
+
     """
     if not hdr_format or hdr_format == "None":
         return False
@@ -434,13 +436,13 @@ def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
 def parse_ffmpeg_progress_line(
     line: str, total_duration: float, progress_callback=None
 ):
-    """
-    Parse a single FFmpeg progress line and call progress callback if provided.
+    """Parse a single FFmpeg progress line and call progress callback if provided.
 
     Args:
         line: FFmpeg output line to parse
         total_duration: Total video duration in seconds
         progress_callback: Callback function for progress updates
+
     """
     # Parse duration
     if "Duration:" in line:
@@ -510,8 +512,7 @@ def parse_ffmpeg_progress_line(
 
 
 def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
-    """
-    Detect if FFmpeg failure is due to unsupported codec/hardware decoder error.
+    """Detect if FFmpeg failure is due to unsupported codec/hardware decoder error.
 
     Checks exit codes and stderr patterns to identify codec-related errors.
     Based on FFmpeg documentation: exit code -22 (EINVAL) and 69 (max error rate)
@@ -523,6 +524,7 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
 
     Returns:
         bool: True if codec/decoder error detected, False otherwise
+
     """
     # Combine all stderr lines into a single lowercase string for pattern matching
     stderr_text = " ".join(stderr_lines).lower()
@@ -583,6 +585,7 @@ def _detect_hwaccel_runtime_error(stderr_lines: List[str]) -> bool:
 
     Returns:
         bool: True if a hardware accelerator runtime error is detected
+
     """
     if not stderr_lines:
         return False
@@ -630,6 +633,7 @@ def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
 
     Returns:
         bool: ``True`` when skip_frame is safe, ``False`` otherwise.
+
     """
     null_sink = "NUL" if os.name == "nt" else "/dev/null"
     cmd = [
@@ -690,8 +694,7 @@ def generate_images(
     config: Config,
     progress_callback=None,
 ) -> tuple:
-    """
-    Generate thumbnail images from a video using FFmpeg.
+    """Generate thumbnail images from a video using FFmpeg.
 
     Runs FFmpeg with hardware acceleration when configured. If the skip-frame
     heuristic allowed it, attempts with '-skip_frame:v nokey' first. If that
@@ -719,6 +722,7 @@ def generate_images(
                            (False if CPU fallback occurred)
             seconds (float): Elapsed processing time (last attempt)
             speed (str): Reported or computed FFmpeg speed string
+
     """
     media_info = MediaInfo.parse(video_file)
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
@@ -882,8 +886,6 @@ def generate_images(
         logger.debug(f"Executing: {' '.join(args)}")
 
         # Use file polling approach for non-blocking, high-frequency progress monitoring
-        import threading
-
         thread_id = threading.get_ident()
         output_file = os.path.join(
             tempfile.gettempdir(),
@@ -1095,7 +1097,7 @@ def generate_images(
         for img in glob.glob(os.path.join(output_folder, "*.jpg")):
             try:
                 os.remove(img)
-            except Exception:
+            except OSError:
                 pass
         retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(
             use_skip=False, init_vulkan=use_libplacebo
@@ -1148,7 +1150,7 @@ def generate_images(
             for img in glob.glob(os.path.join(output_folder, "*.jpg")):
                 try:
                     os.remove(img)
-                except Exception:
+                except OSError:
                     pass
 
             # DV-safe filter: avoid zscale/tonemap; mirror the known-working workaround in issue #130.
@@ -1167,7 +1169,7 @@ def generate_images(
                     for img in glob.glob(os.path.join(output_folder, "*.jpg")):
                         try:
                             os.remove(img)
-                        except Exception:
+                        except OSError:
                             pass
                     raise CodecNotSupportedError(
                         f"{diag_label} in GPU context for {video_file}"
@@ -1217,67 +1219,49 @@ def generate_images(
             for img in glob.glob(os.path.join(output_folder, "*.jpg")):
                 try:
                     os.remove(img)
-                except Exception:
+                except OSError:
                     pass
             # Raise exception to signal worker pool to re-queue for CPU worker
             raise CodecNotSupportedError(
                 f"GPU processing failed ({fallback_reason}) for {video_file} (exit code {rc})"
             )
 
-    # CPU fallback: Only perform CPU fallback when not in GPU context (e.g., when gpu is None)
-    # This preserves the existing fallback behavior for non-GPU processing paths
-    did_cpu_fallback = False
     if rc != 0 and image_count == 0 and gpu is None:
-        # Detect if failure is due to unsupported codec (even on CPU, for edge cases)
         if _detect_codec_error(rc, stderr_lines):
             logger.warning(
                 f"Processing failed with codec error (exit code {rc}) for {video_file}; file may be corrupted or unsupported"
             )
-            # For CPU context, we can't fallback further, so just log and continue
-            # The function will return failure status
 
     # Rename images only after all retries and error checks are complete
-    # This ensures we don't rename images that will be cleaned up due to errors
     if image_count > 0:
-        # Rename images from img-*.jpg format to timestamp-based names
         for image in glob.glob(f"{output_folder}/img*.jpg"):
             frame_no = int(os.path.basename(image).strip("-img").strip(".jpg")) - 1
             frame_second = frame_no * config.plex_bif_frame_interval
             os.rename(image, os.path.join(output_folder, f"{frame_second:010d}.jpg"))
-        # Re-count after renaming to get final count (includes both renamed and any existing timestamped images)
         image_count = len(glob.glob(os.path.join(output_folder, "*.jpg")))
 
-    hw = gpu is not None and not did_cpu_fallback
+    hw = gpu is not None
     success = image_count > 0
 
     if success:
         fallback_suffix = (
-            " (CPU fallback)"
-            if did_cpu_fallback
-            else (
-                " (DV-safe retry)"
-                if did_dv_safe_retry
-                else (" (retry no-skip)" if did_retry else "")
-            )
+            " (DV-safe retry)"
+            if did_dv_safe_retry
+            else (" (retry no-skip)" if did_retry else "")
         )
         logger.info(
             f"Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}"
         )
     else:
         fallback_suffix = (
-            " (after CPU fallback)"
-            if did_cpu_fallback
-            else (
-                " after DV-safe retry"
-                if did_dv_safe_retry
-                else (" after retry" if did_retry else "")
-            )
+            " after DV-safe retry"
+            if did_dv_safe_retry
+            else (" after retry" if did_retry else "")
         )
         logger.error(
             f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}"
         )
-        # Record for end-of-run summary
-        worker_ctx = "GPU" if (gpu is not None and not did_cpu_fallback) else "CPU"
+        worker_ctx = "GPU" if gpu is not None else "CPU"
         reason = (
             f"FFmpeg exit {rc} ({_diagnose_ffmpeg_exit_code(rc)}){fallback_suffix}"
             if rc != 0
@@ -1289,8 +1273,7 @@ def generate_images(
 
 
 def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str]:
-    """
-    Set up all bundle-related paths.
+    """Set up all bundle-related paths.
 
     Args:
         bundle_hash: Bundle hash from Plex
@@ -1298,6 +1281,7 @@ def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str
 
     Returns:
         Tuple of (indexes_path, index_bif, tmp_path)
+
     """
     bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1::1]}.bundle")
     bundle_path = sanitize_path(
@@ -1310,8 +1294,7 @@ def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str
 
 
 def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bool:
-    """
-    Ensure required directories exist.
+    """Ensure required directories exist.
 
     Args:
         indexes_path: Path to indexes directory
@@ -1320,6 +1303,7 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
 
     Returns:
         True if directories are ready, False if creation failed
+
     """
     if not os.path.isdir(indexes_path):
         try:
@@ -1359,11 +1343,11 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
 
 
 def _cleanup_temp_directory(tmp_path: str) -> None:
-    """
-    Clean up temporary directory, logging warnings on failure.
+    """Clean up temporary directory, logging warnings on failure.
 
     Args:
         tmp_path: Path to temporary directory
+
     """
     try:
         if os.path.exists(tmp_path):
@@ -1385,8 +1369,7 @@ def _generate_and_save_bif(
     config: Config,
     progress_callback=None,
 ) -> None:
-    """
-    Generate images and create BIF file.
+    """Generate images and create BIF file.
 
     Args:
         media_file: Path to media file
@@ -1400,6 +1383,7 @@ def _generate_and_save_bif(
     Raises:
         CodecNotSupportedError: If codec is not supported by GPU
         RuntimeError: If thumbnail generation produced 0 images
+
     """
     try:
         gen_result = generate_images(
@@ -1463,8 +1447,7 @@ def _generate_and_save_bif(
 
 
 def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
-    """
-    Build a .bif file from thumbnail images.
+    """Build a .bif file from thumbnail images.
 
     Args:
         bif_filename: Path to output .bif file
@@ -1473,6 +1456,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
 
     Raises:
         PermissionError: If permission denied accessing files or directories
+
     """
     magic = [0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A]
     version = 0
@@ -1552,8 +1536,7 @@ def process_item(
     plex,
     progress_callback=None,
 ) -> ProcessingResult:
-    """
-    Process a single media item: generate thumbnails and BIF file.
+    """Process a single media item: generate thumbnails and BIF file.
 
     This is the core processing function that handles:
     - Plex API queries
@@ -1576,6 +1559,7 @@ def process_item(
         ProcessingResult indicating the outcome. When an item has multiple
         media parts, the most significant outcome is returned (GENERATED
         wins over any skip; FAILED wins over skips other than file-not-found).
+
     """
     try:
         data = retry_plex_call(plex.query, f"{item_key}/tree")

@@ -5,10 +5,12 @@ Tests for logging configuration.
 import json
 import os
 from io import StringIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
-from plex_generate_previews.logging_config import setup_logging, _json_sink
+
 import plex_generate_previews.logging_config as _logging_mod
+from plex_generate_previews.logging_config import _json_sink, setup_logging
 
 
 @pytest.fixture(autouse=True)

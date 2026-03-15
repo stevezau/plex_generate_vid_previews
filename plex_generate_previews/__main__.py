@@ -1,5 +1,4 @@
-"""
-Entry point for python -m plex_generate_previews
+"""Entry point for python -m plex_generate_previews
 
 Allows running the package as a module:
     python -m plex_generate_previews

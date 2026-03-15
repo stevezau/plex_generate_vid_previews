@@ -5,12 +5,13 @@ This module provides fixtures for running end-to-end tests with Playwright.
 """
 
 import os
-import pytest
+import socket
 import subprocess
 import sys
 import time
-import socket
 from typing import Generator
+
+import pytest
 
 
 def wait_for_port(port: int, timeout: float = 10.0) -> bool:

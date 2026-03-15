@@ -1,5 +1,4 @@
-"""
-Job management for the web interface.
+"""Job management for the web interface.
 
 Provides JobManager class for tracking job state, emitting SocketIO events,
 and persisting job data to disk.
@@ -10,10 +9,10 @@ import os
 import threading
 import uuid
 from collections import deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Dict, List, Optional, Callable, Any
+from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -47,6 +46,7 @@ class WorkerStatus:
     eta: str = ""
 
     def to_dict(self) -> dict:
+        """Serialize to dictionary."""
         return asdict(self)
 
 
@@ -64,6 +64,7 @@ class JobProgress:
     outcome: Optional[Dict[str, int]] = None
 
     def to_dict(self) -> dict:
+        """Serialize to dictionary."""
         result = asdict(self)
         result["workers"] = [
             w.to_dict() if isinstance(w, WorkerStatus) else w for w in self.workers
@@ -99,6 +100,7 @@ class Job:
             self.status = JobStatus(self.status)
 
     def to_dict(self) -> dict:
+        """Serialize to dictionary."""
         return {
             "id": self.id,
             "status": self.status.value,
@@ -115,14 +117,14 @@ class Job:
 
 
 class JobManager:
-    """
-    Manages job queue and state for the web interface.
+    """Manages job queue and state for the web interface.
 
     Provides methods for creating, updating, and querying jobs,
     as well as emitting SocketIO events for real-time updates.
     """
 
     def __init__(self, config_dir: str = "/config", socketio=None):
+        """Initialize job manager with config directory and optional SocketIO instance."""
         self.config_dir = config_dir
         self.jobs_file = os.path.join(config_dir, "jobs.json")
         self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
@@ -209,11 +211,11 @@ class JobManager:
 
     def _save_jobs(self) -> None:
         """Save jobs to persistent storage. Caller must hold _lock."""
-        os.makedirs(self.config_dir, exist_ok=True)
         try:
-            with open(self.jobs_file, "w") as f:
-                jobs_data = {"jobs": [job.to_dict() for job in self._jobs.values()]}
-                json.dump(jobs_data, f, indent=2)
+            from ..utils import atomic_json_save
+
+            jobs_data = {"jobs": [job.to_dict() for job in self._jobs.values()]}
+            atomic_json_save(self.jobs_file, jobs_data)
         except IOError as e:
             logger.error(f"Failed to save jobs: {e}")
 
@@ -256,6 +258,7 @@ class JobManager:
             sm = get_settings_manager()
             return int(sm.get("job_history_days", 30))
         except Exception:
+            logger.debug("Could not read job_history_days from settings", exc_info=True)
             return 30
 
     def _enforce_log_retention(self) -> None:
@@ -365,6 +368,7 @@ class JobManager:
 
         Returns:
             List of newly created ``Job`` objects ready to be started.
+
         """
         if not self._interrupted_jobs:
             return []
@@ -541,6 +545,7 @@ class JobManager:
         Args:
             job_id: Job identifier.
             outcome: Dict mapping ProcessingResult values to counts.
+
         """
         with self._lock:
             job = self._jobs.get(job_id)
@@ -562,6 +567,7 @@ class JobManager:
             warning: If set (and error is not), marks job as COMPLETED with a
                      warning message (amber badge in UI). The warning text is
                      stored in `job.error` so the UI can display it.
+
         """
         log_msg = None
         log_level = "info"
@@ -656,6 +662,7 @@ class JobManager:
         Args:
             statuses: List of status strings to clear (e.g. ["completed", "failed"]).
                 Defaults to all terminal statuses: completed, failed, cancelled.
+
         """
         valid_terminal = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
         if statuses:
@@ -890,6 +897,7 @@ class JobManager:
 
         Args:
             job_id: Specific job ID, or empty string to return any active pool.
+
         """
         with self._lock:
             if job_id:
@@ -931,6 +939,7 @@ def get_job_manager(config_dir: Optional[str] = None, socketio=None) -> JobManag
 
     Returns:
         The global ``JobManager`` singleton.
+
     """
     global _job_manager
     with _job_lock:

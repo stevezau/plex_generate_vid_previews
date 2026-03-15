@@ -1,5 +1,4 @@
-"""
-Logging configuration for Plex Video Preview Generator.
+"""Logging configuration for Plex Video Preview Generator.
 
 Centralized logging setup to avoid circular imports and provide
 consistent logging configuration across the application.
@@ -73,8 +72,7 @@ def setup_logging(
     rotation: str = "10 MB",
     retention=5,
 ) -> None:
-    """
-    Set up logging configuration.
+    """Set up logging configuration.
 
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
@@ -86,6 +84,7 @@ def setup_logging(
         rotation: Max size before rotating log files (e.g. "10 MB").
         retention: Number of rotated log files to keep (int) or a time
             string like ``"30 days"``.
+
     """
     if log_format is None:
         log_format = os.environ.get("LOG_FORMAT", "pretty").lower()

@@ -5,16 +5,16 @@ Tests version parsing, GitHub API interaction, and update checking.
 """
 
 import os
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock
 import requests
 
 from plex_generate_previews.version_check import (
-    get_current_version,
-    parse_version,
-    get_latest_github_release,
     check_for_updates,
+    get_current_version,
+    get_latest_github_release,
+    parse_version,
 )
 
 

@@ -1,5 +1,4 @@
-"""
-Web interface package for Plex Preview Generator.
+"""Web interface package for Plex Preview Generator.
 
 Provides a Flask-based web GUI with scheduling and token authentication.
 """

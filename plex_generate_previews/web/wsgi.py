@@ -1,5 +1,4 @@
-"""
-WSGI entry point for gunicorn.
+"""WSGI entry point for gunicorn.
 
 Usage (production — via wrapper.sh):
     gunicorn \\

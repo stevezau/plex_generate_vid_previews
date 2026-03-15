@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from plex_generate_previews.media_processing import (
-    CodecNotSupportedError,
     FFMPEG_STALL_TIMEOUT_SEC,
+    CodecNotSupportedError,
     _detect_codec_error,
     _detect_dolby_vision_rpu_error,
     _detect_hwaccel_runtime_error,

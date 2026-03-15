@@ -5,8 +5,8 @@ Tests the complete flow from Plex query through worker pool
 to BIF generation with all components working together.
 """
 
-from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
+from unittest.mock import MagicMock, patch
 
 from plex_generate_previews.media_processing import ProcessingResult
 
@@ -64,8 +64,9 @@ class TestFullPipeline:
     @patch("plex_generate_previews.worker.process_item")
     def test_full_pipeline_multiple_videos(self, mock_process, mock_config):
         """Test processing multiple videos with worker pool."""
-        from plex_generate_previews.worker import WorkerPool
         import time
+
+        from plex_generate_previews.worker import WorkerPool
 
         # Mock process_item to simulate some processing time
         def mock_process_fn(*args, **kwargs):
@@ -106,8 +107,9 @@ class TestFullPipeline:
     @patch("plex_generate_previews.worker.process_item")
     def test_full_pipeline_with_errors(self, mock_process, mock_config):
         """Test pipeline with some items failing."""
-        from plex_generate_previews.worker import WorkerPool
         import time
+
+        from plex_generate_previews.worker import WorkerPool
 
         # Make some items fail
         call_count = [0]
@@ -224,8 +226,9 @@ class TestWorkerPoolIntegration:
     @patch("plex_generate_previews.worker.process_item")
     def test_worker_pool_load_balancing(self, mock_process, mock_config):
         """Test that work is distributed across workers."""
-        from plex_generate_previews.worker import WorkerPool
         import time
+
+        from plex_generate_previews.worker import WorkerPool
 
         # Simulate variable processing times
         def variable_process(*args, **kwargs):
