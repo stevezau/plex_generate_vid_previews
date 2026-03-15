@@ -45,3 +45,6 @@ plan.md
 
 # Copilot scratchpad (not for source control)
 Copilot-Processing.md
+
+# setuptools-scm auto-generated version file
+plex_generate_previews/_version.py

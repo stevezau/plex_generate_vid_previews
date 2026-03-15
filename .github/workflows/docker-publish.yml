@@ -63,6 +63,7 @@ jobs:
           build-args: |
             GIT_BRANCH=${{ github.ref_name }}
             GIT_SHA=${{ github.sha }}
+            ${{ startsWith(github.ref, 'refs/tags/') && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', github.ref_name) || '' }}
           outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max

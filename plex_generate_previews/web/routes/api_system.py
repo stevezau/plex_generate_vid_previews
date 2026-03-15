@@ -1,6 +1,8 @@
 """System, health, config, and library API routes."""
 
 import os
+import threading
+import time
 
 import urllib3
 from flask import jsonify, request
@@ -95,6 +97,118 @@ def get_config():
     except Exception as e:
         logger.error(f"Failed to get config: {e}")
         return jsonify({"error": "Failed to retrieve configuration"}), 500
+
+
+_version_cache: dict = {"result": None, "fetched_at": 0.0}
+_version_cache_lock = threading.Lock()
+_VERSION_CACHE_TTL = 3600  # seconds
+
+
+def _get_version_info() -> dict:
+    """Build version info, using a 1-hour TTL cache for the GitHub API call.
+
+    The installed version and install_type are cheap to compute and never
+    change at runtime, but the latest-release lookup hits the GitHub API,
+    so we cache the full result for ``_VERSION_CACHE_TTL`` seconds.
+
+    Returns:
+        Dict with current_version, latest_version, update_available,
+        and install_type.
+    """
+    with _version_cache_lock:
+        if (
+            _version_cache["result"] is not None
+            and (time.monotonic() - _version_cache["fetched_at"]) < _VERSION_CACHE_TTL
+        ):
+            return _version_cache["result"]
+
+    from ...utils import is_docker_environment
+    from ...version_check import (
+        get_branch_head_sha,
+        get_current_version,
+        get_latest_github_release,
+        parse_version,
+    )
+
+    git_branch_raw = (os.environ.get("GIT_BRANCH") or "").strip()
+    git_sha_raw = (os.environ.get("GIT_SHA") or "").strip()
+
+    # Dockerfile ARG defaults are the literal string "unknown".
+    is_local_docker = git_branch_raw == "unknown" and git_sha_raw == "unknown"
+    git_branch = "" if git_branch_raw == "unknown" else git_branch_raw
+    git_sha = "" if git_sha_raw == "unknown" else git_sha_raw
+
+    update_available = False
+    latest_version = None
+
+    if is_local_docker:
+        # Local Docker build (Dockerfile defaults, not CI)
+        install_type = "local_docker"
+        current_version = "local build"
+        latest_version = get_latest_github_release()
+
+    elif git_branch and git_sha:
+        # CI Docker build -- distinguish release tags from dev branches
+        try:
+            parse_version(git_branch)
+            # GIT_BRANCH is a version tag (e.g. 3.4.1) -- release image
+            install_type = "docker"
+            current_version = git_branch.lstrip("v")
+            latest_version = get_latest_github_release()
+            if latest_version:
+                try:
+                    update_available = parse_version(latest_version) > parse_version(
+                        current_version
+                    )
+                except ValueError:
+                    logger.debug("Could not compare versions for update check")
+        except ValueError:
+            # GIT_BRANCH is a branch name (e.g. dev) -- dev image
+            install_type = "dev_docker"
+            current_version = f"{git_branch}@{git_sha[:7]}"
+            head_sha = get_branch_head_sha(git_branch)
+            if head_sha and not head_sha.startswith(git_sha):
+                update_available = True
+            latest_version = f"{git_branch}@{head_sha[:7]}" if head_sha else None
+
+    else:
+        # Non-Docker: source checkout or pip install
+        install_type = "source" if not is_docker_environment() else "docker"
+        current_version = get_current_version()
+        latest_version = get_latest_github_release()
+        if latest_version:
+            try:
+                update_available = parse_version(latest_version) > parse_version(
+                    current_version
+                )
+            except ValueError:
+                logger.debug("Could not compare versions for update check")
+
+    result = {
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": update_available,
+        "install_type": install_type,
+    }
+
+    with _version_cache_lock:
+        _version_cache["result"] = result
+        _version_cache["fetched_at"] = time.monotonic()
+
+    return result
+
+
+@api.route("/system/version")
+@setup_or_auth_required
+def get_version_info():
+    """Get installed version and latest available version.
+
+    Returns:
+        JSON with current_version, latest_version, update_available,
+        and install_type fields. latest_version may be null if the
+        GitHub API is unreachable. Results are cached for 1 hour.
+    """
+    return jsonify(_get_version_info())
 
 
 @api.route("/health")

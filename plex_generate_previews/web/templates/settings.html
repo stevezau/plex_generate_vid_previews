@@ -352,6 +352,29 @@
                 <p class="text-muted mb-2">
                     Generate video preview thumbnails for Plex with GPU acceleration.
                 </p>
+
+                <div class="mb-3">
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="text-muted">Installed:</span>
+                        <span id="currentVersion">
+                            <span class="spinner-border spinner-border-sm text-muted" role="status"></span>
+                        </span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="text-muted">Latest:</span>
+                        <span id="latestVersion">
+                            <span class="spinner-border spinner-border-sm text-muted" role="status"></span>
+                        </span>
+                    </div>
+                </div>
+
+                <div id="updateAlert" class="alert alert-warning py-2 d-none">
+                    <i class="bi bi-arrow-up-circle me-1"></i>
+                    <span id="updateMessage"></span>
+                    <a href="https://github.com/stevezau/plex_generate_vid_previews/releases/latest"
+                       target="_blank" class="alert-link ms-1">View release notes</a>
+                </div>
+
                 <a href="https://github.com/stevezau/plex_generate_vid_previews"
                    target="_blank" class="text-decoration-none">
                     <i class="bi bi-github me-1"></i>View on GitHub
@@ -369,6 +392,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadSettings();
     loadLibraries();
     loadGpuInfo();
+    loadVersionInfo();
 
     // Track changes
     document.querySelectorAll('input, select').forEach(el => {
@@ -630,6 +654,39 @@ async function loadGpuInfo() {
         }
     } catch (error) {
         document.getElementById('gpuInfoText').textContent = 'Failed to detect GPUs.';
+    }
+}
+
+async function loadVersionInfo() {
+    try {
+        const response = await fetch('/api/system/version');
+        const data = await response.json();
+
+        document.getElementById('currentVersion').textContent = data.current_version || 'unknown';
+
+        if (data.latest_version) {
+            document.getElementById('latestVersion').textContent = data.latest_version;
+        } else {
+            document.getElementById('latestVersion').innerHTML =
+                '<span class="text-muted">unavailable</span>';
+        }
+
+        if (data.install_type === 'local_docker') {
+            if (data.latest_version) {
+                document.getElementById('updateMessage').textContent =
+                    `Latest release: ${data.latest_version}`;
+                document.getElementById('updateAlert').classList.remove('d-none', 'alert-warning');
+                document.getElementById('updateAlert').classList.add('alert-info');
+            }
+        } else if (data.update_available) {
+            const msg = `Version ${data.latest_version} is available (you have ${data.current_version}).`;
+            document.getElementById('updateMessage').textContent = msg;
+            document.getElementById('updateAlert').classList.remove('d-none');
+        }
+    } catch (error) {
+        document.getElementById('currentVersion').textContent = 'error';
+        document.getElementById('latestVersion').innerHTML =
+            '<span class="text-muted">unavailable</span>';
     }
 }
 
