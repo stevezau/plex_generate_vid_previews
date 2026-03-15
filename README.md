@@ -90,10 +90,13 @@ docker run -d \
   -v /path/to/media:/media:ro \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
+
+> **Timezone:** The `/etc/localtime` mount ensures log timestamps and scheduled jobs use your local time. Alternatively, use `-e TZ=America/New_York` (replace with your [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
 
 Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard.
 

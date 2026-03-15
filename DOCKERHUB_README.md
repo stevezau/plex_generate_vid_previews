@@ -39,10 +39,13 @@ docker run -d \
   -v /path/to/media:/media:ro \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
+
+> **Timezone:** The `/etc/localtime` mount ensures log timestamps and scheduled jobs use your local time. Alternatively, use `-e TZ=America/New_York` (replace with your [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
 
 Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard.
 
@@ -95,6 +98,7 @@ services:
       - /path/to/your/media:/media:ro
       - /path/to/plex/config:/plex:rw
       - /path/to/app/config:/config:rw
+      - /etc/localtime:/etc/localtime:ro
 ```
 
 ### CPU-Only
@@ -116,6 +120,7 @@ services:
       - /path/to/your/media:/media:ro
       - /path/to/plex/config:/plex:rw
       - /path/to/app/config:/config:rw
+      - /etc/localtime:/etc/localtime:ro
 ```
 
 ## GPU Support
@@ -139,10 +144,13 @@ docker run -d \
   --gpus all \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+  -e PUID=1000 \
+  -e PGID=1000 \
   -p 8080:8080 \
   -v /path/to/media:/media:ro \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
@@ -167,6 +175,7 @@ All settings can be configured in the web UI (Settings page). Environment variab
 | `PLEX_LIBRARIES` | All | Comma-separated library names or IDs |
 | `PUID` | `1000` | User ID (Unraid: `99`) |
 | `PGID` | `1000` | Group ID (Unraid: `100`) |
+| `TZ` | Host | Timezone (e.g. `America/New_York`). Alternative to mounting `/etc/localtime` |
 | `WEB_PORT` | `8080` | Web server port |
 | `WEB_AUTH_TOKEN` | Auto | Fixed authentication token |
 | `LOG_LEVEL` | `INFO` | Logging level: DEBUG, INFO, WARNING, ERROR |
@@ -189,6 +198,7 @@ docker run -d \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 

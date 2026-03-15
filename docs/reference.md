@@ -89,6 +89,7 @@ The web server uses **gunicorn** with **gthread** workers in production (Docker)
 |----------|---------|-------------|
 | `PUID` | `1000` | User ID (Unraid: `99`) |
 | `PGID` | `1000` | Group ID (Unraid: `100`) |
+| `TZ` | Host | Timezone (e.g. `America/New_York`). Alternative to mounting `/etc/localtime:/etc/localtime:ro` |
 
 ---
 

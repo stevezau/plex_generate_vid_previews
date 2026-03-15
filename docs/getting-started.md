@@ -40,6 +40,7 @@ docker run -d \
   -v /path/to/media:/media:ro \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
@@ -274,6 +275,7 @@ docker run -d \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
@@ -303,6 +305,7 @@ docker run -d \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
@@ -327,6 +330,7 @@ docker run -d \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
@@ -426,6 +430,7 @@ docker run -d \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
