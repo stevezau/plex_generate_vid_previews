@@ -114,20 +114,17 @@ jobs:
       - name: Set image tags
         id: set_tags
         run: |
+          TAGS="-t ${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.branch == 'main' && 'latest' || 'dev' }}"
           if [ "${{ steps.meta.outputs.branch }}" = "main" ]; then
-            echo "tag_suffix=latest" >> "$GITHUB_OUTPUT"
-            echo "tag_sha=${{ steps.meta.outputs.sha_short }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag_suffix=dev" >> "$GITHUB_OUTPUT"
-            echo "tag_sha=dev-${{ steps.meta.outputs.sha_short }}" >> "$GITHUB_OUTPUT"
+            TAGS="$TAGS -t ${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.sha_short }}"
           fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.DOCKER_IMAGE }}:${{ steps.set_tags.outputs.tag_suffix }} \
-            -t ${{ env.DOCKER_IMAGE }}:${{ steps.set_tags.outputs.tag_sha }} \
+            ${{ steps.set_tags.outputs.tags }} \
             $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
 
   update-dockerhub-description:
