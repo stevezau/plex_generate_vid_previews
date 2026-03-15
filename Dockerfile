@@ -47,8 +47,11 @@ ARG GIT_SHA=unknown
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     mediainfo python3 python3-pip gosu pciutils git \
-    intel-media-va-driver-non-free i965-va-driver mesa-va-drivers \
-    libva2 libva-drm2 vainfo && \
+    mesa-va-drivers libva2 libva-drm2 vainfo && \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      apt-get install -y --no-install-recommends \
+        intel-media-va-driver-non-free i965-va-driver; \
+    fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

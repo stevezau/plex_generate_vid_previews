@@ -127,6 +127,9 @@ Hardware-accelerated video processing for faster thumbnail generation.
 | **All GPUs** | Windows | D3D11VA | Native only |
 | **Apple Silicon** | macOS | VideoToolbox | Native only |
 
+> [!NOTE]
+> **"Native only"** means GPU acceleration requires running the app from source on that platform. Docker on Windows (WSL2) and macOS runs a Linux VM — D3D11VA and VideoToolbox are not available inside Docker. Docker on these platforms will use CPU-only processing. Apple Silicon users benefit from the native ARM64 Docker image (no Rosetta overhead).
+
 ### GPU Detection
 
 Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup**. Detected GPUs are shown there.
@@ -201,13 +204,21 @@ docker run -d \
 
 AMD requires proper VAAPI drivers on the host system.
 
-### Windows (Native)
+### Windows (Native Only)
 
-Windows uses D3D11VA hardware acceleration automatically with any GPU. Run the app via Docker; the web UI will show detected GPUs in Settings or Setup. Requirements: latest GPU drivers (NVIDIA, AMD, or Intel) and FFmpeg with D3D11VA support.
+Windows uses D3D11VA hardware acceleration automatically with any GPU (NVIDIA, AMD, or Intel). This requires running the app **natively from source** — Docker Desktop on Windows uses WSL2 (a Linux VM) where D3D11VA is not available.
 
-### macOS (Native)
+**Requirements:** Latest GPU drivers and FFmpeg with D3D11VA support.
 
-Apple Silicon and Intel Macs use VideoToolbox. Run the app via Docker; the web UI shows detected GPUs in Settings or Setup.
+> [!WARNING]
+> Docker on Windows runs in a Linux VM (WSL2) and cannot access D3D11VA. If you run the Docker image on Windows, processing will use CPU only. For GPU acceleration on Windows, install from source with Python and FFmpeg.
+
+### macOS (Native Only)
+
+Apple Silicon and Intel Macs use VideoToolbox for GPU-accelerated decoding. This requires running the app **natively from source** — Docker on macOS runs a Linux VM that has no access to macOS frameworks.
+
+> [!WARNING]
+> Docker on macOS runs in a Linux VM and cannot access VideoToolbox. If you run the Docker image on macOS, processing will use CPU only. Apple Silicon users still benefit from the native ARM64 Docker image (no Rosetta emulation overhead). For GPU acceleration on macOS, install from source with Python and FFmpeg.
 
 ### Multi-GPU Selection
 

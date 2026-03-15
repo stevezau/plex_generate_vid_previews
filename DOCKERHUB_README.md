@@ -128,6 +128,8 @@ services:
 | **All** | Windows | D3D11VA | Native only |
 | **Apple Silicon** | macOS | VideoToolbox | Native only |
 
+> **"Native only"** means GPU acceleration requires running the app from source on that platform. Docker on Windows (WSL2) and macOS runs a Linux VM — D3D11VA and VideoToolbox are not available inside Docker. Docker on these platforms will use CPU-only processing. Apple Silicon users benefit from the native ARM64 Docker image (no Rosetta overhead).
+
 ### NVIDIA GPU
 
 Prerequisites: NVIDIA drivers + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
