@@ -105,7 +105,7 @@
             </label>
             <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
             <div class="form-text">
-                Seconds to wait before each retry when an item could not be found in Plex. Gives Plex time to finish indexing.
+                Initial delay before the first retry. Subsequent retries use exponential backoff (2x, 4x, etc., capped at the slider maximum). Gives Plex time to finish indexing.
             </div>
         </div>
 

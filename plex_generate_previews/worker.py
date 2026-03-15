@@ -34,6 +34,18 @@ def clear_job_threads():
         _job_thread_ids.clear()
 
 
+def unregister_job_thread():
+    """Remove only the current thread from job tracking.
+
+    Unlike ``clear_job_threads`` which wipes the entire set, this removes
+    only the calling thread's ID.  Use this in job ``finally`` blocks so
+    that concurrently-running retry jobs keep their thread registered for
+    log capture.
+    """
+    with _job_thread_ids_lock:
+        _job_thread_ids.discard(threading.current_thread().ident)
+
+
 def is_job_thread(thread_id: int) -> bool:
     """Check if a thread ID belongs to the active job."""
     with _job_thread_ids_lock:

@@ -33,7 +33,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 log_failure_summary,
             )
             from ...utils import setup_working_directory as create_working_directory
-            from ...worker import clear_job_threads, is_job_thread, register_job_thread
+            from ...worker import is_job_thread, register_job_thread
             from ..settings_manager import get_settings_manager
 
             register_job_thread()
@@ -340,6 +340,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             else f"Retry: {basenames[0]}"
                         )
                         parent_id = job_config.get("parent_job_id") or job_id
+                        backoff_delay = min(
+                            300, retry_delay_sec * (2 ** (attempt - 1))
+                        )
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
                             config={
@@ -347,7 +350,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 "parent_job_id": parent_id,
                                 "retry_attempt": attempt,
                                 "max_retries": effective_max,
-                                "retry_delay": retry_delay_sec,
+                                "retry_delay": backoff_delay,
                                 "path_count": len(paths),
                                 "webhook_basenames": basenames[:20],
                             },
@@ -370,10 +373,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         )
                         return rj.id
 
-                    if (
-                        unresolved_paths
-                        and not is_retry
-                        and not (result.get("cancelled") or status_value == "cancelled")
+                    if unresolved_paths and not (
+                        result.get("cancelled") or status_value == "cancelled"
                     ):
                         try:
                             from ...plex_client import trigger_plex_partial_scan
@@ -401,19 +402,25 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         result.get("cancelled") or status_value == "cancelled"
                     ):
                         if is_retry and retry_attempt < effective_max:
+                            next_attempt = retry_attempt + 1
                             spawned_retry_id = _spawn_retry_job(
-                                unresolved_paths, retry_attempt + 1
+                                unresolved_paths, next_attempt
+                            )
+                            next_delay = min(
+                                300, retry_delay_sec * (2 ** (next_attempt - 1))
                             )
                             job_manager.add_log(
                                 job_id,
                                 f"INFO - Retry {retry_attempt}/{effective_max}: "
-                                f"{len(unresolved_paths)} still unresolved, next retry scheduled",
+                                f"{len(unresolved_paths)} still unresolved, "
+                                f"next retry in {next_delay}s",
                             )
                         elif not is_retry and effective_max > 0:
                             spawned_retry_id = _spawn_retry_job(unresolved_paths, 1)
                             job_manager.add_log(
                                 job_id,
-                                f"INFO - {len(unresolved_paths)} item(s) not found in Plex, retry scheduled",
+                                f"INFO - {len(unresolved_paths)} item(s) not found in Plex, "
+                                f"retry scheduled in {retry_delay_sec}s",
                             )
 
                     if result.get("cancelled") or status_value == "cancelled":
@@ -551,9 +558,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job_manager.add_log(job_id, f"ERROR - Job failed: {e}")
             job_manager.complete_job(job_id, error=str(e))
         finally:
-            from ...worker import clear_job_threads
+            from ...worker import unregister_job_thread
 
-            clear_job_threads()
+            unregister_job_thread()
             if log_handler_id is not None:
                 try:
                     from loguru import logger as loguru_logger
