@@ -50,9 +50,7 @@ class SettingsManager:
         try:
             from ..utils import atomic_json_save
 
-            atomic_json_save(
-                str(self.settings_file), self._settings, permissions=0o600
-            )
+            atomic_json_save(str(self.settings_file), self._settings, permissions=0o600)
             logger.debug(f"Saved settings to {self.settings_file}")
             try:
                 from ..config import clear_config_cache

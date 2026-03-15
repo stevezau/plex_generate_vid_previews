@@ -397,7 +397,9 @@ def create_app(config_dir: str = None) -> Flask:
         """Add standard security headers to every response."""
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault(
+            "Referrer-Policy", "strict-origin-when-cross-origin"
+        )
         return response
 
     # Start scheduler

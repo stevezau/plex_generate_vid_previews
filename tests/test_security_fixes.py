@@ -132,7 +132,8 @@ class TestPathTraversalPrevention:
 
         # Set PLEX_DATA_ROOT to tmp_path so the path is allowed
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
 
         # Path with traversal components should be resolved
@@ -158,7 +159,8 @@ class TestPathTraversalPrevention:
         outside.mkdir()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(allowed_root)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(allowed_root),
         )
 
         response = client.post(
@@ -181,7 +183,8 @@ class TestPathTraversalPrevention:
         secret.mkdir()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(allowed_root)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(allowed_root),
         )
 
         response = client.post(

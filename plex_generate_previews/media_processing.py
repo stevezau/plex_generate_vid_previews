@@ -120,7 +120,9 @@ try:
     # Test that native library is available
     MediaInfo.can_parse()
 except ImportError:
-    logger.error("pymediainfo Python package not found. Please install: pip install pymediainfo")
+    logger.error(
+        "pymediainfo Python package not found. Please install: pip install pymediainfo"
+    )
     sys.exit(1)
 except OSError as e:
     if "libmediainfo" in str(e).lower():
@@ -128,7 +130,9 @@ except OSError as e:
         if sys.platform == "darwin":
             logger.error("  macOS: brew install media-info")
         elif sys.platform.startswith("linux"):
-            logger.error("  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev")
+            logger.error(
+                "  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev"
+            )
             logger.error("  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel")
         else:
             logger.error("  See: https://mediaarea.net/en/MediaInfo/Download")

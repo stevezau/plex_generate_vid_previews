@@ -293,7 +293,9 @@ class TestJobsAPI:
 
     def test_create_job_ignores_credential_overrides(self, client):
         """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+        with patch(
+            "plex_generate_previews.web.routes.api_jobs._start_job_async"
+        ) as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
@@ -758,8 +760,12 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch(
+            "plex_generate_previews.web.routes.api_jobs._start_job_async"
+        ) as mock_start:
+            with patch(
+                "plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)
+            ):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -798,7 +804,9 @@ class TestManualTriggerAPI:
         media_root.mkdir()
 
         with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(media_root)):
+            with patch(
+                "plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(media_root)
+            ):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -820,8 +828,12 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch(
+            "plex_generate_previews.web.routes.api_jobs._start_job_async"
+        ) as mock_start:
+            with patch(
+                "plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)
+            ):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -842,7 +854,9 @@ class TestManualTriggerAPI:
         f2.touch()
 
         with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+            with patch(
+                "plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)
+            ):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -1475,7 +1489,8 @@ class TestPathValidation:
         """New-format path_mappings: invalid local_prefix returns validation error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1506,7 +1521,8 @@ class TestPathValidation:
         """path_mappings row with null byte in local_prefix returns invalid path error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1533,7 +1549,8 @@ class TestPathValidation:
         """Legacy: only plex_videos_path_mapping set returns Local Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1555,7 +1572,8 @@ class TestPathValidation:
         """Legacy: only plex_local_videos_path_mapping set returns Plex Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1908,7 +1926,8 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1925,7 +1944,8 @@ class TestValidatePathsBranches:
     ):
         """Plex directory missing Media subfolder."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1941,7 +1961,8 @@ class TestValidatePathsBranches:
         """Plex directory has Media but missing localhost subfolder."""
         (tmp_path / "Media").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1961,7 +1982,8 @@ class TestValidatePathsBranches:
         media_dir.mkdir(parents=True)
         (media_dir / "a").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1979,7 +2001,8 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -1994,7 +2017,8 @@ class TestValidatePathsBranches:
         """Path traversal attempt is rejected."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -2011,7 +2035,8 @@ class TestValidatePathsBranches:
         """Legacy local_media_path with null byte is rejected via the path_mappings branch."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",
@@ -2032,7 +2057,8 @@ class TestValidatePathsBranches:
     ):
         """Null byte in plex_config_folder is rejected."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT", str(tmp_path)
+            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            str(tmp_path),
         )
         resp = client.post(
             "/api/setup/validate-paths",

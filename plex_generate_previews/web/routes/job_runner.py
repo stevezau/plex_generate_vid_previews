@@ -333,16 +333,14 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         basenames = [_os.path.basename(p) for p in paths]
                         parent_lib = current_job.library_name if current_job else ""
                         if parent_lib.startswith("Retry: "):
-                            parent_lib = parent_lib[len("Retry: "):]
+                            parent_lib = parent_lib[len("Retry: ") :]
                         retry_library_name = (
                             f"Retry: {parent_lib}"
                             if parent_lib
                             else f"Retry: {basenames[0]}"
                         )
                         parent_id = job_config.get("parent_job_id") or job_id
-                        backoff_delay = min(
-                            300, retry_delay_sec * (2 ** (attempt - 1))
-                        )
+                        backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
                             config={
