@@ -331,10 +331,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         import os as _os
 
                         basenames = [_os.path.basename(p) for p in paths]
+                        parent_lib = current_job.library_name if current_job else ""
+                        if parent_lib.startswith("Retry: "):
+                            parent_lib = parent_lib[len("Retry: "):]
                         retry_library_name = (
-                            f"Retry: {basenames[0]}"
-                            if len(paths) == 1
-                            else f"Retry: {len(paths)} files"
+                            f"Retry: {parent_lib}"
+                            if parent_lib
+                            else f"Retry: {basenames[0]}"
                         )
                         parent_id = job_config.get("parent_job_id") or job_id
                         rj = job_manager.create_job(
