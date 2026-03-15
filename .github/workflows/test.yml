@@ -62,4 +62,3 @@ jobs:
 
       - name: Run tests
         run: pytest -m "not gpu and not e2e"
-  
