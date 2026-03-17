@@ -1836,6 +1836,11 @@ function getStatusBadge(status, paused, error, outcome) {
     if (outcome === undefined) outcome = null;
 
     var tooltipText = _buildOutcomeTooltip(outcome);
+    if (error) {
+        tooltipText = tooltipText
+            ? tooltipText + '&#10;' + error
+            : error;
+    }
     var tooltipAttrs = tooltipText
         ? ' data-bs-toggle="tooltip" data-bs-placement="top" data-bs-html="false" title="' + tooltipText + '"'
         : '';
