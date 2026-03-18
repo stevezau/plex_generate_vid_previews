@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1259,7 +1260,9 @@ def load_config(cli_args=None) -> Config:
         sys.exit(1)
 
     # Test FFmpeg actually works and log its version
+    logger.debug(f"FFmpeg path: {ffmpeg_path}")
     try:
+        _ffmpeg_start = time.monotonic()
         result = subprocess.run(
             [ffmpeg_path, "-version"],
             capture_output=True,
@@ -1268,15 +1271,29 @@ def load_config(cli_args=None) -> Config:
             errors="replace",
             timeout=30,
         )
+        _ffmpeg_elapsed = time.monotonic() - _ffmpeg_start
         if result.returncode != 0:
+            logger.error(
+                f"FFmpeg exited with code {result.returncode} "
+                f"after {_ffmpeg_elapsed:.1f}s"
+            )
+            if result.stderr:
+                logger.error(f"FFmpeg stderr: {result.stderr.strip()[:500]}")
+            if result.stdout:
+                logger.debug(f"FFmpeg stdout: {result.stdout.strip()[:500]}")
             validation_errors.append("FFmpeg found but not working properly")
         else:
-            # Log FFmpeg version at debug only; load_config runs on every config request (e.g. UI refresh)
             version_line = (
                 result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
             )
-            logger.debug(f"FFmpeg: {version_line}")
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+            logger.debug(f"FFmpeg: {version_line} (checked in {_ffmpeg_elapsed:.1f}s)")
+    except subprocess.TimeoutExpired:
+        logger.error(f"FFmpeg version check timed out after 30s (path: {ffmpeg_path})")
+        validation_errors.append("FFmpeg found but cannot execute properly")
+    except OSError as exc:
+        logger.error(
+            f"FFmpeg version check failed with OS error: {exc} (path: {ffmpeg_path})"
+        )
         validation_errors.append("FFmpeg found but cannot execute properly")
 
     # Validate configuration using helper functions
