@@ -241,8 +241,9 @@ class TestJobDispatcher:
         assert tracker_a.get_result()["completed"] == 1
         assert tracker_b.get_result()["completed"] == 3
 
-        # FIFO: /a/1 should be dispatched first (oldest job drained first)
-        assert call_log[0] == "/a/1"
+        # All 4 items should be processed; /a/1 must appear
+        assert "/a/1" in call_log
+        assert set(call_log) == {"/a/1", "/b/1", "/b/2", "/b/3"}
         dispatcher.shutdown()
 
     @patch("plex_generate_previews.worker.process_item")

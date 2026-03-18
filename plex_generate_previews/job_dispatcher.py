@@ -1,9 +1,9 @@
 """Multi-job dispatcher for concurrent job processing.
 
 Provides a persistent dispatch loop and shared worker pool so multiple jobs
-can run simultaneously.  Items are dispatched using FIFO drain-first
-scheduling: workers focus on the oldest active job and only spill over to
-the next job when the current job's queue is empty.
+can run simultaneously.  Items are dispatched using priority-aware drain-first
+scheduling: workers focus on the highest-priority active job and only spill
+over to the next job when the current job's queue is empty.
 """
 
 import queue
@@ -17,7 +17,19 @@ from loguru import logger
 
 from .config import Config
 from .media_processing import ProcessingResult
+from .web.jobs import PRIORITY_NORMAL
 from .worker import Worker, WorkerPool
+
+_submission_counter_lock = threading.Lock()
+_submission_counter = 0
+
+
+def _next_submission_order() -> int:
+    """Return a monotonically increasing submission sequence number."""
+    global _submission_counter
+    with _submission_counter_lock:
+        _submission_counter += 1
+        return _submission_counter
 
 
 class JobTracker:
@@ -34,6 +46,7 @@ class JobTracker:
         title_max_width: Max display width for titles.
         library_name: Library name for log prefixes.
         callbacks: Dict of per-job callback functions.
+        priority: Dispatch priority (1=high, 2=normal, 3=low).
 
     """
 
@@ -46,9 +59,12 @@ class JobTracker:
         title_max_width: int = 20,
         library_name: str = "",
         callbacks: Optional[Dict[str, Any]] = None,
+        priority: int = PRIORITY_NORMAL,
     ):
         """Initialize tracker for a single job."""
         self.job_id = job_id
+        self.priority = priority
+        self.submission_order = _next_submission_order()
         self.config = config
         self.plex = plex
         self.title_max_width = title_max_width
@@ -162,8 +178,8 @@ class JobDispatcher:
     """Coordinates item dispatch across multiple concurrent jobs.
 
     Owns a persistent WorkerPool and runs a background dispatch loop.
-    Uses FIFO drain-first scheduling: workers focus on the oldest active
-    job and spill over to the next job only when idle.
+    Uses priority-aware drain-first scheduling: workers focus on the
+    highest-priority active job and spill over to the next only when idle.
 
     Args:
         worker_pool: The shared WorkerPool instance.
@@ -188,6 +204,7 @@ class JobDispatcher:
         title_max_width: int = 20,
         library_name: str = "",
         callbacks: Optional[Dict[str, Any]] = None,
+        priority: int = PRIORITY_NORMAL,
     ) -> JobTracker:
         """Submit items for a job to the shared dispatch queue.
 
@@ -200,6 +217,7 @@ class JobDispatcher:
             library_name: Library name for log prefixes.
             callbacks: Dict with keys: progress_callback, worker_callback,
                 on_item_complete, cancel_check, pause_check.
+            priority: Dispatch priority (1=high, 2=normal, 3=low).
 
         Returns:
             JobTracker that callers can wait() on for completion.
@@ -213,6 +231,7 @@ class JobDispatcher:
             title_max_width=title_max_width,
             library_name=library_name,
             callbacks=callbacks,
+            priority=priority,
         )
         with self._trackers_lock:
             self._trackers[job_id] = tracker
@@ -382,7 +401,7 @@ class JobDispatcher:
                 if worker.worker_type == "CPU_FALLBACK" or not has_main_items:
                     break
 
-            # Pull next item (FIFO: oldest job with items first)
+            # Pull next item (highest priority, then oldest submission)
             item = self._get_next_item()
             if not item:
                 break
@@ -497,26 +516,39 @@ class JobDispatcher:
                     return True
         return False
 
-    def _get_next_item(self) -> Optional[Tuple[str, str, str, str, str]]:
-        """Get the next item using FIFO drain-first scheduling.
+    def update_job_priority(self, job_id: str, priority: int) -> None:
+        """Update the dispatch priority of a running job's tracker.
 
-        Always picks from the oldest active job first.  Workers only
-        spill over to the next job when the current job's queue is empty.
-        Dict insertion order (guaranteed in Python 3.7+) preserves
-        submission order.
+        Args:
+            job_id: Job identifier.
+            priority: New priority (1=high, 2=normal, 3=low).
+        """
+        with self._trackers_lock:
+            tracker = self._trackers.get(job_id)
+            if tracker:
+                tracker.priority = priority
+
+    def _get_next_item(self) -> Optional[Tuple[str, str, str, str, str]]:
+        """Get the next item using priority-aware drain-first scheduling.
+
+        Picks from the highest-priority active job first (lowest number).
+        Within the same priority, earlier submissions are preferred.
 
         Returns:
             (job_id, item_key, media_title, media_type, library_name) or None.
 
         """
         with self._trackers_lock:
-            for tracker in self._trackers.values():
-                if tracker.done_event.is_set():
-                    continue
-                if tracker.is_paused() or tracker.is_cancelled():
-                    continue
-                if not tracker.item_queue:
-                    continue
+            eligible = [
+                t
+                for t in self._trackers.values()
+                if not t.done_event.is_set()
+                and not t.is_paused()
+                and not t.is_cancelled()
+                and t.item_queue
+            ]
+            eligible.sort(key=lambda t: (t.priority, t.submission_order))
+            for tracker in eligible:
                 item = tracker.item_queue.popleft()
                 item_key, media_title, media_type = item[0], item[1], item[2]
                 library_name = item[3] if len(item) > 3 else ""

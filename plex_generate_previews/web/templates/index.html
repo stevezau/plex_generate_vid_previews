@@ -253,6 +253,7 @@
                                 <th>ID</th>
                                 <th>Library</th>
                                 <th>Status</th>
+                                <th style="width:100px">Priority</th>
                                 <th>Progress</th>
                                 <th>Created</th>
                                 <th>Actions</th>
@@ -260,7 +261,7 @@
                         </thead>
                         <tbody id="jobQueue">
                             <tr>
-                                <td colspan="6" class="text-center text-muted py-4">
+                                <td colspan="7" class="text-center text-muted py-4">
                                     Loading jobs...
                                 </td>
                             </tr>
@@ -307,6 +308,7 @@
                                 <th>Name</th>
                                 <th>Library</th>
                                 <th>Schedule</th>
+                                <th style="width:100px">Priority</th>
                                 <th>Next Run</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -314,7 +316,7 @@
                         </thead>
                         <tbody id="scheduleList">
                             <tr>
-                                <td colspan="6" class="text-center text-muted py-4">
+                                <td colspan="7" class="text-center text-muted py-4">
                                     Loading schedules...
                                 </td>
                             </tr>
@@ -367,6 +369,15 @@
                             <div class="form-text ms-4">Re-creates BIF files even if they already exist</div>
                         </div>
                     </div>
+                    <div class="mb-3">
+                        <label for="jobPriority" class="form-label">Priority</label>
+                        <select class="form-select" id="jobPriority">
+                            <option value="1">High</option>
+                            <option value="2" selected>Normal</option>
+                            <option value="3">Low</option>
+                        </select>
+                        <div class="form-text">Higher priority jobs are processed before lower priority ones</div>
+                    </div>
                 </form>
             </div>
             <div class="modal-footer">
@@ -413,12 +424,12 @@
     </div>
 </div>
 
-<!-- New Schedule Modal -->
+<!-- Schedule Modal (Create / Edit) -->
 <div class="modal fade" id="newScheduleModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-calendar-plus me-2"></i>Add Schedule</h5>
+                <h5 class="modal-title" id="scheduleModalTitle"><i class="bi bi-calendar-plus me-2"></i>Add Schedule</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -472,6 +483,15 @@
                         <div class="form-text">Select which days to run</div>
                     </div>
                     <div class="mb-3">
+                        <label for="schedulePriority" class="form-label">Job Priority</label>
+                        <select class="form-select" id="schedulePriority">
+                            <option value="1">High</option>
+                            <option value="2" selected>Normal</option>
+                            <option value="3">Low</option>
+                        </select>
+                        <div class="form-text">Priority assigned to jobs created by this schedule</div>
+                    </div>
+                    <div class="mb-3">
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" id="scheduleEnabled" checked>
                             <label class="form-check-label" for="scheduleEnabled">
@@ -480,11 +500,12 @@
                         </div>
                     </div>
                     <input type="hidden" id="scheduleCron" value="">
+                    <input type="hidden" id="scheduleEditId" value="">
                 </form>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="createSchedule()">
+                <button type="button" class="btn btn-primary" id="scheduleSubmitBtn" onclick="saveSchedule()">
                     <i class="bi bi-check me-1"></i>Create Schedule
                 </button>
             </div>

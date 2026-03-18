@@ -297,6 +297,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         ),
                         job_id=job_id,
                         on_dispatch_start=_on_dispatch_start,
+                        priority=job.priority,
                     )
                     log_failure_summary()
 
@@ -343,6 +344,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         )
                         parent_id = job_config.get("parent_job_id") or job_id
                         backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
+                        parent_priority = current_job.priority if current_job else 2
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
                             config={
@@ -354,6 +356,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 "path_count": len(paths),
                                 "webhook_basenames": basenames[:20],
                             },
+                            priority=parent_priority,
                         )
                         selected_libs = settings.get("selected_libraries", []) or []
                         if not isinstance(selected_libs, list):

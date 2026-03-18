@@ -537,6 +537,7 @@ def run_processing(
     worker_pool_callback=None,
     job_id=None,
     on_dispatch_start=None,
+    priority=None,
 ):
     """Run the main processing workflow.
 
@@ -553,6 +554,7 @@ def run_processing(
         job_id: Optional job identifier for multi-job dispatch (web mode)
         on_dispatch_start: Optional callable invoked once before the first batch of items
             is dispatched (used by the web layer to transition PENDING -> RUNNING).
+        priority: Optional dispatch priority (1=high, 2=normal, 3=low).
 
     """
     return_data = None
@@ -634,6 +636,8 @@ def run_processing(
                         "cancel_check": cancel_check,
                         "pause_check": pause_check,
                     }
+                    from .web.jobs import PRIORITY_NORMAL
+
                     tracker = dispatcher.submit_items(
                         job_id=job_id,
                         items=items,
@@ -642,6 +646,7 @@ def run_processing(
                         title_max_width=title_max_width,
                         library_name=library_name,
                         callbacks=callbacks,
+                        priority=priority if priority is not None else PRIORITY_NORMAL,
                     )
                     tracker.wait()
                     return tracker.get_result()

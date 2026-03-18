@@ -134,6 +134,13 @@ function initDashboard() {
     setInterval(loadJobs, 5000);
     setInterval(loadWorkerStatuses, 1000);
     setInterval(loadPendingWebhooks, 3000);
+
+    // Flush deferred job-queue updates when a priority dropdown closes
+    document.addEventListener('hidden.bs.dropdown', function () {
+        if (_jobQueueUpdatePending) {
+            updateJobQueue();
+        }
+    });
 }
 
 // SocketIO Connection
@@ -167,6 +174,10 @@ function connectSocket() {
         loadJobs();
         loadJobStats();
         showToast('Job Created', `Job ${job.id.substring(0, 8)} created`, 'info');
+    });
+
+    socket.on('job_updated', function(job) {
+        loadJobs();
     });
 
     socket.on('job_started', function(job) {
@@ -454,7 +465,7 @@ async function loadJobs() {
             // Show a less alarming message
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="6" class="text-center text-muted py-4">
+                    <td colspan="7" class="text-center text-muted py-4">
                         <i class="bi bi-hourglass-split me-2"></i>Loading job queue...
                     </td>
                 </tr>
@@ -709,14 +720,72 @@ function toggleActiveJobFiles(jobId) {
     }
 }
 
+const PRIORITY_LABELS = {1: 'High', 2: 'Normal', 3: 'Low'};
+const PRIORITY_BADGE_CLASS = {1: 'bg-danger', 2: 'bg-primary', 3: 'bg-secondary'};
+const PRIORITY_DOT_CLASS = {1: 'priority-dot-high', 2: 'priority-dot-normal', 3: 'priority-dot-low'};
+
+function renderPriorityCell(job) {
+    const pri = job.priority || 2;
+    const label = PRIORITY_LABELS[pri] || 'Normal';
+    const badgeClass = PRIORITY_BADGE_CLASS[pri] || 'bg-primary';
+    const isActive = job.status === 'running' || job.status === 'pending';
+    if (!isActive) {
+        return `<span class="badge ${badgeClass} priority-badge">${label}</span>`;
+    }
+    const items = [1, 2, 3].map(function (p) {
+        const active = p === pri ? ' active' : '';
+        const dot = `<span class="priority-dot ${PRIORITY_DOT_CLASS[p]}"></span>`;
+        return `<li><a class="dropdown-item${active}" href="#" onclick="setJobPriority('${escapeHtml(job.id)}', ${p}); return false;">${dot}${PRIORITY_LABELS[p]}</a></li>`;
+    }).join('');
+    return `<div class="dropdown d-inline-block">
+        <button class="btn btn-sm ${badgeClass} dropdown-toggle text-white priority-btn" type="button" data-bs-toggle="dropdown" aria-expanded="false">${label}</button>
+        <ul class="dropdown-menu">${items}</ul>
+    </div>`;
+}
+
+async function setJobPriority(jobId, priority) {
+    // Update in-memory array so deferred table rebuilds stay consistent
+    const jobObj = jobs.find(function (j) { return j.id === jobId; });
+    const oldPriority = jobObj ? jobObj.priority : null;
+    if (jobObj) jobObj.priority = priority;
+
+    // Optimistic DOM update for immediate visual feedback
+    const row = document.getElementById('job-row-' + jobId);
+    if (row) {
+        const btn = row.querySelector('.priority-btn');
+        if (btn) {
+            for (const cls of Object.values(PRIORITY_BADGE_CLASS)) btn.classList.remove(cls);
+            btn.classList.add(PRIORITY_BADGE_CLASS[priority] || 'bg-primary');
+            btn.textContent = PRIORITY_LABELS[priority] || 'Normal';
+        }
+    }
+
+    try {
+        await apiPost('/api/jobs/' + jobId + '/priority', {priority: priority});
+    } catch (err) {
+        if (jobObj && oldPriority !== null) jobObj.priority = oldPriority;
+        loadJobs();
+        showToast('Error', 'Failed to update priority', 'danger');
+    }
+}
+
+let _jobQueueUpdatePending = false;
+
 function updateJobQueue() {
     const tbody = document.getElementById('jobQueue');
+
+    // Defer rebuild while a priority dropdown is open to avoid destroying it
+    if (tbody && tbody.querySelector('.dropdown-menu.show')) {
+        _jobQueueUpdatePending = true;
+        return;
+    }
+    _jobQueueUpdatePending = false;
 
     if (jobs.length === 0) {
         const msg = jobTotal === 0 ? 'No jobs in queue' : 'No jobs on this page';
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="text-center text-muted py-4">
+                <td colspan="7" class="text-center text-muted py-4">
                     ${msg}
                 </td>
             </tr>
@@ -775,11 +844,13 @@ function updateJobQueue() {
         const retryLabel = isRetry && maxRetries > 0
             ? ` <span class="badge bg-secondary ms-1" title="Retry job">Retry ${retryAttempt}/${maxRetries}</span>`
             : '';
+        const priorityCell = renderPriorityCell(job);
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
                 <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
                 <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${retryLabel}${filesToggleBtn}</td>
                 <td>${statusBadge}</td>
+                <td>${priorityCell}</td>
                 <td>
                     <div class="progress" style="height: 20px;">
                         <div class="progress-bar" role="progressbar"
@@ -801,7 +872,7 @@ function updateJobQueue() {
                 : '';
             html += `
             <tr id="job-detail-${escapeHtml(job.id)}" class="${isFilesExpanded ? '' : 'd-none'} job-files-detail" aria-hidden="${isFilesExpanded ? 'false' : 'true'}">
-                <td colspan="6" class="bg-dark bg-opacity-10 small py-2 ps-4">
+                <td colspan="7" class="bg-dark bg-opacity-10 small py-2 ps-4">
                     <strong>Files:</strong>
                     <div class="mt-1">${filesList}${overflow}</div>
                 </td>
@@ -948,12 +1019,15 @@ function updateActiveJobs(runningJobs) {
             ? `<span class="text-muted small"><i class="bi bi-clock me-1"></i>Started ${formatDate(job.started_at)} (<span data-elapsed-since="${escapeHtml(job.started_at)}">${formatElapsed(job.started_at)}</span>)</span>`
             : '';
 
+        const activePri = job.priority || 2;
+        const activePriBadge = `<span class="badge ${PRIORITY_BADGE_CLASS[activePri] || 'bg-primary'} priority-badge ms-1">${PRIORITY_LABELS[activePri] || 'Normal'}</span>`;
+
         html += `
         <div class="active-job-card mb-3 p-3 border rounded" id="active-job-${jid}">
             <div class="d-flex justify-content-between align-items-center mb-2">
                 <div>
                     <strong>Job:</strong> <code>${jid.substring(0, 8)}</code>
-                    <span class="ms-2">${statusBadge}</span>
+                    <span class="ms-2">${statusBadge}</span>${activePriBadge}
                     <button class="btn btn-sm btn-outline-info ms-2" onclick="showLogsModal('${jid}')" title="View Logs">
                         <i class="bi bi-file-text"></i>
                     </button>
@@ -1337,7 +1411,7 @@ function updateScheduleList() {
     if (schedules.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="text-center text-muted py-4">
+                <td colspan="7" class="text-center text-muted py-4">
                     No schedules configured
                 </td>
             </tr>
@@ -1358,16 +1432,24 @@ function updateScheduleList() {
 
         const nextRun = schedule.next_run ? formatDate(schedule.next_run) : '-';
 
+        const schedPri = schedule.priority || 2;
+        const schedPriLabel = PRIORITY_LABELS[schedPri] || 'Normal';
+        const schedPriBadge = PRIORITY_BADGE_CLASS[schedPri] || 'bg-primary';
+
         html += `
             <tr>
                 <td>${escapeHtml(schedule.name)}</td>
                 <td>${escapeHtml(schedule.library_name) || 'All Libraries'}</td>
                 <td><code>${escapeHtml(cronDisplay)}</code></td>
+                <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
                 <td>${nextRun}</td>
                 <td>${statusBadge}</td>
-                <td>
+                <td class="text-nowrap">
                     <button class="btn btn-sm btn-outline-primary me-1" onclick="runScheduleNow('${escapeHtml(schedule.id)}')" title="Run Now">
                         <i class="bi bi-play-fill"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-info me-1" onclick="showEditScheduleModal('${escapeHtml(schedule.id)}')" title="Edit">
+                        <i class="bi bi-pencil"></i>
                     </button>
                     <button class="btn btn-sm btn-outline-secondary me-1" onclick="toggleSchedule('${escapeHtml(schedule.id)}', ${!schedule.enabled})"
                             title="${schedule.enabled ? 'Disable' : 'Enable'}">
@@ -1450,9 +1532,12 @@ async function startNewJob() {
         }
     }
 
+    const priority = parseInt(document.getElementById('jobPriority').value, 10) || 2;
+
     const jobPayload = {
         library_names: selectedLibraryNames.length > 0 ? selectedLibraryNames : null,
         library_name: libraryName,
+        priority: priority,
         config: {
             force_generate: forceRegenerate
         }
@@ -1715,62 +1800,120 @@ async function clearJobsByStatus() {
     }
 }
 
-function showNewScheduleModal() {
+function _resetScheduleForm() {
     document.getElementById('scheduleName').value = '';
     document.getElementById('scheduleLibrary').value = '';
     document.getElementById('scheduleCron').value = '';
+    document.getElementById('scheduleEditId').value = '';
     document.getElementById('scheduleEnabled').checked = true;
+    document.getElementById('schedulePriority').value = '2';
+    document.getElementById('scheduleTime').value = '02:00';
+
+    // Default days: Mon-Fri checked
+    const defaultDays = new Set(['1', '2', '3', '4', '5']);
+    document.querySelectorAll('.schedule-day').forEach(cb => {
+        cb.checked = defaultDays.has(cb.value);
+    });
+}
+
+function showNewScheduleModal() {
+    _resetScheduleForm();
+    document.getElementById('scheduleModalTitle').innerHTML =
+        '<i class="bi bi-calendar-plus me-2"></i>Add Schedule';
+    document.getElementById('scheduleSubmitBtn').innerHTML =
+        '<i class="bi bi-check me-1"></i>Create Schedule';
 
     const modal = new bootstrap.Modal(document.getElementById('newScheduleModal'));
     modal.show();
 }
 
-async function createSchedule() {
-    const name = document.getElementById('scheduleName').value;
-    const libraryId = document.getElementById('scheduleLibrary').value;
-    const enabled = document.getElementById('scheduleEnabled').checked;
-
-    // Get time
-    const timeValue = document.getElementById('scheduleTime').value;
-    if (!timeValue) {
-        showToast('Error', 'Time is required', 'danger');
-        return;
-    }
-    const [hours, minutes] = timeValue.split(':');
-
-    // Get selected days
-    const dayCheckboxes = document.querySelectorAll('.schedule-day:checked');
-    const selectedDays = Array.from(dayCheckboxes).map(cb => cb.value);
-
-    if (selectedDays.length === 0) {
-        showToast('Error', 'Select at least one day', 'danger');
+function showEditScheduleModal(scheduleId) {
+    const schedule = schedules.find(s => s.id === scheduleId);
+    if (!schedule) {
+        showToast('Error', 'Schedule not found', 'danger');
         return;
     }
 
-    // Build cron expression: minute hour * * day_of_week
-    const cronExpr = `${parseInt(minutes)} ${parseInt(hours)} * * ${selectedDays.join(',')}`;
+    _resetScheduleForm();
 
+    document.getElementById('scheduleEditId').value = schedule.id;
+    document.getElementById('scheduleName').value = schedule.name || '';
+    document.getElementById('scheduleLibrary').value = schedule.library_id || '';
+    document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
+    document.getElementById('schedulePriority').value = String(schedule.priority || 2);
+
+    // Parse cron expression back to time and days
+    if (schedule.trigger_type === 'cron' && schedule.trigger_value) {
+        const parts = schedule.trigger_value.split(/\s+/);
+        if (parts.length >= 5) {
+            const minute = parts[0].padStart(2, '0');
+            const hour = parts[1].padStart(2, '0');
+            document.getElementById('scheduleTime').value = `${hour}:${minute}`;
+
+            const cronDays = parts[4].split(',').map(d => d.trim());
+            document.querySelectorAll('.schedule-day').forEach(cb => {
+                cb.checked = cronDays.includes(cb.value);
+            });
+        }
+    }
+
+    document.getElementById('scheduleModalTitle').innerHTML =
+        '<i class="bi bi-pencil me-2"></i>Edit Schedule';
+    document.getElementById('scheduleSubmitBtn').innerHTML =
+        '<i class="bi bi-check me-1"></i>Save Changes';
+
+    const modal = new bootstrap.Modal(document.getElementById('newScheduleModal'));
+    modal.show();
+}
+
+async function saveSchedule() {
+    const editId = document.getElementById('scheduleEditId').value;
+    const name = document.getElementById('scheduleName').value.trim();
     if (!name) {
         showToast('Error', 'Name is required', 'danger');
         return;
     }
 
+    const timeValue = document.getElementById('scheduleTime').value;
+    if (!timeValue) {
+        showToast('Error', 'Time is required', 'danger');
+        return;
+    }
+
+    const selectedDays = Array.from(document.querySelectorAll('.schedule-day:checked')).map(cb => cb.value);
+    if (selectedDays.length === 0) {
+        showToast('Error', 'Select at least one day', 'danger');
+        return;
+    }
+
+    const [hours, minutes] = timeValue.split(':');
+    const cronExpr = `${parseInt(minutes)} ${parseInt(hours)} * * ${selectedDays.join(',')}`;
+    const libraryId = document.getElementById('scheduleLibrary').value;
     const library = libraries.find(l => l.id === libraryId);
 
+    const payload = {
+        name: name,
+        cron_expression: cronExpr,
+        library_id: libraryId || null,
+        library_name: library ? library.name : 'All Libraries',
+        enabled: document.getElementById('scheduleEnabled').checked,
+        priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2
+    };
+
     try {
-        await apiPost('/api/schedules', {
-            name: name,
-            cron_expression: cronExpr,
-            library_id: libraryId || null,
-            library_name: library ? library.name : 'All Libraries',
-            enabled: enabled
-        });
+        if (editId) {
+            await apiPut(`/api/schedules/${editId}`, payload);
+            showToast('Schedule Updated', `Schedule "${name}" updated successfully`, 'success');
+        } else {
+            await apiPost('/api/schedules', payload);
+            showToast('Schedule Created', `Schedule "${name}" created successfully`, 'success');
+        }
 
         bootstrap.Modal.getInstance(document.getElementById('newScheduleModal')).hide();
         loadSchedules();
-        showToast('Schedule Created', `Schedule "${name}" created successfully`, 'success');
     } catch (error) {
-        showToast('Error', 'Failed to create schedule: ' + error.message, 'danger');
+        const action = editId ? 'update' : 'create';
+        showToast('Error', `Failed to ${action} schedule: ` + error.message, 'danger');
     }
 }
 

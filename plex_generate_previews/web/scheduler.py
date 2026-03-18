@@ -25,6 +25,7 @@ def execute_scheduled_job(
     library_id: Optional[str] = None,
     library_name: str = "",
     config: Optional[dict] = None,
+    priority: Optional[int] = None,
 ) -> None:
     """Execute a scheduled job - module-level function for APScheduler pickling.
 
@@ -36,19 +37,23 @@ def execute_scheduled_job(
         library_id: Plex library section ID
         library_name: Human-readable library name
         config: Job configuration dict
+        priority: Dispatch priority (1=high, 2=normal, 3=low)
 
     """
     logger.info(f"Executing scheduled job: {schedule_id} for library: {library_name}")
 
-    # Get the schedule manager singleton to access the callback
     manager = get_schedule_manager()
 
     if manager.run_job_callback:
         try:
-            manager.run_job_callback(
-                library_id=library_id, library_name=library_name, config=config or {}
-            )
-            # Update last run time
+            kwargs = {
+                "library_id": library_id,
+                "library_name": library_name,
+                "config": config or {},
+            }
+            if priority is not None:
+                kwargs["priority"] = priority
+            manager.run_job_callback(**kwargs)
             manager._update_last_run(schedule_id)
         except Exception as e:
             logger.error(f"Failed to execute scheduled job {schedule_id}: {e}")
@@ -161,6 +166,7 @@ class ScheduleManager:
         library_name: str = "",
         config: Optional[dict] = None,
         enabled: bool = True,
+        priority: Optional[int] = None,
     ) -> dict:
         """Create a new schedule.
 
@@ -172,6 +178,7 @@ class ScheduleManager:
             library_name: Library name for display
             config: Optional configuration overrides
             enabled: Whether the schedule is enabled
+            priority: Dispatch priority for jobs created by this schedule (1-3)
 
         Returns:
             Schedule metadata dict
@@ -206,6 +213,7 @@ class ScheduleManager:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_run": None,
             "next_run": None,
+            "priority": priority,
         }
 
         # Ensure scheduler is running
@@ -218,7 +226,7 @@ class ScheduleManager:
                 execute_scheduled_job,
                 trigger=trigger,
                 id=schedule_id,
-                args=[schedule_id, library_id, library_name, config],
+                args=[schedule_id, library_id, library_name, config, priority],
                 replace_existing=True,
             )
             schedule_meta["next_run"] = (
@@ -241,6 +249,7 @@ class ScheduleManager:
         library_name: str = None,
         config: dict = None,
         enabled: bool = None,
+        priority: int = None,
     ) -> Optional[dict]:
         """Update an existing schedule."""
         if schedule_id not in self._schedules:
@@ -259,6 +268,8 @@ class ScheduleManager:
             schedule["config"] = config
         if enabled is not None:
             schedule["enabled"] = enabled
+        if priority is not None:
+            schedule["priority"] = priority
 
         # Update trigger if changed
         if cron_expression is not None:
@@ -290,6 +301,7 @@ class ScheduleManager:
                     schedule["library_id"],
                     schedule["library_name"],
                     schedule["config"],
+                    schedule.get("priority"),
                 ],
                 replace_existing=True,
             )

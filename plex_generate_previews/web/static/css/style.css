@@ -258,3 +258,23 @@ code {
 .dropdown-menu .form-check-label {
     color: #e0e0e0;
 }
+
+/* Priority buttons & badges — fixed width so High/Normal/Low don't shift layout */
+.priority-btn,
+.priority-badge {
+    min-width: 76px;
+    text-align: center;
+}
+
+/* Color dot in priority dropdown items */
+.priority-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.priority-dot-high   { background-color: #dc3545; }
+.priority-dot-normal { background-color: #0d6efd; }
+.priority-dot-low    { background-color: #6c757d; }

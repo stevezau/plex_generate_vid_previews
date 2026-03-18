@@ -19,6 +19,33 @@ from loguru import logger
 # Message shown in UI when a job's log file was removed by retention policy.
 LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
 
+PRIORITY_HIGH = 1
+PRIORITY_NORMAL = 2
+PRIORITY_LOW = 3
+
+PRIORITY_LABELS = {
+    PRIORITY_HIGH: "high",
+    PRIORITY_NORMAL: "normal",
+    PRIORITY_LOW: "low",
+}
+PRIORITY_FROM_LABEL = {v: k for k, v in PRIORITY_LABELS.items()}
+
+
+def parse_priority(value) -> int:
+    """Parse a priority value from int or string label.
+
+    Args:
+        value: Integer (1-3) or string ("high", "normal", "low").
+
+    Returns:
+        Priority integer, defaulting to PRIORITY_NORMAL for invalid input.
+    """
+    if isinstance(value, int) and value in PRIORITY_LABELS:
+        return value
+    if isinstance(value, str):
+        return PRIORITY_FROM_LABEL.get(value.lower(), PRIORITY_NORMAL)
+    return PRIORITY_NORMAL
+
 
 class JobStatus(str, Enum):
     """Job status enumeration."""
@@ -87,6 +114,7 @@ class Job:
     error: Optional[str] = None
     config: Dict[str, Any] = field(default_factory=dict)
     paused: bool = False
+    priority: int = PRIORITY_NORMAL
 
     def __post_init__(self):
         if not self.created_at:
@@ -98,6 +126,7 @@ class Job:
             self.progress = JobProgress(**data)
         if isinstance(self.status, str):
             self.status = JobStatus(self.status)
+        self.priority = parse_priority(self.priority)
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -113,6 +142,7 @@ class Job:
             "error": self.error,
             "config": self.config,
             "paused": self.paused,
+            "priority": self.priority,
         }
 
 
@@ -336,14 +366,23 @@ class JobManager:
         library_id: Optional[str] = None,
         library_name: str = "",
         config: Optional[Dict[str, Any]] = None,
+        priority: int = PRIORITY_NORMAL,
     ) -> Job:
-        """Create a new job."""
+        """Create a new job.
+
+        Args:
+            library_id: Plex library section ID.
+            library_name: Human-readable library name.
+            config: Job configuration overrides.
+            priority: Dispatch priority (1=high, 2=normal, 3=low).
+        """
         with self._lock:
             job = Job(
                 id=str(uuid.uuid4()),
                 library_id=library_id,
                 library_name=library_name,
                 config=config or {},
+                priority=parse_priority(priority),
             )
             self._jobs[job.id] = job
             self._save_jobs()
@@ -418,11 +457,12 @@ class JobManager:
                     orig.error = "Superseded by auto-requeue after restart"
                     orig.completed_at = datetime.now(timezone.utc).isoformat()
 
-            # Create the new job
+            # Create the new job, preserving original priority
             new_job = self.create_job(
                 library_id=orig.library_id,
                 library_name=orig.library_name,
                 config=new_config,
+                priority=orig.priority,
             )
             self.add_log(
                 new_job.id,
@@ -484,6 +524,26 @@ class JobManager:
             if job:
                 job.config = dict(config)
                 self._save_jobs()
+
+    def update_job_priority(self, job_id: str, priority: int) -> Optional[Job]:
+        """Update the dispatch priority of a job.
+
+        Args:
+            job_id: Job identifier.
+            priority: New priority value (1=high, 2=normal, 3=low).
+
+        Returns:
+            The updated Job, or None if not found.
+        """
+        priority = parse_priority(priority)
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            job.priority = priority
+            self._save_jobs()
+            self._emit_event("job_updated", job.to_dict())
+        return job
 
     def start_job(self, job_id: str) -> Optional[Job]:
         """Mark a job as started."""

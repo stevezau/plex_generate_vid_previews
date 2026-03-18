@@ -28,7 +28,7 @@ socketio = SocketIO()
 csrf = CSRFProtect()
 
 
-def run_scheduled_job(library_id=None, library_name="", config=None):
+def run_scheduled_job(library_id=None, library_name="", config=None, priority=None):
     """Callback for running scheduled jobs.
 
     Must be at module level (not inside create_app) so APScheduler
@@ -38,25 +38,26 @@ def run_scheduled_job(library_id=None, library_name="", config=None):
         library_id: Plex library section ID
         library_name: Human-readable library name
         config: Job configuration dict
+        priority: Dispatch priority (1=high, 2=normal, 3=low)
 
     """
-    # Get job manager - uses singleton pattern
+    from .jobs import PRIORITY_NORMAL
+
     job_manager = get_job_manager()
 
     job = job_manager.create_job(
-        library_id=library_id, library_name=library_name, config=config or {}
+        library_id=library_id,
+        library_name=library_name,
+        config=config or {},
+        priority=priority if priority is not None else PRIORITY_NORMAL,
     )
 
-    # Build config overrides - include library_id if specified
     job_config = dict(config) if config else {}
     if library_id:
-        # Specific library selected - run only that library
         job_config["selected_libraries"] = [library_id]
     else:
-        # All libraries - empty list means process all
         job_config["selected_libraries"] = []
 
-    # Import here to avoid circular imports
     from .routes import _start_job_async
 
     _start_job_async(job.id, job_config)

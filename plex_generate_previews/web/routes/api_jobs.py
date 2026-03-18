@@ -12,7 +12,7 @@ from ..auth import (
     regenerate_token,
     validate_token,
 )
-from ..jobs import JobStatus, get_job_manager
+from ..jobs import PRIORITY_NORMAL, JobStatus, get_job_manager, parse_priority
 from . import api
 from .job_runner import _start_job_async
 from ._helpers import (
@@ -95,7 +95,7 @@ def get_jobs():
         running = [j for j in all_jobs if j.status == JobStatus.RUNNING]
         pending = sorted(
             (j for j in all_jobs if j.status == JobStatus.PENDING),
-            key=lambda j: j.created_at or "",
+            key=lambda j: (j.priority, j.created_at or ""),
         )
         terminal = sorted(
             (
@@ -167,6 +167,8 @@ def create_job():
     if not library_names and data.get("library_id"):
         library_ids = [data.get("library_id")]
 
+    priority = data.get("priority", PRIORITY_NORMAL)
+
     job_manager = get_job_manager()
     job = job_manager.create_job(
         library_id=",".join(library_names)
@@ -174,6 +176,7 @@ def create_job():
         else (",".join(library_ids) if library_ids else None),
         library_name=data.get("library_name", ""),
         config=data.get("config", {}),
+        priority=priority,
     )
 
     config_overrides = data.get("config", {})
@@ -205,6 +208,7 @@ def create_manual_job():
     data = request.get_json() or {}
     raw_paths = data.get("file_paths") or []
     force_regenerate = _param_to_bool(data.get("force_regenerate"), False)
+    priority = data.get("priority", PRIORITY_NORMAL)
 
     if not raw_paths:
         return jsonify({"error": "file_paths is required and must not be empty"}), 400
@@ -236,6 +240,7 @@ def create_manual_job():
             "webhook_paths": resolved_paths,
             "force_generate": force_regenerate,
         },
+        priority=priority,
     )
 
     config_overrides = {
@@ -282,6 +287,39 @@ def resume_job(job_id):
     return resume_processing()
 
 
+@api.route("/jobs/<job_id>/priority", methods=["POST"])
+@api_token_required
+def set_job_priority(job_id):
+    """Update the dispatch priority of a job.
+
+    Accepts JSON body: {"priority": "high"|"normal"|"low"} or {"priority": 1|2|3}.
+    Updates the job model and, if the job is running, the dispatcher tracker.
+    """
+    data = request.get_json() or {}
+    raw = data.get("priority")
+    if raw is None:
+        return jsonify({"error": "priority is required"}), 400
+
+    priority = parse_priority(raw)
+
+    job_manager = get_job_manager()
+    job = job_manager.update_job_priority(job_id, priority)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if job.status == JobStatus.RUNNING:
+        try:
+            from ...job_dispatcher import get_dispatcher
+
+            dispatcher = get_dispatcher()
+            if dispatcher is not None:
+                dispatcher.update_job_priority(job_id, priority)
+        except Exception:
+            logger.debug("Could not update dispatcher priority", exc_info=True)
+
+    return jsonify(job.to_dict())
+
+
 @api.route("/processing/state", methods=["GET"])
 @api_token_required
 def get_processing_state():
@@ -323,7 +361,7 @@ def resume_processing():
     logger.info("Global processing resumed")
     pending = sorted(
         job_manager.get_pending_jobs(),
-        key=lambda j: j.created_at or "",
+        key=lambda j: (j.priority, j.created_at or ""),
     )
     for pj in pending:
         _start_job_async(pj.id, pj.config or {})
@@ -675,6 +713,7 @@ def reprocess_job(job_id):
         library_id=job.library_id,
         library_name=job.library_name,
         config=new_config,
+        priority=job.priority,
     )
     _start_job_async(new_job.id, new_job.config)
     return jsonify(new_job.to_dict()), 201

@@ -53,6 +53,7 @@ def create_schedule():
             library_name=data.get("library_name", ""),
             config=data.get("config", {}),
             enabled=data.get("enabled", True),
+            priority=data.get("priority"),
         )
         return jsonify(schedule), 201
     except ValueError as e:
@@ -79,6 +80,7 @@ def update_schedule(schedule_id):
         library_name=data.get("library_name"),
         config=data.get("config"),
         enabled=data.get("enabled"),
+        priority=data.get("priority"),
     )
 
     if schedule:
