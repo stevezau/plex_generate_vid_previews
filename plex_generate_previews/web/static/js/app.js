@@ -836,7 +836,7 @@ function renderPriorityCell(job) {
         return `<li><a class="dropdown-item${active}" href="#" onclick="setJobPriority('${escapeHtml(job.id)}', ${p}); return false;">${dot}${PRIORITY_LABELS[p]}</a></li>`;
     }).join('');
     return `<div class="dropdown d-inline-block">
-        <button class="btn btn-sm ${badgeClass} dropdown-toggle text-white priority-btn" type="button" data-bs-toggle="dropdown" aria-expanded="false">${label}</button>
+        <button class="badge ${badgeClass} border-0 dropdown-toggle priority-btn" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="cursor:pointer;">${label}</button>
         <ul class="dropdown-menu">${items}</ul>
     </div>`;
 }
