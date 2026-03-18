@@ -11,6 +11,7 @@ import pytest
 
 from plex_generate_previews.config import (
     expand_path_mapping_candidates,
+    ConfigValidationError,
     get_config_value,
     get_path_mapping_pairs,
     is_path_excluded,
@@ -738,8 +739,8 @@ class TestLoadConfig:
         )
 
         with patch.dict("os.environ", {}, clear=True):
-            config = load_config(args)
-            assert config is None
+            with pytest.raises(ConfigValidationError):
+                load_config(args)
 
     @patch("shutil.which")
     @patch("plex_generate_previews.logging_config.setup_logging")
@@ -768,8 +769,8 @@ class TestLoadConfig:
         )
 
         with patch.dict("os.environ", {}, clear=True):
-            config = load_config(args)
-            assert config is None
+            with pytest.raises(ConfigValidationError):
+                load_config(args)
 
     @patch("shutil.which")
     @patch("plex_generate_previews.config.load_dotenv")
@@ -803,8 +804,8 @@ class TestLoadConfig:
         )
 
         with patch.dict("os.environ", {}, clear=True):
-            config = load_config(args)
-            assert config is None
+            with pytest.raises(ConfigValidationError):
+                load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -839,8 +840,8 @@ class TestLoadConfig:
             log_level=None,
         )
 
-        config = load_config(args)
-        assert config is None
+        with pytest.raises(ConfigValidationError):
+            load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -878,8 +879,8 @@ class TestLoadConfig:
             log_level=None,
         )
 
-        config = load_config(args)
-        assert config is None
+        with pytest.raises(ConfigValidationError):
+            load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -935,10 +936,9 @@ class TestLoadConfig:
         args.tmp_folder = "/tmp/plex_generate_previews"
         args.log_level = None
 
-        config = load_config(args)
-
         # Should fail validation due to invalid frame interval
-        assert config is None
+        with pytest.raises(ConfigValidationError):
+            load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -992,10 +992,9 @@ class TestLoadConfig:
         args.tmp_folder = "/tmp/plex_generate_previews"
         args.log_level = None
 
-        config = load_config(args)
-
         # Should fail validation due to invalid thread count
-        assert config is None
+        with pytest.raises(ConfigValidationError):
+            load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1050,10 +1049,9 @@ class TestLoadConfig:
         args.tmp_folder = "/tmp/plex_generate_previews"
         args.log_level = None
 
-        config = load_config(args)
-
         # Should fail validation due to invalid ffmpeg_threads
-        assert config is None
+        with pytest.raises(ConfigValidationError):
+            load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1107,10 +1105,9 @@ class TestLoadConfig:
         args.tmp_folder = "/tmp/plex_generate_previews"
         args.log_level = None
 
-        config = load_config(args)
-
         # Should fail validation due to invalid GPU selection
-        assert config is None
+        with pytest.raises(ConfigValidationError):
+            load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1382,8 +1379,8 @@ class TestLoadConfig:
         )
 
         with patch.dict("os.environ", {}, clear=True):
-            config = load_config(args)
-            assert config is None
+            with pytest.raises(ConfigValidationError):
+                load_config(args)
 
     @patch("shutil.which")
     @patch("subprocess.run")

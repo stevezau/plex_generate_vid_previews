@@ -24,7 +24,7 @@ from rich.progress import (
 )
 from rich.text import Text
 
-from .config import load_config
+from .config import ConfigValidationError, load_config
 from .gpu_detection import detect_all_gpus, format_gpu_info
 from .logging_config import setup_logging
 from .media_processing import ProcessingResult, clear_failures, log_failure_summary
@@ -389,10 +389,9 @@ def setup_application() -> tuple:
 
     # Load and validate configuration (CLI args take precedence over env vars)
     # Note: Basic logging is already set up, so config validation errors will be logged properly
-    config = load_config(args)
-
-    # Exit if configuration validation failed
-    if config is None:
+    try:
+        config = load_config(args)
+    except ConfigValidationError:
         sys.exit(1)
 
     # Store config in global application state for cleanup

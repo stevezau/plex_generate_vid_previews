@@ -25,7 +25,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             from loguru import logger as loguru_logger
 
             from ...cli import run_processing
-            from ...config import load_config
+            from ...config import ConfigValidationError, load_config
             from ...media_processing import (
                 _verify_tmp_folder_health,
                 clear_failures,
@@ -96,11 +96,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 "true" if _job_settings.plex_verify_ssl else "false"
             )
 
-            config = load_config()
-            if config is None:
+            try:
+                config = load_config()
+            except ConfigValidationError as exc:
+                detail = "; ".join(exc.errors)
                 job_manager.complete_job(
                     job_id,
-                    error="Configuration incomplete. Check PLEX_URL and PLEX_TOKEN.",
+                    error=f"Configuration validation failed: {detail}",
                 )
                 return
 

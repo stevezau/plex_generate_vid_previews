@@ -18,6 +18,20 @@ from loguru import logger
 
 from .utils import is_docker_environment
 
+
+class ConfigValidationError(Exception):
+    """Raised when configuration validation fails.
+
+    Args:
+        errors: List of human-readable validation error strings.
+
+    """
+
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        super().__init__("; ".join(errors))
+
+
 # Set default ROCM_PATH if not already set to prevent KeyError in AMD SMI
 if "ROCM_PATH" not in os.environ:
     os.environ["ROCM_PATH"] = "/opt/rocm"
@@ -1007,7 +1021,10 @@ def get_cached_config(cli_args=None):
     mtime = os.path.getmtime(settings_path) if os.path.exists(settings_path) else 0.0
     if _cached_config is not None and _cached_config_mtime == mtime:
         return _cached_config
-    config = load_config(cli_args)
+    try:
+        config = load_config(cli_args)
+    except ConfigValidationError:
+        return None
     if config is not None:
         _cached_config = config
         _cached_config_mtime = mtime
@@ -1029,10 +1046,12 @@ def load_config(cli_args=None) -> Config:
         cli_args: Parsed CLI arguments or None
 
     Returns:
-        Config: Validated configuration object
+        Config: Validated configuration object.
 
     Raises:
-        SystemExit: If required configuration is missing or invalid
+        ConfigValidationError: If configuration validation fails (missing params,
+            invalid values, FFmpeg issues, etc.).
+        SystemExit: If both CPU and GPU threads are set to 0.
 
     """
     # Load .env file so environment variables are available
@@ -1247,7 +1266,7 @@ def load_config(cli_args=None) -> Config:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=5,
+            timeout=30,
         )
         if result.returncode != 0:
             validation_errors.append("FFmpeg found but not working properly")
@@ -1300,14 +1319,14 @@ def load_config(cli_args=None) -> Config:
             except SystemExit:
                 pass
 
-        return None  # Return None to indicate validation failure
+        raise ConfigValidationError(missing_params)
 
     # Handle validation errors (standard error messages)
     if validation_errors:
         logger.error("❌ Configuration Error:")
         for i, error_msg in enumerate(validation_errors, 1):
             logger.error(f"   {i}. {error_msg}")
-        return None  # Return None to indicate validation failure
+        raise ConfigValidationError(validation_errors)
 
     # Check if both threads are 0 (requires immediate exit)
     if should_exit:

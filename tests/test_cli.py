@@ -16,6 +16,7 @@ from plex_generate_previews.cli import (
     setup_working_directory,
     signal_handler,
 )
+from plex_generate_previews.config import ConfigValidationError
 
 
 class TestArgumentParsing:
@@ -544,7 +545,10 @@ class TestSetupApplication:
         assert config is None
 
     @patch("plex_generate_previews.cli.parse_arguments")
-    @patch("plex_generate_previews.cli.load_config", return_value=None)
+    @patch(
+        "plex_generate_previews.cli.load_config",
+        side_effect=ConfigValidationError(["test error"]),
+    )
     @patch("plex_generate_previews.cli.check_for_updates")
     @patch("plex_generate_previews.cli.is_windows", return_value=False)
     def test_setup_application_exits_on_bad_config(
