@@ -266,6 +266,14 @@ code {
     text-align: center;
 }
 
+/* Make the dropdown toggle match badge sizing so rows don't shift height */
+.priority-btn {
+    padding: 0.25em 0.5em;
+    font-size: 0.75em;
+    line-height: 1;
+    vertical-align: middle;
+}
+
 /* Color dot in priority dropdown items */
 .priority-dot {
     display: inline-block;

@@ -1571,6 +1571,7 @@ async function startNewJob() {
 function showManualTriggerModal() {
     document.getElementById('manualFilePaths').value = '';
     document.getElementById('manualForceRegenerate').checked = false;
+    document.getElementById('manualPriority').value = '2';
     new bootstrap.Modal(document.getElementById('manualTriggerModal')).show();
 }
 
@@ -1588,11 +1589,13 @@ async function startManualJob() {
     }
 
     const forceRegenerate = document.getElementById('manualForceRegenerate').checked;
+    const manualPriority = parseInt(document.getElementById('manualPriority').value, 10) || 2;
 
     try {
         await apiPost('/api/jobs/manual', {
             file_paths: paths,
-            force_regenerate: forceRegenerate
+            force_regenerate: forceRegenerate,
+            priority: manualPriority
         });
         bootstrap.Modal.getInstance(document.getElementById('manualTriggerModal')).hide();
         loadJobs();

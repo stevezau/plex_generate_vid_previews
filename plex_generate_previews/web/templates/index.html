@@ -406,6 +406,14 @@
                             placeholder="/media/movies/Movie (2024)/Movie (2024).mkv"></textarea>
                         <div class="form-text">Enter one file path per line (absolute paths as seen by the container).</div>
                     </div>
+                    <div class="mb-3">
+                        <label for="manualPriority" class="form-label">Priority</label>
+                        <select class="form-select" id="manualPriority">
+                            <option value="1">High</option>
+                            <option value="2" selected>Normal</option>
+                            <option value="3">Low</option>
+                        </select>
+                    </div>
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="manualForceRegenerate">
                         <label class="form-check-label" for="manualForceRegenerate">
