@@ -487,14 +487,14 @@ Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-select
 
 **Does it handle HDR content correctly?**
 
-Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating thumbnails:
+Yes. The tool auto-detects HDR metadata and tone maps to SDR using the ITU-R BT.2390 broadcast standard before generating thumbnails:
 
 | Format | Status |
 |--------|--------|
-| HDR10 | Fully tone mapped |
-| HLG | Fully tone mapped |
-| Dolby Vision Profile 7/8 (with HDR10 compatible base layer) | Fully tone mapped |
-| Dolby Vision Profile 5 (no backward-compatible layer) | Supported via `libplacebo` ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172)) |
+| HDR10 | Fully tone mapped (BT.2390 via zscale/tonemap) |
+| HLG | Fully tone mapped (BT.2390 via zscale/tonemap) |
+| Dolby Vision Profile 7/8 (with HDR10 compatible base layer) | Fully tone mapped (BT.2390 via zscale/tonemap) |
+| Dolby Vision Profile 5 (no backward-compatible layer) | Supported via `libplacebo` with BT.2390 ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172)) |
 
 Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
 
