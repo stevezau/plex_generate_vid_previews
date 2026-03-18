@@ -270,6 +270,7 @@ code {
 .priority-btn {
     padding: 0.25em 0.5em;
     font-size: 0.75em;
+    font-weight: 700;
     line-height: 1;
     vertical-align: middle;
 }

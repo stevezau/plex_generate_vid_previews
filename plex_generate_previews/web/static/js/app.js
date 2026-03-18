@@ -580,24 +580,11 @@ async function resumeProcessing() {
 function updateSystemStatus(status) {
     let html = '';
 
-    // GPU Info
+    // Cache detected GPUs for the GPU Workers section
     if (status.gpus && status.gpus.length > 0) {
         cachedDetectedGpus = status.gpus;
-        html += '<div class="mb-3">';
-        html += '<h6><i class="bi bi-gpu-card me-2"></i>GPUs</h6>';
-        for (const gpu of status.gpus) {
-            html += `<div class="d-flex align-items-center mb-1">`;
-            html += `<span class="badge bg-primary me-2">${escapeHtml(gpu.type).toUpperCase()}</span>`;
-            html += `<span>${escapeHtml(gpu.name)}</span>`;
-            html += `</div>`;
-        }
-        html += '</div>';
     } else {
         cachedDetectedGpus = [];
-        html += '<div class="mb-3">';
-        html += '<h6><i class="bi bi-cpu me-2"></i>Processing</h6>';
-        html += '<span class="text-muted">CPU only (no GPU detected)</span>';
-        html += '</div>';
     }
 
     // Running job
