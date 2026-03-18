@@ -4,7 +4,7 @@
 
 # Plex Generate Previews
 
-GPU-accelerated video preview thumbnail generation for Plex Media Server.
+GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web UI only** — no CLI.
 
 **The Problem:** Plex's built-in preview generation is painfully slow.
 
@@ -15,6 +15,7 @@ GPU-accelerated video preview thumbnail generation for Plex Media Server.
 | Feature | Description |
 |---------|-------------|
 | **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
+| **Per-GPU Config** | Configure each GPU individually in Settings |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
 | **GPU to CPU Fallback** | Optional fallback-only CPU workers for GPU decode failures |
 | **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
@@ -47,15 +48,7 @@ Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with
 
 > **Timezone:** The `/etc/localtime` mount ensures log timestamps and scheduled jobs use your local time. Alternatively, use `-e TZ=America/New_York` (replace with your [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
 
-Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard.
-
-### Get Your Authentication Token
-
-```bash
-docker logs plex-generate-previews | grep "Token:"
-```
-
-Or set a fixed token with `-e WEB_AUTH_TOKEN=your-password`.
+Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard. All settings (Plex connection, GPU config, processing options) are configured in the web UI Settings page.
 
 ## Volume Mounts
 
@@ -103,6 +96,8 @@ services:
 
 ### CPU-Only
 
+Set GPU Workers to 0 and CPU Workers as needed in the web UI Settings.
+
 ```yaml
 services:
   plex-previews:
@@ -112,8 +107,6 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - GPU_THREADS=0
-      - CPU_THREADS=8
       - PUID=1000
       - PGID=1000
     volumes:
@@ -156,31 +149,24 @@ docker run -d \
 
 ### GPU + CPU Fallback Mode
 
-Set **CPU Workers** to `0` and **CPU Fallback Workers** to `1` (or higher) to keep main processing on GPU while allowing CPU retry for unsupported codecs.
+Set **CPU Workers** to `0` and **CPU Fallback Workers** to `1` (or higher) in Settings to keep main processing on GPU while allowing CPU retry for unsupported codecs.
 
 ## Environment Variables
 
-All settings can be configured in the web UI (Settings page). Environment variables are optional overrides.
+All application settings (Plex, GPU, processing) are configured in the web UI Settings page. `settings.json` in `/config` is the single source of truth. The only infrastructure env vars that remain active:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PLEX_URL` | *(wizard)* | Plex server URL (e.g. `http://192.168.1.100:32400`) |
-| `PLEX_TOKEN` | *(wizard)* | Plex authentication token (auto-set via OAuth wizard) |
-| `PLEX_CONFIG_FOLDER` | *(wizard)* | Path to Plex config folder |
-| `GPU_THREADS` | `1` | Number of GPU worker threads (0-32) |
-| `CPU_THREADS` | `1` | Number of CPU worker threads (0-32) |
-| `FALLBACK_CPU_THREADS` | `0` | CPU fallback workers for GPU failures (0-32) |
-| `THUMBNAIL_QUALITY` | `4` | Preview quality 1-10 (2=highest) |
-| `PLEX_BIF_FRAME_INTERVAL` | `5` | Seconds between preview images (1-60) |
-| `PLEX_LIBRARIES` | All | Comma-separated library names or IDs |
+| `CONFIG_DIR` | `/config` | Path to config directory |
+| `WEB_PORT` | `8080` | Web server port |
 | `PUID` | `1000` | User ID (Unraid: `99`) |
 | `PGID` | `1000` | Group ID (Unraid: `100`) |
-| `TZ` | Host | Timezone (e.g. `America/New_York`). Alternative to mounting `/etc/localtime` |
-| `WEB_PORT` | `8080` | Web server port |
-| `WEB_AUTH_TOKEN` | Auto | Fixed authentication token |
-| `LOG_LEVEL` | `INFO` | Logging level: DEBUG, INFO, WARNING, ERROR |
-| `TMP_FOLDER` | System | Temporary folder for processing |
-| `PLEX_TIMEOUT` | `60` | Plex API timeout in seconds |
+| `TZ` | Host | Timezone (e.g. `America/New_York`) |
+| `CORS_ORIGINS` | `*` | CORS allowed origins |
+| `HTTPS` | `false` | Enable HTTPS |
+| `DEV_RELOAD` | `false` | Enable dev reload |
+
+Application-level env vars (PLEX_URL, PLEX_TOKEN, CPU_THREADS, etc.) act as one-time seed values on first startup. They are migrated into settings.json. After that, settings.json is the source of truth.
 
 ## Unraid
 
@@ -192,7 +178,6 @@ docker run -d \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
-  -e WEB_AUTH_TOKEN=my-secret-password \
   -e PUID=99 \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
@@ -204,14 +189,7 @@ docker run -d \
 
 ## Performance Tuning
 
-| GPU Threads | CPU Threads | Use Case |
-|-------------|-------------|----------|
-| 1 | 1 | Default (safe for all hardware) |
-| 4 | 2 | Balanced (mid-range systems) |
-| 8 | 4 | High-end systems |
-| 0 | 8 | CPU-only |
-
-Configure in the web UI under **Settings**.
+Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 ## Important Notes
 

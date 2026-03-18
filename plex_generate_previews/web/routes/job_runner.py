@@ -10,7 +10,57 @@ import threading
 from loguru import logger
 
 from ..jobs import get_job_manager
-from ._helpers import _gpu_cache, _gpu_cache_lock
+
+
+def _build_selected_gpus(settings) -> list:
+    """Build the selected_gpus list from gpu_config and GPU cache.
+
+    Merges persisted gpu_config (enabled/workers/ffmpeg_threads per GPU)
+    with the live GPU detection cache.  Only enabled GPUs are returned.
+    The ``ffmpeg_threads`` value from gpu_config is attached to each
+    gpu_info dict so WorkerPool._create_worker can pick it up.
+
+    Args:
+        settings: SettingsManager instance.
+
+    Returns:
+        List of (gpu_type, gpu_device, gpu_info) tuples for enabled GPUs.
+
+    """
+    from ._helpers import _ensure_gpu_cache, _gpu_cache, _gpu_cache_lock
+
+    _ensure_gpu_cache()
+    with _gpu_cache_lock:
+        cached_gpus = _gpu_cache["result"] or []
+
+    gpu_config = settings.gpu_config  # list of per-GPU config dicts
+
+    # Build a lookup from device path -> gpu_config entry
+    config_by_device = {
+        entry["device"]: entry
+        for entry in gpu_config
+        if isinstance(entry, dict) and entry.get("device")
+    }
+
+    selected = []
+    for g in cached_gpus:
+        device = g.get("device", "")
+        entry = config_by_device.get(device)
+        if entry is not None:
+            if not entry.get("enabled", True):
+                continue
+            info = dict(g)
+            info["ffmpeg_threads"] = entry.get("ffmpeg_threads", 2)
+            info["workers"] = entry.get("workers", 1)
+            selected.append((g["type"], device, info))
+        else:
+            # GPU not in config yet (newly detected); include with defaults
+            info = dict(g)
+            info["ffmpeg_threads"] = 2
+            info["workers"] = 1
+            selected.append((g["type"], device, info))
+
+    return selected
 
 
 def _start_job_async(job_id: str, config_overrides: dict = None):
@@ -24,7 +74,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             from loguru import logger as loguru_logger
 
-            from ...cli import run_processing
+            from ...processing import run_processing
             from ...config import ConfigValidationError, load_config
             from ...media_processing import (
                 _verify_tmp_folder_health,
@@ -83,17 +133,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 processed_items=0,
                 total_items=0,
                 current_item="Initializing...",
-            )
-
-            _job_settings = get_settings_manager()
-            if _job_settings.plex_url:
-                os.environ["PLEX_URL"] = _job_settings.plex_url
-            if _job_settings.plex_token:
-                os.environ["PLEX_TOKEN"] = _job_settings.plex_token
-            if _job_settings.plex_config_folder:
-                os.environ["PLEX_CONFIG_FOLDER"] = _job_settings.plex_config_folder
-            os.environ["PLEX_VERIFY_SSL"] = (
-                "true" if _job_settings.plex_verify_ssl else "false"
             )
 
             try:
@@ -171,14 +210,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     f"Working temp folder is not healthy: {config.working_tmp_folder}"
                 )
 
-            with _gpu_cache_lock:
-                cached_gpus = _gpu_cache["result"]
-            if cached_gpus is not None:
-                selected_gpus = [(g["type"], g["device"], g) for g in cached_gpus]
-            else:
-                from ...gpu_detection import detect_all_gpus
-
-                selected_gpus = detect_all_gpus()
+            selected_gpus = _build_selected_gpus(settings)
 
             def _format_eta(seconds: float) -> str:
                 """Format seconds into human-readable ETA string."""
@@ -244,7 +276,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     percent=0,
                     processed_items=0,
                     total_items=0,
-                    current_item=f"Waiting {delay_sec}s before retry...",
+                    current_item=f"Retry starting in {delay_sec}s...",
                 )
                 elapsed = 0
                 while elapsed < delay_sec:
@@ -257,6 +289,14 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     sleep_chunk = min(2, delay_sec - elapsed)
                     _time.sleep(sleep_chunk)
                     elapsed += sleep_chunk
+                    remaining = max(0, int(delay_sec - elapsed))
+                    job_manager.update_progress(
+                        job_id,
+                        percent=0,
+                        processed_items=0,
+                        total_items=0,
+                        current_item=f"Retry starting in {remaining}s...",
+                    )
 
             try:
                 if _retry_cancelled:
@@ -279,7 +319,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     result = run_processing(
                         config,
                         selected_gpus,
-                        headless=True,
                         progress_callback=progress_callback,
                         worker_callback=worker_callback,
                         item_complete_callback=_on_item_complete,
@@ -332,6 +371,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     def _spawn_retry_job(paths, attempt):
                         """Create and start a retry job for unresolved webhook paths."""
                         import os as _os
+                        from datetime import datetime, timedelta, timezone
 
                         basenames = [_os.path.basename(p) for p in paths]
                         parent_lib = current_job.library_name if current_job else ""
@@ -344,6 +384,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         )
                         parent_id = job_config.get("parent_job_id") or job_id
                         backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
+                        scheduled_at = (
+                            datetime.now(timezone.utc)
+                            + timedelta(seconds=backoff_delay)
+                        ).isoformat()
                         parent_priority = current_job.priority if current_job else 2
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
@@ -353,6 +397,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 "retry_attempt": attempt,
                                 "max_retries": effective_max,
                                 "retry_delay": backoff_delay,
+                                "scheduled_at": scheduled_at,
                                 "path_count": len(paths),
                                 "webhook_basenames": basenames[:20],
                             },

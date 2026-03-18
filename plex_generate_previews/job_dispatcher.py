@@ -360,7 +360,7 @@ class JobDispatcher:
                 self._merge_worker_outcome(worker, tracker)
                 tracker.record_completion(success, worker.display_name, title)
             else:
-                # No tracker (e.g. CLI mode) — just log
+                # No tracker for this item — just log
                 success = worker.last_task_succeeded()
                 outcome = "success" if success else "failed"
                 logger.debug(
@@ -647,11 +647,7 @@ class JobDispatcher:
             gpu_base_name = (worker.gpu_name or "").strip() or f"GPU {worker.gpu_index}"
 
             if worker.worker_type == "GPU":
-                display_name = (
-                    f"{gpu_base_name} #{idx}"
-                    if type_counters.get("GPU", 0) > 1
-                    else gpu_base_name
-                )
+                display_name = f"{gpu_base_name} #{idx}"
             elif worker.worker_type == "CPU_FALLBACK":
                 display_name = f"CPU Fallback - Worker {idx}"
             else:

@@ -71,6 +71,26 @@ class TestSettingsAPIRoutes:
 
     def test_update_settings(self, client, auth_headers):
         """Test updating settings."""
+        # Pre-seed gpu_config so gpu_threads setter can distribute workers
+        client.post(
+            "/api/settings",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps(
+                {
+                    "gpu_config": [
+                        {
+                            "device": "/dev/gpu0",
+                            "name": "GPU 0",
+                            "type": "vaapi",
+                            "enabled": True,
+                            "workers": 1,
+                            "ffmpeg_threads": 2,
+                        },
+                    ]
+                }
+            ),
+        )
+
         response = client.post(
             "/api/settings",
             headers={**auth_headers, "Content-Type": "application/json"},

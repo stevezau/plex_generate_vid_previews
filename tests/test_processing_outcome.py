@@ -313,7 +313,7 @@ class TestJobManagerSetOutcome:
 
 
 class TestMisconfigurationDetection:
-    """Test the misconfiguration warning logic in cli.py."""
+    """Test the misconfiguration warning logic in processing.py."""
 
     def test_warning_logged_when_all_not_found(self):
         """When all items are skipped_file_not_found, a warning is logged."""

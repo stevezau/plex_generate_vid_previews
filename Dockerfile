@@ -101,6 +101,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Use LinuxServer's /init for PUID/PGID handling
 ENTRYPOINT ["/init", "/app/wrapper.sh"]
 
-# Default: run without arguments (environment variables will be used)
-# Optional: docker run image:tag --cli for one-off CLI processing
+# Web UI only; configure via the browser at http://<host>:<port>
 CMD []

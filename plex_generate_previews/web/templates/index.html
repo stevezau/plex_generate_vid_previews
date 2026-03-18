@@ -39,16 +39,12 @@
 
                 <hr>
 
-                <!-- Workers Status (preserved across updates) -->
-                <div id="workerCounts">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>GPU Workers:</span>
-                        <span class="d-flex align-items-center gap-1">
-                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="GPU" data-direction="-1" onclick="scaleWorkersGlobal('GPU', -1)" title="Remove one GPU worker"><i class="bi bi-dash-lg"></i></button>
-                            <span id="gpuWorkers" class="badge bg-primary" style="min-width: 1.5rem;">-</span>
-                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="GPU" data-direction="1" onclick="scaleWorkersGlobal('GPU', 1)" title="Add one GPU worker"><i class="bi bi-plus-lg"></i></button>
-                        </span>
-                    </div>
+                <!-- Per-GPU Worker Config (populated by app.js) -->
+                <div id="gpuWorkerConfig">
+                    <div class="text-muted small">Loading GPU config...</div>
+                </div>
+
+                <div class="mt-2 mb-3">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <span>CPU Workers:</span>
                         <span class="d-flex align-items-center gap-1">
@@ -66,7 +62,7 @@
                         </span>
                     </div>
                 </div>
-                <div class="small text-muted mt-1">Changes are saved to settings. If a job is running, workers are also scaled live.</div>
+                <div class="small text-muted">Changes are saved to settings. If a job is running, workers are also scaled live.</div>
 
                 <hr>
 

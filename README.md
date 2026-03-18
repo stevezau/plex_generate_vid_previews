@@ -115,7 +115,7 @@ For Docker Compose, Unraid, and GPU-specific setup:
 | **Docker Compose** | Managed deployments | [docker-compose.example.yml](docker-compose.example.yml) |
 | **Unraid** | Unraid servers | [Getting Started — Unraid](docs/getting-started.md#unraid) |
 
-- **CLI:** The command-line interface still works when run inside the container or from source; we recommend using the **Docker image and Web UI** for normal use.
+- **Web UI only:** The Docker image runs the web interface. There is no CLI; all configuration and job management is done via the web UI.
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]

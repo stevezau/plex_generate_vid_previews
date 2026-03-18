@@ -12,6 +12,8 @@ let processingPaused = false;
 const expandedJobFileRows = new Set();
 const expandedActiveJobFiles = new Set();
 let cachedWorkerConfigCounts = null;
+let cachedGpuConfig = null;
+let cachedDetectedGpus = null;
 let _elapsedTimerInterval = null;
 let jobsLoadedOnce = false;
 let jobPage = 1;
@@ -394,12 +396,14 @@ async function refreshStatus() {
     // worker badges are updated by /api/jobs/workers to avoid race/flicker.
     try {
         await loadWorkerConfigCounts(true);
+        renderDashboardGpuConfig();
     } catch (e) {
         console.warn('Failed to load worker config:', e);
     }
 }
 
 function normalizeWorkerConfigCounts(config) {
+    // gpu_threads is the total across all enabled GPUs (computed from gpu_config)
     return {
         gpu_threads: Number(config?.gpu_threads ?? 0),
         cpu_threads: Number(config?.cpu_threads ?? 1),
@@ -413,13 +417,10 @@ async function loadWorkerConfigCounts(forceRefresh = false) {
     }
 
     try {
-        // Use bare fetch (not apiGet) to avoid 401 redirect side-effects.
-        const resp = await fetch('/api/system/config');
-        if (resp.ok) {
-            const config = await resp.json();
-            cachedWorkerConfigCounts = normalizeWorkerConfigCounts(config);
-            return cachedWorkerConfigCounts;
-        }
+        const config = await apiGet('/api/system/config');
+        cachedWorkerConfigCounts = normalizeWorkerConfigCounts(config);
+        cachedGpuConfig = config.gpu_config || [];
+        return cachedWorkerConfigCounts;
     } catch (e) {
         console.warn('Failed to cache worker config counts:', e);
     }
@@ -581,6 +582,7 @@ function updateSystemStatus(status) {
 
     // GPU Info
     if (status.gpus && status.gpus.length > 0) {
+        cachedDetectedGpus = status.gpus;
         html += '<div class="mb-3">';
         html += '<h6><i class="bi bi-gpu-card me-2"></i>GPUs</h6>';
         for (const gpu of status.gpus) {
@@ -591,6 +593,7 @@ function updateSystemStatus(status) {
         }
         html += '</div>';
     } else {
+        cachedDetectedGpus = [];
         html += '<div class="mb-3">';
         html += '<h6><i class="bi bi-cpu me-2"></i>Processing</h6>';
         html += '<span class="text-muted">CPU only (no GPU detected)</span>';
@@ -610,6 +613,114 @@ function updateSystemStatus(status) {
     html += '</div>';
 
     document.getElementById('systemStatus').innerHTML = html;
+
+    renderDashboardGpuConfig();
+}
+
+function renderDashboardGpuConfig() {
+    const container = document.getElementById('gpuWorkerConfig');
+    if (!container) return;
+
+    const gpus = cachedDetectedGpus || [];
+    const gpuConfig = cachedGpuConfig || [];
+
+    if (gpus.length === 0) {
+        container.innerHTML = '<span class="text-muted small">No GPUs detected</span>';
+        return;
+    }
+
+    const configByDevice = {};
+    gpuConfig.forEach(c => { if (c.device) configByDevice[c.device] = c; });
+
+    let html = '<h6 class="mb-2"><i class="bi bi-gpu-card me-2"></i>GPU Workers</h6>';
+    for (const gpu of gpus) {
+        const device = gpu.device || '';
+        const saved = configByDevice[device] || {};
+        const enabled = saved.enabled !== undefined ? saved.enabled : true;
+        const workers = saved.workers !== undefined ? saved.workers : 1;
+        const safeDevice = escapeHtml(device);
+        const statusBadge = enabled
+            ? '<span class="badge bg-success">enabled</span>'
+            : '<span class="badge bg-secondary">disabled</span>';
+
+        html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
+        html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${safeDevice}">`;
+        html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
+        html += `${escapeHtml(gpu.name)} ${statusBadge}`;
+        html += `</span>`;
+        if (enabled) {
+            html += `<span class="d-flex align-items-center gap-1">`;
+            html += `<button type="button" class="btn btn-sm btn-outline-secondary gpu-scale-btn" onclick="scaleGpuWorkers('${safeDevice}', -1)" title="Remove one worker"${workers <= 0 ? ' disabled' : ''}><i class="bi bi-dash-lg"></i></button>`;
+            html += `<span class="badge bg-primary gpu-worker-badge" data-device="${safeDevice}" style="min-width: 1.5rem;">${workers}</span>`;
+            html += `<button type="button" class="btn btn-sm btn-outline-success gpu-scale-btn" onclick="scaleGpuWorkers('${safeDevice}', 1)" title="Add one worker"><i class="bi bi-plus-lg"></i></button>`;
+            html += `</span>`;
+        } else {
+            html += `<span class="text-muted small">--</span>`;
+        }
+        html += `</div>`;
+    }
+    html += `<div class="mt-1"><a href="/settings" class="small text-decoration-none"><i class="bi bi-gear me-1"></i>Configure GPUs in Settings</a></div>`;
+    container.innerHTML = html;
+}
+
+async function scaleGpuWorkers(device, direction) {
+    const gpuConfig = cachedGpuConfig ? JSON.parse(JSON.stringify(cachedGpuConfig)) : [];
+    let entry = gpuConfig.find(e => e.device === device);
+
+    if (!entry) {
+        const detectedGpu = (cachedDetectedGpus || []).find(g => g.device === device);
+        if (!detectedGpu) return;
+        entry = {
+            device: device,
+            name: detectedGpu.name || 'GPU',
+            type: detectedGpu.type || '',
+            enabled: true,
+            workers: 1,
+            ffmpeg_threads: 2
+        };
+        gpuConfig.push(entry);
+    }
+
+    const currentWorkers = entry.workers || 0;
+    const newWorkers = Math.max(0, currentWorkers + direction);
+    if (newWorkers === currentWorkers) return;
+    entry.workers = newWorkers;
+
+    try {
+        await apiPost('/api/settings', { gpu_config: gpuConfig });
+        cachedGpuConfig = gpuConfig;
+        cachedWorkerConfigCounts = null;
+        await loadWorkerConfigCounts(true);
+
+        const badge = document.querySelector(`.gpu-worker-badge[data-device="${escapeHtml(device)}"]`);
+        if (badge) badge.textContent = String(newWorkers);
+
+        const minusBtn = badge ? badge.previousElementSibling : null;
+        if (minusBtn) minusBtn.disabled = newWorkers <= 0;
+
+        const endpoint = direction > 0 ? 'add' : 'remove';
+        try {
+            const result = await apiPost(`/api/workers/${endpoint}`, {
+                worker_type: 'GPU',
+                count: 1
+            });
+            await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
+            if (endpoint === 'add') {
+                showToast('Workers Updated', `Added ${result.added} GPU worker(s)`, 'success');
+            } else {
+                const scheduled = result.scheduled_removal || 0;
+                if (scheduled > 0) {
+                    showToast('Workers Updated', `Removed ${result.removed} GPU; ${scheduled} scheduled after current tasks`, 'warning');
+                } else {
+                    showToast('Workers Updated', `Removed ${result.removed} GPU worker(s)`, 'info');
+                }
+            }
+        } catch (scaleErr) {
+            showToast('Setting Saved', `GPU workers for ${device} set to ${newWorkers}`, 'success');
+        }
+    } catch (error) {
+        showToast('Error', `Failed to update GPU workers: ${error.message}`, 'danger');
+    }
 }
 
 async function updateLibraryList() {
@@ -845,18 +956,26 @@ function updateJobQueue() {
             ? ` <span class="badge bg-secondary ms-1" title="Retry job">Retry ${retryAttempt}/${maxRetries}</span>`
             : '';
         const priorityCell = renderPriorityCell(job);
+        const scheduledAt = job.config && job.config.scheduled_at;
+        const isWaitingRetry = job.status === 'pending' && isRetry && scheduledAt;
+        let progressCell;
+        if (isWaitingRetry) {
+            const remaining = Math.max(0, Math.ceil((new Date(scheduledAt).getTime() - Date.now()) / 1000));
+            const label = remaining > 0 ? `Retry starting in ${remaining}s` : 'Starting...';
+            progressCell = `<span class="text-warning small" data-scheduled-at="${escapeHtml(scheduledAt)}"><i class="bi bi-hourglass-split me-1"></i>${label}</span>`;
+        } else {
+            progressCell = `<div class="progress" style="height: 20px;">
+                        <div class="progress-bar" role="progressbar"
+                             style="width: ${progress}%">${progress}%</div>
+                    </div>`;
+        }
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
                 <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
                 <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${retryLabel}${filesToggleBtn}</td>
                 <td>${statusBadge}</td>
                 <td>${priorityCell}</td>
-                <td>
-                    <div class="progress" style="height: 20px;">
-                        <div class="progress-bar" role="progressbar"
-                             style="width: ${progress}%">${progress}%</div>
-                    </div>
-                </td>
+                <td>${progressCell}</td>
                 <td>${created}</td>
                 <td class="text-nowrap">
                     ${actionButtons}
@@ -887,6 +1006,10 @@ function updateJobQueue() {
     tbody.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
         new bootstrap.Tooltip(el);
     });
+
+    if (document.querySelector('[data-scheduled-at]')) {
+        _ensureElapsedTimer();
+    }
 }
 
 function renderJobPagination() {
@@ -1106,7 +1229,6 @@ function updateWorkerStatuses(workers, options = {}) {
         keepBadgeCounts = false
     } = options;
     const container = document.getElementById('workerStatusContainer');
-    const gpuWorkersEl = document.getElementById('gpuWorkers');
     const cpuWorkersEl = document.getElementById('cpuWorkers');
     const cpuFallbackWorkersEl = document.getElementById('cpuFallbackWorkers');
 
@@ -1121,7 +1243,6 @@ function updateWorkerStatuses(workers, options = {}) {
         }
         const counts = fallbackCounts || cachedWorkerConfigCounts;
         if (counts) {
-            if (gpuWorkersEl) gpuWorkersEl.textContent = String(counts.gpu_threads);
             if (cpuWorkersEl) cpuWorkersEl.textContent = String(counts.cpu_threads);
             if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(counts.cpu_fallback_threads);
         }
@@ -1129,10 +1250,8 @@ function updateWorkerStatuses(workers, options = {}) {
         return;
     }
 
-    const gpuCount = workers.filter(w => w.worker_type === 'GPU').length;
     const cpuCount = workers.filter(w => w.worker_type === 'CPU').length;
     const cpuFallbackCount = workers.filter(w => w.worker_type === 'CPU_FALLBACK').length;
-    if (gpuWorkersEl) gpuWorkersEl.textContent = String(gpuCount);
     if (cpuWorkersEl) cpuWorkersEl.textContent = String(cpuCount);
     if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(cpuFallbackCount);
 
@@ -1683,7 +1802,7 @@ function refreshWorkerScaleButtons() {
 }
 
 function getWorkerCountForType(workerType) {
-    const id = workerType === 'GPU' ? 'gpuWorkers' : workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers';
+    const id = workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers';
     const el = document.getElementById(id);
     if (!el) return 0;
     const n = parseInt(el.textContent, 10);
@@ -1691,7 +1810,6 @@ function getWorkerCountForType(workerType) {
 }
 
 function settingsKeyForWorkerType(workerType) {
-    if (workerType === 'GPU') return 'gpu_threads';
     if (workerType === 'CPU') return 'cpu_threads';
     return 'cpu_fallback_threads';
 }
@@ -1709,7 +1827,7 @@ async function scaleWorkersGlobal(workerType, direction) {
         await loadWorkerConfigCounts(true);
 
         const badgeEl = document.getElementById(
-            workerType === 'GPU' ? 'gpuWorkers' : workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
+            workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
         );
         if (badgeEl) badgeEl.textContent = String(newCount);
         refreshWorkerScaleButtons();
@@ -1732,7 +1850,6 @@ async function scaleWorkersGlobal(workerType, direction) {
                 }
             }
         } catch (scaleErr) {
-            // No live pool yet -- setting was saved; next job will use it.
             showToast('Setting Saved', `${workerType} workers set to ${newCount}`, 'success');
         }
     } catch (error) {
@@ -2037,6 +2154,15 @@ function _updateElapsedTimers() {
     document.querySelectorAll('[data-elapsed-since]').forEach(function (el) {
         el.textContent = formatElapsed(el.getAttribute('data-elapsed-since'));
     });
+    document.querySelectorAll('[data-scheduled-at]').forEach(function (el) {
+        var scheduled = new Date(el.getAttribute('data-scheduled-at')).getTime();
+        var remaining = Math.max(0, Math.ceil((scheduled - Date.now()) / 1000));
+        if (remaining > 0) {
+            el.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Retry starting in ' + remaining + 's';
+        } else {
+            el.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Starting...';
+        }
+    });
 }
 
 function _ensureElapsedTimer() {
@@ -2045,10 +2171,10 @@ function _ensureElapsedTimer() {
 }
 
 function _stopElapsedTimer() {
-    if (_elapsedTimerInterval) {
-        clearInterval(_elapsedTimerInterval);
-        _elapsedTimerInterval = null;
-    }
+    if (!_elapsedTimerInterval) return;
+    if (document.querySelector('[data-scheduled-at]')) return;
+    clearInterval(_elapsedTimerInterval);
+    _elapsedTimerInterval = null;
 }
 
 function showToast(title, message, type = 'info') {
@@ -2072,3 +2198,65 @@ function showToast(title, message, type = 'info') {
     const bsToast = new bootstrap.Toast(toast);
     bsToast.show();
 }
+
+// "What's New" changelog popup (runs on every page via base.html)
+async function checkWhatsNew() {
+    try {
+        const resp = await fetch('/api/system/whats-new');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!data.has_new || !data.entries || data.entries.length === 0) return;
+
+        const body = document.getElementById('whatsNewBody');
+        if (!body) return;
+
+        let html = '';
+        for (const entry of data.entries) {
+            const date = entry.date ? new Date(entry.date).toLocaleDateString() : '';
+            html += `<div class="mb-4">`;
+            html += `<h5 class="d-flex align-items-center gap-2">`;
+            html += `<span class="badge bg-primary">${escapeHtml(entry.version)}</span>`;
+            html += `<span>${escapeHtml(entry.name)}</span>`;
+            if (date) html += `<small class="text-muted ms-auto">${escapeHtml(date)}</small>`;
+            html += `</h5>`;
+            if (entry.body) {
+                html += `<div class="changelog-body text-break">${_renderMarkdownBasic(entry.body)}</div>`;
+            }
+            if (entry.url) {
+                html += `<a href="${escapeHtml(entry.url)}" target="_blank" class="small text-decoration-none">`;
+                html += `<i class="bi bi-box-arrow-up-right me-1"></i>View on GitHub</a>`;
+            }
+            html += `</div>`;
+        }
+        body.innerHTML = html;
+
+        const modalEl = document.getElementById('whatsNewModal');
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+
+        modalEl.addEventListener('hidden.bs.modal', async function () {
+            try { await fetch('/api/system/whats-new/dismiss', { method: 'POST', headers: { 'X-CSRFToken': getCsrfToken() } }); }
+            catch (e) { console.warn('Failed to dismiss what\'s new:', e); }
+        }, { once: true });
+    } catch (e) {
+        console.debug('What\'s new check skipped:', e);
+    }
+}
+
+function _renderMarkdownBasic(md) {
+    let html = escapeHtml(md);
+    html = html.replace(/^### (.+)$/gm, '<h6 class="mt-3 mb-1">$1</h6>');
+    html = html.replace(/^## (.+)$/gm, '<h5 class="mt-3 mb-1">$1</h5>');
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, function (m) { return '<ul class="mb-2">' + m + '</ul>'; });
+    html = html.replace(/\n{2,}/g, '<br><br>');
+    html = html.replace(/\n/g, '<br>');
+    return html;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    setTimeout(checkWhatsNew, 2000);
+});

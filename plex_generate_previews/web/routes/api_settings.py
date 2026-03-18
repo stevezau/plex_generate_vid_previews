@@ -36,17 +36,20 @@ def get_settings():
             "plex_config_folder": settings.plex_config_folder or "/plex",
             "selected_libraries": settings.selected_libraries,
             "media_path": settings.media_path or "",
-            "plex_videos_path_mapping": settings.plex_videos_path_mapping or "",
-            "plex_local_videos_path_mapping": settings.plex_local_videos_path_mapping
-            or "",
+            "plex_videos_path_mapping": settings.get("plex_videos_path_mapping", ""),
+            "plex_local_videos_path_mapping": settings.get(
+                "plex_local_videos_path_mapping", ""
+            ),
             "path_mappings": settings.get("path_mappings", []),
             "exclude_paths": settings.get("exclude_paths", []),
+            "gpu_config": settings.gpu_config,
             "gpu_threads": settings.gpu_threads,
             "cpu_threads": settings.cpu_threads,
             "cpu_fallback_threads": settings.cpu_fallback_threads,
             "ffmpeg_threads": settings.get("ffmpeg_threads", 2),
             "thumbnail_interval": settings.thumbnail_interval,
             "thumbnail_quality": settings.thumbnail_quality,
+            "tonemap_algorithm": settings.tonemap_algorithm,
             "log_level": settings.get("log_level", "INFO"),
             "log_rotation_size": settings.get("log_rotation_size", "10 MB"),
             "log_retention_count": settings.get("log_retention_count", 5),
@@ -83,12 +86,14 @@ def save_settings():
         "plex_local_videos_path_mapping",
         "path_mappings",
         "exclude_paths",
+        "gpu_config",
         "gpu_threads",
         "cpu_threads",
         "cpu_fallback_threads",
         "ffmpeg_threads",
         "thumbnail_interval",
         "thumbnail_quality",
+        "tonemap_algorithm",
         "log_level",
         "log_rotation_size",
         "log_retention_count",
@@ -103,6 +108,15 @@ def save_settings():
     ]
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+    # Sanitize gpu_config: must be a list of dicts with a device key
+    if "gpu_config" in updates:
+        raw = updates["gpu_config"]
+        if not isinstance(raw, list):
+            return jsonify({"error": "gpu_config must be a list"}), 400
+        updates["gpu_config"] = [
+            entry for entry in raw if isinstance(entry, dict) and entry.get("device")
+        ]
 
     if updates:
         settings.update(updates)

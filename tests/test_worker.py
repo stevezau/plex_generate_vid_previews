@@ -815,14 +815,18 @@ class TestWorkerPool:
         call_order = []
 
         def mock_process_fn(
-            item_key, gpu, gpu_device, config, plex, progress_callback=None
+            item_key,
+            gpu,
+            gpu_device,
+            config,
+            plex,
+            progress_callback=None,
+            ffmpeg_threads_override=None,
         ):
             call_order.append((item_key, gpu))
             time.sleep(0.01)
-            # First call from GPU worker - raise codec error
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported by GPU")
-            # Second call from CPU worker - succeed
             return ProcessingResult.GENERATED
 
         mock_process.side_effect = mock_process_fn
@@ -868,7 +872,13 @@ class TestWorkerPool:
         call_order = []
 
         def mock_process_fn(
-            item_key, gpu, gpu_device, config, plex, progress_callback=None
+            item_key,
+            gpu,
+            gpu_device,
+            config,
+            plex,
+            progress_callback=None,
+            ffmpeg_threads_override=None,
         ):
             call_order.append((item_key, gpu))
             time.sleep(0.01)
@@ -916,10 +926,15 @@ class TestWorkerPool:
         """Test that codec errors fail when no CPU workers available."""
 
         def mock_process_fn(
-            item_key, gpu, gpu_device, config, plex, progress_callback=None
+            item_key,
+            gpu,
+            gpu_device,
+            config,
+            plex,
+            progress_callback=None,
+            ffmpeg_threads_override=None,
         ):
             time.sleep(0.01)
-            # GPU worker raises codec error
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported")
             return ProcessingResult.GENERATED
@@ -957,7 +972,13 @@ class TestWorkerProgressCount:
         completed_counts = []
 
         def mock_process_fn(
-            item_key, gpu, gpu_device, config, plex, progress_callback=None
+            item_key,
+            gpu,
+            gpu_device,
+            config,
+            plex,
+            progress_callback=None,
+            ffmpeg_threads_override=None,
         ):
             time.sleep(0.01)
             if gpu is not None:

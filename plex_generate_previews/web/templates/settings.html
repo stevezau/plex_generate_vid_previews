@@ -178,20 +178,33 @@
                 <i class="bi bi-speedometer2 me-2"></i>Processing Options
             </div>
             <div class="card-body">
-                <div class="row mb-4">
-                    <div class="col-md-4 mb-3">
-                        <label for="gpuThreads" class="form-label">GPU Workers</label>
-                        <input type="number" class="form-control" id="gpuThreads"
-                               min="0" max="16" value="1">
-                        <div class="form-text">Parallel GPU jobs (0 to disable)</div>
+
+                <!-- GPU Configuration -->
+                <h6 class="mb-3"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
+                <div id="gpuConfigContainer">
+                    <div class="text-muted mb-3" id="gpuDetecting">
+                        <div class="spinner-border spinner-border-sm me-2" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        Detecting GPUs...
                     </div>
-                    <div class="col-md-4 mb-3">
+                    <div id="gpuConfigList"></div>
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-4"
+                        onclick="rescanGPUs()" id="gpuRescanBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs
+                </button>
+
+                <!-- CPU Workers -->
+                <h6 class="mb-3"><i class="bi bi-cpu me-2"></i>CPU Workers</h6>
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control" id="cpuThreads"
                                min="0" max="32" value="1">
                         <div class="form-text">Parallel CPU jobs from main queue</div>
                     </div>
-                    <div class="col-md-4 mb-3">
+                    <div class="col-md-6 mb-3">
                         <label for="cpuFallbackThreads" class="form-label">
                             CPU Fallback Workers
                         </label>
@@ -202,30 +215,19 @@
                         </div>
                     </div>
                 </div>
-                <div class="row mb-4">
-                    <div class="col-md-4 mb-3">
-                        <label for="ffmpegThreads" class="form-label">FFmpeg Threads (GPU Only)</label>
-                        <input type="number" class="form-control" id="ffmpegThreads"
-                               min="0" max="32" value="2">
-                        <div class="form-text">
-                            Limits CPU usage per GPU job. Lower = less system load. 0 = no limit. Recommended: 2.
-                        </div>
-                    </div>
-                </div>
                 <div class="alert alert-secondary py-2 mb-4">
                     <small>
                         <strong>CPU Fallback Workers</strong> &mdash; Set <em>CPU Workers = 0</em>
                         and <em>CPU Fallback Workers &gt; 0</em> to process everything on GPU
                         while still handling unsupported files on CPU.
-                        Ignored when CPU Workers is greater than 0.<br>
-                        <strong>FFmpeg Threads</strong> &mdash; Reduces CPU load per GPU job
-                        so Plex playback and other services stay responsive.
-                        Does not affect CPU-only jobs.
+                        Ignored when CPU Workers is greater than 0.
                         <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md#cpu-fallback-workers"
                            target="_blank" rel="noopener noreferrer">Learn more</a>.
                     </small>
                 </div>
 
+                <!-- Thumbnail Settings -->
+                <h6 class="mb-3"><i class="bi bi-image me-2"></i>Thumbnail Settings</h6>
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">Thumbnail Interval</label>
@@ -244,10 +246,53 @@
                     </div>
                 </div>
 
-                <!-- GPU Info -->
-                <div id="gpuInfo" class="alert alert-info mt-3">
-                    <i class="bi bi-gpu-card me-2"></i>
-                    <span id="gpuInfoText">Detecting GPUs...</span>
+                <!-- HDR Tone Mapping -->
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="tonemapAlgorithm" class="form-label">
+                            HDR Tone Mapping
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: pointer;"
+                               onclick="document.getElementById('tonemapHelp').classList.toggle('d-none')"
+                               title="Click for details"></i>
+                        </label>
+                        <select class="form-select" id="tonemapAlgorithm">
+                            <option value="hable">Hable (default) &mdash; balanced, slightly darker</option>
+                            <option value="reinhard">Reinhard &mdash; brightest, closest to SDR</option>
+                            <option value="mobius">Mobius &mdash; natural colors, good brightness</option>
+                            <option value="clip">Clip &mdash; accurate colors, clips highlights</option>
+                            <option value="gamma">Gamma &mdash; very bright, less contrast</option>
+                            <option value="linear">Linear &mdash; simple stretch, can look flat</option>
+                        </select>
+                        <div class="form-text" id="tonemapDescription">
+                            Preserves dark and bright details with a filmic look. Good all-round choice.
+                        </div>
+                        <div class="alert alert-secondary mt-2 small d-none" id="tonemapHelp">
+                            <strong>What is tone mapping?</strong><br>
+                            HDR (High Dynamic Range) videos have a wider range of brightness than a
+                            standard display can show. Tone mapping converts those brightness levels
+                            so thumbnails look correct on any screen. This setting only affects HDR
+                            content (HDR10, HLG, Dolby Vision).
+                            <hr class="my-2">
+                            <strong>Which should I pick?</strong>
+                            <ul class="mb-0 mt-1">
+                                <li><strong>Hable</strong> &mdash; The Plex default. Gives a filmic,
+                                    cinematic look that preserves detail in both shadows and highlights.
+                                    Can look slightly darker than the original.</li>
+                                <li><strong>Reinhard</strong> &mdash; Produces the brightest thumbnails,
+                                    closest to how standard (non-HDR) content looks. Try this first
+                                    if your thumbnails look too dark.</li>
+                                <li><strong>Mobius</strong> &mdash; A good middle ground: keeps colors
+                                    natural and accurate with good brightness. Slightly less bright
+                                    than Reinhard.</li>
+                                <li><strong>Clip</strong> &mdash; Keeps colours perfectly accurate for
+                                    normal brightness, but cuts off very bright highlights sharply.</li>
+                                <li><strong>Gamma</strong> &mdash; Makes everything noticeably brighter,
+                                    but can wash out colours and reduce contrast.</li>
+                                <li><strong>Linear</strong> &mdash; A simple brightness stretch.
+                                    Can look flat or washed out on some content.</li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -389,9 +434,8 @@
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    loadSettings();
+    loadSettings().then(() => loadGpuInfo());
     loadLibraries();
-    loadGpuInfo();
     loadVersionInfo();
 
     // Track changes
@@ -404,6 +448,9 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('thumbnailQuality').addEventListener('input', function() {
         document.getElementById('qualityValue').textContent = this.value;
     });
+
+    // Tonemap algorithm description
+    document.getElementById('tonemapAlgorithm').addEventListener('change', updateTonemapDescription);
 
     document.getElementById('addPathMappingBtn').addEventListener('click', function() {
         const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
@@ -418,6 +465,20 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 let isDirty = false;
+
+const tonemapDescriptions = {
+    hable: 'Preserves dark and bright details with a filmic look. Good all-round choice.',
+    reinhard: 'Produces the brightest thumbnails, closest to how SDR content looks. Great if your HDR thumbnails look too dark.',
+    mobius: 'Keeps colors accurate and natural while still being brighter than Hable. A good middle ground.',
+    clip: 'Keeps colors perfectly accurate for normal brightness, but very bright highlights get cut off.',
+    gamma: 'Makes everything noticeably brighter, but can wash out colors and reduce contrast.',
+    linear: 'Simple brightness stretch. Can look flat or washed out on some content.',
+};
+
+function updateTonemapDescription() {
+    const algo = document.getElementById('tonemapAlgorithm').value;
+    document.getElementById('tonemapDescription').textContent = tonemapDescriptions[algo] || '';
+}
 
 function markDirty() {
     isDirty = true;
@@ -434,13 +495,16 @@ async function loadSettings() {
         document.getElementById('plexConfigFolder').value = settings.plex_config_folder || '/plex';
         renderPathMappingRows(settings.path_mappings || legacyToPathMappings(settings));
         renderExcludePathRows(settings.exclude_paths || []);
-        document.getElementById('gpuThreads').value = settings.gpu_threads ?? 1;
+
+        // Store gpu_config for the GPU panel
+        window._gpuConfig = settings.gpu_config || [];
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
         document.getElementById('cpuFallbackThreads').value = settings.cpu_fallback_threads ?? 0;
-        document.getElementById('ffmpegThreads').value = settings.ffmpeg_threads ?? 2;
         document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
+        document.getElementById('tonemapAlgorithm').value = settings.tonemap_algorithm || 'hable';
+        updateTonemapDescription();
 
         // Logging settings
         document.getElementById('logLevel').value = settings.log_level || 'INFO';
@@ -641,20 +705,135 @@ async function loadGpuInfo() {
         const response = await fetch('/api/system/status');
         const data = await response.json();
 
-        const gpuText = document.getElementById('gpuInfoText');
-        const gpuInfo = document.getElementById('gpuInfo');
+        document.getElementById('gpuDetecting').classList.add('d-none');
 
         if (data.gpus && data.gpus.length > 0) {
-            const names = data.gpus.map(g => `${g.name} (${g.type})`).join(', ');
-            gpuText.textContent = `Detected: ${names}`;
-            gpuInfo.classList.remove('alert-info');
-            gpuInfo.classList.add('alert-success');
+            renderGpuConfigPanel(data.gpus, window._gpuConfig || []);
         } else {
-            gpuText.textContent = 'No GPU detected. CPU processing will be used.';
+            document.getElementById('gpuConfigList').innerHTML =
+                '<div class="alert alert-warning mb-0">' +
+                '<i class="bi bi-exclamation-triangle me-2"></i>' +
+                'No GPU detected. CPU processing will be used.</div>';
         }
     } catch (error) {
-        document.getElementById('gpuInfoText').textContent = 'Failed to detect GPUs.';
+        document.getElementById('gpuDetecting').classList.add('d-none');
+        document.getElementById('gpuConfigList').innerHTML =
+            '<div class="alert alert-danger mb-0">' +
+            '<i class="bi bi-x-circle me-2"></i>Failed to detect GPUs.</div>';
     }
+}
+
+function renderGpuConfigPanel(detectedGpus, savedConfig) {
+    const configByDevice = {};
+    (savedConfig || []).forEach(c => { if (c.device) configByDevice[c.device] = c; });
+
+    const container = document.getElementById('gpuConfigList');
+    container.innerHTML = '';
+
+    detectedGpus.forEach((gpu, idx) => {
+        const saved = configByDevice[gpu.device] || {};
+        const enabled = saved.enabled !== undefined ? saved.enabled : true;
+        const workers = saved.workers !== undefined ? saved.workers : 1;
+        const ffmpegThreads = saved.ffmpeg_threads !== undefined ? saved.ffmpeg_threads : 2;
+        const deviceId = (gpu.device || 'gpu' + idx).replace(/[^a-zA-Z0-9]/g, '_');
+
+        const card = document.createElement('div');
+        card.className = 'card mb-2';
+        card.innerHTML = `
+            <div class="card-body py-2 px-3">
+                <div class="row align-items-start">
+                    <div class="col-md-4 d-flex flex-column justify-content-center" style="min-height: 3.5rem;">
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input gpu-enable-toggle" type="checkbox"
+                                   id="gpuEnable_${deviceId}" data-device="${gpu.device}"
+                                   data-gpu-name="${gpu.name}" data-gpu-type="${gpu.type}"
+                                   ${enabled ? 'checked' : ''}
+                                   onchange="markDirty(); toggleGpuRow('${deviceId}')">
+                            <label class="form-check-label fw-semibold" for="gpuEnable_${deviceId}">
+                                ${gpu.name}
+                            </label>
+                        </div>
+                        <small class="text-muted">${gpu.type} &mdash; ${gpu.device || 'N/A'}</small>
+                    </div>
+                    <div class="col-md-4 gpu-settings-${deviceId}" ${enabled ? '' : 'style="opacity:0.5;pointer-events:none"'}>
+                        <label class="form-label form-label-sm mb-1">Workers
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="How many items this GPU processes at the same time. More workers = faster overall, but each worker uses GPU memory. Start with 1 and increase if your GPU can handle it."></i>
+                        </label>
+                        <input type="number" class="form-control form-control-sm gpu-workers"
+                               data-device="${gpu.device}" min="0" max="16"
+                               value="${workers}" onchange="markDirty()">
+                    </div>
+                    <div class="col-md-4 gpu-settings-${deviceId}" ${enabled ? '' : 'style="opacity:0.5;pointer-events:none"'}>
+                        <label class="form-label form-label-sm mb-1">FFmpeg Threads
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Limits how many CPU cores FFmpeg uses per worker for tasks like decoding and filtering. Lower values free up CPU for other workers. Set to 0 to let FFmpeg decide automatically."></i>
+                        </label>
+                        <input type="number" class="form-control form-control-sm gpu-ffmpeg-threads"
+                               data-device="${gpu.device}" min="0" max="32"
+                               value="${ffmpegThreads}" onchange="markDirty()">
+                        <small class="text-muted">0 = no limit</small>
+                    </div>
+                </div>
+            </div>
+        `;
+        container.appendChild(card);
+    });
+
+    container.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+}
+
+function toggleGpuRow(deviceId) {
+    const els = document.querySelectorAll('.gpu-settings-' + deviceId);
+    const enabled = document.getElementById('gpuEnable_' + deviceId).checked;
+    els.forEach(el => {
+        el.style.opacity = enabled ? '1' : '0.5';
+        el.style.pointerEvents = enabled ? '' : 'none';
+    });
+}
+
+function collectGpuConfig() {
+    const config = [];
+    document.querySelectorAll('.gpu-enable-toggle').forEach(toggle => {
+        const device = toggle.dataset.device;
+        const deviceId = (device || '').replace(/[^a-zA-Z0-9]/g, '_');
+        const row = toggle.closest('.card');
+        const workersInput = row.querySelector('.gpu-workers');
+        const ffmpegInput = row.querySelector('.gpu-ffmpeg-threads');
+        config.push({
+            device: device,
+            name: toggle.dataset.gpuName || 'GPU',
+            type: toggle.dataset.gpuType || '',
+            enabled: toggle.checked,
+            workers: parseInt(workersInput.value) || 0,
+            ffmpeg_threads: parseInt(ffmpegInput.value) || 0,
+        });
+    });
+    return config;
+}
+
+async function rescanGPUs() {
+    const btn = document.getElementById('gpuRescanBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning...';
+    try {
+        const response = await fetch('/api/system/rescan-gpus', { method: 'POST' });
+        const data = await response.json();
+        if (data.gpus) {
+            renderGpuConfigPanel(data.gpus, collectGpuConfig());
+            showToast('GPU Scan', `Detected ${data.gpus.length} GPU(s)`, 'success');
+        } else {
+            showToast('GPU Scan', 'No GPUs detected', 'warning');
+        }
+    } catch (error) {
+        showToast('GPU Scan', 'Scan failed: ' + error.message, 'danger');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs';
 }
 
 async function loadVersionInfo() {
@@ -708,12 +887,12 @@ async function saveAllSettings() {
             plex_config_folder: document.getElementById('plexConfigFolder').value,
             path_mappings: collectPathMappingRows(),
             exclude_paths: collectExcludePathRows(),
-            gpu_threads: parseInt(document.getElementById('gpuThreads').value),
+            gpu_config: collectGpuConfig(),
             cpu_threads: parseInt(document.getElementById('cpuThreads').value),
             cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
-            ffmpeg_threads: parseInt(document.getElementById('ffmpegThreads').value),
             thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
             thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
+            tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
             selected_libraries: libraries,
             log_level: document.getElementById('logLevel').value,
             log_rotation_size: document.getElementById('logRotationSize').value + ' MB',

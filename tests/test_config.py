@@ -5,6 +5,7 @@ Tests configuration loading, validation, path checking,
 FFmpeg detection, and environment-specific behavior.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,6 +25,55 @@ from plex_generate_previews.config import (
     show_docker_help,
     split_library_selectors,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config(tmp_path, monkeypatch):
+    """Ensure load_config uses a fresh empty settings.json and no .env file."""
+    from plex_generate_previews.web import settings_manager
+
+    monkeypatch.setattr(settings_manager, "_settings_manager", None)
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("plex_generate_previews.config.load_dotenv", lambda: None)
+
+    # Clear config cache to avoid stale values between tests
+    from plex_generate_previews.config import clear_config_cache
+
+    clear_config_cache()
+
+
+def _set_test_env(monkeypatch_or_patch_dict, args_ns):
+    """Convert a SimpleNamespace of 'CLI args' to environment variables.
+
+    Bridges old CLI-arg-based tests to the new settings.json/env-var model.
+    """
+    _field_to_env = {
+        "plex_url": "PLEX_URL",
+        "plex_token": "PLEX_TOKEN",
+        "plex_config_folder": "PLEX_CONFIG_FOLDER",
+        "plex_timeout": "PLEX_TIMEOUT",
+        "plex_libraries": "PLEX_LIBRARIES",
+        "plex_local_videos_path_mapping": "PLEX_LOCAL_VIDEOS_PATH_MAPPING",
+        "plex_videos_path_mapping": "PLEX_VIDEOS_PATH_MAPPING",
+        "plex_bif_frame_interval": "PLEX_BIF_FRAME_INTERVAL",
+        "thumbnail_quality": "THUMBNAIL_QUALITY",
+        "regenerate_thumbnails": "REGENERATE_THUMBNAILS",
+        "gpu_threads": "GPU_THREADS",
+        "cpu_threads": "CPU_THREADS",
+        "ffmpeg_threads": "FFMPEG_THREADS",
+        "tmp_folder": "TMP_FOLDER",
+        "log_level": "LOG_LEVEL",
+        "fallback_cpu_threads": "FALLBACK_CPU_THREADS",
+    }
+    env = {}
+    for field, env_key in _field_to_env.items():
+        val = getattr(args_ns, field, None)
+        if val is not None:
+            if isinstance(val, bool):
+                env[env_key] = "true" if val else "false"
+            else:
+                env[env_key] = str(val)
+    return env
 
 
 class TestGetConfigValue:
@@ -684,9 +734,6 @@ class TestLoadConfig:
         statvfs_result.f_bavail = 1024 * 1024 * 250  # 1GB+ free
         mock_statvfs.return_value = statvfs_result
 
-        # Create args - use SimpleNamespace to avoid MagicMock attribute issues
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="test_token",
@@ -700,12 +747,14 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder="/tmp/plex_generate_previews",
             log_level=None,
         )
 
-        config = load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            config = load_config()
 
         assert config is not None
         assert config.plex_url == "http://localhost:32400"
@@ -717,8 +766,6 @@ class TestLoadConfig:
     def test_load_config_missing_plex_url(self, mock_logging, mock_which):
         """Test error when PLEX_URL is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
-
-        from types import SimpleNamespace
 
         args = SimpleNamespace(
             plex_url=None,
@@ -733,22 +780,21 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder=None,
             log_level=None,
         )
 
-        with patch.dict("os.environ", {}, clear=True):
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
             with pytest.raises(ConfigValidationError):
-                load_config(args)
+                load_config()
 
     @patch("shutil.which")
     @patch("plex_generate_previews.logging_config.setup_logging")
     def test_load_config_missing_plex_token(self, mock_logging, mock_which):
         """Test error when PLEX_TOKEN is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
-
-        from types import SimpleNamespace
 
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
@@ -763,14 +809,15 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder=None,
             log_level=None,
         )
 
-        with patch.dict("os.environ", {}, clear=True):
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
             with pytest.raises(ConfigValidationError):
-                load_config(args)
+                load_config()
 
     @patch("shutil.which")
     @patch("plex_generate_previews.config.load_dotenv")
@@ -782,8 +829,6 @@ class TestLoadConfig:
         mock_which.return_value = "/usr/bin/ffmpeg"
         # Prevent load_dotenv from repopulating os.environ so missing_params is triggered
         mock_load_dotenv.return_value = None
-
-        from types import SimpleNamespace
 
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
@@ -798,14 +843,15 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder=None,
             log_level=None,
         )
 
-        with patch.dict("os.environ", {}, clear=True):
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
             with pytest.raises(ConfigValidationError):
-                load_config(args)
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -820,8 +866,6 @@ class TestLoadConfig:
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
         mock_exists.return_value = False
 
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
@@ -835,13 +879,15 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder=None,
             log_level=None,
         )
 
-        with pytest.raises(ConfigValidationError):
-            load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            with pytest.raises(ConfigValidationError):
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -859,8 +905,6 @@ class TestLoadConfig:
         mock_isdir.return_value = True
         mock_listdir.return_value = ["random", "folders"]  # Missing Cache and Media
 
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
@@ -874,13 +918,15 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder=None,
             log_level=None,
         )
 
-        with pytest.raises(ConfigValidationError):
-            load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            with pytest.raises(ConfigValidationError):
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -917,28 +963,30 @@ class TestLoadConfig:
         statvfs_result.f_bavail = 1024 * 1024 * 250
         mock_statvfs.return_value = statvfs_result
 
-        args = MagicMock()
-        args.plex_url = "http://localhost:32400"
-        args.plex_token = "token"
-        args.plex_config_folder = (
-            "/config/plex/Library/Application Support/Plex Media Server"
+        args = SimpleNamespace(
+            plex_url="http://localhost:32400",
+            plex_token="token",
+            plex_config_folder=(
+                "/config/plex/Library/Application Support/Plex Media Server"
+            ),
+            plex_timeout=None,
+            plex_libraries=None,
+            plex_local_videos_path_mapping=None,
+            plex_videos_path_mapping=None,
+            plex_bif_frame_interval=100,  # Invalid: > 60
+            thumbnail_quality=None,
+            regenerate_thumbnails=False,
+            gpu_threads=None,
+            cpu_threads=None,
+            gpu_config=None,
+            tmp_folder="/tmp/plex_generate_previews",
+            log_level=None,
         )
-        args.plex_timeout = None
-        args.plex_libraries = None
-        args.plex_local_videos_path_mapping = None
-        args.plex_videos_path_mapping = None
-        args.plex_bif_frame_interval = 100  # Invalid: > 60
-        args.thumbnail_quality = None
-        args.regenerate_thumbnails = False
-        args.gpu_threads = None
-        args.cpu_threads = None
-        args.gpu_selection = None
-        args.tmp_folder = "/tmp/plex_generate_previews"
-        args.log_level = None
 
-        # Should fail validation due to invalid frame interval
-        with pytest.raises(ConfigValidationError):
-            load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            with pytest.raises(ConfigValidationError):
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -973,28 +1021,30 @@ class TestLoadConfig:
         statvfs_result.f_bavail = 1024 * 1024 * 250
         mock_statvfs.return_value = statvfs_result
 
-        args = MagicMock()
-        args.plex_url = "http://localhost:32400"
-        args.plex_token = "token"
-        args.plex_config_folder = (
-            "/config/plex/Library/Application Support/Plex Media Server"
+        args = SimpleNamespace(
+            plex_url="http://localhost:32400",
+            plex_token="token",
+            plex_config_folder=(
+                "/config/plex/Library/Application Support/Plex Media Server"
+            ),
+            plex_timeout=None,
+            plex_libraries=None,
+            plex_local_videos_path_mapping=None,
+            plex_videos_path_mapping=None,
+            plex_bif_frame_interval=None,
+            thumbnail_quality=None,
+            regenerate_thumbnails=False,
+            gpu_threads=50,  # Invalid: > 32
+            cpu_threads=None,
+            gpu_config=None,
+            tmp_folder="/tmp/plex_generate_previews",
+            log_level=None,
         )
-        args.plex_timeout = None
-        args.plex_libraries = None
-        args.plex_local_videos_path_mapping = None
-        args.plex_videos_path_mapping = None
-        args.plex_bif_frame_interval = None
-        args.thumbnail_quality = None
-        args.regenerate_thumbnails = False
-        args.gpu_threads = 50  # Invalid: > 32
-        args.cpu_threads = None
-        args.gpu_selection = None
-        args.tmp_folder = "/tmp/plex_generate_previews"
-        args.log_level = None
 
-        # Should fail validation due to invalid thread count
-        with pytest.raises(ConfigValidationError):
-            load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            with pytest.raises(ConfigValidationError):
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1029,85 +1079,31 @@ class TestLoadConfig:
         statvfs_result.f_bavail = 1024 * 1024 * 250
         mock_statvfs.return_value = statvfs_result
 
-        args = MagicMock()
-        args.plex_url = "http://localhost:32400"
-        args.plex_token = "token"
-        args.plex_config_folder = (
-            "/config/plex/Library/Application Support/Plex Media Server"
+        args = SimpleNamespace(
+            plex_url="http://localhost:32400",
+            plex_token="token",
+            plex_config_folder=(
+                "/config/plex/Library/Application Support/Plex Media Server"
+            ),
+            plex_timeout=None,
+            plex_libraries=None,
+            plex_local_videos_path_mapping=None,
+            plex_videos_path_mapping=None,
+            plex_bif_frame_interval=None,
+            thumbnail_quality=None,
+            regenerate_thumbnails=False,
+            gpu_threads=None,
+            cpu_threads=None,
+            ffmpeg_threads=50,  # Invalid: > 32
+            gpu_config=None,
+            tmp_folder="/tmp/plex_generate_previews",
+            log_level=None,
         )
-        args.plex_timeout = None
-        args.plex_libraries = None
-        args.plex_local_videos_path_mapping = None
-        args.plex_videos_path_mapping = None
-        args.plex_bif_frame_interval = None
-        args.thumbnail_quality = None
-        args.regenerate_thumbnails = False
-        args.gpu_threads = None
-        args.cpu_threads = None
-        args.ffmpeg_threads = 50  # Invalid: > 32
-        args.gpu_selection = None
-        args.tmp_folder = "/tmp/plex_generate_previews"
-        args.log_level = None
 
-        # Should fail validation due to invalid ffmpeg_threads
-        with pytest.raises(ConfigValidationError):
-            load_config(args)
-
-    @patch("shutil.which")
-    @patch("subprocess.run")
-    @patch("os.statvfs", create=True)
-    @patch("os.access")
-    @patch("os.listdir")
-    @patch("os.path.isdir")
-    @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
-    def test_load_config_validates_gpu_selection(
-        self,
-        mock_logging,
-        mock_exists,
-        mock_isdir,
-        mock_listdir,
-        mock_access,
-        mock_statvfs,
-        mock_run,
-        mock_which,
-    ):
-        """Test validation of GPU selection format."""
-        mock_which.return_value = "/usr/bin/ffmpeg"
-        mock_run.return_value = MagicMock(returncode=0)
-        mock_exists.return_value = True
-        mock_isdir.return_value = True
-        mock_listdir.side_effect = lambda path: (
-            ["Cache", "Media"] if "Plex Media Server" in path else ["0", "1", "a", "b"]
-        )
-        mock_access.return_value = True
-        statvfs_result = MagicMock()
-        statvfs_result.f_frsize = 4096
-        statvfs_result.f_bavail = 1024 * 1024 * 250
-        mock_statvfs.return_value = statvfs_result
-
-        args = MagicMock()
-        args.plex_url = "http://localhost:32400"
-        args.plex_token = "token"
-        args.plex_config_folder = (
-            "/config/plex/Library/Application Support/Plex Media Server"
-        )
-        args.plex_timeout = None
-        args.plex_libraries = None
-        args.plex_local_videos_path_mapping = None
-        args.plex_videos_path_mapping = None
-        args.plex_bif_frame_interval = None
-        args.thumbnail_quality = None
-        args.regenerate_thumbnails = False
-        args.gpu_threads = None
-        args.cpu_threads = None
-        args.gpu_selection = "invalid,format,abc"  # Contains non-numeric
-        args.tmp_folder = "/tmp/plex_generate_previews"
-        args.log_level = None
-
-        # Should fail validation due to invalid GPU selection
-        with pytest.raises(ConfigValidationError):
-            load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            with pytest.raises(ConfigValidationError):
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1182,8 +1178,6 @@ class TestLoadConfig:
         mock_stat.f_bavail = 1024 * 1024  # Plenty of space
         mock_statvfs.return_value = mock_stat
 
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
@@ -1198,11 +1192,13 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             log_level=None,
         )
 
-        config = load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            config = load_config()
 
         # Should succeed and create the folder
         assert config is not None
@@ -1282,8 +1278,6 @@ class TestLoadConfig:
         mock_stat.f_bavail = 1024 * 1024  # Plenty of space
         mock_statvfs.return_value = mock_stat
 
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
@@ -1298,11 +1292,13 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             log_level=None,
         )
 
-        config = load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            config = load_config()
 
         # Should succeed even though tmp folder is not empty
         assert config is not None
@@ -1314,13 +1310,28 @@ class TestLoadConfig:
         """Test error when FFmpeg is not found."""
         mock_which.return_value = None
 
-        args = MagicMock()
-        args.plex_url = "http://localhost:32400"
-        args.plex_token = "token"
-        args.plex_config_folder = "/config/plex"
+        args = SimpleNamespace(
+            plex_url="http://localhost:32400",
+            plex_token="token",
+            plex_config_folder="/config/plex",
+            plex_timeout=None,
+            plex_libraries=None,
+            plex_local_videos_path_mapping=None,
+            plex_videos_path_mapping=None,
+            plex_bif_frame_interval=None,
+            thumbnail_quality=None,
+            regenerate_thumbnails=False,
+            gpu_threads=None,
+            cpu_threads=None,
+            gpu_config=None,
+            tmp_folder=None,
+            log_level=None,
+        )
 
-        with pytest.raises(SystemExit):
-            load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            with pytest.raises(SystemExit):
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1358,8 +1369,6 @@ class TestLoadConfig:
         statvfs_result.f_bavail = 1024 * 1024 * 250  # 1GB+ free
         mock_statvfs.return_value = statvfs_result
 
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url=None,  # Missing required field
             plex_token="token",
@@ -1373,14 +1382,15 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder=None,
             log_level=None,
         )
 
-        with patch.dict("os.environ", {}, clear=True):
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
             with pytest.raises(ConfigValidationError):
-                load_config(args)
+                load_config()
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1450,8 +1460,6 @@ class TestLoadConfig:
         statvfs_result.f_bavail = 1024 * 1024 * 250
         mock_statvfs.return_value = statvfs_result
 
-        from types import SimpleNamespace
-
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
@@ -1465,12 +1473,14 @@ class TestLoadConfig:
             regenerate_thumbnails=False,
             gpu_threads=None,
             cpu_threads=None,
-            gpu_selection=None,
+            gpu_config=None,
             tmp_folder="/tmp/plex_generate_previews",
             log_level=None,
         )
 
-        config = load_config(args)
+        env = _set_test_env(None, args)
+        with patch.dict("os.environ", env, clear=False):
+            config = load_config()
 
         assert config is not None
         assert "movies" in config.plex_libraries
@@ -1487,5 +1497,9 @@ class TestDockerHelp:
         show_docker_help()
         logged_lines = [call.args[0] for call in mock_info.call_args_list]
         assert any("Docker Environment Detected" in line for line in logged_lines)
-        assert any("Required Environment Variables" in line for line in logged_lines)
-        assert any("Example Docker Run Command" in line for line in logged_lines)
+        assert any(
+            "One-time seed environment variables" in line for line in logged_lines
+        )
+        assert any(
+            "Infrastructure environment variables" in line for line in logged_lines
+        )

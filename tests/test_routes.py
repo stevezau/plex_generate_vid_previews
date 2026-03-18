@@ -918,6 +918,23 @@ class TestSettingsAPI:
         assert resp.get_json().get("exclude_paths") == exclude_paths
 
     def test_save_settings(self, client):
+        # Pre-seed gpu_config so gpu_threads setter can distribute workers
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "gpu_config": [
+                    {
+                        "device": "/dev/gpu0",
+                        "name": "GPU 0",
+                        "type": "vaapi",
+                        "enabled": True,
+                        "workers": 1,
+                        "ffmpeg_threads": 2,
+                    },
+                ]
+            },
+        )
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
@@ -950,6 +967,42 @@ class TestSettingsAPI:
             },
         )
         assert resp.status_code == 200
+
+    def test_save_gpu_config_validates_list(self, client):
+        """gpu_config must be a list; non-list values are rejected."""
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"gpu_config": "not_a_list"},
+        )
+        assert resp.status_code == 400
+
+    def test_save_gpu_config_filters_invalid_entries(self, client):
+        """gpu_config entries without device key are filtered out."""
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "gpu_config": [
+                    {
+                        "device": "cuda",
+                        "name": "GPU",
+                        "type": "nvidia",
+                        "enabled": True,
+                        "workers": 1,
+                        "ffmpeg_threads": 2,
+                    },
+                    {"name": "no_device"},
+                    "string_entry",
+                    None,
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        get_resp = client.get("/api/settings", headers=_api_headers())
+        saved = get_resp.get_json()["gpu_config"]
+        assert len(saved) == 1
+        assert saved[0]["device"] == "cuda"
 
     def test_save_log_settings(self, client):
         """Test that log_level, log_rotation_size, log_retention_count are persisted."""
@@ -1050,7 +1103,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.cli.run_processing",
+                "plex_generate_previews.processing.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1113,7 +1166,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.cli.run_processing",
+                "plex_generate_previews.processing.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1174,7 +1227,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.cli.run_processing",
+                "plex_generate_previews.processing.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1228,7 +1281,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.cli.run_processing",
+                "plex_generate_previews.processing.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1277,7 +1330,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.cli.run_processing",
+                "plex_generate_previews.processing.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(

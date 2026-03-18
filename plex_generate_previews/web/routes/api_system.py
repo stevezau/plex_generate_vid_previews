@@ -19,6 +19,22 @@ from ._helpers import (
 )
 
 
+@api.route("/system/rescan-gpus", methods=["POST"])
+@setup_or_auth_required
+def rescan_gpus():
+    """Force GPU re-detection and return updated list."""
+    try:
+        with _gpu_cache_lock:
+            _gpu_cache["result"] = None
+        _ensure_gpu_cache()
+        with _gpu_cache_lock:
+            gpus = _gpu_cache["result"] or []
+        return jsonify({"gpus": gpus})
+    except Exception as e:
+        logger.error(f"Failed to rescan GPUs: {e}")
+        return jsonify({"error": "GPU scan failed"}), 500
+
+
 @api.route("/system/status")
 @setup_or_auth_required
 def get_system_status():
@@ -57,21 +73,20 @@ def get_config():
         from ..settings_manager import get_settings_manager
 
         config = get_cached_config()
+        settings = get_settings_manager()
         if config is None:
-            settings = get_settings_manager()
             return jsonify(
                 {
-                    "plex_url": os.environ.get("PLEX_URL", ""),
-                    "plex_token": "****" if os.environ.get("PLEX_TOKEN") else "",
-                    "plex_config_folder": os.environ.get("PLEX_CONFIG_FOLDER", ""),
+                    "plex_url": settings.plex_url or "",
+                    "plex_token": "****" if settings.plex_token else "",
+                    "plex_config_folder": settings.plex_config_folder or "",
                     "plex_verify_ssl": settings.plex_verify_ssl,
-                    "config_error": "Configuration incomplete. Check required environment variables.",
-                    "gpu_threads": int(os.environ.get("GPU_THREADS", 1)),
-                    "cpu_threads": int(os.environ.get("CPU_THREADS", 1)),
-                    "cpu_fallback_threads": int(
-                        os.environ.get("FALLBACK_CPU_THREADS", 0)
-                    ),
-                    "ffmpeg_threads": int(os.environ.get("FFMPEG_THREADS", 2)),
+                    "config_error": "Configuration incomplete. Complete the setup wizard.",
+                    "gpu_config": settings.gpu_config,
+                    "gpu_threads": settings.gpu_threads,
+                    "cpu_threads": settings.cpu_threads,
+                    "cpu_fallback_threads": settings.cpu_fallback_threads,
+                    "ffmpeg_threads": settings.get("ffmpeg_threads", 2),
                 }
             )
 
@@ -87,6 +102,7 @@ def get_config():
                 "thumbnail_interval": config.plex_bif_frame_interval,
                 "thumbnail_quality": config.thumbnail_quality,
                 "regenerate_thumbnails": config.regenerate_thumbnails,
+                "gpu_config": config.gpu_config,
                 "gpu_threads": config.gpu_threads,
                 "cpu_threads": config.cpu_threads,
                 "cpu_fallback_threads": config.fallback_cpu_threads,
@@ -215,6 +231,118 @@ def get_version_info():
 def health_check():
     """Health check endpoint (no auth required)."""
     return jsonify({"status": "healthy"})
+
+
+_GITHUB_RELEASES_URL = (
+    "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases"
+)
+_RELEASES_CACHE: dict = {"result": None, "fetched_at": 0.0}
+_RELEASES_CACHE_TTL = 3600
+
+
+def _fetch_github_releases(limit: int = 10) -> list:
+    """Fetch recent GitHub releases with TTL caching.
+
+    Args:
+        limit: Max releases to return.
+
+    Returns:
+        List of dicts with version, date, and body (markdown).
+    """
+    now = time.monotonic()
+    if (
+        _RELEASES_CACHE["result"] is not None
+        and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL
+    ):
+        return _RELEASES_CACHE["result"][:limit]
+
+    import requests as req
+
+    try:
+        resp = req.get(
+            _GITHUB_RELEASES_URL,
+            headers={"User-Agent": "plex-generate-previews"},
+            params={"per_page": limit},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        entries = []
+        for rel in resp.json():
+            if rel.get("draft"):
+                continue
+            entries.append(
+                {
+                    "version": (rel.get("tag_name") or "").lstrip("v"),
+                    "name": rel.get("name") or rel.get("tag_name") or "",
+                    "date": rel.get("published_at") or "",
+                    "body": rel.get("body") or "",
+                    "url": rel.get("html_url") or "",
+                }
+            )
+        _RELEASES_CACHE["result"] = entries
+        _RELEASES_CACHE["fetched_at"] = time.monotonic()
+        return entries[:limit]
+    except Exception as e:
+        logger.debug(f"Failed to fetch GitHub releases: {e}")
+        return []
+
+
+@api.route("/system/whats-new")
+@setup_or_auth_required
+def get_whats_new():
+    """Return changelog entries the user hasn't seen yet.
+
+    Compares the current running version against ``last_seen_version``
+    stored in settings.  On first install (no ``last_seen_version``),
+    silently sets it to the current version and returns nothing.
+    """
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    version_info = _get_version_info()
+    current = version_info.get("current_version", "")
+
+    if not current or current in ("0.0.0", "0.0.0.dev0", "local build"):
+        return jsonify({"has_new": False, "entries": []})
+
+    last_seen = settings.get("last_seen_version", "")
+
+    if not last_seen:
+        settings.update({"last_seen_version": current})
+        return jsonify({"has_new": False, "entries": []})
+
+    if last_seen == current:
+        return jsonify({"has_new": False, "entries": []})
+
+    from ...version_check import parse_version
+
+    releases = _fetch_github_releases(limit=10)
+    unseen = []
+    for entry in releases:
+        v = entry["version"]
+        if not v:
+            continue
+        try:
+            if parse_version(v) > parse_version(last_seen):
+                unseen.append(entry)
+        except ValueError:
+            continue
+
+    return jsonify({"has_new": len(unseen) > 0, "entries": unseen})
+
+
+@api.route("/system/whats-new/dismiss", methods=["POST"])
+@setup_or_auth_required
+def dismiss_whats_new():
+    """Mark the current version's changelog as seen."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    version_info = _get_version_info()
+    current = version_info.get("current_version", "")
+    if current and current not in ("0.0.0", "0.0.0.dev0", "local build"):
+        settings.update({"last_seen_version": current})
+    return jsonify({"ok": True})
 
 
 def _fetch_libraries_via_http(

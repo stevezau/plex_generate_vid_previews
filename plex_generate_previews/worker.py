@@ -63,16 +63,19 @@ class Worker:
         gpu_device: Optional[str] = None,
         gpu_index: Optional[int] = None,
         gpu_name: Optional[str] = None,
+        ffmpeg_threads: Optional[int] = None,
     ):
         """Initialize a worker.
 
         Args:
-            worker_id: Unique identifier for this worker
-            worker_type: 'GPU' or 'CPU'
-            gpu: GPU type for acceleration
-            gpu_device: GPU device path
-            gpu_index: Index of the assigned GPU hardware
-            gpu_name: Human-readable GPU name for display
+            worker_id: Unique identifier for this worker.
+            worker_type: 'GPU', 'CPU', or 'CPU_FALLBACK'.
+            gpu: GPU type for acceleration (e.g. 'nvidia', 'amd').
+            gpu_device: GPU device path (e.g. '/dev/dri/renderD128').
+            gpu_index: Index of the assigned GPU in the pool.
+            gpu_name: Human-readable GPU name for display.
+            ffmpeg_threads: Per-GPU FFmpeg thread cap (overrides
+                config.ffmpeg_threads when set).
 
         """
         self.worker_id = worker_id
@@ -81,6 +84,7 @@ class Worker:
         self.gpu_device = gpu_device
         self.gpu_index = gpu_index
         self.gpu_name = gpu_name
+        self.ffmpeg_threads = ffmpeg_threads
         self.display_name = f"{worker_type} {worker_id}"
 
         # Task state
@@ -313,7 +317,13 @@ class Worker:
 
         try:
             result = process_item(
-                item_key, self.gpu, self.gpu_device, config, plex, progress_callback
+                item_key,
+                self.gpu,
+                self.gpu_device,
+                config,
+                plex,
+                progress_callback,
+                ffmpeg_threads_override=self.ffmpeg_threads,
             )
             self.outcome_counts[result.value] += 1
             if result == ProcessingResult.FAILED:
@@ -557,6 +567,7 @@ class WorkerPool:
             self._next_gpu_assignment_index += 1
             gpu_type, gpu_device, gpu_info = self.selected_gpus[gpu_index]
             gpu_name = gpu_info.get("name", f"{gpu_type} GPU")
+            per_gpu_ffmpeg = gpu_info.get("ffmpeg_threads")
             worker = Worker(
                 worker_id,
                 "GPU",
@@ -564,6 +575,7 @@ class WorkerPool:
                 gpu_device,
                 gpu_index,
                 gpu_name,
+                ffmpeg_threads=per_gpu_ffmpeg,
             )
             worker.display_name = f"GPU Worker {type_idx} ({gpu_name})"
             return worker
@@ -1048,11 +1060,7 @@ class WorkerPool:
                     ).strip() or f"GPU {worker.gpu_index}"
 
                     if worker.worker_type == "GPU":
-                        display_name = (
-                            f"{gpu_base_name} #{idx}"
-                            if type_counters["GPU"] > 1
-                            else gpu_base_name
-                        )
+                        display_name = f"{gpu_base_name} #{idx}"
                     elif worker.worker_type == "CPU_FALLBACK":
                         display_name = f"CPU Fallback - Worker {idx}"
                     else:

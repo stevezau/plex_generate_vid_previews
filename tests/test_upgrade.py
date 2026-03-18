@@ -1,0 +1,625 @@
+"""Tests for the upgrade/migration system.
+
+Tests env var migration, schema migrations, and GPU config building.
+"""
+
+from unittest.mock import patch
+
+import pytest
+
+
+@pytest.fixture
+def settings_manager(tmp_path, monkeypatch):
+    """Create a SettingsManager with clean environment."""
+    from plex_generate_previews.web.settings_manager import SettingsManager
+
+    monkeypatch.delenv("GPU_THREADS", raising=False)
+    monkeypatch.delenv("GPU_SELECTION", raising=False)
+    monkeypatch.delenv("FFMPEG_THREADS", raising=False)
+    monkeypatch.delenv("PLEX_URL", raising=False)
+    monkeypatch.delenv("PLEX_TOKEN", raising=False)
+    monkeypatch.delenv("PLEX_LIBRARIES", raising=False)
+    monkeypatch.delenv("PLEX_VIDEOS_PATH_MAPPING", raising=False)
+    monkeypatch.delenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", raising=False)
+    return SettingsManager(config_dir=str(tmp_path))
+
+
+class TestRunMigrations:
+    """Tests for the top-level run_migrations entry point."""
+
+    def test_calls_env_and_schema_migrations(self, settings_manager, monkeypatch):
+        """run_migrations runs both env var and schema migrations."""
+        from plex_generate_previews.upgrade import run_migrations
+
+        monkeypatch.setenv("PLEX_URL", "http://plex:32400")
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("_env_migrated") is True
+        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("plex_url") == "http://plex:32400"
+
+
+class TestEnvVarMigration:
+    """Tests for environment variable migration."""
+
+    def test_migrates_plex_url(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("PLEX_URL", "http://plex:32400")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("plex_url") == "http://plex:32400"
+
+    def test_migrates_int_values(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("CPU_THREADS", "4")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("cpu_threads") == 4
+
+    def test_migrates_bool_values(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("PLEX_VERIFY_SSL", "false")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("plex_verify_ssl") is False
+
+    def test_skips_existing_keys(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        settings_manager.set("plex_url", "http://existing:32400")
+        monkeypatch.setenv("PLEX_URL", "http://new:32400")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("plex_url") == "http://existing:32400"
+
+    def test_runs_only_once(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("PLEX_URL", "http://first:32400")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("plex_url") == "http://first:32400"
+
+        monkeypatch.setenv("PLEX_URL", "http://second:32400")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("plex_url") == "http://first:32400"
+
+    def test_sets_env_migrated_flag(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("_env_migrated") is True
+
+    def test_migrates_libraries(self, settings_manager, monkeypatch):
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("PLEX_LIBRARIES", "Movies, TV Shows")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("selected_libraries") == ["Movies", "TV Shows"]
+
+
+class TestEnvVarMigrationExtended:
+    """Additional coverage for _migrate_env_vars edge cases."""
+
+    def test_invalid_int_env_var_logged(self, settings_manager, monkeypatch):
+        """Invalid int env var is skipped with a warning, not a crash."""
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("CPU_THREADS", "not_a_number")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("cpu_threads") is None
+        assert settings_manager.get("_env_migrated") is True
+
+    def test_gpu_config_migrated_from_env(self, settings_manager, monkeypatch):
+        """gpu_config is built from GPU env vars during env migration."""
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("GPU_THREADS", "2")
+        detected = [("nvidia", "cuda", {"name": "RTX 4090"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            _migrate_env_vars(settings_manager)
+        config = settings_manager.get("gpu_config")
+        assert config is not None
+        assert len(config) == 1
+        assert config[0]["workers"] == 2
+
+    def test_path_mappings_migrated_from_env(self, settings_manager, monkeypatch):
+        """path_mappings are built from legacy env vars during env migration."""
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("PLEX_VIDEOS_PATH_MAPPING", "/plex/media")
+        monkeypatch.setenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", "/local/media")
+        _migrate_env_vars(settings_manager)
+        mappings = settings_manager.get("path_mappings")
+        assert mappings is not None
+        assert len(mappings) == 1
+        assert mappings[0]["plex_prefix"] == "/plex/media"
+
+    def test_deprecated_env_var_does_not_crash(self, settings_manager, monkeypatch):
+        """Deprecated env vars emit a warning but don't block migration."""
+        from plex_generate_previews.upgrade import _migrate_env_vars
+
+        monkeypatch.setenv("GPU_SELECTION", "0")
+        monkeypatch.setenv("SORT_BY", "name")
+        _migrate_env_vars(settings_manager)
+        assert settings_manager.get("_env_migrated") is True
+
+
+class TestBuildGpuConfigFromEnv:
+    """Tests for _build_gpu_config_from_env helper."""
+
+    def test_returns_none_when_no_env_vars(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.delenv("GPU_THREADS", raising=False)
+        monkeypatch.delenv("GPU_SELECTION", raising=False)
+        monkeypatch.delenv("FFMPEG_THREADS", raising=False)
+        result = _build_gpu_config_from_env()
+        assert result is None
+
+    def test_builds_config_with_gpu_threads(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "2")
+        detected = [
+            ("vaapi", "/dev/dri/renderD128", {"name": "Intel GPU"}),
+            ("vaapi", "/dev/dri/renderD129", {"name": "AMD GPU"}),
+        ]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result is not None
+        assert len(result) == 2
+        assert all(entry["enabled"] for entry in result)
+        total_workers = sum(e["workers"] for e in result)
+        assert total_workers == 2
+
+    def test_gpu_selection_disables_unselected(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "1")
+        monkeypatch.setenv("GPU_SELECTION", "0")
+        detected = [
+            ("vaapi", "/dev/dri/renderD128", {"name": "Intel GPU"}),
+            ("vaapi", "/dev/dri/renderD129", {"name": "AMD GPU"}),
+        ]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result is not None
+        assert result[0]["enabled"] is True
+        assert result[1]["enabled"] is False
+
+    def test_ffmpeg_threads_propagated(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "1")
+        monkeypatch.setenv("FFMPEG_THREADS", "4")
+        detected = [("nvidia", "/dev/nvidia0", {"name": "RTX 4090"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result[0]["ffmpeg_threads"] == 4
+
+    def test_returns_empty_when_no_gpus_detected(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "2")
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=[],
+        ):
+            result = _build_gpu_config_from_env()
+        assert result == []
+
+
+class TestMigrateSchema:
+    """Tests for settings schema migration (gpu_threads -> gpu_config)."""
+
+    def test_noop_when_already_at_current_version(self, settings_manager):
+        """Migration is skipped when _schema_version is current."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("_schema_version", 2)
+        settings_manager.set("gpu_threads", 4)
+        _migrate_schema(settings_manager)
+        assert settings_manager.get("gpu_threads") == 4
+
+    def test_builds_gpu_config_from_flat_gpu_threads(self, settings_manager):
+        """Flat gpu_threads is converted to per-GPU gpu_config."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_threads", 3)
+        settings_manager.set("ffmpeg_threads", 4)
+
+        detected = [
+            ("nvidia", "/dev/nvidia0", {"name": "RTX 4090"}),
+            ("nvidia", "/dev/nvidia1", {"name": "RTX 3090"}),
+        ]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            _migrate_schema(settings_manager)
+
+        config = settings_manager.gpu_config
+        assert len(config) == 2
+        assert config[0]["name"] == "RTX 4090"
+        assert config[1]["name"] == "RTX 3090"
+        assert all(e["enabled"] for e in config)
+        assert sum(e["workers"] for e in config) == 3
+        assert all(e["ffmpeg_threads"] == 4 for e in config)
+
+        assert settings_manager.get("gpu_threads") is None
+        assert settings_manager.get("ffmpeg_threads") is None
+        assert settings_manager.get("_schema_version") == 2
+
+    def test_removes_stale_keys_without_gpu_config(self, settings_manager):
+        """Stale flat keys are removed even when no GPUs are detected."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_threads", 2)
+        settings_manager.set("ffmpeg_threads", 3)
+
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=[],
+        ):
+            _migrate_schema(settings_manager)
+
+        assert settings_manager.get("gpu_threads") is None
+        assert settings_manager.get("ffmpeg_threads") is None
+        assert settings_manager.gpu_config == []
+        assert settings_manager.get("_schema_version") == 2
+
+    def test_preserves_existing_gpu_config(self, settings_manager):
+        """Existing gpu_config is not overwritten by migration."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        existing = [
+            {
+                "device": "/dev/nvidia0",
+                "name": "RTX 4090",
+                "type": "nvidia",
+                "enabled": True,
+                "workers": 2,
+                "ffmpeg_threads": 3,
+            }
+        ]
+        settings_manager.set("gpu_config", existing)
+        settings_manager.set("gpu_threads", 99)
+
+        _migrate_schema(settings_manager)
+
+        config = settings_manager.gpu_config
+        assert len(config) == 1
+        assert config[0]["workers"] == 2
+        assert settings_manager.get("gpu_threads") is None
+
+    def test_no_flat_keys_noop(self, settings_manager):
+        """Migration is a no-op when no flat keys or gpu_config exist."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        _migrate_schema(settings_manager)
+
+        assert settings_manager.gpu_config == []
+        assert settings_manager.get("_schema_version") == 2
+
+    def test_idempotent(self, settings_manager):
+        """Running migration twice does not change the result."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_threads", 2)
+        detected = [("nvidia", "/dev/nvidia0", {"name": "GPU"})]
+
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            _migrate_schema(settings_manager)
+
+        config_after_first = settings_manager.gpu_config.copy()
+        _migrate_schema(settings_manager)
+
+        assert settings_manager.gpu_config == config_after_first
+
+
+class TestMigrateSchemaEdgeCases:
+    """Edge-case tests for schema migration."""
+
+    def test_invalid_gpu_threads_value_handled(self, settings_manager):
+        """Non-numeric gpu_threads in settings doesn't crash migration."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_threads", "abc")
+        settings_manager.set("ffmpeg_threads", 2)
+        _migrate_schema(settings_manager)
+        assert settings_manager.get("gpu_threads") is None
+        assert settings_manager.get("_schema_version") == 2
+
+    def test_invalid_ffmpeg_threads_value_handled(self, settings_manager):
+        """Non-numeric ffmpeg_threads in settings doesn't crash migration."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_threads", 2)
+        settings_manager.set("ffmpeg_threads", "not_a_number")
+        _migrate_schema(settings_manager)
+        assert settings_manager.get("ffmpeg_threads") is None
+        assert settings_manager.get("_schema_version") == 2
+
+    def test_gpu_config_empty_list_not_overwritten(self, settings_manager):
+        """gpu_config=[] is not overwritten (it means user cleared config)."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_config", [])
+        settings_manager.set("gpu_threads", 4)
+        _migrate_schema(settings_manager)
+        assert settings_manager.gpu_config == []
+        assert settings_manager.get("gpu_threads") is None
+
+    def test_gpu_threads_zero_skips_config_build(self, settings_manager):
+        """gpu_threads=0 removes stale keys but doesn't build gpu_config."""
+        from plex_generate_previews.upgrade import _migrate_schema
+
+        settings_manager.set("gpu_threads", 0)
+        _migrate_schema(settings_manager)
+        assert settings_manager.gpu_config == []
+        assert settings_manager.get("gpu_threads") is None
+
+
+class TestBuildGpuConfigFromEnvEdgeCases:
+    """Edge-case tests for _build_gpu_config_from_env."""
+
+    def test_invalid_gpu_threads_env_uses_default(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "not_a_number")
+        detected = [("nvidia", "cuda", {"name": "GPU"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result is not None
+        assert result[0]["workers"] == 1
+
+    def test_invalid_ffmpeg_threads_env_uses_default(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "1")
+        monkeypatch.setenv("FFMPEG_THREADS", "xyz")
+        detected = [("nvidia", "cuda", {"name": "GPU"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result is not None
+        assert result[0]["ffmpeg_threads"] == 2
+
+    def test_gpu_selection_out_of_range_indices(self, monkeypatch):
+        """GPU_SELECTION with out-of-range index doesn't crash."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "1")
+        monkeypatch.setenv("GPU_SELECTION", "0,999")
+        detected = [("nvidia", "cuda", {"name": "GPU"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result is not None
+        assert result[0]["enabled"] is True
+
+    def test_gpu_detection_exception_returns_empty(self, monkeypatch):
+        """When detect_all_gpus raises, returns empty list."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "1")
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            side_effect=RuntimeError("detection failed"),
+        ):
+            result = _build_gpu_config_from_env()
+        assert result == []
+
+    def test_gpu_threads_zero_disables_all(self, monkeypatch):
+        """GPU_THREADS=0 sets all GPUs to enabled=False with workers=0."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "0")
+        detected = [("nvidia", "cuda", {"name": "GPU"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result[0]["enabled"] is False
+        assert result[0]["workers"] == 0
+
+    def test_gpu_selection_non_numeric_falls_back_to_all(self, monkeypatch):
+        """Non-numeric GPU_SELECTION enables all GPUs."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "1")
+        monkeypatch.setenv("GPU_SELECTION", "first,second")
+        detected = [
+            ("nvidia", "cuda:0", {"name": "GPU A"}),
+            ("nvidia", "cuda:1", {"name": "GPU B"}),
+        ]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert all(e["enabled"] for e in result)
+
+    def test_gpu_selection_no_matching_indices_falls_back(self, monkeypatch):
+        """GPU_SELECTION with only out-of-range indices enables all GPUs."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "2")
+        monkeypatch.setenv("GPU_SELECTION", "99,100")
+        detected = [("nvidia", "cuda", {"name": "GPU"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result[0]["enabled"] is True
+        assert result[0]["workers"] == 2
+
+    def test_remainder_distributed_across_gpus(self, monkeypatch):
+        """5 threads across 2 GPUs: first gets 3, second gets 2."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.setenv("GPU_THREADS", "5")
+        detected = [
+            ("nvidia", "cuda:0", {"name": "GPU A"}),
+            ("nvidia", "cuda:1", {"name": "GPU B"}),
+        ]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result[0]["workers"] == 3
+        assert result[1]["workers"] == 2
+        assert sum(e["workers"] for e in result) == 5
+
+    def test_only_ffmpeg_threads_set_triggers_migration(self, monkeypatch):
+        """Setting only FFMPEG_THREADS triggers GPU config build."""
+        from plex_generate_previews.upgrade import _build_gpu_config_from_env
+
+        monkeypatch.delenv("GPU_THREADS", raising=False)
+        monkeypatch.delenv("GPU_SELECTION", raising=False)
+        monkeypatch.setenv("FFMPEG_THREADS", "4")
+        detected = [("nvidia", "cuda", {"name": "GPU"})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            result = _build_gpu_config_from_env()
+        assert result is not None
+        assert result[0]["ffmpeg_threads"] == 4
+        assert result[0]["workers"] == 1
+
+
+class TestBuildPathMappingsFromEnv:
+    """Tests for _build_path_mappings_from_env helper."""
+
+    def test_returns_none_when_no_env_vars(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_path_mappings_from_env
+
+        monkeypatch.delenv("PLEX_VIDEOS_PATH_MAPPING", raising=False)
+        monkeypatch.delenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", raising=False)
+        result = _build_path_mappings_from_env()
+        assert result is None
+
+    def test_builds_mappings(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_path_mappings_from_env
+
+        monkeypatch.setenv("PLEX_VIDEOS_PATH_MAPPING", "/plex/media")
+        monkeypatch.setenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", "/local/media")
+        result = _build_path_mappings_from_env()
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["plex_prefix"] == "/plex/media"
+        assert result[0]["local_prefix"] == "/local/media"
+        assert result[0]["webhook_prefixes"] == []
+
+    def test_returns_none_when_only_one_var_set(self, monkeypatch):
+        from plex_generate_previews.upgrade import _build_path_mappings_from_env
+
+        monkeypatch.setenv("PLEX_VIDEOS_PATH_MAPPING", "/plex/media")
+        monkeypatch.delenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", raising=False)
+        result = _build_path_mappings_from_env()
+        assert result is None
+
+    def test_returns_none_when_get_path_mapping_pairs_raises(self, monkeypatch):
+        """Exception in get_path_mapping_pairs returns None gracefully."""
+        from plex_generate_previews.upgrade import _build_path_mappings_from_env
+
+        monkeypatch.setenv("PLEX_VIDEOS_PATH_MAPPING", "/plex/media")
+        monkeypatch.setenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", "/local/media")
+        with patch(
+            "plex_generate_previews.config.get_path_mapping_pairs",
+            side_effect=RuntimeError("parsing failed"),
+        ):
+            result = _build_path_mappings_from_env()
+        assert result is None
+
+    def test_returns_none_when_pairs_empty(self, monkeypatch):
+        """Empty pairs from get_path_mapping_pairs returns None."""
+        from plex_generate_previews.upgrade import _build_path_mappings_from_env
+
+        monkeypatch.setenv("PLEX_VIDEOS_PATH_MAPPING", "/plex/media")
+        monkeypatch.setenv("PLEX_LOCAL_VIDEOS_PATH_MAPPING", "/local/media")
+        with patch(
+            "plex_generate_previews.config.get_path_mapping_pairs",
+            return_value=[],
+        ):
+            result = _build_path_mappings_from_env()
+        assert result is None
+
+
+class TestMigrateToV2Extended:
+    """Additional edge-case tests for _migrate_to_v2."""
+
+    def test_gpu_detection_exception_still_removes_stale_keys(self, settings_manager):
+        """If GPU detection fails, stale keys are still cleaned up."""
+        from plex_generate_previews.upgrade import _migrate_to_v2
+
+        settings_manager.set("gpu_threads", 4)
+        settings_manager.set("ffmpeg_threads", 2)
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            side_effect=RuntimeError("no driver"),
+        ):
+            notes = _migrate_to_v2(settings_manager)
+        assert settings_manager.get("gpu_threads") is None
+        assert settings_manager.get("ffmpeg_threads") is None
+        assert any("removed stale keys" in n for n in notes)
+
+    def test_worker_remainder_distribution(self, settings_manager):
+        """5 threads across 3 GPUs: 2+2+1 with remainder going to first GPUs."""
+        from plex_generate_previews.upgrade import _migrate_to_v2
+
+        settings_manager.set("gpu_threads", 5)
+        settings_manager.set("ffmpeg_threads", 2)
+        detected = [
+            ("nvidia", "/dev/nvidia0", {"name": "GPU A"}),
+            ("nvidia", "/dev/nvidia1", {"name": "GPU B"}),
+            ("nvidia", "/dev/nvidia2", {"name": "GPU C"}),
+        ]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            _migrate_to_v2(settings_manager)
+        config = settings_manager.gpu_config
+        workers = [e["workers"] for e in config]
+        assert sum(workers) == 5
+        assert workers == [2, 2, 1]
+
+    def test_gpu_name_fallback(self, settings_manager):
+        """GPU without a 'name' in gpu_info uses type-based fallback."""
+        from plex_generate_previews.upgrade import _migrate_to_v2
+
+        settings_manager.set("gpu_threads", 1)
+        detected = [("vaapi", "/dev/dri/renderD128", {})]
+        with patch(
+            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            return_value=detected,
+        ):
+            _migrate_to_v2(settings_manager)
+        config = settings_manager.gpu_config
+        assert config[0]["name"] == "vaapi GPU"

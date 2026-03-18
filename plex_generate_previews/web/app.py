@@ -251,6 +251,11 @@ def create_app(config_dir: str = None) -> Flask:
 
     sm = get_settings_manager(config_dir)
 
+    # Run all pending settings migrations (env vars, schema upgrades)
+    from ..upgrade import run_migrations
+
+    run_migrations(sm)
+
     # Apply saved log level so the web server starts with the correct verbosity
     from ..logging_config import setup_logging
 
@@ -308,6 +313,7 @@ def create_app(config_dir: str = None) -> Flask:
         "api.api_regenerate_token",
         # System config
         "api.get_config",
+        "api.rescan_gpus",
         # Libraries
         "api.get_libraries",
         # Webhooks — external POST from Radarr/Sonarr

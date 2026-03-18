@@ -697,6 +697,7 @@ def generate_images(
     gpu_device_path: Optional[str],
     config: Config,
     progress_callback=None,
+    ffmpeg_threads_override: Optional[int] = None,
 ) -> tuple:
     """Generate thumbnail images from a video using FFmpeg.
 
@@ -798,7 +799,7 @@ def generate_images(
                 vf_parameters = (
                     f"fps=fps={fps_value}:round=up,"
                     f"zscale=t=linear{npl_param},format=gbrpf32le,"
-                    f"zscale=p=bt709,tonemap=tonemap=bt2390:desat=2,"
+                    f"zscale=p=bt709,tonemap=tonemap={config.tonemap_algorithm}:desat=2,"
                     f"zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
                 )
 
@@ -825,12 +826,17 @@ def generate_images(
         # running multiple workers.  CPU paths are left uncapped so software
         # decode can use all available cores.
         effective_gpu = gpu_override if gpu_override is not None else gpu
-        if effective_gpu is not None and config.ffmpeg_threads > 0:
+        effective_ffmpeg_threads = (
+            ffmpeg_threads_override
+            if ffmpeg_threads_override is not None
+            else config.ffmpeg_threads
+        )
+        if effective_gpu is not None and effective_ffmpeg_threads > 0:
             args += [
                 "-threads",
-                str(config.ffmpeg_threads),
+                str(effective_ffmpeg_threads),
                 "-filter_threads",
-                str(config.ffmpeg_threads),
+                str(effective_ffmpeg_threads),
             ]
 
         args += ["-threads:v", "1"]
@@ -1372,26 +1378,35 @@ def _generate_and_save_bif(
     gpu_device_path: Optional[str],
     config: Config,
     progress_callback=None,
+    ffmpeg_threads_override: Optional[int] = None,
 ) -> None:
     """Generate images and create BIF file.
 
     Args:
-        media_file: Path to media file
-        tmp_path: Temporary directory for images
-        index_bif: Path to output BIF file
-        gpu: GPU type for acceleration
-        gpu_device_path: GPU device path
-        config: Configuration object
-        progress_callback: Callback function for progress updates
+        media_file: Path to media file.
+        tmp_path: Temporary directory for images.
+        index_bif: Path to output BIF file.
+        gpu: GPU type for acceleration.
+        gpu_device_path: GPU device path.
+        config: Configuration object.
+        progress_callback: Callback function for progress updates.
+        ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
+            config.ffmpeg_threads when set).
 
     Raises:
-        CodecNotSupportedError: If codec is not supported by GPU
-        RuntimeError: If thumbnail generation produced 0 images
+        CodecNotSupportedError: If codec is not supported by GPU.
+        RuntimeError: If thumbnail generation produced 0 images.
 
     """
     try:
         gen_result = generate_images(
-            media_file, tmp_path, gpu, gpu_device_path, config, progress_callback
+            media_file,
+            tmp_path,
+            gpu,
+            gpu_device_path,
+            config,
+            progress_callback,
+            ffmpeg_threads_override=ffmpeg_threads_override,
         )
     except CodecNotSupportedError:
         # Clean up temp directory before re-raising
@@ -1539,6 +1554,7 @@ def process_item(
     config: Config,
     plex,
     progress_callback=None,
+    ffmpeg_threads_override: Optional[int] = None,
 ) -> ProcessingResult:
     """Process a single media item: generate thumbnails and BIF file.
 
@@ -1552,12 +1568,14 @@ def process_item(
     - Cleanup
 
     Args:
-        item_key: Plex media item key
-        gpu: GPU type for acceleration
-        gpu_device_path: GPU device path
-        config: Configuration object
-        plex: Plex server instance
-        progress_callback: Callback function for progress updates
+        item_key: Plex media item key.
+        gpu: GPU type for acceleration.
+        gpu_device_path: GPU device path.
+        config: Configuration object.
+        plex: Plex server instance.
+        progress_callback: Callback function for progress updates.
+        ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
+            config.ffmpeg_threads when set).
 
     Returns:
         ProcessingResult indicating the outcome. When an item has multiple
@@ -1662,6 +1680,7 @@ def process_item(
                         gpu_device_path,
                         config,
                         progress_callback,
+                        ffmpeg_threads_override=ffmpeg_threads_override,
                     )
                     _update_best(ProcessingResult.GENERATED)
                 except CodecNotSupportedError:

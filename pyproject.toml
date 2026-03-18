@@ -68,9 +68,6 @@ Homepage = "https://github.com/stevezau/plex_generate_vid_previews"
 Repository = "https://github.com/stevezau/plex_generate_vid_previews"
 Issues = "https://github.com/stevezau/plex_generate_vid_previews/issues"
 
-[project.scripts]
-plex-generate-previews = "plex_generate_previews.cli:main"
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["plex_generate_previews*"]

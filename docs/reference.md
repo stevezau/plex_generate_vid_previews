@@ -19,26 +19,21 @@ Complete reference for all configuration options and REST API endpoints.
 
 ## Configuration Priority
 
-Settings are applied in this order (highest priority first):
+**settings.json** (at `/config/settings.json`) is the sole source of truth for application configuration. On first start, environment variables are migrated into settings.json as seed values. After that, all configuration is managed via the **Web UI** (Setup Wizard and Settings page).
 
-1. **CLI arguments** — override everything (used when running with `--cli`)
-2. **Web UI / Settings page** — saved to `/config/settings.json`
-3. **Environment variables** — fallback when not set in UI
-4. **Default values** — used when nothing is configured
-
-For normal Docker use, configure everything in the **Setup Wizard** and **Settings**; no environment variables are required. Use env vars only when you need to override UI settings or run in CLI mode without an existing `/config`.
+**Infrastructure environment variables** remain active and are not migrated (see [Infrastructure Variables](#infrastructure-variables)).
 
 ---
 
 ## Plex Connection
 
-Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env vars are only needed if you skip the UI (e.g. CLI-only runs).
+Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Values are stored in settings.json (seeded from env vars on first start).
 
-| Variable | CLI Argument | Web UI | Description |
-|----------|--------------|--------|-------------|
-| `PLEX_URL` | `--plex-url` | Yes | Plex server URL (e.g., `http://192.168.1.100:32400`) |
-| `PLEX_TOKEN` | `--plex-token` | Yes | Plex authentication token (auto-set via OAuth) |
-| `PLEX_CONFIG_FOLDER` | `--plex-config-folder` | Yes | Path to Plex config folder |
+| Setting | Web UI | Description |
+|---------|--------|-------------|
+| `plex_url` | Yes | Plex server URL (e.g., `http://192.168.1.100:32400`) |
+| `plex_token` | Yes | Plex authentication token (auto-set via OAuth) |
+| `plex_config_folder` | Yes | Path to Plex config folder |
 
 > [!TIP]
 > Use the Setup Wizard to sign in with Plex OAuth. Your token is obtained securely without manually copying it.
@@ -48,59 +43,77 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Env v
 ## Processing Options
 <a id="cpu-fallback-workers"></a>
 
-| Variable | CLI Argument | Web UI | Default | Description |
-|----------|--------------|--------|---------|-------------|
-| `GPU_THREADS` | `--gpu-threads` | Yes | `1` | Number of GPU worker threads (0–32) |
-| `CPU_THREADS` | `--cpu-threads` | Yes | `1` | Number of CPU worker threads (0–32) |
-| `FALLBACK_CPU_THREADS` | `--fallback-cpu-threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `CPU_THREADS=0`) |
-| `FFMPEG_THREADS` | `--ffmpeg-threads` | Yes | `2` | Limits CPU usage per GPU job (0–32, 0 = no limit). Recommended: 2 |
-| `GPU_SELECTION` | `--gpu-selection` | No | `all` | GPU selection: `all` or `0,1,2` |
-| `THUMBNAIL_QUALITY` | `--thumbnail-quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
-| `PLEX_BIF_FRAME_INTERVAL` | `--plex-bif-frame-interval` | Yes | `5` | Interval between preview images (1–60 s) |
-| `REGENERATE_THUMBNAILS` | `--regenerate-thumbnails` | No | `false` | Regenerate existing thumbnails |
-| `PLEX_LIBRARIES` | `--plex-libraries` | Yes | All | Comma-separated library names or IDs |
-| `SORT_BY` | `--sort-by` | No | `newest` | Sort order: `newest` or `oldest` |
-| `NICE_LEVEL` | N/A | No | `15` | Process priority (0–19) |
+### Per-GPU Configuration (gpu_config)
+
+GPU settings are configured per-GPU in **Settings** → **Processing Options**. Each entry in `gpu_config` has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `device` | string | GPU device identifier (e.g. `/dev/dri/renderD128`) |
+| `name` | string | Display name (e.g. "Intel UHD Graphics 630") |
+| `type` | string | `nvidia`, `intel`, `amd`, `apple` |
+| `enabled` | boolean | Whether this GPU is used for processing |
+| `workers` | int | Number of worker threads for this GPU (0–32) |
+| `ffmpeg_threads` | int | CPU threads per FFmpeg job on this GPU (0–32, 0 = no limit). Recommended: 2 |
+
+### Other Processing Settings
+
+| Setting | Web UI | Default | Description |
+|---------|--------|---------|-------------|
+| `cpu_threads` | Yes | `1` | Number of CPU worker threads (0–32) |
+| `cpu_fallback_threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `cpu_threads=0`) |
+| `thumbnail_quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
+| `thumbnail_interval` | Yes | `5` | Interval between preview images (1–60 s) |
+| `selected_libraries` | Yes | All | Library IDs to process |
 
 > [!TIP]
 > For GPU-first processing with CPU safety net:
-> set `CPU_THREADS=0` and `FALLBACK_CPU_THREADS>0`.
+> set `cpu_threads=0` and `cpu_fallback_threads>0`.
 > This prevents regular CPU main-queue work while still allowing GPU-failed items to be retried on CPU.
+
+---
+
+## Environment Variables
+
+### Infrastructure Variables (always active) <a id="infrastructure-variables"></a>
+
+These are not migrated to settings.json and remain in effect:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONFIG_DIR` | `/config` | Directory for settings.json, auth, schedules |
+| `WEB_PORT` | `8080` | Web server port |
+| `PUID` | `1000` | User ID (Unraid: `99`) |
+| `PGID` | `1000` | Group ID (Unraid: `100`) |
+| `TZ` | Host | Timezone (e.g. `America/New_York`) |
+| `CORS_ORIGINS` | `*` | Allowed CORS origins (comma-separated) |
+| `HTTPS` | `false` | Enable HTTPS for cookies |
+| `DEV_RELOAD` | `false` | Enable Flask auto-reload (development) |
+| `WEB_AUTH_TOKEN` | Auto-generated | Fixed authentication token (overrides wizard-set token) |
+
+### Deprecated (no longer used)
+
+These env vars are deprecated. Configure via **Settings** instead:
+
+| Variable | Replacement |
+|----------|--------------|
+| `GPU_SELECTION` | Per-GPU enable/disable in Settings → Processing Options |
+| `GPU_THREADS` | Per-GPU workers in `gpu_config` |
+| `FFMPEG_THREADS` | Per-GPU `ffmpeg_threads` in `gpu_config` |
+
+### One-time seed values (migrated on first start)
+
+On first run, these env vars are migrated into settings.json. After that, settings.json is the source of truth:
+
+- `PLEX_URL`, `PLEX_TOKEN`, `PLEX_CONFIG_FOLDER`, `PLEX_VERIFY_SSL`, `PLEX_TIMEOUT`
+- `PLEX_BIF_FRAME_INTERVAL`, `THUMBNAIL_QUALITY`, `CPU_THREADS`, `FALLBACK_CPU_THREADS`
+- `MEDIA_PATH`, `TMP_FOLDER`, `LOG_LEVEL`
 
 ---
 
 ## Web Interface Settings
 
-The web server uses **gunicorn** with **gthread** workers in production (Docker).
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WEB_PORT` | `8080` | Web server port |
-| `WEB_AUTH_TOKEN` | Auto-generated | Fixed authentication token (overrides wizard-set token) |
-| `FLASK_SECRET_KEY` | Auto-generated | Session secret (persisted to `/config/flask_secret.key`) |
-| `CORS_ORIGINS` | `*` (all) | Allowed CORS origins (comma-separated) |
-| `RATELIMIT_STORAGE_URL` | In-memory | Redis URL for rate limiting across restarts |
-
----
-
-## Docker/Permissions
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PUID` | `1000` | User ID (Unraid: `99`) |
-| `PGID` | `1000` | Group ID (Unraid: `100`) |
-| `TZ` | Host | Timezone (e.g. `America/New_York`). Alternative to mounting `/etc/localtime:/etc/localtime:ro` |
-
----
-
-## System Settings
-
-| Variable | CLI Argument | Default | Description |
-|----------|--------------|---------|-------------|
-| `PLEX_TIMEOUT` | `--plex-timeout` | `60` | Plex API timeout in seconds |
-| `TMP_FOLDER` | `--tmp-folder` | System temp | Temporary folder for processing |
-| `LOG_LEVEL` | `--log-level` | `INFO` | Logging level: DEBUG, INFO, WARNING, ERROR |
-| `DEBUG` | N/A | `false` | Enable debug mode |
+The web server uses **gunicorn** with **gthread** workers in production (Docker). `WEB_PORT`, `CORS_ORIGINS`, `HTTPS`, and `DEV_RELOAD` are infrastructure variables (see above).
 
 ---
 
@@ -118,19 +131,6 @@ Webhook processing respects `selected_libraries`; paths outside unchecked librar
 
 > [!TIP]
 > Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.
-
----
-
-## Special Commands (Docker CLI mode)
-
-When running the container with `--cli`, you can pass:
-
-| Command | Description |
-|---------|-------------|
-| `--help` | Show help message and exit |
-| `--cli` | Run in CLI mode (instead of web server) |
-
-To see detected GPUs, use the web UI: open **Settings** or **Setup**.
 
 ---
 
@@ -158,14 +158,14 @@ In **Settings** and **Setup**, you add mapping rows. Each row has:
 
 Add as many rows as you need (e.g. one per disk when Plex uses multiple roots).
 
-### Legacy env/CLI (semicolon pair)
+### Legacy env (semicolon pair)
 
-| Variable | CLI Argument | Description |
-|----------|--------------|-------------|
-| `PLEX_VIDEOS_PATH_MAPPING` | `--plex-videos-path-mapping` | Path(s) as Plex sees it; semicolon-separated for multiple roots |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | `--plex-local-videos-path-mapping` | Path as this app sees it (one value, or semicolon-separated to pair by index) |
+| Variable | Description |
+|----------|-------------|
+| `PLEX_VIDEOS_PATH_MAPPING` | Path(s) as Plex sees it; semicolon-separated for multiple roots (seed value) |
+| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Path as this app sees it (seed value) |
 
-If you use the Web UI, the saved **path_mappings** take precedence. Existing semicolon-based values are converted to mapping rows when loading.
+The saved **path_mappings** in settings.json take precedence. Existing semicolon-based values are converted to mapping rows when migrated.
 
 ### When Plex uses multiple roots (e.g. mergerfs)
 
@@ -323,7 +323,9 @@ Get current settings.
   "path_mappings": [
     {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
   ],
-  "gpu_threads": 4,
+  "gpu_config": [
+    {"device": "/dev/dri/renderD128", "name": "Intel UHD 630", "type": "intel", "enabled": true, "workers": 4, "ffmpeg_threads": 2}
+  ],
   "cpu_threads": 2,
   "cpu_fallback_threads": 0,
   "thumbnail_interval": 5,
@@ -337,7 +339,7 @@ Update settings. Send only the fields to change.
 
 ```json
 {
-  "gpu_threads": 4,
+  "gpu_config": [{"device": "/dev/dri/renderD128", "enabled": true, "workers": 4, "ffmpeg_threads": 2}],
   "cpu_fallback_threads": 1,
   "thumbnail_interval": 5,
   "plex_url": "http://192.168.1.100:32400"

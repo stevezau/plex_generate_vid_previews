@@ -76,7 +76,7 @@ Access settings at `/settings` to manage:
 - **Plex Connection** — re-authenticate, test connection
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
-- **Processing Options** — GPU/CPU threads, CPU fallback workers, thumbnail interval and quality
+- **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, CPU fallback workers, thumbnail interval and quality
 
 ### CPU Fallback Workers (GPU Safety Net)
 
@@ -221,18 +221,6 @@ For multi-worker deployments, configure Redis:
 
 ```bash
 RATELIMIT_STORAGE_URL=redis://localhost:6379
-```
-
-### CLI Mode
-
-To skip the web interface and run one-time processing:
-
-```bash
-# Docker
-docker run ... stevezzau/plex_generate_vid_previews:latest --cli
-
-# Local
-plex-generate-previews --cli --plex-url ... --plex-token ...
 ```
 
 ### Real-Time Updates
@@ -439,12 +427,7 @@ Yes! Windows supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD
 
 **Can I use this without a GPU?**
 
-Yes! In **Settings**, set **GPU Workers** to `0` and **CPU Workers** to your desired value (e.g. `4` or `8`).
-
-**What's the difference between web mode and CLI mode?**
-
-- **Web mode** (default): runs a dashboard at port 8080 for managing jobs and schedules
-- **CLI mode** (`--cli`): runs one-time processing and exits
+Yes! In **Settings** → **Processing Options**, disable all GPUs (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `4` or `8`).
 
 **Is Docker required? Is there a standalone .exe?**
 
@@ -466,13 +449,11 @@ No. This tool is Plex-only — it generates Plex-specific BIF files and uses the
 
 **How do I know which GPUs are detected?**
 
-```bash
-plex-generate-previews --list-gpus
-```
+Open **Settings** → **Processing Options**. The GPU panel lists all detected GPUs with their device IDs, names, and types.
 
 **Can I use multiple GPUs?**
 
-Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-selection "0,1,2"` to select specific ones.
+Yes! In **Settings** → **Processing Options**, enable individual GPUs and set workers and FFmpeg threads per GPU. Each GPU can be enabled/disabled independently.
 
 **Which GPU should I use?**
 
@@ -487,14 +468,16 @@ Yes! The tool automatically detects and can use multiple GPUs. Use `--gpu-select
 
 **Does it handle HDR content correctly?**
 
-Yes. The tool auto-detects HDR metadata and tone maps to SDR using the ITU-R BT.2390 broadcast standard before generating thumbnails:
+Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating thumbnails:
 
 | Format | Status |
 |--------|--------|
-| HDR10 | Fully tone mapped (BT.2390 via zscale/tonemap) |
-| HLG | Fully tone mapped (BT.2390 via zscale/tonemap) |
-| Dolby Vision Profile 7/8 (with HDR10 compatible base layer) | Fully tone mapped (BT.2390 via zscale/tonemap) |
+| HDR10 | Fully tone mapped (configurable algorithm via zscale/tonemap, default: Hable) |
+| HLG | Fully tone mapped (configurable algorithm via zscale/tonemap, default: Hable) |
+| Dolby Vision Profile 7/8 (with HDR10 compatible base layer) | Fully tone mapped (configurable algorithm via zscale/tonemap, default: Hable) |
 | Dolby Vision Profile 5 (no backward-compatible layer) | Supported via `libplacebo` with BT.2390 ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172)) |
+
+The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.
 
 Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
 
@@ -502,11 +485,13 @@ Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnai
 
 **How many threads should I use?**
 
-| Scenario | GPU Threads | CPU Threads |
+Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Options**. The GPU panel lets you set workers and FFmpeg threads per GPU.
+
+| Scenario | GPU Workers (per GPU) | CPU Threads |
 |----------|-------------|-------------|
 | Default | 1 | 1 |
-| Balanced | 4 | 2 |
-| High-end | 8 | 4 |
+| Balanced | 4 total | 2 |
+| High-end | 8 total | 4 |
 | CPU-only | 0 | 8 |
 
 > [!TIP]
@@ -536,27 +521,27 @@ Use [Authentication Token](getting-started.md#authentication-token).
 
 **Does GPU passthrough work with Docker Desktop on Windows?**
 
-Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, use the CLI or run natively with D3D11VA instead of Docker.
+Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, run natively with D3D11VA instead of Docker.
 
 **Windows: paths in config must use forward slashes**
 
-On Windows, use forward slashes (`/`) in all path configuration (environment variables, `.env` files, CLI flags). Backslashes (`\`) will cause path resolution failures.
+On Windows, use forward slashes (`/`) in all path configuration (environment variables, `.env` files, Settings). Backslashes (`\`) will cause path resolution failures.
 
 ### Processing
 
 **Can I process specific libraries only?**
 
-Yes! Use `--plex-libraries "Movies, TV Shows"` to process only specific libraries.
+Yes! In **Settings** → **Libraries**, select which libraries to process.
 
 **How do I regenerate existing thumbnails?**
 
-Use `--regenerate-thumbnails` or set `REGENERATE_THUMBNAILS=true`.
+When starting a job, use the **Regenerate** option to force regeneration of existing thumbnails.
 
 **Why is it "skipping" some files?**
 
 Possible causes:
 
-- Thumbnails already exist (use `--regenerate-thumbnails` to force)
+- Thumbnails already exist (use the **Regenerate** option when starting a job to force)
 - File not found (check [path mappings](reference.md#path-mappings))
 - Invalid file format
 
@@ -612,13 +597,7 @@ Expected directories include `Cache`, `Media`, and `Metadata`.
 
 ### Debug Logging
 
-Enable detailed logs when diagnosing persistent issues:
-
-```bash
--e LOG_LEVEL=DEBUG
-# or
---log-level DEBUG
-```
+Enable detailed logs when diagnosing persistent issues. In **Settings** → **Processing Options**, set **Log Level** to `DEBUG`. Alternatively, set `LOG_LEVEL=DEBUG` as an environment variable (one-time seed on first start).
 
 ---
 

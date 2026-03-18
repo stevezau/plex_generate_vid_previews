@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -487,7 +487,6 @@ class Config:
     # Threading configuration
     gpu_threads: int
     cpu_threads: int
-    gpu_selection: str
     ffmpeg_threads: int
 
     # System paths
@@ -498,8 +497,16 @@ class Config:
     # Logging
     log_level: str
 
+    # HDR-to-SDR tone mapping algorithm for the zscale/tonemap filter path.
+    # Valid values: reinhard, mobius, hable, clip, gamma, linear
+    tonemap_algorithm: str = "hable"
+
     # Optional GPU->CPU fallback worker count (used when cpu_threads=0)
     fallback_cpu_threads: int = 0
+
+    # Per-GPU configuration: list of dicts with keys
+    # device, name, type, enabled, workers, ffmpeg_threads
+    gpu_config: List[Dict[str, Any]] = field(default_factory=list)
 
     # Runtime state (set after construction)
     working_tmp_folder: str = ""
@@ -527,90 +534,38 @@ class Config:
 
 
 def show_docker_help():
-    """Show Docker-optimized help message with environment variables prominently displayed."""
-    logger.info(
-        "🐳 Docker Environment Detected - Configuration via Environment Variables or CLI Arguments"
-    )
+    """Show help message pointing users to the web UI for configuration."""
+    logger.info("🐳 Docker Environment Detected")
     logger.info("=" * 80)
     logger.info("")
-    logger.info("📋 Required Environment Variables:")
+    logger.info("Configuration is managed through the web UI (Settings page).")
+    logger.info("Open http://<host>:<port> in your browser to get started.")
+    logger.info("")
+    logger.info("📋 One-time seed environment variables (applied on first startup):")
     logger.info("")
     logger.info(
         "  PLEX_URL                    Plex server URL (e.g., http://localhost:32400)"
     )
     logger.info("  PLEX_TOKEN                  Plex authentication token")
-    logger.info(
-        "  PLEX_CONFIG_FOLDER          Path to Plex Media Server configuration folder"
-    )
-    logger.info("")
-    logger.info("📋 Optional Environment Variables:")
-    logger.info("")
+    logger.info("  PLEX_CONFIG_FOLDER          Path to Plex config folder")
     logger.info(
         "  PLEX_TIMEOUT                Plex API timeout in seconds (default: 60)"
     )
+    logger.info("  PLEX_LIBRARIES              Comma-separated library names")
     logger.info(
-        '  PLEX_LIBRARIES              Comma-separated library names (e.g., "Movies, TV Shows")'
-    )
-    logger.info("  PLEX_LOCAL_VIDEOS_PATH_MAPPING  Local videos path mapping")
-    logger.info("  PLEX_VIDEOS_PATH_MAPPING    Plex videos path mapping")
-    logger.info(
-        "  PLEX_BIF_FRAME_INTERVAL     Interval between preview images in seconds (default: 5)"
-    )
-    logger.info("  THUMBNAIL_QUALITY           Preview image quality 1-10 (default: 4)")
-    logger.info(
-        "  REGENERATE_THUMBNAILS       Regenerate existing thumbnails (true/false, default: false)"
-    )
-    logger.info(
-        '  SORT_BY                     Sort media by date added: "newest" or "oldest" (default: newest)'
-    )
-    logger.info(
-        "  GPU_THREADS                 Number of GPU worker threads (default: 1)"
-    )
-    logger.info(
-        "  CPU_THREADS                 Number of CPU worker threads (default: 1)"
-    )
-    logger.info(
-        "  FFMPEG_THREADS              Limits CPU usage per GPU job, 0 = no limit (default: 2)"
-    )
-    logger.info(
-        '  GPU_SELECTION               GPU selection: "all" or comma-separated indices (default: all)'
-    )
-    logger.info(
-        "  TMP_FOLDER                  Temporary folder for processing (default: system temp dir)"
-    )
-    logger.info(
-        "  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
+        "  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR"
     )
     logger.info("")
-    logger.info("💡 Example Docker Run Command (using environment variables):")
+    logger.info("  These are migrated into settings.json on first run and")
+    logger.info("  ignored afterwards. Use the web UI to change them.")
     logger.info("")
-    logger.info("  docker run -it --rm --runtime=nvidia \\")
-    logger.info('    -e PLEX_URL="http://localhost:32400" \\')
-    logger.info('    -e PLEX_TOKEN="your_token_here" \\')
-    logger.info(
-        '    -e PLEX_CONFIG_FOLDER="/config/plex/Library/Application Support/Plex Media Server" \\'
-    )
-    logger.info("    -e GPU_THREADS=1 \\")
-    logger.info("    -e CPU_THREADS=1 \\")
-    logger.info("    -v /path/to/plex/config:/config \\")
-    logger.info("    -v /path/to/videos:/data \\")
-    logger.info("    plex_generate_vid_previews:latest")
+    logger.info("📋 Infrastructure environment variables (always active):")
     logger.info("")
-    logger.info("💡 Example Docker Run Command (using CLI arguments):")
+    logger.info("  CONFIG_DIR                  Config directory (default: /config)")
+    logger.info("  WEB_PORT                    Web UI port (default: 8080)")
+    logger.info("  PUID / PGID                 Run-as user/group IDs")
+    logger.info("  TZ                          Timezone")
     logger.info("")
-    logger.info("  docker run -it --rm --runtime=nvidia \\")
-    logger.info("    -v /path/to/plex/config:/config \\")
-    logger.info("    -v /path/to/videos:/data \\")
-    logger.info("    plex_generate_vid_previews:latest \\")
-    logger.info('    --plex-url "http://localhost:32400" \\')
-    logger.info('    --plex-token "your_token_here" \\')
-    logger.info(
-        '    --plex-config-folder "/config/plex/Library/Application Support/Plex Media Server" \\'
-    )
-    logger.info("    --gpu-threads 1 \\")
-    logger.info("    --cpu-threads 1")
-    logger.info("")
-    logger.info("🔧 For more options, use: plex-generate-previews --help")
 
 
 def _validate_plex_config(
@@ -638,7 +593,7 @@ def _validate_plex_config(
             )
         else:
             missing_params.append(
-                "PLEX_URL is required (use --plex-url or set PLEX_URL environment variable)"
+                "PLEX_URL is required (configure via web UI or set PLEX_URL environment variable)"
             )
     elif not plex_url.startswith(("http://", "https://")):
         validation_errors.append(
@@ -652,7 +607,7 @@ def _validate_plex_config(
             )
         else:
             missing_params.append(
-                "PLEX_TOKEN is required (use --plex-token or set PLEX_TOKEN environment variable)"
+                "PLEX_TOKEN is required (configure via web UI or set PLEX_TOKEN environment variable)"
             )
 
     # Check PLEX_CONFIG_FOLDER
@@ -667,7 +622,7 @@ def _validate_plex_config(
             )
         else:
             missing_params.append(
-                "PLEX_CONFIG_FOLDER is required (use --plex-config-folder or set PLEX_CONFIG_FOLDER environment variable)"
+                "PLEX_CONFIG_FOLDER is required (configure via web UI or set PLEX_CONFIG_FOLDER environment variable)"
             )
     else:
         # Path is provided, validate it
@@ -846,10 +801,14 @@ def _validate_plex_config(
                 )
 
 
+VALID_TONEMAP_ALGORITHMS = ("reinhard", "mobius", "hable", "clip", "gamma", "linear")
+
+
 def _validate_processing_config(
     plex_bif_frame_interval: int,
     thumbnail_quality: int,
     plex_timeout: int,
+    tonemap_algorithm: str,
     validation_errors: list,
 ) -> None:
     """Validate processing configuration parameters.
@@ -858,10 +817,10 @@ def _validate_processing_config(
         plex_bif_frame_interval: Frame interval in seconds
         thumbnail_quality: Thumbnail quality (1-10)
         plex_timeout: Plex API timeout in seconds
+        tonemap_algorithm: HDR-to-SDR tone mapping algorithm name
         validation_errors: List to append validation errors
 
     """
-    # Validate numeric ranges
     if plex_bif_frame_interval < 1 or plex_bif_frame_interval > 60:
         validation_errors.append(
             f"PLEX_BIF_FRAME_INTERVAL must be between 1-60 seconds (got: {plex_bif_frame_interval})"
@@ -877,75 +836,59 @@ def _validate_processing_config(
             f"PLEX_TIMEOUT must be between 10-3600 seconds (got: {plex_timeout})"
         )
 
+    if tonemap_algorithm not in VALID_TONEMAP_ALGORITHMS:
+        validation_errors.append(
+            f"TONEMAP_ALGORITHM must be one of {', '.join(VALID_TONEMAP_ALGORITHMS)} "
+            f"(got: {tonemap_algorithm})"
+        )
+
 
 def _validate_thread_config(
     gpu_threads: int,
     cpu_threads: int,
     fallback_cpu_threads: int,
     ffmpeg_threads: int,
-    gpu_selection: str,
     validation_errors: list,
 ) -> tuple[bool, str]:
     """Validate thread configuration parameters.
 
     Args:
-        gpu_threads: Number of GPU worker threads
-        cpu_threads: Number of CPU worker threads
-        fallback_cpu_threads: Number of CPU fallback worker threads
-        ffmpeg_threads: CPU usage limit per FFmpeg process for GPU jobs (0 = no limit)
-        gpu_selection: GPU selection string
-        validation_errors: List to append validation errors
+        gpu_threads: Total GPU worker threads (sum across enabled GPUs).
+        cpu_threads: Number of CPU worker threads.
+        fallback_cpu_threads: Number of CPU fallback worker threads.
+        ffmpeg_threads: Default CPU usage limit per FFmpeg process for
+            GPU jobs (0 = no limit).
+        validation_errors: List to append validation errors.
 
     Returns:
-        tuple: (should_exit, error_message) - (True, message) if both threads are 0, (False, "") otherwise
+        Tuple of (should_exit, error_message).
 
     """
-    # Validate thread counts
     if gpu_threads < 0 or gpu_threads > 32:
         validation_errors.append(
-            f"GPU_THREADS must be between 0-32 (got: {gpu_threads})"
+            f"gpu_threads must be between 0-32 (got: {gpu_threads})"
         )
 
     if cpu_threads < 0 or cpu_threads > 32:
         validation_errors.append(
-            f"CPU_THREADS must be between 0-32 (got: {cpu_threads})"
+            f"cpu_threads must be between 0-32 (got: {cpu_threads})"
         )
 
     if fallback_cpu_threads < 0 or fallback_cpu_threads > 32:
         validation_errors.append(
-            f"FALLBACK_CPU_THREADS must be between 0-32 (got: {fallback_cpu_threads})"
+            f"fallback_cpu_threads must be between 0-32 (got: {fallback_cpu_threads})"
         )
 
     if ffmpeg_threads < 0 or ffmpeg_threads > 32:
         validation_errors.append(
-            f"FFMPEG_THREADS must be between 0-32 (got: {ffmpeg_threads})"
+            f"ffmpeg_threads must be between 0-32 (got: {ffmpeg_threads})"
         )
 
-    # Validate gpu_selection format
-    if gpu_selection.lower() != "all":
-        try:
-            # Parse comma-separated GPU indices
-            gpu_indices = [
-                int(x.strip()) for x in gpu_selection.split(",") if x.strip()
-            ]
-            if not gpu_indices:
-                validation_errors.append(
-                    f'GPU_SELECTION must be "all" or comma-separated GPU indices (got: {gpu_selection})'
-                )
-            elif any(idx < 0 for idx in gpu_indices):
-                validation_errors.append(
-                    f"GPU_SELECTION indices must be non-negative (got: {gpu_selection})"
-                )
-        except ValueError:
-            validation_errors.append(
-                f'GPU_SELECTION must be "all" or comma-separated integers (got: {gpu_selection})'
-            )
-
-    # Check if both threads are 0 (this requires immediate exit, not just a validation error)
     if cpu_threads == 0 and gpu_threads == 0:
         return (
             True,
-            "Both CPU_THREADS and GPU_THREADS are set to 0. At least one processing method must be enabled.",
+            "Both cpu_threads and gpu_threads are 0. "
+            "At least one processing method must be enabled.",
         )
 
     return False, ""
@@ -1004,7 +947,7 @@ _cached_config: Optional[Config] = None
 _cached_config_mtime: Optional[float] = None
 
 
-def get_cached_config(cli_args=None):
+def get_cached_config():
     """Return config, using cache if settings.json has not changed since last load.
 
     Use this for read-only config access (e.g. API that returns current config).
@@ -1023,7 +966,7 @@ def get_cached_config(cli_args=None):
     if _cached_config is not None and _cached_config_mtime == mtime:
         return _cached_config
     try:
-        config = load_config(cli_args)
+        config = load_config()
     except ConfigValidationError:
         return None
     if config is not None:
@@ -1039,19 +982,17 @@ def clear_config_cache() -> None:
     _cached_config_mtime = None
 
 
-def load_config(cli_args=None) -> Config:
-    """Load and validate configuration from CLI arguments, settings.json, and environment variables.
-    Precedence: CLI args > settings.json > env vars > defaults
+def load_config() -> Config:
+    """Load and validate configuration from settings.json and environment variables.
 
-    Args:
-        cli_args: Parsed CLI arguments or None
+    settings.json is the primary source. Environment variables act as
+    fallbacks (for backward compat / first-run before migration).
 
     Returns:
-        Config: Validated configuration object.
+        Validated configuration object.
 
     Raises:
-        ConfigValidationError: If configuration validation fails (missing params,
-            invalid values, FFmpeg issues, etc.).
+        ConfigValidationError: If configuration validation fails.
         SystemExit: If both CPU and GPU threads are set to 0.
 
     """
@@ -1069,21 +1010,8 @@ def load_config(cli_args=None) -> Config:
     except Exception as e:
         logger.debug(f"Could not load settings.json: {e}")
 
-    # Helper to get value with precedence: CLI > settings.json > env > default
-    def get_value(cli_args, field_name, settings_key, env_key, default, value_type=str):
-        # 1. CLI args (highest precedence)
-        cli_value = None
-        if cli_args is not None:
-            try:
-                cli_vars = vars(cli_args)
-            except TypeError:
-                cli_vars = {}
-            if field_name in cli_vars:
-                cli_value = cli_vars[field_name]
-        if cli_value is not None:
-            return cli_value
-
-        # 2. settings.json
+    def get_value(settings_key, env_key, default, value_type=str):
+        """Get config value from settings.json, falling back to env then default."""
         if settings_key in ui_settings and ui_settings[settings_key] not in (None, ""):
             val = ui_settings[settings_key]
             if value_type is bool:
@@ -1096,7 +1024,6 @@ def load_config(cli_args=None) -> Config:
             else:
                 return str(val) if val else default
 
-        # 3. Environment variables
         env_value = os.environ.get(env_key, "")
         if env_value:
             if value_type is bool:
@@ -1108,20 +1035,15 @@ def load_config(cli_args=None) -> Config:
                     return default
             return env_value
 
-        # 4. Default
         return default
 
-    # Load configuration with precedence: CLI args > settings.json > env vars > defaults
-    plex_url = get_value(cli_args, "plex_url", "plex_url", "PLEX_URL", "", str)
-    plex_token = get_value(cli_args, "plex_token", "plex_token", "PLEX_TOKEN", "", str)
-    plex_timeout = get_value(
-        cli_args, "plex_timeout", "plex_timeout", "PLEX_TIMEOUT", 60, int
-    )
-    plex_verify_ssl = get_value(
-        cli_args, "plex_verify_ssl", "plex_verify_ssl", "PLEX_VERIFY_SSL", True, bool
-    )
+    # Load configuration: settings.json > env vars > defaults
+    plex_url = get_value("plex_url", "PLEX_URL", "", str)
+    plex_token = get_value("plex_token", "PLEX_TOKEN", "", str)
+    plex_timeout = get_value("plex_timeout", "PLEX_TIMEOUT", 60, int)
+    plex_verify_ssl = get_value("plex_verify_ssl", "PLEX_VERIFY_SSL", True, bool)
 
-    # Handle plex_libraries (special case for comma-separated values OR list from settings.json)
+    # Handle plex_libraries (comma-separated string OR list from settings.json)
     plex_libraries_setting = ui_settings.get("selected_libraries", [])
     plex_library_ids: Optional[List[str]] = None
     if isinstance(plex_libraries_setting, list) and plex_libraries_setting:
@@ -1129,34 +1051,26 @@ def load_config(cli_args=None) -> Config:
         plex_libraries = selected_titles
         plex_library_ids = selected_ids or None
     else:
-        plex_libraries = get_config_value_str(
-            cli_args, "plex_libraries", "PLEX_LIBRARIES", ""
-        )
+        plex_libraries_raw = get_value("selected_libraries", "PLEX_LIBRARIES", "", str)
         plex_libraries = [
             library.strip().lower()
-            for library in plex_libraries.split(",")
+            for library in plex_libraries_raw.split(",")
             if library.strip()
         ]
 
     plex_config_folder = get_value(
-        cli_args,
-        "plex_config_folder",
         "plex_config_folder",
         "PLEX_CONFIG_FOLDER",
         "/path_to/plex/Library/Application Support/Plex Media Server",
         str,
     )
     plex_local_videos_path_mapping = get_value(
-        cli_args,
-        "plex_local_videos_path_mapping",
         "plex_local_videos_path_mapping",
         "PLEX_LOCAL_VIDEOS_PATH_MAPPING",
         "",
         str,
     )
     plex_videos_path_mapping = get_value(
-        cli_args,
-        "plex_videos_path_mapping",
         "plex_videos_path_mapping",
         "PLEX_VIDEOS_PATH_MAPPING",
         "",
@@ -1173,59 +1087,57 @@ def load_config(cli_args=None) -> Config:
     exclude_paths = normalize_exclude_paths(ui_settings.get("exclude_paths"))
 
     plex_bif_frame_interval = get_value(
-        cli_args,
-        "plex_bif_frame_interval",
-        "thumbnail_interval",
-        "PLEX_BIF_FRAME_INTERVAL",
-        5,
-        int,
+        "thumbnail_interval", "PLEX_BIF_FRAME_INTERVAL", 5, int
     )
-    thumbnail_quality = get_value(
-        cli_args, "thumbnail_quality", "thumbnail_quality", "THUMBNAIL_QUALITY", 4, int
+    thumbnail_quality = get_value("thumbnail_quality", "THUMBNAIL_QUALITY", 4, int)
+    tonemap_algorithm = (
+        get_value("tonemap_algorithm", "TONEMAP_ALGORITHM", "hable", str)
+        .strip()
+        .lower()
     )
     regenerate_thumbnails = get_value(
-        cli_args,
-        "regenerate_thumbnails",
-        "regenerate_thumbnails",
-        "REGENERATE_THUMBNAILS",
-        False,
-        bool,
+        "regenerate_thumbnails", "REGENERATE_THUMBNAILS", False, bool
     )
 
-    # Handle sort_by (default: 'newest', can be 'newest' or 'oldest')
-    sort_by_raw = get_value(cli_args, "sort_by", "sort_by", "SORT_BY", "newest", str)
+    sort_by_raw = get_value("sort_by", "SORT_BY", "newest", str)
     sort_by = sort_by_raw.strip().lower() if sort_by_raw else "newest"
 
-    gpu_threads = get_value(
-        cli_args, "gpu_threads", "gpu_threads", "GPU_THREADS", 1, int
-    )
-    cpu_threads = get_value(
-        cli_args, "cpu_threads", "cpu_threads", "CPU_THREADS", 1, int
-    )
+    # Load per-GPU config from settings (populated by settings UI or migration)
+    gpu_config = ui_settings.get("gpu_config", [])
+    if isinstance(gpu_config, list):
+        gpu_config = [
+            entry
+            for entry in gpu_config
+            if isinstance(entry, dict) and entry.get("device")
+        ]
+    else:
+        gpu_config = []
+
+    # Compute totals from per-GPU config
+    if gpu_config:
+        gpu_threads = sum(
+            entry.get("workers", 0)
+            for entry in gpu_config
+            if entry.get("enabled", False)
+        )
+        enabled_ffmpeg = [
+            entry.get("ffmpeg_threads", 2)
+            for entry in gpu_config
+            if entry.get("enabled", False)
+        ]
+        ffmpeg_threads = max(enabled_ffmpeg) if enabled_ffmpeg else 2
+    else:
+        gpu_threads = get_value("gpu_threads", "GPU_THREADS", 1, int)
+        ffmpeg_threads = get_value("ffmpeg_threads", "FFMPEG_THREADS", 2, int)
+
+    cpu_threads = get_value("cpu_threads", "CPU_THREADS", 1, int)
     fallback_cpu_threads = get_value(
-        cli_args,
-        "fallback_cpu_threads",
-        "cpu_fallback_threads",
-        "FALLBACK_CPU_THREADS",
-        0,
-        int,
-    )
-    gpu_selection = get_value(
-        cli_args, "gpu_selection", "gpu_selection", "GPU_SELECTION", "all", str
-    )
-    ffmpeg_threads = get_value(
-        cli_args, "ffmpeg_threads", "ffmpeg_threads", "FFMPEG_THREADS", 2, int
+        "cpu_fallback_threads", "FALLBACK_CPU_THREADS", 0, int
     )
 
-    # Use system temp directory (respects TMPDIR, TEMP, TMP env vars)
-    tmp_folder = get_value(
-        cli_args, "tmp_folder", "tmp_folder", "TMP_FOLDER", tempfile.gettempdir(), str
-    )
+    tmp_folder = get_value("tmp_folder", "TMP_FOLDER", tempfile.gettempdir(), str)
 
-    # Handle log_level (case insensitive)
-    log_level = get_value(
-        cli_args, "log_level", "log_level", "LOG_LEVEL", "INFO", str
-    ).upper()
+    log_level = get_value("log_level", "LOG_LEVEL", "INFO", str).upper()
 
     # Initialize validation lists
     missing_params = []
@@ -1301,14 +1213,17 @@ def load_config(cli_args=None) -> Config:
         plex_url, plex_token, plex_config_folder, missing_params, validation_errors
     )
     _validate_processing_config(
-        plex_bif_frame_interval, thumbnail_quality, plex_timeout, validation_errors
+        plex_bif_frame_interval,
+        thumbnail_quality,
+        plex_timeout,
+        tonemap_algorithm,
+        validation_errors,
     )
     should_exit, thread_error = _validate_thread_config(
         gpu_threads,
         cpu_threads,
         fallback_cpu_threads,
         ffmpeg_threads,
-        gpu_selection,
         validation_errors,
     )
     tmp_folder_created_by_us, _ = _validate_paths(tmp_folder, validation_errors)
@@ -1320,21 +1235,13 @@ def load_config(cli_args=None) -> Config:
             logger.error(f"   {i}. {error_msg}")
         logger.info("")
 
-        # Show Docker-optimized help if running in Docker, otherwise show CLI help
         if is_docker_environment():
             show_docker_help()
         else:
-            logger.info("📋 Showing help for all available options:")
-            logger.info("=" * 60)
-            # Show help automatically
-            sys.argv = [sys.argv[0], "--help"]
-            try:
-                # Import locally to avoid circular imports
-                from .cli import parse_arguments
-
-                parse_arguments()
-            except SystemExit:
-                pass
+            logger.info(
+                "💡 Open the web UI at http://localhost:8080 "
+                "and complete the setup wizard to configure these settings."
+            )
 
         raise ConfigValidationError(missing_params)
 
@@ -1348,12 +1255,11 @@ def load_config(cli_args=None) -> Config:
     # Check if both threads are 0 (requires immediate exit)
     if should_exit:
         logger.error(
-            "❌ Configuration Error: Both CPU_THREADS and GPU_THREADS are set to 0."
+            "❌ Configuration Error: Both cpu_threads and gpu_threads are set to 0."
         )
         logger.error("📋 At least one processing method must be enabled.")
-        logger.info("💡 Use --help to see all available options.")
         logger.info(
-            "💡 Example: plex-generate-previews --cpu-threads 4 --gpu-threads 2"
+            "💡 Open the Settings page in the web UI to configure GPU or CPU workers."
         )
         sys.exit(1)
 
@@ -1370,13 +1276,14 @@ def load_config(cli_args=None) -> Config:
         exclude_paths=exclude_paths,
         plex_bif_frame_interval=plex_bif_frame_interval,
         thumbnail_quality=thumbnail_quality,
+        tonemap_algorithm=tonemap_algorithm,
         regenerate_thumbnails=regenerate_thumbnails,
         sort_by=sort_by,
         gpu_threads=gpu_threads,
         cpu_threads=cpu_threads,
         fallback_cpu_threads=fallback_cpu_threads,
         ffmpeg_threads=ffmpeg_threads,
-        gpu_selection=gpu_selection,
+        gpu_config=gpu_config,
         tmp_folder=tmp_folder,
         tmp_folder_created_by_us=tmp_folder_created_by_us,
         ffmpeg_path=ffmpeg_path,
@@ -1392,6 +1299,7 @@ def load_config(cli_args=None) -> Config:
     logger.debug(f"PLEX_TOKEN = {'*' * 10}...{'*' * 10}")  # Mask token for security
     logger.debug(f"PLEX_BIF_FRAME_INTERVAL = {config.plex_bif_frame_interval}")
     logger.debug(f"THUMBNAIL_QUALITY = {config.thumbnail_quality}")
+    logger.debug(f"TONEMAP_ALGORITHM = {config.tonemap_algorithm}")
     logger.debug(f"PLEX_CONFIG_FOLDER = {config.plex_config_folder}")
     logger.debug(f"TMP_FOLDER = {config.tmp_folder}")
     logger.debug(f"PLEX_TIMEOUT = {config.plex_timeout}")
@@ -1401,12 +1309,12 @@ def load_config(cli_args=None) -> Config:
     )
     logger.debug(f"PLEX_VIDEOS_PATH_MAPPING = {config.plex_videos_path_mapping}")
     logger.debug(f"path_mappings = {len(config.path_mappings)} row(s)")
-    logger.debug(f"GPU_THREADS = {config.gpu_threads}")
-    logger.debug(f"CPU_THREADS = {config.cpu_threads}")
-    logger.debug(f"FALLBACK_CPU_THREADS = {config.fallback_cpu_threads}")
-    logger.debug(f"FFMPEG_THREADS = {config.ffmpeg_threads}")
-    logger.debug(f"GPU_SELECTION = {config.gpu_selection}")
-    logger.debug(f"REGENERATE_THUMBNAILS = {config.regenerate_thumbnails}")
-    logger.debug(f"SORT_BY = {config.sort_by}")
+    logger.debug(f"gpu_threads = {config.gpu_threads}")
+    logger.debug(f"cpu_threads = {config.cpu_threads}")
+    logger.debug(f"fallback_cpu_threads = {config.fallback_cpu_threads}")
+    logger.debug(f"ffmpeg_threads = {config.ffmpeg_threads}")
+    logger.debug(f"gpu_config = {len(config.gpu_config)} GPU(s) configured")
+    logger.debug(f"regenerate_thumbnails = {config.regenerate_thumbnails}")
+    logger.debug(f"sort_by = {config.sort_by}")
 
     return config

@@ -2,7 +2,7 @@
 
 Thank you for contributing to Plex Generate Previews!
 
-The supported way to run the app in production is **Docker** and the **web UI**. The setup below is for developing and testing the codebase (run the web app or CLI locally).
+The supported way to run the app in production is **Docker** and the **web UI**. The setup below is for developing and testing the codebase (run the web app locally).
 
 ---
 
@@ -54,27 +54,20 @@ pip install -e ".[dev,test]"
 # Verify
 pytest
 ruff check .
-plex-generate-previews --help
 ```
 
 ### Running the Application
 
 ```bash
-# Web mode with gunicorn (production-like)
+# Web UI with gunicorn (production-like)
 gunicorn \
   --bind 0.0.0.0:8080 \
-  --worker-class eventlet \
+  --worker-class gthread \
   --workers 1 \
   "plex_generate_previews.web.wsgi:app"
 
-# Web mode with dev server
-python -m plex_generate_previews
-
-# CLI mode
-plex-generate-previews --cli \
-  --plex-url http://localhost:32400 \
-  --plex-token your-token \
-  --plex-config-folder "/path/to/plex/config"
+# Web UI with dev server (Flask reload)
+python -m plex_generate_previews.web.app
 ```
 
 ---
@@ -146,7 +139,6 @@ def test_config_loads_from_env(monkeypatch, mock_config):
 
 ```
 plex_generate_previews/
-├── cli.py                 # CLI argument parsing, Rich progress
 ├── config.py              # Configuration management
 ├── worker.py              # Thread pool workers
 ├── media_processing.py    # FFmpeg, BIF generation

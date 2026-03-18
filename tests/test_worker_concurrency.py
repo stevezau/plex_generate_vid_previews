@@ -26,20 +26,42 @@ def _make_gpu_list(n: int = 1) -> List[Tuple[str, str, dict]]:
     return [("nvidia", f"/dev/nvidia{i}", {"name": f"RTX 4090 #{i}"}) for i in range(n)]
 
 
-def _fake_process_item(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+def _fake_process_item(
+    item_key,
+    gpu,
+    gpu_device,
+    config,
+    plex,
+    progress_callback=None,
+    ffmpeg_threads_override=None,
+):
     """Simulate FFmpeg processing with a tiny sleep."""
     time.sleep(0.02)
     return ProcessingResult.GENERATED
 
 
-def _slow_process_item(item_key, gpu, gpu_device, config, plex, progress_callback=None):
+def _slow_process_item(
+    item_key,
+    gpu,
+    gpu_device,
+    config,
+    plex,
+    progress_callback=None,
+    ffmpeg_threads_override=None,
+):
     """Simulate slow processing for shutdown/cancellation tests."""
     time.sleep(0.5)
     return ProcessingResult.GENERATED
 
 
 def _very_slow_process_item(
-    item_key, gpu, gpu_device, config, plex, progress_callback=None
+    item_key,
+    gpu,
+    gpu_device,
+    config,
+    plex,
+    progress_callback=None,
+    ffmpeg_threads_override=None,
 ):
     """Simulate long processing so headless polling emits worker updates."""
     if progress_callback:
@@ -55,14 +77,26 @@ def _very_slow_process_item(
 
 
 def _failing_process_item(
-    item_key, gpu, gpu_device, config, plex, progress_callback=None
+    item_key,
+    gpu,
+    gpu_device,
+    config,
+    plex,
+    progress_callback=None,
+    ffmpeg_threads_override=None,
 ):
     """Simulate a processing failure."""
     raise RuntimeError("ffmpeg crashed")
 
 
 def _codec_error_process_item(
-    item_key, gpu, gpu_device, config, plex, progress_callback=None
+    item_key,
+    gpu,
+    gpu_device,
+    config,
+    plex,
+    progress_callback=None,
+    ffmpeg_threads_override=None,
 ):
     """Simulate a GPU codec error that should fall back to CPU."""
     from plex_generate_previews.media_processing import CodecNotSupportedError
@@ -254,7 +288,13 @@ class TestWorkerPoolProcessing:
         call_count = {"n": 0}
 
         def alternating_process(
-            item_key, gpu, gpu_device, config, plex, progress_callback=None
+            item_key,
+            gpu,
+            gpu_device,
+            config,
+            plex,
+            progress_callback=None,
+            ffmpeg_threads_override=None,
         ):
             call_count["n"] += 1
             if call_count["n"] % 2 == 0:
@@ -286,7 +326,13 @@ class TestCPUFallbackQueue:
         gpu_call_count = {"n": 0}
 
         def gpu_then_cpu(
-            item_key, gpu, gpu_device, config, plex, progress_callback=None
+            item_key,
+            gpu,
+            gpu_device,
+            config,
+            plex,
+            progress_callback=None,
+            ffmpeg_threads_override=None,
         ):
             gpu_call_count["n"] += 1
             if gpu is not None:

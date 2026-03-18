@@ -19,6 +19,15 @@ from plex_generate_previews.config import load_config
 from plex_generate_previews.utils import is_windows, sanitize_path
 
 
+@pytest.fixture(autouse=True)
+def _isolate_settings(tmp_path, monkeypatch):
+    """Ensure load_config uses a fresh empty settings.json."""
+    from plex_generate_previews.web import settings_manager
+
+    monkeypatch.setattr(settings_manager, "_settings_manager", None)
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+
+
 class TestWindowsPlatformDetection:
     """Test Windows platform detection."""
 
@@ -150,102 +159,26 @@ class TestWindowsTempDirectory:
 
         mock_listdir.side_effect = mock_listdir_fn
 
-        from types import SimpleNamespace
-
-        args = SimpleNamespace(
-            plex_url="http://localhost:32400",
-            plex_token="test_token",
-            plex_config_folder="C:\\ProgramData\\Plex\\Library\\Application Support\\Plex Media Server",
-            plex_local_videos_path_mapping="",
-            plex_videos_path_mapping="",
-            plex_bif_frame_interval=5,
-            thumbnail_quality=4,
-            regenerate_thumbnails=False,
-            gpu_threads=0,
-            cpu_threads=4,
-            gpu_selection="all",
-            tmp_folder=None,  # Should use Windows default
-            log_level="INFO",
-            plex_timeout=60,
-            plex_libraries="",
-        )
-
-        config = load_config(args)
+        env = {
+            "PLEX_URL": "http://localhost:32400",
+            "PLEX_TOKEN": "test_token",
+            "PLEX_CONFIG_FOLDER": "C:\\ProgramData\\Plex\\Library\\Application Support\\Plex Media Server",
+            "CPU_THREADS": "4",
+            "GPU_THREADS": "0",
+            "PLEX_BIF_FRAME_INTERVAL": "5",
+            "THUMBNAIL_QUALITY": "4",
+            "LOG_LEVEL": "INFO",
+            "PLEX_TIMEOUT": "60",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("plex_generate_previews.config.load_dotenv", lambda: None):
+                config = load_config()
 
         # Should use Windows temp directory from tempfile.gettempdir()
         assert config is not None
         assert (
             config.tmp_folder == "C:\\Temp"
         )  # Should use the mocked gettempdir() value
-
-
-class TestWindowsGPUValidation:
-    """Test that GPU detection works on Windows with D3D11VA."""
-
-    @patch("os.name", "nt")
-    @patch("plex_generate_previews.cli.is_windows", return_value=True)
-    @patch("plex_generate_previews.cli.detect_all_gpus")
-    @patch("plex_generate_previews.cli.logger")
-    def test_windows_gpu_threads_allowed_with_gpu(
-        self, mock_logger, mock_detect_gpus, mock_is_windows
-    ):
-        """Test that GPU threads work on Windows when GPU detected."""
-        from types import SimpleNamespace
-
-        from plex_generate_previews.cli import detect_and_select_gpus
-
-        # Simulate Windows GPU detected
-        mock_detect_gpus.return_value = [
-            (
-                "WINDOWS_GPU",
-                "d3d11va",
-                {
-                    "name": "Windows GPU",
-                    "acceleration": "D3D11VA",
-                    "device_path": "d3d11va",
-                },
-            )
-        ]
-
-        config = SimpleNamespace(gpu_threads=4, gpu_selection="all")
-
-        result = detect_and_select_gpus(config)
-
-        # Should return the detected GPU
-        assert len(result) == 1
-        assert result[0][0] == "WINDOWS_GPU"
-
-        # Should not log errors about Windows not being supported
-        error_calls = [str(call) for call in mock_logger.error.call_args_list]
-        assert not any("not supported" in call for call in error_calls)
-
-    @patch("os.name", "nt")
-    @patch("plex_generate_previews.cli.is_windows", return_value=True)
-    @patch("plex_generate_previews.cli.detect_all_gpus")
-    @patch("plex_generate_previews.cli.logger")
-    def test_windows_no_gpu_detected_exits(
-        self, mock_logger, mock_detect_gpus, mock_is_windows
-    ):
-        """Test that when GPU threads requested but no GPU detected on Windows, it exits with error."""
-        from types import SimpleNamespace
-
-        from plex_generate_previews.cli import detect_and_select_gpus
-
-        # Simulate no GPU detected
-        mock_detect_gpus.return_value = []
-
-        config = SimpleNamespace(gpu_threads=4, gpu_selection="all")
-
-        # Should exit with error
-        with pytest.raises(SystemExit) as excinfo:
-            detect_and_select_gpus(config)
-
-        assert excinfo.value.code == 1
-
-        # Should log error message about no GPUs detected
-        error_calls = [str(call) for call in mock_logger.error.call_args_list]
-        assert any("No GPUs detected" in call for call in error_calls)
-        assert any("GPU_THREADS" in call for call in error_calls)
 
 
 class TestWindowsSignalHandling:
@@ -258,7 +191,7 @@ class TestWindowsSignalHandling:
         # We test that code should check for SIGTERM existence before using it
         import signal as sig_module
 
-        # This test verifies the pattern used in cli.py:
+        # This test verifies the signal-handling pattern:
         # signal.signal(signal.SIGINT, handler)
         # if hasattr(signal, 'SIGTERM'):
         #     signal.signal(signal.SIGTERM, handler)
@@ -408,27 +341,20 @@ class TestWindowsConfigValidation:
 
         mock_listdir.side_effect = mock_listdir_fn
 
-        from types import SimpleNamespace
-
-        args = SimpleNamespace(
-            plex_url="http://localhost:32400",
-            plex_token="test_token",
-            plex_config_folder="C:\\Users\\Test\\AppData\\Local\\Plex Media Server",
-            plex_local_videos_path_mapping="",
-            plex_videos_path_mapping="",
-            plex_bif_frame_interval=5,
-            thumbnail_quality=4,
-            regenerate_thumbnails=False,
-            gpu_threads=0,  # Must be 0 on Windows
-            cpu_threads=4,
-            gpu_selection="all",
-            tmp_folder=None,
-            log_level="INFO",
-            plex_timeout=60,
-            plex_libraries="",
-        )
-
-        config = load_config(args)
+        env = {
+            "PLEX_URL": "http://localhost:32400",
+            "PLEX_TOKEN": "test_token",
+            "PLEX_CONFIG_FOLDER": "C:\\Users\\Test\\AppData\\Local\\Plex Media Server",
+            "CPU_THREADS": "4",
+            "GPU_THREADS": "0",
+            "PLEX_BIF_FRAME_INTERVAL": "5",
+            "THUMBNAIL_QUALITY": "4",
+            "LOG_LEVEL": "INFO",
+            "PLEX_TIMEOUT": "60",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("plex_generate_previews.config.load_dotenv", lambda: None):
+                config = load_config()
 
         assert config is not None
         assert config.gpu_threads == 0

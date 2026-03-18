@@ -96,7 +96,25 @@ class TestSettingsManagerProperties:
         assert settings_manager.plex_token == "test-token-123"
 
     def test_gpu_threads_property(self, settings_manager):
-        """Test gpu_threads property with int conversion."""
+        """Test gpu_threads computed from gpu_config and distributed by setter."""
+        settings_manager.gpu_config = [
+            {
+                "device": "/dev/dri/renderD128",
+                "name": "GPU 0",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 1,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "/dev/dri/renderD129",
+                "name": "GPU 1",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 1,
+                "ffmpeg_threads": 2,
+            },
+        ]
         settings_manager.gpu_threads = 4
         assert settings_manager.gpu_threads == 4
 
@@ -110,27 +128,15 @@ class TestSettingsManagerProperties:
         monkeypatch.delenv("PLEX_VERIFY_SSL", raising=False)
         assert settings_manager.plex_verify_ssl is True
 
-    def test_plex_verify_ssl_env_var_truthy(self, settings_manager, monkeypatch):
-        """Test plex_verify_ssl reads env var with same truthy list as config.py."""
-        for truthy in ("true", "1", "yes", "True", "YES"):
-            monkeypatch.setenv("PLEX_VERIFY_SSL", truthy)
-            assert settings_manager.plex_verify_ssl is True, (
-                f"Expected True for {truthy!r}"
-            )
-
-    def test_plex_verify_ssl_env_var_falsy(self, settings_manager, monkeypatch):
-        """Test plex_verify_ssl treats non-truthy env values as False."""
-        for falsy in ("false", "0", "no", "off", "anything"):
-            monkeypatch.setenv("PLEX_VERIFY_SSL", falsy)
-            assert settings_manager.plex_verify_ssl is False, (
-                f"Expected False for {falsy!r}"
-            )
-
-    def test_plex_verify_ssl_saved_overrides_env(self, settings_manager, monkeypatch):
-        """Test saved setting takes precedence over env var."""
-        monkeypatch.setenv("PLEX_VERIFY_SSL", "false")
+    def test_plex_verify_ssl_saved_true(self, settings_manager):
+        """Test plex_verify_ssl persists True value."""
         settings_manager.plex_verify_ssl = True
         assert settings_manager.plex_verify_ssl is True
+
+    def test_plex_verify_ssl_saved_false(self, settings_manager):
+        """Test plex_verify_ssl persists False value."""
+        settings_manager.plex_verify_ssl = False
+        assert settings_manager.plex_verify_ssl is False
 
     def test_cpu_threads_default_when_missing(self, settings_manager, monkeypatch):
         """Test cpu_threads defaults to 1 when key is not set."""
@@ -138,9 +144,9 @@ class TestSettingsManagerProperties:
         assert settings_manager.cpu_threads == 1
 
     def test_gpu_threads_default_when_missing(self, settings_manager, monkeypatch):
-        """Test gpu_threads defaults to 1 when key is not set."""
+        """Test gpu_threads defaults to 0 when gpu_config is empty."""
         monkeypatch.delenv("GPU_THREADS", raising=False)
-        assert settings_manager.gpu_threads == 1
+        assert settings_manager.gpu_threads == 0
 
     def test_cpu_fallback_threads_default_when_missing(
         self, settings_manager, monkeypatch
@@ -176,6 +182,135 @@ class TestSettingsManagerProperties:
         """Test thumbnail_interval property."""
         settings_manager.thumbnail_interval = 5
         assert settings_manager.thumbnail_interval == 5
+
+
+class TestGpuConfig:
+    """Tests for gpu_config property and computed gpu_threads."""
+
+    @pytest.fixture
+    def settings_manager(self, tmp_path, monkeypatch):
+        from plex_generate_previews.web.settings_manager import SettingsManager
+
+        monkeypatch.delenv("GPU_THREADS", raising=False)
+        monkeypatch.delenv("GPU_SELECTION", raising=False)
+        monkeypatch.delenv("FFMPEG_THREADS", raising=False)
+        return SettingsManager(config_dir=str(tmp_path))
+
+    def test_gpu_config_getter_setter_roundtrip(self, settings_manager):
+        """Test gpu_config persists through getter/setter."""
+        config = [
+            {
+                "device": "/dev/dri/renderD128",
+                "name": "GPU 0",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 2,
+                "ffmpeg_threads": 4,
+            },
+        ]
+        settings_manager.gpu_config = config
+        assert settings_manager.gpu_config == config
+
+    def test_gpu_threads_computed_from_gpu_config(self, settings_manager):
+        """Test gpu_threads is the sum of workers across enabled GPUs."""
+        settings_manager.gpu_config = [
+            {
+                "device": "/dev/gpu0",
+                "name": "GPU 0",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 3,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "/dev/gpu1",
+                "name": "GPU 1",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 2,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "/dev/gpu2",
+                "name": "GPU 2",
+                "type": "vaapi",
+                "enabled": False,
+                "workers": 5,
+                "ffmpeg_threads": 2,
+            },
+        ]
+        assert settings_manager.gpu_threads == 5
+
+    def test_gpu_threads_setter_distributes_across_enabled(self, settings_manager):
+        """Test gpu_threads setter distributes workers evenly across enabled GPUs."""
+        settings_manager.gpu_config = [
+            {
+                "device": "/dev/gpu0",
+                "name": "GPU 0",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "/dev/gpu1",
+                "name": "GPU 1",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "/dev/gpu2",
+                "name": "GPU 2",
+                "type": "vaapi",
+                "enabled": False,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+        ]
+        settings_manager.gpu_threads = 5
+        config = settings_manager.gpu_config
+        enabled_workers = [e["workers"] for e in config if e["enabled"]]
+        assert sum(enabled_workers) == 5
+        assert enabled_workers == [3, 2]
+        assert config[2]["workers"] == 0
+
+    def test_gpu_threads_setter_noop_when_no_enabled(self, settings_manager):
+        """Test gpu_threads setter does nothing when no enabled GPUs."""
+        settings_manager.gpu_config = [
+            {
+                "device": "/dev/gpu0",
+                "name": "GPU 0",
+                "type": "vaapi",
+                "enabled": False,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+        ]
+        settings_manager.gpu_threads = 4
+        assert settings_manager.gpu_threads == 0
+
+    def test_gpu_threads_zero_with_empty_config(self, settings_manager):
+        """Test gpu_threads returns 0 when gpu_config is empty."""
+        assert settings_manager.gpu_config == []
+        assert settings_manager.gpu_threads == 0
+
+    def test_update_routes_gpu_threads_through_setter(self, settings_manager):
+        """Test that update() distributes gpu_threads via setter logic."""
+        settings_manager.gpu_config = [
+            {
+                "device": "/dev/gpu0",
+                "name": "GPU 0",
+                "type": "vaapi",
+                "enabled": True,
+                "workers": 1,
+                "ffmpeg_threads": 2,
+            },
+        ]
+        settings_manager.update({"gpu_threads": 3, "cpu_threads": 2})
+        assert settings_manager.gpu_threads == 3
+        assert settings_manager.cpu_threads == 2
 
 
 class TestSettingsManagerConfigStatus:
@@ -280,3 +415,184 @@ class TestSetupState:
 
         assert settings_manager.is_setup_complete() is True
         assert settings_manager.get_setup_state() == {}
+
+
+class TestApplyChanges:
+    """Tests for the apply_changes batch update method."""
+
+    @pytest.fixture
+    def settings_manager(self, tmp_path):
+        from plex_generate_previews.web.settings_manager import SettingsManager
+
+        return SettingsManager(config_dir=str(tmp_path))
+
+    def test_apply_updates_only(self, settings_manager):
+        settings_manager.apply_changes(updates={"a": 1, "b": 2})
+        assert settings_manager.get("a") == 1
+        assert settings_manager.get("b") == 2
+
+    def test_apply_deletes_only(self, settings_manager):
+        settings_manager.set("x", 10)
+        settings_manager.apply_changes(deletes=["x"])
+        assert settings_manager.get("x") is None
+
+    def test_apply_updates_and_deletes(self, settings_manager):
+        settings_manager.set("old_key", "old_val")
+        settings_manager.apply_changes(
+            updates={"new_key": "new_val"},
+            deletes=["old_key"],
+        )
+        assert settings_manager.get("new_key") == "new_val"
+        assert settings_manager.get("old_key") is None
+
+    def test_apply_noop(self, settings_manager):
+        """apply_changes with no args saves without error."""
+        settings_manager.set("keep", True)
+        settings_manager.apply_changes()
+        assert settings_manager.get("keep") is True
+
+    def test_deleting_nonexistent_key_is_safe(self, settings_manager):
+        settings_manager.apply_changes(deletes=["no_such_key"])
+        assert settings_manager.get("no_such_key") is None
+
+
+class TestGpuConfigEdgeCases:
+    """Edge-case tests for GPU config handling."""
+
+    @pytest.fixture
+    def settings_manager(self, tmp_path):
+        from plex_generate_previews.web.settings_manager import SettingsManager
+
+        return SettingsManager(config_dir=str(tmp_path))
+
+    def test_gpu_config_none_returns_empty_list(self, settings_manager):
+        """gpu_config returns [] when stored value is None."""
+        settings_manager.set("gpu_config", None)
+        assert settings_manager.gpu_config == []
+
+    def test_gpu_config_non_list_returns_empty_list(self, settings_manager):
+        """gpu_config returns [] when stored value is a string or int."""
+        settings_manager.set("gpu_config", "invalid")
+        assert settings_manager.gpu_config == []
+        settings_manager.set("gpu_config", 42)
+        assert settings_manager.gpu_config == []
+
+    def test_gpu_config_filters_non_dict_entries(self, settings_manager):
+        """gpu_config filters out non-dict entries in the list."""
+        settings_manager.set(
+            "gpu_config",
+            [
+                {"device": "cuda", "enabled": True, "workers": 1},
+                "bad_entry",
+                None,
+                42,
+                {"device": "vaapi", "enabled": False, "workers": 0},
+            ],
+        )
+        result = settings_manager.gpu_config
+        assert len(result) == 2
+        assert result[0]["device"] == "cuda"
+        assert result[1]["device"] == "vaapi"
+
+    def test_gpu_threads_with_none_gpu_config(self, settings_manager):
+        """gpu_threads returns 0 when gpu_config is None."""
+        settings_manager.set("gpu_config", None)
+        assert settings_manager.gpu_threads == 0
+
+    def test_gpu_threads_with_malformed_entries(self, settings_manager):
+        """gpu_threads ignores non-dict entries in gpu_config."""
+        settings_manager.set(
+            "gpu_config",
+            [
+                {"device": "cuda", "enabled": True, "workers": 3},
+                "not_a_dict",
+                None,
+            ],
+        )
+        assert settings_manager.gpu_threads == 3
+
+    def test_gpu_threads_missing_workers_key(self, settings_manager):
+        """gpu_threads defaults workers to 0 when key is missing."""
+        settings_manager.set(
+            "gpu_config",
+            [{"device": "cuda", "enabled": True}],
+        )
+        assert settings_manager.gpu_threads == 0
+
+    def test_distribute_gpu_threads_with_none_config(self, settings_manager):
+        """_distribute_gpu_threads does nothing when gpu_config is None."""
+        settings_manager.set("gpu_config", None)
+        settings_manager.gpu_threads = 5
+        assert settings_manager.get("gpu_config") is None
+
+    def test_distribute_gpu_threads_with_non_list_config(self, settings_manager):
+        """_distribute_gpu_threads does nothing when gpu_config is not a list."""
+        settings_manager.set("gpu_config", "invalid")
+        settings_manager.gpu_threads = 5
+        assert settings_manager.get("gpu_config") == "invalid"
+
+    def test_distribute_gpu_threads_with_malformed_entries(self, settings_manager):
+        """_distribute_gpu_threads filters out non-dict entries."""
+        settings_manager.set(
+            "gpu_config",
+            [
+                {"device": "cuda", "enabled": True, "workers": 0},
+                "not_a_dict",
+                None,
+            ],
+        )
+        settings_manager.gpu_threads = 3
+        config = settings_manager.gpu_config
+        assert len(config) == 1
+        assert config[0]["workers"] == 3
+
+    def test_distribute_fewer_threads_than_gpus(self, settings_manager):
+        """2 threads across 3 enabled GPUs: first 2 get 1 each, third gets 0."""
+        settings_manager.gpu_config = [
+            {
+                "device": "g0",
+                "type": "t",
+                "name": "G0",
+                "enabled": True,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "g1",
+                "type": "t",
+                "name": "G1",
+                "enabled": True,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+            {
+                "device": "g2",
+                "type": "t",
+                "name": "G2",
+                "enabled": True,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+        ]
+        settings_manager.gpu_threads = 2
+        config = settings_manager.gpu_config
+        workers = [e["workers"] for e in config]
+        assert sum(workers) == 2
+        assert workers == [1, 1, 0]
+
+    def test_update_does_not_mutate_caller_dict(self, settings_manager):
+        """update() should not modify the dict passed to it."""
+        settings_manager.gpu_config = [
+            {
+                "device": "cuda",
+                "type": "nvidia",
+                "name": "GPU",
+                "enabled": True,
+                "workers": 0,
+                "ffmpeg_threads": 2,
+            },
+        ]
+        payload = {"gpu_threads": 3, "cpu_threads": 2}
+        settings_manager.update(payload)
+        assert "gpu_threads" in payload
+        assert payload["gpu_threads"] == 3

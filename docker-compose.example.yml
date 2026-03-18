@@ -3,8 +3,8 @@
 # Copy this file to docker-compose.yml and modify as needed.
 # Choose ONE of the configurations below based on your setup.
 #
-# PLEX_URL and PLEX_TOKEN are optional — the Setup Wizard at
-# http://YOUR_IP:8080 configures them via Plex OAuth.
+# All settings (Plex, GPU, processing) are configured in the web UI at
+# http://YOUR_IP:8080. settings.json in /config is the source of truth.
 #
 # Full configuration reference: docs/reference.md
 
@@ -49,19 +49,12 @@ services:
       # - NVIDIA_VISIBLE_DEVICES=all
       # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-      # Optional: override processing (otherwise set in web UI Settings)
-      # - GPU_THREADS=4
-      # - CPU_THREADS=2
-
       # User/group (match your host user; Unraid: 99/100)
       - PUID=1000
       - PGID=1000
 
       # Timezone — ensures log timestamps and scheduled jobs use your local time
       # - TZ=America/New_York
-
-      # Optional: set a fixed auth token (otherwise check container logs)
-      # - WEB_AUTH_TOKEN=your-password
 
     volumes:
       # Your media files (read-only)
@@ -86,9 +79,6 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # Optional: or set GPU Workers = 0, CPU Workers = 8 in web UI Settings
-      - GPU_THREADS=0
-      - CPU_THREADS=8
       - PUID=1000
       - PGID=1000
       # Timezone — ensures log timestamps and scheduled jobs use your local time
@@ -126,19 +116,12 @@ services:
       # - NVIDIA_VISIBLE_DEVICES=all
       # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-      # Optional: or set in web UI Settings
-      - GPU_THREADS=4
-      - CPU_THREADS=2
-
       # Unraid permissions (nobody:users)
       - PUID=99
       - PGID=100
 
       # Timezone — ensures log timestamps and scheduled jobs use your local time
       # - TZ=America/New_York
-
-      # Optional: set a fixed auth token (otherwise check container logs)
-      # - WEB_AUTH_TOKEN=your-password
 
     volumes:
       # Media share (read-only) — use the same path as your Plex container

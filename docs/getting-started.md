@@ -107,7 +107,7 @@ See [docker-compose.example.yml](../docker-compose.example.yml) for ready-to-use
 | Configuration | Use Case |
 |---------------|----------|
 | **GPU** | Single service covering Intel, AMD, and NVIDIA with inline comments |
-| **CPU-Only** | Minimal service with `GPU_THREADS=0` |
+| **CPU-Only** | Minimal service; disable all GPUs in Settings after first run |
 | **Unraid** | Intel iGPU default with NVIDIA alternative, Unraid paths and permissions |
 
 Copy the file, uncomment the section for your hardware, and adjust volume paths.
@@ -221,24 +221,24 @@ Apple Silicon and Intel Macs use VideoToolbox for GPU-accelerated decoding. This
 > [!WARNING]
 > Docker on macOS runs in a Linux VM and cannot access VideoToolbox. If you run the Docker image on macOS, processing will use CPU only. Apple Silicon users still benefit from the native ARM64 Docker image (no Rosetta emulation overhead). For GPU acceleration on macOS, install from source with Python and FFmpeg.
 
-### Multi-GPU Selection
+### Multi-GPU and Per-GPU Configuration
 
-Configure in the web UI under **Settings** (or use env var `GPU_SELECTION` / CLI flag `--gpu-selection` for one-off runs). Values: `all` (default) or `0,2` to use specific GPUs.
+In **Settings** → **Processing Options**, the GPU panel lists all detected GPUs. Enable or disable each GPU independently and set **workers** and **FFmpeg threads** per GPU.
 
 ### CPU-Only Mode
 
-Disable GPU acceleration by setting **GPU Workers** to `0` and **CPU Workers** to your desired value (e.g. `8`) in **Settings**.
+In **Settings** → **Processing Options**, disable all GPUs (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `8`).
 
 ### Performance Tuning
 
-| Threads | Recommendation |
-|---------|----------------|
-| GPU: 1, CPU: 1 | Default (safe for all hardware) |
-| GPU: 4, CPU: 2 | Balanced (mid-range systems) |
-| GPU: 8, CPU: 4 | High-end systems |
-| GPU: 0, CPU: 8 | CPU-only |
+| Workers | Recommendation |
+|--------|----------------|
+| 1 GPU × 1 worker, CPU: 1 | Default (safe for all hardware) |
+| 1 GPU × 4 workers, CPU: 2 | Balanced (mid-range systems) |
+| 1 GPU × 8 workers, CPU: 4 | High-end systems |
+| 0 GPU, CPU: 8 | CPU-only |
 
-Set **GPU Workers** and **CPU Workers** in the web UI (**Settings**). Start with the defaults and increase gradually; monitor system load to find the best balance.
+Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Options**. Start with the defaults and increase gradually; monitor system load to find the best balance.
 
 ---
 
@@ -439,23 +439,6 @@ docker run -d \
 
 ---
 
-## CLI Mode
-
-Run one-time processing without the web server (e.g. for cron or batch scripts). Either pass connection details via env vars, or mount an existing `/config` volume so the CLI uses settings from the web UI:
-
-```bash
-docker run --rm \
-  --device /dev/dri:/dev/dri \
-  -v /path/to/media:/media:ro \
-  -v /path/to/plex/config:/plex:rw \
-  -v /path/to/app/config:/config:rw \
-  stevezzau/plex_generate_vid_previews:latest --cli
-```
-
-If `/config` already has `settings.json` (from a previous web UI setup), the CLI uses those. Otherwise set `PLEX_URL`, `PLEX_TOKEN`, and other options via environment variables.
-
----
-
 ## Common Operations
 
 ### View Logs
@@ -523,7 +506,7 @@ This container uses s6-overlay (a built-in process manager). Adding `init: true`
 
 **Use IP address for Plex when needed**
 
-The container cannot reach `localhost` on your host. When using the Setup Wizard, pick your Plex server from the list (it will show the correct URL). If you set a Plex URL manually (env var or CLI), use your host's IP (e.g. `http://192.168.1.100:32400`), not `localhost`.
+The container cannot reach `localhost` on your host. When using the Setup Wizard, pick your Plex server from the list (it will show the correct URL). If you set a Plex URL manually (env var or Settings), use your host's IP (e.g. `http://192.168.1.100:32400`), not `localhost`.
 
 ---
 

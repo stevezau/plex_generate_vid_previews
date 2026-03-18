@@ -619,7 +619,7 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
                 "⚠️  Other GPU vendors (AMD, Intel) are NOT supported in WSL2"
             )
             logger.warning(
-                "⚠️  For non-NVIDIA GPUs in WSL2, please use CPU-only processing (set GPU_THREADS=0)"
+                "⚠️  For non-NVIDIA GPUs in WSL2, please use CPU-only processing (disable GPUs in Settings)"
             )
             nvidia_vendor = _detect_nvidia_via_nvidia_smi()
             if nvidia_vendor == "NVIDIA":

@@ -1,6 +1,6 @@
 # Plex Generate Previews
 
-> GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, D3D11VA, VideoToolbox) and parallel workers to generate previews 5-10x faster than Plex's built-in method. Distributed as a Docker image with a web UI dashboard.
+> GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, D3D11VA, VideoToolbox) and parallel workers to generate previews 5-10x faster than Plex's built-in method. Distributed as a Docker image with a web UI as the only interface (no CLI).
 
 ## Quick Start
 
@@ -26,9 +26,9 @@ Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-p
 ## Features
 
 - Multi-GPU support: NVIDIA (CUDA), AMD (VAAPI), Intel (QuickSync/VAAPI), Windows (D3D11VA), macOS (VideoToolbox)
-- Parallel processing with configurable GPU and CPU worker threads
+- Per-GPU configuration in Settings: enable/disable individual GPUs, workers per GPU, FFmpeg threads per GPU
 - GPU-to-CPU fallback workers for unsupported codecs
-- Web dashboard for job management, scheduling, and settings
+- Web UI (only interface): dashboard for job management, scheduling, and settings
 - Cron and interval-based scheduling
 - Radarr/Sonarr/Tdarr webhook integration for automatic processing on media import
 - Custom webhook endpoint for any external tool
@@ -36,7 +36,6 @@ Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-p
 - Adjustable thumbnail quality (1-10) and frame interval (1-60s)
 - Plex OAuth sign-in via setup wizard
 - Path mapping support for Docker volume differences
-- CLI mode for one-time batch processing
 - REST API with token authentication
 - WebSocket real-time progress updates
 - Rate limiting and CORS configuration
@@ -57,24 +56,15 @@ Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-p
 | All      | Windows  | D3D11VA          | Native only              |
 | Apple    | macOS    | VideoToolbox     | Native only              |
 
-## Environment Variables
+## Configuration
 
-| Variable                 | Default   | Description                                      |
-|--------------------------|-----------|--------------------------------------------------|
-| `PLEX_URL`               | (wizard)  | Plex server URL                                  |
-| `PLEX_TOKEN`             | (wizard)  | Plex authentication token                        |
-| `PLEX_CONFIG_FOLDER`     | (wizard)  | Path to Plex config folder                       |
-| `GPU_THREADS`            | 1         | GPU worker threads (0-32)                        |
-| `CPU_THREADS`            | 1         | CPU worker threads (0-32)                        |
-| `FALLBACK_CPU_THREADS`   | 0         | CPU fallback workers for GPU failures (0-32)     |
-| `THUMBNAIL_QUALITY`      | 4         | Preview quality 1-10 (2=highest)                 |
-| `PLEX_BIF_FRAME_INTERVAL`| 5         | Seconds between preview images (1-60)            |
-| `PLEX_LIBRARIES`         | All       | Comma-separated library names or IDs             |
-| `WEB_PORT`               | 8080      | Web server port                                  |
-| `WEB_AUTH_TOKEN`         | Auto      | Fixed authentication token                       |
-| `LOG_LEVEL`              | INFO      | DEBUG, INFO, WARNING, ERROR                      |
-| `PUID`                   | 1000      | User ID (Unraid: 99)                             |
-| `PGID`                   | 1000      | Group ID (Unraid: 100)                           |
+**settings.json** at `/config/settings.json` is the sole source of truth. On first start, env vars are migrated as seed values. After that, configure via the Web UI Settings page.
+
+**Infrastructure env vars** (always active): `CONFIG_DIR`, `WEB_PORT`, `PUID`, `PGID`, `TZ`, `CORS_ORIGINS`, `HTTPS`, `DEV_RELOAD`, `WEB_AUTH_TOKEN`
+
+**Deprecated** (use Settings instead): `GPU_SELECTION`, `GPU_THREADS`, `FFMPEG_THREADS`
+
+**Per-GPU config**: In Settings → Processing Options, configure each GPU: enabled, workers, ffmpeg_threads.
 
 ## REST API
 

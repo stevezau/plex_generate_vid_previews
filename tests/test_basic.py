@@ -2,9 +2,9 @@
 Basic functionality tests for plex_generate_previews.
 """
 
-import subprocess
-import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestBasicFunctionality:
@@ -24,54 +24,27 @@ class TestBasicFunctionality:
             f"Version '{plex_generate_previews.__version__}' doesn't match PEP 440 format"
         )
 
-    def test_cli_help(self):
-        """Test that CLI help works."""
-        result = subprocess.run(
-            [sys.executable, "-m", "plex_generate_previews", "--help"],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        assert "Generate video preview thumbnails" in result.stdout
+    def test_web_module_importable(self):
+        """Test that the web module can be imported."""
+        from plex_generate_previews.web.app import create_app
 
-    def test_list_gpus(self):
-        """Test that GPU listing works."""
-        result = subprocess.run(
-            [sys.executable, "-m", "plex_generate_previews", "--list-gpus"],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        output = result.stdout + result.stderr
-        assert "Detecting available GPUs" in output
+        assert callable(create_app)
 
-    def test_invalid_config_returns_error(self):
-        """Test that invalid configuration returns error."""
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "plex_generate_previews",
-                "--plex-url",
-                "http://localhost:32400",
-                # Missing required plex-token and plex-config-folder
-            ],
-            capture_output=True,
-            text=True,
-        )
-        # The app will try to connect to Plex and fail, which is expected
-        # We just want to make sure it doesn't crash with a Python error
-        assert result.returncode in [0, 1]  # Either success or expected failure
-        # Check for various expected error messages
-        expected_errors = [
-            "Failed to connect to Plex server",
-            "PLEX_TOKEN is required",
-            "FFmpeg not found",
-        ]
-        output = result.stdout + result.stderr
-        assert any(error in output for error in expected_errors), (
-            f"Expected one of {expected_errors} in output: {output}"
-        )
+    def test_no_cli_module(self):
+        """Test that CLI module has been removed."""
+        import importlib
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("plex_generate_previews.cli")
+
+    def test_config_validation_error_class(self):
+        """Test that ConfigValidationError can be raised."""
+        from plex_generate_previews.config import ConfigValidationError
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            raise ConfigValidationError(["Missing PLEX_URL", "Missing PLEX_TOKEN"])
+        assert "Missing PLEX_URL" in str(exc_info.value)
+        assert len(exc_info.value.errors) == 2
 
 
 class TestConfigFunctions:
@@ -158,32 +131,11 @@ class TestGPUDetection:
             assert _check_ffmpeg_version() is False
 
 
-class TestCLIFunctions:
-    """Test CLI functions."""
+class TestProcessingModule:
+    """Test processing module exists and is importable."""
 
-    def test_parse_arguments(self):
-        """Test argument parsing."""
-        from plex_generate_previews.cli import parse_arguments
+    def test_run_processing_importable(self):
+        """Test that run_processing can be imported from processing module."""
+        from plex_generate_previews.processing import run_processing
 
-        with patch(
-            "sys.argv",
-            ["plex-generate-previews", "--plex-url", "http://localhost:32400"],
-        ):
-            args = parse_arguments()
-            assert args.plex_url == "http://localhost:32400"
-
-    def test_application_state(self):
-        """Test application state management."""
-        from plex_generate_previews.cli import ApplicationState
-
-        state = ApplicationState()
-        assert state.config is None
-        assert state.console is not None
-
-        # Test setting config
-        config = MagicMock()
-        state.set_config(config)
-        assert state.config == config
-
-        # Test cleanup without config
-        state.cleanup()  # Should not raise any exceptions
+        assert callable(run_processing)

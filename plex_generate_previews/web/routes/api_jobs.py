@@ -605,7 +605,7 @@ def _build_idle_workers_from_config():
 
     Used before any job has been submitted (no WorkerPool exists yet)
     so the UI still shows the configured workers as idle.  Uses the
-    cached GPU detection results for real hardware names.
+    cached GPU detection results and gpu_config for per-GPU worker counts.
 
     Returns:
         List of worker status dicts.
@@ -615,7 +615,7 @@ def _build_idle_workers_from_config():
         from ..settings_manager import get_settings_manager
 
         settings = get_settings_manager()
-        gpu_count = settings.gpu_threads
+        gpu_config = settings.gpu_config
         cpu_count = settings.cpu_threads
         cpu_fb_count = settings.cpu_fallback_threads
     except Exception:
@@ -637,18 +637,36 @@ def _build_idle_workers_from_config():
     statuses = []
     worker_id = 0
 
-    for i in range(gpu_count):
-        worker_id += 1
-        gpu_name = gpu_infos[i]["name"] if i < len(gpu_infos) else "GPU"
-        display_name = f"{gpu_name} #{i + 1}" if gpu_count > 1 else gpu_name
-        statuses.append(
-            {
-                "worker_id": worker_id,
-                "worker_type": "GPU",
-                "worker_name": display_name,
-                **idle_entry,
-            }
-        )
+    # Build GPU workers from per-GPU config
+    config_by_device = {
+        entry["device"]: entry
+        for entry in gpu_config
+        if isinstance(entry, dict) and entry.get("device")
+    }
+
+    for gpu_info in gpu_infos:
+        device = gpu_info.get("device", "")
+        entry = config_by_device.get(device)
+        if entry is not None:
+            if not entry.get("enabled", True):
+                continue
+            workers_for_gpu = entry.get("workers", 1)
+        elif gpu_config:
+            continue
+        else:
+            workers_for_gpu = 1
+        gpu_name = gpu_info.get("name", "GPU")
+        for w in range(workers_for_gpu):
+            worker_id += 1
+            display = f"{gpu_name} #{w + 1}"
+            statuses.append(
+                {
+                    "worker_id": worker_id,
+                    "worker_type": "GPU",
+                    "worker_name": display,
+                    **idle_entry,
+                }
+            )
 
     for i in range(cpu_count):
         worker_id += 1

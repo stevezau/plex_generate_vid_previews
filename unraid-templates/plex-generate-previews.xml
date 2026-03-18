@@ -69,11 +69,10 @@ For NVIDIA GPU support, you must:
     <Config Name="Local Videos Path" Target="PLEX_LOCAL_VIDEOS_PATH_MAPPING" Default="/media" Mode="" Description="How this container sees media (usually /media)" Type="Variable" Display="advanced" Required="false" Mask="false">/media</Config>
     <Config Name="Plex Videos Path" Target="PLEX_VIDEOS_PATH_MAPPING" Default="" Mode="" Description="How Plex sees media (if different from this container's path)" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
-    <!-- Processing Options -->
-    <Config Name="Frame Interval (seconds)" Target="PLEX_BIF_FRAME_INTERVAL" Default="5" Mode="" Description="Seconds between each preview frame (default: 5)" Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
-    <Config Name="Thumbnail Quality" Target="THUMBNAIL_QUALITY" Default="4" Mode="" Description="Preview image quality 1-10, higher = better quality but larger files (default: 4)" Type="Variable" Display="advanced" Required="false" Mask="false">4</Config>
-    <Config Name="GPU Threads" Target="GPU_THREADS" Default="1" Mode="" Description="Number of parallel GPU workers (default: 1)" Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
-    <Config Name="CPU Threads" Target="CPU_THREADS" Default="1" Mode="" Description="Number of parallel CPU workers for fallback (default: 1)" Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
+    <!-- Processing Options (seed values; configure per-GPU in Web UI Settings after first run) -->
+    <Config Name="Frame Interval (seconds)" Target="PLEX_BIF_FRAME_INTERVAL" Default="5" Mode="" Description="Seconds between each preview frame (default: 5). Migrated to settings.json on first start." Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
+    <Config Name="Thumbnail Quality" Target="THUMBNAIL_QUALITY" Default="4" Mode="" Description="Preview image quality 1-10, higher = better quality but larger files (default: 4). Migrated to settings.json on first start." Type="Variable" Display="advanced" Required="false" Mask="false">4</Config>
+    <Config Name="CPU Threads" Target="CPU_THREADS" Default="1" Mode="" Description="Number of parallel CPU workers for fallback (default: 1). Migrated to settings.json on first start. GPU config (enable/disable, workers per GPU) is in Web UI Settings." Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
 
     <!-- Web Authentication -->
     <Config Name="Auth Token Override" Target="WEB_AUTH_TOKEN" Default="" Mode="" Description="Optional: Override the authentication token. If empty, use the token set during the setup wizard (or auto-generated if skipped)" Type="Variable" Display="advanced" Required="false" Mask="true"/>

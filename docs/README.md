@@ -19,7 +19,7 @@ Use this page to find the right doc quickly based on what you are trying to do.
 ### I need exact settings or API behavior
 
 - Use [Configuration & API Reference](reference.md)
-- Includes configuration precedence, environment variables, CLI flags, and REST endpoints
+- Includes configuration precedence, environment variables, and REST endpoints
 
 ### I want to contribute code
 
@@ -55,10 +55,19 @@ They are intentionally not part of end-user product documentation.
 
 ```mermaid
 graph TB
-    subgraph CLI["CLI Layer"]
-        A[cli.py] --> B[config.py]
-        A --> C[logging_config.py]
-        A --> VC[version_check.py]
+    subgraph Web["Web Interface (only interface)"]
+        W[wsgi.py / gunicorn] --> L[Flask + SocketIO]
+        L --> M[auth.py]
+        L --> R["routes/"]
+        L --> JM[job_runner.py]
+        L --> N[scheduler.py]
+        L --> SM[settings_manager.py]
+        L --> WH[webhooks.py]
+    end
+
+    subgraph Config["Configuration"]
+        SM --> B[config.py]
+        B --> G[gpu_detection.py]
     end
 
     subgraph Workers["Worker Pool"]
@@ -70,7 +79,6 @@ graph TB
 
     subgraph Processing["Media Processing"]
         F[media_processing.py]
-        G[gpu_detection.py]
         F --> H[FFmpeg]
         F --> I[BIF Generator]
     end
@@ -80,23 +88,11 @@ graph TB
         K[plex_client.py]
     end
 
-    subgraph Web["Web Interface"]
-        W[wsgi.py / gunicorn] --> L[Flask + SocketIO]
-        L --> M[auth.py]
-        L --> R["routes/"]
-        L --> JM[jobs.py]
-        L --> N[scheduler.py]
-        L --> SM[settings_manager.py]
-        L --> WH[webhooks.py]
-    end
-
-    A --> D
-    A --> G
+    JM --> D
+    JM --> G
     D --> F
     K --> J
-    A --> K
     L --> B
-    JM --> D
 ```
 
 ### Web Request Flow
@@ -136,14 +132,11 @@ graph TB
 
         subgraph App["Application"]
             WEB[Web UI :8080]
-            CLI_APP[CLI Mode]
             PROC[FFmpeg Processing]
         end
 
         S6 --> WEB
-        S6 --> CLI_APP
         WEB --> PROC
-        CLI_APP --> PROC
     end
 
     subgraph Volumes["Volume Mounts"]

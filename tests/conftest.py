@@ -36,7 +36,7 @@ def mock_config():
     config.regenerate_thumbnails = False
     config.gpu_threads = 1
     config.cpu_threads = 1
-    config.gpu_selection = "all"
+    config.gpu_config = []
     config.tmp_folder = "/tmp/plex_generate_previews"
     config.tmp_folder_created_by_us = False
     config.ffmpeg_path = "/usr/bin/ffmpeg"

@@ -1,7 +1,8 @@
 """Settings manager for persistent configuration.
 
 Manages user-configurable settings stored in /config/settings.json.
-These settings override environment variables when set.
+Settings are the single source of truth for all application-level
+configuration.  Migration/upgrade logic lives in ``upgrade.py``.
 """
 
 import json
@@ -103,9 +104,17 @@ class SettingsManager:
             return self._settings.copy()
 
     def update(self, settings: Dict[str, Any]) -> None:
-        """Update multiple settings at once."""
+        """Update multiple settings at once.
+
+        ``gpu_threads`` is special-cased: its value is distributed across
+        enabled GPUs in ``gpu_config`` rather than stored as a raw int.
+        The caller's dict is not modified.
+        """
         with self._lock:
-            self._settings.update(settings)
+            to_apply = {k: v for k, v in settings.items() if k != "gpu_threads"}
+            self._settings.update(to_apply)
+            if "gpu_threads" in settings:
+                self._distribute_gpu_threads(int(settings["gpu_threads"]))
             self._save()
 
     def delete(self, key: str) -> None:
@@ -115,11 +124,37 @@ class SettingsManager:
                 del self._settings[key]
                 self._save()
 
-    # Convenience methods for common settings
+    def apply_changes(
+        self,
+        updates: Dict[str, Any] = None,
+        deletes: List[str] = None,
+    ) -> None:
+        """Apply a batch of updates and deletions atomically.
+
+        Unlike ``update()``, no special-casing is applied — values are
+        written directly.  Intended for migrations and bulk operations.
+
+        Args:
+            updates: Key/value pairs to set.
+            deletes: Keys to remove.
+
+        """
+        with self._lock:
+            if updates:
+                self._settings.update(updates)
+            if deletes:
+                for key in deletes:
+                    self._settings.pop(key, None)
+            self._save()
+
+    # =========================================================================
+    # Convenience properties (settings.json is the sole source)
+    # =========================================================================
+
     @property
     def plex_url(self) -> Optional[str]:
-        """Plex server URL from settings or environment."""
-        return self.get("plex_url") or os.environ.get("PLEX_URL")
+        """Plex server URL."""
+        return self.get("plex_url")
 
     @plex_url.setter
     def plex_url(self, value: str) -> None:
@@ -127,8 +162,8 @@ class SettingsManager:
 
     @property
     def plex_token(self) -> Optional[str]:
-        """Plex authentication token from settings or environment."""
-        return self.get("plex_token") or os.environ.get("PLEX_TOKEN")
+        """Plex authentication token."""
+        return self.get("plex_token")
 
     @plex_token.setter
     def plex_token(self, value: str) -> None:
@@ -137,9 +172,7 @@ class SettingsManager:
     @property
     def plex_config_folder(self) -> Optional[str]:
         """Plex configuration folder path."""
-        return self.get("plex_config_folder") or os.environ.get(
-            "PLEX_CONFIG_FOLDER", "/plex"
-        )
+        return self.get("plex_config_folder") or "/plex"
 
     @plex_config_folder.setter
     def plex_config_folder(self, value: str) -> None:
@@ -151,9 +184,6 @@ class SettingsManager:
         val = self.get("plex_verify_ssl")
         if val is not None:
             return bool(val)
-        env_val = os.environ.get("PLEX_VERIFY_SSL", "").strip().lower()
-        if env_val:
-            return env_val in ("true", "1", "yes")
         return True
 
     @plex_verify_ssl.setter
@@ -163,64 +193,81 @@ class SettingsManager:
     @property
     def media_path(self) -> Optional[str]:
         """Local media root path."""
-        return self.get("media_path") or os.environ.get("MEDIA_PATH")
+        return self.get("media_path")
 
     @media_path.setter
     def media_path(self, value: str) -> None:
         self.set("media_path", value)
 
     @property
-    def plex_videos_path_mapping(self) -> Optional[str]:
-        """Plex-side path prefix for path mapping."""
-        return self.get("plex_videos_path_mapping") or os.environ.get(
-            "PLEX_VIDEOS_PATH_MAPPING"
-        )
-
-    @plex_videos_path_mapping.setter
-    def plex_videos_path_mapping(self, value: str) -> None:
-        self.set("plex_videos_path_mapping", value)
-
-    @property
-    def plex_local_videos_path_mapping(self) -> Optional[str]:
-        """Local-side path prefix for path mapping."""
-        return self.get("plex_local_videos_path_mapping") or os.environ.get(
-            "PLEX_LOCAL_VIDEOS_PATH_MAPPING"
-        )
-
-    @plex_local_videos_path_mapping.setter
-    def plex_local_videos_path_mapping(self, value: str) -> None:
-        self.set("plex_local_videos_path_mapping", value)
-
-    @property
     def thumbnail_interval(self) -> int:
         """Seconds between thumbnail captures."""
-        return int(
-            self.get("thumbnail_interval") or os.environ.get("THUMBNAIL_INTERVAL", "2")
-        )
+        return int(self.get("thumbnail_interval") or 2)
 
     @thumbnail_interval.setter
     def thumbnail_interval(self, value: int) -> None:
         self.set("thumbnail_interval", value)
 
     @property
+    def gpu_config(self) -> List[Dict[str, Any]]:
+        """Per-GPU configuration list.
+
+        Each entry has: device, name, type, enabled, workers, ffmpeg_threads.
+        Always returns a list (never ``None``).
+        """
+        val = self.get("gpu_config")
+        if not isinstance(val, list):
+            return []
+        return [e for e in val if isinstance(e, dict)]
+
+    @gpu_config.setter
+    def gpu_config(self, value: List[Dict[str, Any]]) -> None:
+        self.set("gpu_config", value)
+
+    @property
     def gpu_threads(self) -> int:
-        """Number of GPU worker threads."""
-        val = self.get("gpu_threads")
-        if val is None or val == "":
-            return int(os.environ.get("GPU_THREADS", "1"))
-        return int(val)
+        """Total GPU worker threads (computed from gpu_config)."""
+        config = self.gpu_config
+        if not config:
+            return 0
+        return sum(
+            entry.get("workers", 0) for entry in config if entry.get("enabled", False)
+        )
 
     @gpu_threads.setter
     def gpu_threads(self, value: int) -> None:
-        self.set("gpu_threads", value)
+        with self._lock:
+            self._distribute_gpu_threads(int(value))
+            self._save()
+
+    def _distribute_gpu_threads(self, value: int) -> None:
+        """Distribute a total worker count across enabled GPUs in gpu_config.
+
+        Must be called while holding ``self._lock``.  Does nothing when
+        there are no enabled GPUs or gpu_config is missing/invalid.
+        """
+        raw = self._settings.get("gpu_config")
+        if not isinstance(raw, list):
+            return
+        config = [e for e in raw if isinstance(e, dict)]
+        enabled = [e for e in config if e.get("enabled", False)]
+        if not enabled:
+            return
+        per_gpu = max(0, value // len(enabled))
+        remainder = max(0, value - per_gpu * len(enabled))
+        for entry in config:
+            if entry.get("enabled", False):
+                entry["workers"] = per_gpu
+                if remainder > 0:
+                    entry["workers"] += 1
+                    remainder -= 1
+        self._settings["gpu_config"] = config
 
     @property
     def cpu_threads(self) -> int:
         """Number of CPU worker threads."""
         val = self.get("cpu_threads")
-        if val is None or val == "":
-            return int(os.environ.get("CPU_THREADS", "1"))
-        return int(val)
+        return int(val) if val is not None else 1
 
     @cpu_threads.setter
     def cpu_threads(self, value: int) -> None:
@@ -230,9 +277,7 @@ class SettingsManager:
     def cpu_fallback_threads(self) -> int:
         """Number of CPU fallback worker threads."""
         val = self.get("cpu_fallback_threads")
-        if val is None or val == "":
-            return int(os.environ.get("FALLBACK_CPU_THREADS", "0"))
-        return int(val)
+        return int(val) if val is not None else 0
 
     @cpu_fallback_threads.setter
     def cpu_fallback_threads(self, value: int) -> None:
@@ -241,13 +286,20 @@ class SettingsManager:
     @property
     def thumbnail_quality(self) -> int:
         """Thumbnail quality (1-10, default 4)."""
-        return int(
-            self.get("thumbnail_quality") or os.environ.get("THUMBNAIL_QUALITY", "4")
-        )
+        return int(self.get("thumbnail_quality") or 4)
 
     @thumbnail_quality.setter
     def thumbnail_quality(self, value: int) -> None:
         self.set("thumbnail_quality", value)
+
+    @property
+    def tonemap_algorithm(self) -> str:
+        """HDR-to-SDR tone mapping algorithm (default: hable)."""
+        return str(self.get("tonemap_algorithm") or "hable").strip().lower()
+
+    @tonemap_algorithm.setter
+    def tonemap_algorithm(self, value: str) -> None:
+        self.set("tonemap_algorithm", str(value).strip().lower())
 
     @property
     def selected_libraries(self) -> List[str]:
@@ -283,8 +335,7 @@ class SettingsManager:
     def is_configured(self) -> bool:
         """Check if the application is fully configured.
 
-        Returns True if at least plex_url and plex_token are set
-        (either in settings or environment variables).
+        Returns True if at least plex_url and plex_token are set in settings.
         """
         return bool(self.plex_url and self.plex_token)
 
