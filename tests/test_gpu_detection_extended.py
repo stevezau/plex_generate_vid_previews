@@ -8,6 +8,7 @@ and device enumeration using extensive mocking.
 from unittest.mock import MagicMock, patch
 
 from plex_generate_previews.gpu_detection import (
+    _detect_windows_gpus,
     _get_ffmpeg_hwaccels,
     _get_gpu_devices,
     _is_hwaccel_available,
@@ -1141,3 +1142,135 @@ class TestWSL2NoDRMDevices:
         """WSL2 + nvidia-smi confirms + CUDA functional test fails -> no GPU."""
         gpus = detect_all_gpus()
         assert gpus == []
+
+
+class TestDetectWindowsGPUs:
+    """Tests for _detect_windows_gpus().
+
+    Covers the priority order: NVIDIA CUDA first, D3D11VA fallback.
+    """
+
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda", "d3d11va"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_gpu_name",
+        return_value="NVIDIA GeForce RTX 5080",
+    )
+    def test_nvidia_cuda_detected(
+        self, _mock_name, _mock_test, _mock_smi, _mock_hwaccels
+    ):
+        """NVIDIA confirmed by nvidia-smi + CUDA functional test passes -> NVIDIA/cuda GPU."""
+        gpus = _detect_windows_gpus()
+        assert len(gpus) == 1
+        gpu_type, device, info = gpus[0]
+        assert gpu_type == "NVIDIA"
+        assert device == "cuda"
+        assert info["acceleration"] == "CUDA"
+        assert "RTX 5080" in info["name"]
+
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda", "d3d11va"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=False,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_acceleration_method",
+        return_value=True,
+    )
+    def test_cuda_test_fails_falls_back_to_d3d11va(
+        self, _mock_accel, _mock_test, _mock_smi, _mock_hwaccels
+    ):
+        """nvidia-smi confirms NVIDIA but CUDA functional test fails -> falls back to D3D11VA."""
+        gpus = _detect_windows_gpus()
+        assert len(gpus) == 1
+        gpu_type, device, info = gpus[0]
+        assert gpu_type == "WINDOWS_GPU"
+        assert device == "d3d11va"
+        assert info["acceleration"] == "D3D11VA"
+
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda", "d3d11va"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_acceleration_method",
+        return_value=True,
+    )
+    def test_no_nvidia_smi_falls_back_to_d3d11va(
+        self, _mock_accel, _mock_smi, _mock_hwaccels
+    ):
+        """nvidia-smi finds no NVIDIA GPU -> skips CUDA and uses D3D11VA."""
+        gpus = _detect_windows_gpus()
+        assert len(gpus) == 1
+        assert gpus[0][0] == "WINDOWS_GPU"
+        assert gpus[0][1] == "d3d11va"
+
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["d3d11va"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_acceleration_method",
+        return_value=True,
+    )
+    def test_no_cuda_hwaccel_uses_d3d11va(self, _mock_accel, _mock_hwaccels):
+        """CUDA not in FFmpeg hwaccels -> goes straight to D3D11VA."""
+        gpus = _detect_windows_gpus()
+        assert len(gpus) == 1
+        assert gpus[0][0] == "WINDOWS_GPU"
+        assert gpus[0][1] == "d3d11va"
+
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=[],
+    )
+    def test_no_hwaccels_returns_empty(self, _mock_hwaccels):
+        """No hwaccels available at all -> empty list."""
+        gpus = _detect_windows_gpus()
+        assert gpus == []
+
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda", "d3d11va"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_gpu_name",
+        return_value="NVIDIA GeForce RTX 5080",
+    )
+    def test_nvidia_cuda_skips_d3d11va(
+        self, _mock_name, _mock_test, _mock_smi, _mock_hwaccels
+    ):
+        """When CUDA succeeds, D3D11VA is not added (early return)."""
+        gpus = _detect_windows_gpus()
+        types = [g[0] for g in gpus]
+        assert "WINDOWS_GPU" not in types
+        assert len(gpus) == 1
