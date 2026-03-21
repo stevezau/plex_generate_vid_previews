@@ -866,42 +866,40 @@ def generate_images(
                 str(effective_ffmpeg_threads),
             ]
 
-        # Vulkan device required by the libplacebo filter (Dolby Vision tone mapping).
-        # Use -hwaccel vulkan so decode runs on the same GPU context as
-        # libplacebo; FFmpeg auto-falls-back to software decode when the
-        # driver lacks VK_KHR_video_decode_queue.  CUDA/VAAPI hwaccel is
-        # skipped because those decoded frames live in a different device
-        # memory context and cannot be uploaded to Vulkan.
+        # Vulkan device for the libplacebo filter (Dolby Vision tone mapping).
+        # -filter_hw_device tells hwupload which device to target when
+        # multiple hardware contexts coexist (e.g. CUDA + Vulkan).
         if init_vulkan:
-            args += ["-init_hw_device", "vulkan"]
-            if effective_gpu is not None:
-                args += ["-hwaccel", "vulkan"]
-        else:
-            args += ["-threads:v", "1"]
-            # Add hardware acceleration for decoding (before -i flag)
-            effective_gpu_device_path = (
-                gpu_device_path_override
-                if gpu_device_path_override is not None
-                else gpu_device_path
-            )
+            args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
 
-            use_gpu = effective_gpu is not None
-            if use_gpu:
-                if effective_gpu == "NVIDIA":
-                    args += ["-hwaccel", "cuda"]
-                elif effective_gpu == "WINDOWS_GPU":
-                    args += ["-hwaccel", "d3d11va"]
-                elif effective_gpu == "APPLE":
-                    args += ["-hwaccel", "videotoolbox"]
-                elif effective_gpu_device_path and effective_gpu_device_path.startswith(
-                    "/dev/dri/"
-                ):
-                    args += [
-                        "-hwaccel",
-                        "vaapi",
-                        "-vaapi_device",
-                        effective_gpu_device_path,
-                    ]
+        args += ["-threads:v", "1"]
+
+        # Hardware acceleration for decoding (before -i flag).
+        # Compatible with both the zscale/tonemap and libplacebo paths:
+        # decoded frames auto-transfer to CPU memory, then hwupload sends
+        # them to the Vulkan device for libplacebo when needed.
+        effective_gpu_device_path = (
+            gpu_device_path_override
+            if gpu_device_path_override is not None
+            else gpu_device_path
+        )
+        use_gpu = effective_gpu is not None
+        if use_gpu:
+            if effective_gpu == "NVIDIA":
+                args += ["-hwaccel", "cuda"]
+            elif effective_gpu == "WINDOWS_GPU":
+                args += ["-hwaccel", "d3d11va"]
+            elif effective_gpu == "APPLE":
+                args += ["-hwaccel", "videotoolbox"]
+            elif effective_gpu_device_path and effective_gpu_device_path.startswith(
+                "/dev/dri/"
+            ):
+                args += [
+                    "-hwaccel",
+                    "vaapi",
+                    "-vaapi_device",
+                    effective_gpu_device_path,
+                ]
 
         # Add skip_frame option for faster decoding (if safe)
         if use_skip:

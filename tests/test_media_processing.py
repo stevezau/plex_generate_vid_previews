@@ -1762,12 +1762,13 @@ class TestProactiveDVSkip:
 
         assert "-init_hw_device" in first_args
         vulkan_idx = first_args.index("-init_hw_device")
-        assert first_args[vulkan_idx + 1] == "vulkan"
+        assert first_args[vulkan_idx + 1] == "vulkan=vk"
+        assert "-filter_hw_device" in first_args
+        assert first_args[first_args.index("-filter_hw_device") + 1] == "vk"
 
-        # No GPU passed → no Vulkan hwaccel, and -threads:v should be absent
-        # (libplacebo path lets FFmpeg auto-detect decoder thread count).
+        assert "-threads:v" in first_args
+        # No GPU passed → no hwaccel flag
         assert "-hwaccel" not in first_args
-        assert "-threads:v" not in first_args
 
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
@@ -1935,7 +1936,7 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV on a GPU worker should add -hwaccel vulkan for faster decode."""
+        """DV on a GPU worker should use native hwaccel + Vulkan for libplacebo."""
         mock_run.return_value = MagicMock(returncode=0)
 
         mock_info = MagicMock()
@@ -1976,17 +1977,17 @@ class TestProactiveDVSkip:
 
         first_args = mock_popen.call_args_list[0][0][0]
 
+        # Vulkan device for libplacebo
         assert "-init_hw_device" in first_args
-        assert first_args[first_args.index("-init_hw_device") + 1] == "vulkan"
+        assert first_args[first_args.index("-init_hw_device") + 1] == "vulkan=vk"
+        assert "-filter_hw_device" in first_args
+        assert first_args[first_args.index("-filter_hw_device") + 1] == "vk"
 
+        # Native CUDA hwaccel for fast decoding
         assert "-hwaccel" in first_args
-        assert first_args[first_args.index("-hwaccel") + 1] == "vulkan"
+        assert first_args[first_args.index("-hwaccel") + 1] == "cuda"
 
-        # libplacebo path should not cap decoder threads to 1
-        assert "-threads:v" not in first_args
-
-        # Should NOT have CUDA hwaccel
-        assert "cuda" not in first_args
+        assert "-threads:v" in first_args
 
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
@@ -2079,12 +2080,15 @@ class TestLibplaceboFallback:
         # First call should have libplacebo + vulkan init
         first_args = mock_popen.call_args_list[0][0][0]
         assert "-init_hw_device" in first_args
+        assert first_args[first_args.index("-init_hw_device") + 1] == "vulkan=vk"
+        assert "-filter_hw_device" in first_args
         vf1_idx = first_args.index("-vf")
         assert "libplacebo" in first_args[vf1_idx + 1]
 
         # Second call (DV-safe retry) should be basic fps+scale, no vulkan
         second_args = mock_popen.call_args_list[1][0][0]
         assert "-init_hw_device" not in second_args
+        assert "-filter_hw_device" not in second_args
         vf2_idx = second_args.index("-vf")
         vf2_value = second_args[vf2_idx + 1]
         assert "libplacebo" not in vf2_value
