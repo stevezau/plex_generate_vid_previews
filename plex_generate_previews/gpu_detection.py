@@ -587,6 +587,31 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
     return devices
 
 
+def _scan_dev_dri_render_devices() -> List[str]:
+    """Scan /dev/dri directly for render device nodes.
+
+    Fallback for container environments (e.g. TrueNAS Scale, Kubernetes) where
+    /sys/class/drm is unavailable but GPU devices are mounted via --device.
+
+    Returns:
+        List[str]: Sorted list of render device paths (e.g. ['/dev/dri/renderD128'])
+
+    """
+    dev_dri = "/dev/dri"
+    if not os.path.isdir(dev_dri):
+        return []
+    try:
+        return sorted(
+            os.path.join(dev_dri, entry)
+            for entry in os.listdir(dev_dri)
+            if entry.startswith("renderD")
+            and os.access(os.path.join(dev_dri, entry), os.R_OK)
+        )
+    except OSError as e:
+        logger.debug(f"Error scanning {dev_dri}: {e}")
+        return []
+
+
 def _get_gpu_vendor_from_driver(driver_name: str) -> str:
     """Map driver name to GPU vendor using DRIVER_VENDOR_MAP.
 
@@ -1076,6 +1101,38 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                     logger.debug("  WSL2 CUDA functionality test failed")
             else:
                 logger.debug("  WSL2 nvidia-smi did not detect NVIDIA GPU")
+
+        # Container fallback: /sys/class/drm unavailable but /dev/dri render
+        # devices may be mounted directly (e.g. TrueNAS Scale, Kubernetes).
+        if not detected_gpus:
+            render_devices = _scan_dev_dri_render_devices()
+            if render_devices and _is_hwaccel_available("vaapi"):
+                logger.info(
+                    "  /sys/class/drm unavailable — probing /dev/dri render devices directly"
+                )
+                vendor = _detect_gpu_type_from_lspci()
+                if vendor == "UNKNOWN":
+                    logger.debug("  lspci could not identify GPU vendor")
+
+                for device_path in render_devices:
+                    logger.info(f"    Testing VAAPI on {device_path}...")
+                    if _test_hwaccel_functionality("vaapi", device_path):
+                        if vendor in GPU_ACCELERATION_MAP:
+                            gpu_name = get_gpu_name(vendor, device_path)
+                        else:
+                            gpu_name = "GPU"
+                        gpu_info = {
+                            "name": gpu_name,
+                            "acceleration": "VAAPI",
+                            "device_path": device_path,
+                            "render_device": device_path,
+                            "card": f"dri-{os.path.basename(device_path)}",
+                            "driver": "unknown",
+                        }
+                        detected_gpus.append((vendor, device_path, gpu_info))
+                        logger.info(f"  ✅ VAAPI working on {device_path}: {gpu_name}")
+                    else:
+                        logger.debug(f"  ✗ VAAPI test failed on {device_path}")
     else:
         logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
         for card_name, render_device, driver in physical_gpus:

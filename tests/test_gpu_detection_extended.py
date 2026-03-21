@@ -1049,8 +1049,13 @@ class TestWSL2NoDRMDevices:
         "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
         return_value=[],
     )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
     def test_wsl2_no_drm_no_cuda_hwaccel(
         self,
+        _mock_scan,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1071,8 +1076,13 @@ class TestWSL2NoDRMDevices:
         "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
-    def test_not_wsl2_no_drm_no_detection(
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
+    def test_not_wsl2_no_drm_no_render_devices(
         self,
+        _mock_scan,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1080,9 +1090,181 @@ class TestWSL2NoDRMDevices:
         _mock_windows,
         _mock_macos,
     ):
-        """Not WSL2 + no DRM devices -> no GPU (even if CUDA is listed)."""
+        """Not WSL2 + no DRM + no render devices in /dev/dri -> no GPU."""
         gpus = detect_all_gpus()
         assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=["/dev/dri/renderD128"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        return_value="INTEL",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_gpu_name",
+        return_value="Intel Arc A770",
+    )
+    def test_container_no_sysfs_vaapi_detected(
+        self,
+        _mock_name,
+        _mock_test,
+        _mock_lspci,
+        _mock_scan,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Container with /dev/dri passthrough but no sysfs -> VAAPI GPU detected."""
+        gpus = detect_all_gpus()
+        assert len(gpus) == 1
+        vendor, device, info = gpus[0]
+        assert vendor == "INTEL"
+        assert device == "/dev/dri/renderD128"
+        assert info["acceleration"] == "VAAPI"
+        assert info["name"] == "Intel Arc A770"
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=["/dev/dri/renderD128"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        return_value="UNKNOWN",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    def test_container_no_sysfs_unknown_vendor(
+        self,
+        _mock_test,
+        _mock_lspci,
+        _mock_scan,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Container fallback with unknown vendor -> GPU detected with generic name."""
+        gpus = detect_all_gpus()
+        assert len(gpus) == 1
+        vendor, device, info = gpus[0]
+        assert vendor == "UNKNOWN"
+        assert device == "/dev/dri/renderD128"
+        assert info["acceleration"] == "VAAPI"
+        assert info["name"] == "GPU"
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=["/dev/dri/renderD128"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        return_value="INTEL",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=False,
+    )
+    def test_container_no_sysfs_vaapi_fails(
+        self,
+        _mock_test,
+        _mock_lspci,
+        _mock_scan,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Container with render device but VAAPI test fails -> no GPU."""
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=["/dev/dri/renderD128", "/dev/dri/renderD129"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        return_value="INTEL",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_gpu_name",
+        return_value="Intel Arc A770",
+    )
+    def test_container_no_sysfs_multiple_render_devices(
+        self,
+        _mock_name,
+        _mock_test,
+        _mock_lspci,
+        _mock_scan,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Container with multiple render devices -> all working ones detected."""
+        gpus = detect_all_gpus()
+        assert len(gpus) == 2
+        assert gpus[0][1] == "/dev/dri/renderD128"
+        assert gpus[1][1] == "/dev/dri/renderD129"
+        for _, _, info in gpus:
+            assert info["acceleration"] == "VAAPI"
 
     @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
     @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
@@ -1097,8 +1279,13 @@ class TestWSL2NoDRMDevices:
         "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
         return_value="UNKNOWN",
     )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
     def test_wsl2_no_drm_nvidia_smi_fails(
         self,
+        _mock_scan,
         _mock_nvidia_smi,
         _mock_hwaccels,
         _mock_wsl2,
@@ -1128,8 +1315,13 @@ class TestWSL2NoDRMDevices:
         "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
         return_value=False,
     )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
     def test_wsl2_no_drm_cuda_test_fails(
         self,
+        _mock_scan,
         _mock_test,
         _mock_nvidia_smi,
         _mock_hwaccels,
