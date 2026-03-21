@@ -14,6 +14,26 @@ from ._helpers import (
 )
 
 
+def _reconcile_live_gpu_workers(settings) -> None:
+    """Sync the live WorkerPool with the current gpu_config.
+
+    After gpu_config is persisted, rebuild the selected-GPU list and
+    reconcile the running pool so that disabled GPUs are removed and
+    newly enabled GPUs are added without requiring a restart.
+    """
+    try:
+        from .api_jobs import _get_shared_worker_pool
+        from .job_runner import _build_selected_gpus
+
+        pool = _get_shared_worker_pool()
+        if pool is None:
+            return
+        new_selected = _build_selected_gpus(settings)
+        pool.reconcile_gpu_workers(new_selected)
+    except Exception:
+        logger.warning("Failed to reconcile GPU workers", exc_info=True)
+
+
 # ============================================================================
 # Settings
 # ============================================================================
@@ -121,6 +141,9 @@ def save_settings():
     if updates:
         settings.update(updates)
         logger.info(f"Settings updated: {list(updates.keys())}")
+
+        if "gpu_config" in updates:
+            _reconcile_live_gpu_workers(settings)
 
         log_fields = {"log_level", "log_rotation_size", "log_retention_count"}
         if log_fields & updates.keys():

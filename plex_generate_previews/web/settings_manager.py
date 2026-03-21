@@ -231,7 +231,7 @@ class SettingsManager:
         if not config:
             return 0
         return sum(
-            entry.get("workers", 0) for entry in config if entry.get("enabled", False)
+            entry.get("workers", 0) for entry in config if entry.get("enabled", True)
         )
 
     @gpu_threads.setter
@@ -250,13 +250,13 @@ class SettingsManager:
         if not isinstance(raw, list):
             return
         config = [e for e in raw if isinstance(e, dict)]
-        enabled = [e for e in config if e.get("enabled", False)]
+        enabled = [e for e in config if e.get("enabled", True)]
         if not enabled:
             return
         per_gpu = max(0, value // len(enabled))
         remainder = max(0, value - per_gpu * len(enabled))
         for entry in config:
-            if entry.get("enabled", False):
+            if entry.get("enabled", True):
                 entry["workers"] = per_gpu
                 if remainder > 0:
                     entry["workers"] += 1

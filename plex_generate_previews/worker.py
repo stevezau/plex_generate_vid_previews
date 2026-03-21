@@ -690,6 +690,92 @@ class WorkerPool:
                 retired += 1
         return retired
 
+    def reconcile_gpu_workers(
+        self, new_selected_gpus: List[Tuple[str, str, dict]]
+    ) -> dict:
+        """Reconcile live GPU workers against a new GPU configuration.
+
+        Compares current GPU workers (by device path) against
+        *new_selected_gpus* and adds/removes workers so the pool matches
+        the desired state.
+
+        Workers are removed from the pool immediately.  Any in-flight
+        FFmpeg processes continue running to completion in their own
+        thread; only pool tracking and future task assignment stop.
+        This avoids the type-level ``_pending_removals`` counter which
+        cannot distinguish between devices in a multi-GPU setup.
+
+        Args:
+            new_selected_gpus: List of (gpu_type, gpu_device, gpu_info) tuples
+                for GPUs that should be active.  Each gpu_info dict must
+                contain a ``workers`` key with the desired worker count.
+
+        Returns:
+            Summary dict with keys ``added`` and ``removed``.
+
+        """
+        new_by_device: dict[str, tuple] = {
+            device: (gpu_type, device, info)
+            for gpu_type, device, info in new_selected_gpus
+        }
+
+        added = 0
+        removed = 0
+
+        with self._workers_lock:
+            current_by_device: dict[str, list] = defaultdict(list)
+            for w in self.workers:
+                if w.worker_type == "GPU" and w.gpu_device:
+                    current_by_device[w.gpu_device].append(w)
+
+            # Remove workers for devices no longer enabled
+            for device, workers in current_by_device.items():
+                if device not in new_by_device:
+                    for w in workers:
+                        self.workers.remove(w)
+                        removed += 1
+
+            # Adjust worker counts for devices still enabled
+            for device, gpu_tuple in new_by_device.items():
+                _, _, info = gpu_tuple
+                desired = info.get("workers", 1)
+                current_workers = current_by_device.get(device, [])
+                current_count = len(current_workers)
+
+                if current_count > desired:
+                    excess = current_count - desired
+                    idle_first = sorted(current_workers, key=lambda w: w.is_busy)
+                    for w in idle_first[:excess]:
+                        self.workers.remove(w)
+                        removed += 1
+                elif current_count < desired:
+                    deficit = desired - current_count
+
+                    # Temporarily add to selected_gpus so _create_worker can
+                    # reference it; the list is replaced at the end of this block.
+                    if not any(d == device for _, d, _ in self.selected_gpus):
+                        self.selected_gpus.append(gpu_tuple)
+
+                    gpu_idx = next(
+                        (
+                            i
+                            for i, (_, d, _) in enumerate(self.selected_gpus)
+                            if d == device
+                        ),
+                        0,
+                    )
+                    for _ in range(deficit):
+                        self._next_gpu_assignment_index = gpu_idx
+                        self.workers.append(self._create_worker("GPU"))
+                        added += 1
+
+            self.selected_gpus = list(new_selected_gpus)
+            self._next_gpu_assignment_index = 0
+
+        if removed or added:
+            logger.info(f"GPU reconciliation: added={added}, removed={removed}")
+        return {"added": added, "removed": removed}
+
     def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
         """Find an available worker.
 

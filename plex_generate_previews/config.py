@@ -1118,12 +1118,12 @@ def load_config() -> Config:
         gpu_threads = sum(
             entry.get("workers", 0)
             for entry in gpu_config
-            if entry.get("enabled", False)
+            if entry.get("enabled", True)
         )
         enabled_ffmpeg = [
             entry.get("ffmpeg_threads", 2)
             for entry in gpu_config
-            if entry.get("enabled", False)
+            if entry.get("enabled", True)
         ]
         ffmpeg_threads = max(enabled_ffmpeg) if enabled_ffmpeg else 2
     else:
