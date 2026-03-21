@@ -216,10 +216,18 @@
     }
 
     // --- Smart level default ---
+    // Honour the user's localStorage override, but only if the server level
+    // hasn't changed since they set it.  This way, changing the level in
+    // Settings immediately takes effect in the log viewer on next visit.
     async function resolveDefaultLevel() {
         const serverLevel = await fetchServerLevel();
         const stored = localStorage.getItem(LS_KEY);
-        if (stored && ['DEBUG','INFO','WARNING','ERROR'].includes(stored)) return stored;
+        const storedFor = localStorage.getItem(LS_KEY + '_server');
+        if (stored && storedFor === serverLevel && ['DEBUG','INFO','WARNING','ERROR'].includes(stored)) {
+            return stored;
+        }
+        localStorage.removeItem(LS_KEY);
+        localStorage.removeItem(LS_KEY + '_server');
         return serverLevel;
     }
 
@@ -486,6 +494,7 @@
             const level = btn.dataset.level;
             setLevelUI(level);
             localStorage.setItem(LS_KEY, level);
+            localStorage.setItem(LS_KEY + '_server', serverLevelBadge.textContent.replace('Server: ', ''));
             if (socket && socket.connected) {
                 socket.emit('set_level', { level: level });
             }
