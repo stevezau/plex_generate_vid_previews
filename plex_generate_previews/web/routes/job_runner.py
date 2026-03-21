@@ -44,6 +44,8 @@ def _build_selected_gpus(settings) -> list:
 
     selected = []
     for g in cached_gpus:
+        if g.get("status") == "failed":
+            continue
         device = g.get("device", "")
         entry = config_by_device.get(device)
         if entry is not None:

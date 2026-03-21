@@ -1056,6 +1056,72 @@ def _test_acceleration_method(
     return test_passed
 
 
+def _build_gpu_error_detail(
+    acceleration: str,
+    device_path: Optional[str],
+    render_device: str,
+    accel_config: dict,
+) -> tuple[str, str]:
+    """Build a user-facing error/detail pair for a failed GPU.
+
+    Args:
+        acceleration: Primary acceleration method that was attempted.
+        device_path: Device path used for the test (may be 'cuda' or a /dev/dri path).
+        render_device: The /dev/dri render device for this GPU.
+        accel_config: Entry from GPU_ACCELERATION_MAP for this vendor.
+
+    Returns:
+        (error, error_detail): Short headline and longer actionable fix.
+
+    """
+    # VAAPI: check whether the failure is a permission issue
+    if acceleration == "VAAPI" and render_device:
+        check_path = (
+            device_path
+            if device_path and device_path.startswith("/dev/")
+            else render_device
+        )
+        accessible, reason = _check_device_access(check_path)
+        if not accessible and reason == "permission_denied":
+            try:
+                device_gid = os.stat(check_path).st_gid
+                user_groups = os.getgroups()
+                if device_gid not in user_groups:
+                    return (
+                        f"VAAPI device {check_path} permission denied",
+                        f"Device group is {device_gid} but container runs as groups {user_groups}. "
+                        f"Fix: set PGID={device_gid} or add --group-add {device_gid} to your docker run command.",
+                    )
+                return (
+                    f"VAAPI device {check_path} permission denied",
+                    f"You are in group {device_gid} but the device is still not accessible. "
+                    f"Check host device permissions: ls -l {check_path}",
+                )
+            except Exception:
+                return (
+                    f"VAAPI device {check_path} permission denied",
+                    "Add your user to the 'render' or 'video' group, or set PGID to match the device group.",
+                )
+        if not accessible and reason == "not_found":
+            return (
+                f"Device {check_path} not found",
+                "The render device does not exist. Ensure --device /dev/dri:/dev/dri is passed to docker.",
+            )
+
+    # CUDA: likely missing nvidia-docker runtime
+    if acceleration == "CUDA" and accel_config.get("requires_runtime"):
+        return (
+            "CUDA acceleration test failed",
+            "This usually means the NVIDIA Container Toolkit runtime is not configured. "
+            "See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html",
+        )
+
+    return (
+        f"{acceleration} acceleration test failed",
+        "The FFmpeg hardware acceleration test did not succeed. Check container logs for details.",
+    )
+
+
 def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
     """Detect Linux GPUs from /dev/dri devices.
 
@@ -1090,6 +1156,7 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                         "render_device": None,
                         "card": "wsl2",
                         "driver": "nvidia",
+                        "status": "ok",
                     }
                     detected_gpus.append(("NVIDIA", "cuda", gpu_info))
                     logger.warning(
@@ -1128,11 +1195,28 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                             "render_device": device_path,
                             "card": f"dri-{os.path.basename(device_path)}",
                             "driver": "unknown",
+                            "status": "ok",
                         }
                         detected_gpus.append((vendor, device_path, gpu_info))
                         logger.info(f"  ✅ VAAPI working on {device_path}: {gpu_name}")
                     else:
                         logger.debug(f"  ✗ VAAPI test failed on {device_path}")
+                        vaapi_cfg = GPU_ACCELERATION_MAP.get(vendor, {})
+                        error, error_detail = _build_gpu_error_detail(
+                            "VAAPI", device_path, device_path, vaapi_cfg
+                        )
+                        gpu_info = {
+                            "name": f"GPU ({os.path.basename(device_path)})",
+                            "acceleration": "VAAPI",
+                            "device_path": device_path,
+                            "render_device": device_path,
+                            "card": f"dri-{os.path.basename(device_path)}",
+                            "driver": "unknown",
+                            "status": "failed",
+                            "error": error,
+                            "error_detail": error_detail,
+                        }
+                        detected_gpus.append((vendor, device_path, gpu_info))
     else:
         logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
         for card_name, render_device, driver in physical_gpus:
@@ -1233,9 +1317,10 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                 "name": gpu_name,
                 "acceleration": primary_method,
                 "device_path": device_path,
-                "render_device": render_device,  # Store the actual /dev/dri device
+                "render_device": render_device,
                 "card": card_name,
                 "driver": driver,
+                "status": "ok",
             }
             detected_gpus.append((vendor, device_path, gpu_info))
             detected_vendors.add(vendor)
@@ -1272,6 +1357,7 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                     "render_device": render_device,
                     "card": card_name,
                     "driver": driver,
+                    "status": "ok",
                 }
                 detected_gpus.append((vendor, fallback_device_path, gpu_info))
                 detected_vendors.add(vendor)
@@ -1280,8 +1366,40 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                 )
             else:
                 logger.warning(f"  ❌ {card_name}: All acceleration methods failed")
+                error, error_detail = _build_gpu_error_detail(
+                    primary_method, device_path, render_device, accel_config
+                )
+                gpu_name = get_gpu_name(vendor, device_path or render_device)
+                gpu_info = {
+                    "name": gpu_name or f"{vendor} GPU ({card_name})",
+                    "acceleration": primary_method,
+                    "device_path": device_path,
+                    "render_device": render_device,
+                    "card": card_name,
+                    "driver": driver,
+                    "status": "failed",
+                    "error": error,
+                    "error_detail": error_detail,
+                }
+                detected_gpus.append((vendor, device_path or render_device, gpu_info))
         else:
             logger.warning(f"  ❌ {card_name}: No fallback available, GPU unusable")
+            error, error_detail = _build_gpu_error_detail(
+                primary_method, device_path, render_device, accel_config
+            )
+            gpu_name = get_gpu_name(vendor, device_path or render_device)
+            gpu_info = {
+                "name": gpu_name or f"{vendor} GPU ({card_name})",
+                "acceleration": primary_method,
+                "device_path": device_path,
+                "render_device": render_device,
+                "card": card_name,
+                "driver": driver,
+                "status": "failed",
+                "error": error,
+                "error_detail": error_detail,
+            }
+            detected_gpus.append((vendor, device_path or render_device, gpu_info))
 
     return detected_gpus
 

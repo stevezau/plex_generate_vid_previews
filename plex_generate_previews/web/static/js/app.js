@@ -623,9 +623,27 @@ function renderDashboardGpuConfig() {
     for (const gpu of gpus) {
         const device = gpu.device || '';
         const saved = configByDevice[device] || {};
+        const safeDevice = escapeHtml(device);
+        const isFailed = gpu.status === 'failed';
+
+        if (isFailed) {
+            const errorTitle = escapeHtml(gpu.error || 'GPU unusable');
+            const errorDetail = escapeHtml(gpu.error_detail || '');
+            html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
+            html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${safeDevice}">`;
+            html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
+            html += `${escapeHtml(gpu.name)} <span class="badge bg-danger">failed</span>`;
+            html += `</span>`;
+            html += `<span><i class="bi bi-exclamation-triangle-fill text-danger" style="cursor:pointer;" `;
+            html += `data-bs-toggle="popover" data-bs-trigger="click" data-bs-placement="left" `;
+            html += `data-bs-title="${errorTitle}" `;
+            html += `data-bs-content="${errorDetail}"></i></span>`;
+            html += `</div>`;
+            continue;
+        }
+
         const enabled = saved.enabled !== undefined ? saved.enabled : true;
         const workers = saved.workers !== undefined ? saved.workers : 1;
-        const safeDevice = escapeHtml(device);
         const statusBadge = enabled
             ? '<span class="badge bg-success">enabled</span>'
             : '<span class="badge bg-secondary">disabled</span>';
@@ -648,14 +666,20 @@ function renderDashboardGpuConfig() {
     }
     html += `<div class="mt-1"><a href="/settings" class="small text-decoration-none"><i class="bi bi-gear me-1"></i>Configure GPUs in Settings</a></div>`;
     container.innerHTML = html;
+
+    container.querySelectorAll('[data-bs-toggle="popover"]').forEach(el => {
+        new bootstrap.Popover(el, { html: false });
+    });
 }
 
 async function scaleGpuWorkers(device, direction) {
+    const detectedGpu = (cachedDetectedGpus || []).find(g => g.device === device);
+    if (detectedGpu && detectedGpu.status === 'failed') return;
+
     const gpuConfig = cachedGpuConfig ? JSON.parse(JSON.stringify(cachedGpuConfig)) : [];
     let entry = gpuConfig.find(e => e.device === device);
 
     if (!entry) {
-        const detectedGpu = (cachedDetectedGpus || []).find(g => g.device === device);
         if (!detectedGpu) return;
         entry = {
             device: device,

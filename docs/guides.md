@@ -475,7 +475,7 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 | HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| All Dolby Vision (Profile 5, 7, 8, etc.) | libplacebo with BT.2390 via Vulkan ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| All Dolby Vision (Profile 5, 7, 8, etc.) | libplacebo via Vulkan with GPU-accelerated decode ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
 
 **Dolby Vision** content uses `libplacebo` for tone mapping because it correctly reads DV RPU reshaping metadata (via `apply_dolbyvision`, enabled by default in FFmpeg 8+). The zscale/tonemap chain cannot handle DV-reshaped pixels and produces dark or blank thumbnails. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
 
@@ -498,6 +498,16 @@ Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Op
 
 > [!TIP]
 > Start with the defaults and increase gradually while monitoring system load.
+
+**Why is CPU usage high when I have a GPU configured?**
+
+GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding (via NVDEC, VAAPI, etc.) and tone mapping (via Vulkan/libplacebo for Dolby Vision content). The CPU handles frame selection, pixel format conversion, thumbnail scaling, and JPEG encoding.
+
+For **standard (SDR) content**, GPU does nearly all the work and CPU usage is minimal — you'll see speeds of 500x or higher.
+
+For **Dolby Vision content**, CPU usage is noticeably higher because FFmpeg must process Dolby Vision reshaping metadata on the CPU, and frames are transferred between CPU and GPU memory for tone mapping. Expect speeds around 8–10x for 4K DV content — much faster than pure CPU processing, but with visible CPU load.
+
+The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
 
 **What's thumbnail quality 1-10?**
 

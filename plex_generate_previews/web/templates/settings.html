@@ -181,6 +181,7 @@
 
                 <!-- GPU Configuration -->
                 <h6 class="mb-3"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
+                <p class="form-text mt-0 mb-3">GPU workers use both GPU and CPU. For standard content, the GPU does most of the work. For HDR and Dolby Vision content, CPU usage will be higher due to additional tone mapping processing.</p>
                 <div id="gpuConfigContainer">
                     <div class="text-muted mb-3" id="gpuDetecting">
                         <div class="spinner-border spinner-border-sm me-2" role="status">
@@ -731,11 +732,45 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
     container.innerHTML = '';
 
     detectedGpus.forEach((gpu, idx) => {
+        const deviceId = (gpu.device || 'gpu' + idx).replace(/[^a-zA-Z0-9]/g, '_');
+        const isFailed = gpu.status === 'failed';
+
+        if (isFailed) {
+            const card = document.createElement('div');
+            card.className = 'card mb-2 border-danger';
+            card.style.opacity = '0.85';
+            const errorHtml = gpu.error_detail
+                ? `<br><span class="text-light mt-1 d-inline-block">${gpu.error_detail}</span>`
+                : '';
+            card.innerHTML = `
+            <div class="card-body py-2 px-3">
+                <div class="d-flex flex-column">
+                    <div class="d-flex align-items-center mb-1">
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" disabled>
+                            <label class="form-check-label fw-semibold text-muted">
+                                ${gpu.name || 'Unknown GPU'}
+                            </label>
+                        </div>
+                        <span class="badge bg-danger ms-2">failed</span>
+                    </div>
+                    <small class="text-muted mb-2">${gpu.type || 'UNKNOWN'} &mdash; ${gpu.device || 'N/A'}</small>
+                    <div class="alert alert-danger mb-0 py-2 px-3" style="font-size: 0.85em;">
+                        <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                        <strong>${gpu.error || 'Acceleration test failed'}</strong>
+                        ${errorHtml}
+                        <br><small class="text-muted">Fix the issue and click <strong>Re-scan GPUs</strong> below.</small>
+                    </div>
+                </div>
+            </div>`;
+            container.appendChild(card);
+            return;
+        }
+
         const saved = configByDevice[gpu.device] || {};
         const enabled = saved.enabled !== undefined ? saved.enabled : true;
         const workers = saved.workers !== undefined ? saved.workers : 1;
         const ffmpegThreads = saved.ffmpeg_threads !== undefined ? saved.ffmpeg_threads : 2;
-        const deviceId = (gpu.device || 'gpu' + idx).replace(/[^a-zA-Z0-9]/g, '_');
 
         const card = document.createElement('div');
         card.className = 'card mb-2';
@@ -800,7 +835,6 @@ function collectGpuConfig() {
     const config = [];
     document.querySelectorAll('.gpu-enable-toggle').forEach(toggle => {
         const device = toggle.dataset.device;
-        const deviceId = (device || '').replace(/[^a-zA-Z0-9]/g, '_');
         const row = toggle.closest('.card');
         const workersInput = row.querySelector('.gpu-workers');
         const ffmpegInput = row.querySelector('.gpu-ffmpeg-threads');
@@ -823,9 +857,14 @@ async function rescanGPUs() {
     try {
         const response = await fetch('/api/system/rescan-gpus', { method: 'POST' });
         const data = await response.json();
-        if (data.gpus) {
+        if (data.gpus && data.gpus.length > 0) {
             renderGpuConfigPanel(data.gpus, collectGpuConfig());
-            showToast('GPU Scan', `Detected ${data.gpus.length} GPU(s)`, 'success');
+            const ok = data.gpus.filter(g => g.status !== 'failed').length;
+            const failed = data.gpus.filter(g => g.status === 'failed').length;
+            const msg = failed > 0
+                ? `${ok} working, ${failed} failed`
+                : `Detected ${ok} GPU(s)`;
+            showToast('GPU Scan', msg, failed > 0 ? 'warning' : 'success');
         } else {
             showToast('GPU Scan', 'No GPUs detected', 'warning');
         }
