@@ -857,35 +857,37 @@ def generate_images(
         args += ["-threads:v", "1"]
 
         # Vulkan device required by the libplacebo filter (Dolby Vision tone mapping).
-        # Works with software Vulkan (lavapipe) when no GPU is present.
+        # When using libplacebo, skip hardware decode acceleration — CUDA/VAAPI
+        # decoded frames live in device memory that cannot be uploaded to the
+        # Vulkan context.  Software decoding is used instead; at thumbnail fps
+        # rates (0.5 fps) this has negligible performance impact.
         if init_vulkan:
             args += ["-init_hw_device", "vulkan"]
+        else:
+            # Add hardware acceleration for decoding (before -i flag)
+            effective_gpu_device_path = (
+                gpu_device_path_override
+                if gpu_device_path_override is not None
+                else gpu_device_path
+            )
 
-        # Add hardware acceleration for decoding (before -i flag)
-        # Allow overriding GPU settings for CPU fallback
-        effective_gpu_device_path = (
-            gpu_device_path_override
-            if gpu_device_path_override is not None
-            else gpu_device_path
-        )
-
-        use_gpu = effective_gpu is not None
-        if use_gpu:
-            if effective_gpu == "NVIDIA":
-                args += ["-hwaccel", "cuda"]
-            elif effective_gpu == "WINDOWS_GPU":
-                args += ["-hwaccel", "d3d11va"]
-            elif effective_gpu == "APPLE":
-                args += ["-hwaccel", "videotoolbox"]
-            elif effective_gpu_device_path and effective_gpu_device_path.startswith(
-                "/dev/dri/"
-            ):
-                args += [
-                    "-hwaccel",
-                    "vaapi",
-                    "-vaapi_device",
-                    effective_gpu_device_path,
-                ]
+            use_gpu = effective_gpu is not None
+            if use_gpu:
+                if effective_gpu == "NVIDIA":
+                    args += ["-hwaccel", "cuda"]
+                elif effective_gpu == "WINDOWS_GPU":
+                    args += ["-hwaccel", "d3d11va"]
+                elif effective_gpu == "APPLE":
+                    args += ["-hwaccel", "videotoolbox"]
+                elif effective_gpu_device_path and effective_gpu_device_path.startswith(
+                    "/dev/dri/"
+                ):
+                    args += [
+                        "-hwaccel",
+                        "vaapi",
+                        "-vaapi_device",
+                        effective_gpu_device_path,
+                    ]
 
         # Add skip_frame option for faster decoding (if safe)
         if use_skip:
