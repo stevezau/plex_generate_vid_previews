@@ -431,6 +431,7 @@ class JobDispatcher:
                 cpu_fallback_queue=cpu_fallback_queue,
                 job_id=job_id,
                 library_name=library_name,
+                cancel_check=tracker.cancel_check,
             )
             logger.info(
                 f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) "
@@ -461,6 +462,19 @@ class JobDispatcher:
         with self._trackers_lock:
             tracker = self._trackers.get(job_id) if job_id else None
 
+        # Don't assign fallback items for cancelled jobs
+        if tracker and (tracker.cancelled or tracker.is_cancelled()):
+            tracker.record_completion(
+                success=False,
+                worker_display_name="(cancelled)",
+                title=str(media_title or item_key),
+            )
+            logger.info(
+                f"Dispatcher: skipped cancelled fallback item {media_title!r} "
+                f"(job {job_id[:8] if job_id else 'unknown'})"
+            )
+            return True
+
         if tracker:
             config = tracker.config
             plex = tracker.plex
@@ -479,6 +493,7 @@ class JobDispatcher:
             )
 
         progress_callback = partial(self.worker_pool._update_worker_progress, worker)
+        cancel_check = tracker.cancel_check if tracker else None
         worker.assign_task(
             item_key,
             config,
@@ -490,6 +505,7 @@ class JobDispatcher:
             cpu_fallback_queue=None,
             job_id=job_id,
             library_name=library_name,
+            cancel_check=cancel_check,
         )
         logger.info(
             f"Dispatch: assigned fallback item {media_title!r} to {worker.display_name}"

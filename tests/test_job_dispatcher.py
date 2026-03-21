@@ -516,3 +516,72 @@ class TestJobDispatcher:
         assert result["completed"] + result["failed"] == 1
         assert result["failed"] >= 1
         dispatcher.shutdown()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_cancel_passes_cancel_check_to_worker(self, mock_process):
+        """Cancelled job's cancel_check is passed through to the worker thread."""
+        cancel_checks_received = []
+
+        def capturing_process(*args, **kwargs):
+            cancel_checks_received.append(kwargs.get("cancel_check"))
+            return ProcessingResult.GENERATED
+
+        mock_process.side_effect = capturing_process
+
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        def cancel_fn():
+            return False
+
+        tracker = dispatcher.submit_items(
+            job_id="job-cc",
+            items=[("/cc/1", "CC1", "movie")],
+            config=_make_config(),
+            plex=MagicMock(),
+            callbacks={"cancel_check": cancel_fn},
+        )
+        assert tracker.wait(timeout=10)
+
+        assert len(cancel_checks_received) == 1
+        assert cancel_checks_received[0] is cancel_fn
+        dispatcher.shutdown()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_cancelled_fallback_items_are_not_dispatched(self, mock_process):
+        """Fallback items from a cancelled job are skipped, not assigned to CPU."""
+        call_count = [0]
+        cancelled = threading.Event()
+
+        def process_fn(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                cancelled.set()
+                raise CodecNotSupportedError("test codec error")
+            time.sleep(0.1)
+            return ProcessingResult.GENERATED
+
+        mock_process.side_effect = process_fn
+
+        pool = WorkerPool(
+            gpu_workers=1,
+            cpu_workers=1,
+            selected_gpus=[("NVIDIA", None, {"name": "Test GPU"})],
+        )
+        dispatcher = JobDispatcher(pool)
+
+        tracker = dispatcher.submit_items(
+            job_id="job-fb",
+            items=[("/fb/1", "FB1", "movie")],
+            config=_make_config(cpu_threads=1),
+            plex=MagicMock(),
+            callbacks={"cancel_check": lambda: cancelled.is_set()},
+        )
+        assert tracker.wait(timeout=10)
+
+        result = tracker.get_result()
+        assert result["completed"] == 0
+        # process_item should only have been called once (GPU), not a second
+        # time for CPU fallback -- this is the core assertion.
+        assert call_count[0] == 1
+        dispatcher.shutdown()

@@ -13,6 +13,7 @@ import pytest
 
 from plex_generate_previews.media_processing import (
     FFMPEG_STALL_TIMEOUT_SEC,
+    CancellationError,
     CodecNotSupportedError,
     _detect_codec_error,
     _detect_dolby_vision_rpu_error,
@@ -2785,3 +2786,219 @@ class TestFfmpegThreadFlags:
         thread_idx = args.index("-threads")
         assert args[thread_idx + 1] == "2"
         assert "-filter_threads" in args
+
+
+class TestCancellation:
+    """Test that cancellation kills FFmpeg and skips retries."""
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    def test_cancel_kills_ffmpeg_process(
+        self,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Test that cancel_check terminates the running FFmpeg process."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                None,
+                None,
+                mock_config,
+                cancel_check=lambda: True,
+            )
+
+        mock_proc.terminate.assert_called_once()
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    def test_cancel_skips_skip_frame_retry(
+        self,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Test that cancellation after first FFmpeg failure skips the skip-frame retry."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        cancelled = False
+
+        def cancel_after_first():
+            nonlocal cancelled
+            if mock_popen.call_count >= 1:
+                cancelled = True
+            return cancelled
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                None,
+                None,
+                mock_config,
+                cancel_check=cancel_after_first,
+            )
+
+        assert mock_popen.call_count == 1
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    def test_cancel_skips_dv_safe_retry(
+        self,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Test that cancellation after skip-frame retry skips the DV-safe retry."""
+        mock_run.return_value = MagicMock(returncode=1)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format="Dolby Vision / SMPTE ST 2086")]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        cancel_flag = False
+
+        def cancel_after_first_ffmpeg():
+            nonlocal cancel_flag
+            if mock_popen.call_count >= 1:
+                cancel_flag = True
+            return cancel_flag
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                "NVIDIA",
+                None,
+                mock_config,
+                cancel_check=cancel_after_first_ffmpeg,
+            )
+
+        assert mock_popen.call_count == 1
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_cancel_skips_gpu_to_cpu_fallback(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Test that cancellation prevents CodecNotSupportedError (no CPU fallback)."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc_skip = MagicMock()
+        mock_proc_skip.poll.side_effect = [None, 0]
+        mock_proc_skip.returncode = 69
+
+        mock_proc_noskip = MagicMock()
+        mock_proc_noskip.poll.side_effect = [None, 0]
+        mock_proc_noskip.returncode = 69
+
+        mock_popen.side_effect = [mock_proc_skip, mock_proc_noskip]
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+        mock_detect.return_value = True
+
+        cancel_flag = False
+
+        def cancel_after_retries():
+            nonlocal cancel_flag
+            if mock_popen.call_count >= 2:
+                cancel_flag = True
+            return cancel_flag
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                "NVIDIA",
+                None,
+                mock_config,
+                cancel_check=cancel_after_retries,
+            )
+
+        assert mock_popen.call_count == 2

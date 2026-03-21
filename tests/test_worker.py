@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from plex_generate_previews.media_processing import (
+    CancellationError,
     CodecNotSupportedError,
     ProcessingResult,
 )
@@ -822,6 +823,7 @@ class TestWorkerPool:
             plex,
             progress_callback=None,
             ffmpeg_threads_override=None,
+            cancel_check=None,
         ):
             call_order.append((item_key, gpu))
             time.sleep(0.01)
@@ -879,6 +881,7 @@ class TestWorkerPool:
             plex,
             progress_callback=None,
             ffmpeg_threads_override=None,
+            cancel_check=None,
         ):
             call_order.append((item_key, gpu))
             time.sleep(0.01)
@@ -933,6 +936,7 @@ class TestWorkerPool:
             plex,
             progress_callback=None,
             ffmpeg_threads_override=None,
+            cancel_check=None,
         ):
             time.sleep(0.01)
             if gpu is not None:
@@ -979,6 +983,7 @@ class TestWorkerProgressCount:
             plex,
             progress_callback=None,
             ffmpeg_threads_override=None,
+            cancel_check=None,
         ):
             time.sleep(0.01)
             if gpu is not None:
@@ -1054,3 +1059,62 @@ class TestWorkerProgressCount:
         time.sleep(0.2)
         worker.check_completion()
         assert worker.completed == 1
+
+
+class TestWorkerCancellation:
+    """Test that cancellation is properly handled by workers."""
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_worker_cancellation_does_not_fallback_to_cpu(self, mock_process):
+        """Test that CancellationError is handled without CPU fallback."""
+        worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 3080")
+        config = MagicMock()
+        config.cpu_threads = 2
+        plex = MagicMock()
+        fallback_queue = queue.Queue()
+
+        mock_process.side_effect = CancellationError("cancelled")
+
+        worker.assign_task(
+            "test_key",
+            config,
+            plex,
+            media_title="Cancelled Movie",
+            media_type="movie",
+            cpu_fallback_queue=fallback_queue,
+            cancel_check=lambda: True,
+        )
+
+        time.sleep(0.2)
+
+        assert worker.failed == 1
+        assert worker.completed == 0
+        assert worker.requeued_to_cpu is False
+        assert fallback_queue.empty()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_worker_passes_cancel_check_to_process_item(self, mock_process):
+        """Test that cancel_check is forwarded from assign_task to process_item."""
+        mock_process.return_value = ProcessingResult.GENERATED
+
+        def cancel_fn():
+            return False
+
+        worker = Worker(0, "CPU", None, None, 0, None)
+        config = MagicMock()
+        plex = MagicMock()
+
+        worker.assign_task(
+            "test_key",
+            config,
+            plex,
+            media_title="Test",
+            media_type="movie",
+            cancel_check=cancel_fn,
+        )
+
+        time.sleep(0.2)
+
+        assert mock_process.called
+        call_kwargs = mock_process.call_args[1]
+        assert call_kwargs.get("cancel_check") is cancel_fn

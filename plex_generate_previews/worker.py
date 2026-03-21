@@ -15,7 +15,12 @@ from typing import Any, List, Optional, Tuple
 from loguru import logger
 
 from .config import Config
-from .media_processing import CodecNotSupportedError, ProcessingResult, process_item
+from .media_processing import (
+    CancellationError,
+    CodecNotSupportedError,
+    ProcessingResult,
+    process_item,
+)
 from .utils import format_display_title
 
 _job_thread_ids: set = set()
@@ -204,6 +209,7 @@ class Worker:
         cpu_fallback_queue=None,
         job_id: Optional[str] = None,
         library_name: str = "",
+        cancel_check=None,
     ) -> None:
         """Assign a new task to this worker.
 
@@ -218,6 +224,7 @@ class Worker:
             cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
             job_id: Optional job identifier for multi-job dispatch routing
             library_name: Library name the item belongs to
+            cancel_check: Optional callable returning True when job is cancelled
 
         """
         if self.is_busy:
@@ -254,6 +261,7 @@ class Worker:
         self.ffmpeg_started = False
         self.task_start_time = time.time()
         self.requeued_to_cpu = False  # Reset per-task GPU→CPU handoff flag
+        self.cancel_check = cancel_check
 
         # Reset FFmpeg data fields
         self.frame = 0
@@ -324,12 +332,19 @@ class Worker:
                 plex,
                 progress_callback,
                 ffmpeg_threads_override=self.ffmpeg_threads,
+                cancel_check=self.cancel_check,
             )
             self.outcome_counts[result.value] += 1
             if result == ProcessingResult.FAILED:
                 self.failed += 1
             else:
                 self.completed += 1
+        except CancellationError:
+            ctx_logger.info(
+                f"{self.display_name} cancelled while processing {display_name}"
+            )
+            self.outcome_counts["failed"] += 1
+            self.failed += 1
         except CodecNotSupportedError as e:
             # Codec not supported by GPU - re-queue for CPU worker
             if self.worker_type == "GPU":
@@ -727,7 +742,12 @@ class WorkerPool:
         return ("Unknown (fallback)", "unknown")
 
     def _assign_fallback_task(
-        self, worker: "Worker", config: Config, plex, title_max_width: int
+        self,
+        worker: "Worker",
+        config: Config,
+        plex,
+        title_max_width: int,
+        cancel_check=None,
     ) -> bool:
         """Assign a task from fallback queue to a CPU worker.
 
@@ -760,6 +780,7 @@ class WorkerPool:
                 cpu_fallback_queue=None,
                 job_id=job_id,
                 library_name=library_name,
+                cancel_check=cancel_check,
             )
             logger.info(f"Dispatch: assigned fallback item to {worker.display_name}")
             return True
@@ -773,6 +794,7 @@ class WorkerPool:
         config: Config,
         plex,
         title_max_width: int,
+        cancel_check=None,
     ) -> bool:
         """Assign a task from main queue to a worker.
 
@@ -801,6 +823,7 @@ class WorkerPool:
             title_max_width=title_max_width,
             cpu_fallback_queue=cpu_fallback_queue,
             library_name=library_name,
+            cancel_check=cancel_check,
         )
         logger.info(
             f"Dispatch: assigned main queue item to {worker.display_name} (title={media_title!r})"
@@ -1271,7 +1294,11 @@ class WorkerPool:
 
                 if available_worker.worker_type in ("CPU", "CPU_FALLBACK"):
                     if self._assign_fallback_task(
-                        available_worker, config, plex, title_max_width
+                        available_worker,
+                        config,
+                        plex,
+                        title_max_width,
+                        cancel_check=cancel_check,
                     ):
                         continue
                     if (
@@ -1281,7 +1308,12 @@ class WorkerPool:
                         break
 
                 if not self._assign_main_queue_task(
-                    available_worker, media_queue, config, plex, title_max_width
+                    available_worker,
+                    media_queue,
+                    config,
+                    plex,
+                    title_max_width,
+                    cancel_check=cancel_check,
                 ):
                     break
 

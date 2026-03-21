@@ -155,6 +155,16 @@ class CodecNotSupportedError(Exception):
     pass
 
 
+class CancellationError(Exception):
+    """Raised when processing is cancelled by user request.
+
+    Propagates through the call chain to immediately stop FFmpeg,
+    skip all retry/fallback paths, and exit the worker thread cleanly.
+    """
+
+    pass
+
+
 def _diagnose_ffmpeg_exit_code(returncode: int) -> str:
     """Classify FFmpeg exit codes into actionable diagnostics.
 
@@ -705,6 +715,7 @@ def generate_images(
     config: Config,
     progress_callback=None,
     ffmpeg_threads_override: Optional[int] = None,
+    cancel_check=None,
 ) -> tuple:
     """Generate thumbnail images from a video using FFmpeg.
 
@@ -725,6 +736,7 @@ def generate_images(
         gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI)
         config: Configuration object
         progress_callback: Optional progress callback for UI updates
+        cancel_check: Optional callable returning True when job is cancelled
 
     Returns:
         (success, image_count, hw_used, seconds, speed):
@@ -970,6 +982,17 @@ def generate_images(
 
             time.sleep(0.02)
             while proc.poll() is None:
+                if cancel_check and cancel_check():
+                    logger.info(
+                        f"Cancellation requested, terminating FFmpeg for {video_file}"
+                    )
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    raise CancellationError(f"Processing cancelled for {video_file}")
                 if os.path.exists(output_file):
                     try:
                         with open(output_file, "r", encoding="utf-8") as f:
@@ -1118,6 +1141,8 @@ def generate_images(
     retry_stderr_lines = stderr_lines
 
     if rc != 0 and use_skip_initial:
+        if cancel_check and cancel_check():
+            raise CancellationError(f"Processing cancelled for {video_file}")
         did_retry = True
         logger.warning(
             f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame"
@@ -1148,6 +1173,8 @@ def generate_images(
     # On both CPU and GPU, retry once with a DV-safe filter chain that
     # avoids zscale/tonemap/libplacebo entirely.
     if rc != 0 and image_count == 0:
+        if cancel_check and cancel_check():
+            raise CancellationError(f"Processing cancelled for {video_file}")
         is_dv_rpu = _detect_dolby_vision_rpu_error(stderr_lines_all)
         is_zscale = _detect_zscale_colorspace_error(stderr_lines_all)
         # libplacebo failure: if the libplacebo chain was active and FFmpeg
@@ -1216,6 +1243,8 @@ def generate_images(
     # If in GPU context and codec/crash error detected, raise exception for worker pool to handle
 
     if rc != 0 and image_count == 0 and gpu is not None:
+        if cancel_check and cancel_check():
+            raise CancellationError(f"Processing cancelled for {video_file}")
         should_fallback = _detect_codec_error(rc, stderr_lines)
         fallback_reason = "codec error"
 
@@ -1398,6 +1427,7 @@ def _generate_and_save_bif(
     config: Config,
     progress_callback=None,
     ffmpeg_threads_override: Optional[int] = None,
+    cancel_check=None,
 ) -> None:
     """Generate images and create BIF file.
 
@@ -1411,8 +1441,10 @@ def _generate_and_save_bif(
         progress_callback: Callback function for progress updates.
         ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
             config.ffmpeg_threads when set).
+        cancel_check: Optional callable returning True when job is cancelled.
 
     Raises:
+        CancellationError: If job was cancelled during processing.
         CodecNotSupportedError: If codec is not supported by GPU.
         RuntimeError: If thumbnail generation produced 0 images.
 
@@ -1426,9 +1458,9 @@ def _generate_and_save_bif(
             config,
             progress_callback,
             ffmpeg_threads_override=ffmpeg_threads_override,
+            cancel_check=cancel_check,
         )
-    except CodecNotSupportedError:
-        # Clean up temp directory before re-raising
+    except (CancellationError, CodecNotSupportedError):
         _cleanup_temp_directory(tmp_path)
         raise
     except Exception as e:
@@ -1574,6 +1606,7 @@ def process_item(
     plex,
     progress_callback=None,
     ffmpeg_threads_override: Optional[int] = None,
+    cancel_check=None,
 ) -> ProcessingResult:
     """Process a single media item: generate thumbnails and BIF file.
 
@@ -1595,6 +1628,7 @@ def process_item(
         progress_callback: Callback function for progress updates.
         ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
             config.ffmpeg_threads when set).
+        cancel_check: Optional callable returning True when job is cancelled.
 
     Returns:
         ProcessingResult indicating the outcome. When an item has multiple
@@ -1699,9 +1733,10 @@ def process_item(
                     config,
                     progress_callback,
                     ffmpeg_threads_override=ffmpeg_threads_override,
+                    cancel_check=cancel_check,
                 )
                 _update_best(ProcessingResult.GENERATED)
-            except CodecNotSupportedError:
+            except (CancellationError, CodecNotSupportedError):
                 raise
             except RuntimeError as e:
                 logger.error(f"Error processing {media_file}: {str(e)}")
