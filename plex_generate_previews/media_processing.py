@@ -377,31 +377,44 @@ def _detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
     return False
 
 
-def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
-    """Detect Dolby Vision content without a backward-compatible HDR base layer.
+def _is_dolby_vision(hdr_format: Optional[str]) -> bool:
+    """Detect any Dolby Vision content.
 
-    DV Profile 5 (and similar) uses IPT-PQ transfer characteristics that the
-    zscale tonemap filter chain cannot handle (``code 3074: no path between
-    colorspaces``).  When the Dolby Vision metadata does **not** include a
-    backward-compatible layer (HDR10, HLG, etc.) we must skip zscale/tonemap
-    entirely to avoid a guaranteed crash.
+    All Dolby Vision content (with or without a backward-compatible base
+    layer) should be routed through libplacebo for tone mapping.  libplacebo's
+    ``apply_dolbyvision`` option (enabled by default in FFmpeg 8+) correctly
+    handles DV RPU reshaping metadata for all profiles.
 
-    MediaInfo reports ``hdr_format`` as a comma-separated description, e.g.:
-
-    * ``"Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU"``  (Profile 5)
-    * ``"Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086"``
-    * ``"Dolby Vision / SMPTE ST 2086, HDR10 compatible"``
-
-    The function returns ``True`` when Dolby Vision is present **and** no
-    backward-compatible HDR format (HDR10, HLG, PQ10, SMPTE ST 2086, etc.)
-    is declared alongside it.
+    The zscale/tonemap filter chain cannot properly tone-map DV content
+    because FFmpeg 7+/8 decoders apply DV RPU reshaping by default, changing
+    the decoded pixel values out of standard PQ.  This produces dark or blank
+    thumbnails regardless of which tonemap algorithm is selected.
 
     Args:
         hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
 
     Returns:
-        bool: ``True`` if content is DV without backward compat (unsafe for
-              zscale/tonemap), ``False`` otherwise.
+        bool: ``True`` if Dolby Vision metadata is present, ``False`` otherwise.
+
+    """
+    if not hdr_format or hdr_format == "None":
+        return False
+
+    return "dolby vision" in hdr_format.lower()
+
+
+def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
+    """Detect Dolby Vision content without a backward-compatible HDR base layer.
+
+    Used for logging and diagnostics.  DV Profile 5 (and similar) uses IPT-PQ
+    transfer characteristics with no HDR10/HLG fallback.
+
+    Args:
+        hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
+
+    Returns:
+        bool: ``True`` if content is DV without backward compat,
+              ``False`` otherwise.
 
     """
     if not hdr_format or hdr_format == "None":
@@ -409,19 +422,16 @@ def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
 
     hdr_lower = hdr_format.lower()
 
-    # Must contain Dolby Vision to be relevant
     if "dolby vision" not in hdr_lower:
         return False
 
-    # Profiles that use IPT-PQ transfer — unsafe for zscale/tonemap.
+    # Profiles that use IPT-PQ transfer — no backward-compat base layer.
     # Profile 5 (HEVC): dvhe.05  |  Profile 4 (HEVC, non-backward-compat): dvhe.04
     # AV1 DV Profile 5: dvav.05  |  AV1 DV set/entry: dvav.se
     dv_unsafe_profiles = ["dvhe.05", "dvhe.04", "dvav.05", "dvav.se"]
     if any(tag in hdr_lower for tag in dv_unsafe_profiles):
         return True
 
-    # Backward-compatible keywords — if any are present alongside DV, the
-    # base layer is HDR10/HLG/etc. and zscale/tonemap will work.
     backward_compat_keywords = [
         "hdr10",
         "hlg",
@@ -431,10 +441,7 @@ def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
         "compatible",
         "compat",
     ]
-    has_backward_compat = any(kw in hdr_lower for kw in backward_compat_keywords)
-
-    # DV present but NO backward-compatible layer → unsafe for zscale
-    return not has_backward_compat
+    return not any(kw in hdr_lower for kw in backward_compat_keywords)
 
 
 def parse_ffmpeg_progress_line(
@@ -743,14 +750,22 @@ def generate_images(
     if media_info.video_tracks:
         hdr_fmt = media_info.video_tracks[0].hdr_format
         if hdr_fmt != "None" and hdr_fmt is not None:
-            if _is_dv_no_backward_compat(hdr_fmt):
-                # DV Profile 5 (IPT-PQ) — use libplacebo for proper tone
-                # mapping.  libplacebo handles DV RPU metadata natively
-                # (apply_dolbyvision is enabled by default).  If
-                # libplacebo/Vulkan is unavailable, FFmpeg will fail and the
-                # existing DV-safe retry path falls back to basic fps+scale.
+            if _is_dolby_vision(hdr_fmt):
+                # Dolby Vision — use libplacebo for proper tone mapping.
+                # libplacebo's apply_dolbyvision (enabled by default in
+                # FFmpeg 8+) correctly reads DV RPU reshaping metadata for
+                # all profiles (5, 7, 8, etc.).  The zscale/tonemap chain
+                # cannot handle DV-reshaped pixels and produces dark/blank
+                # output.  If libplacebo/Vulkan is unavailable, FFmpeg will
+                # fail and the existing DV-safe retry path falls back to
+                # basic fps+scale.
+                dv_detail = (
+                    "no backward-compat base layer"
+                    if _is_dv_no_backward_compat(hdr_fmt)
+                    else "with backward-compat base layer"
+                )
                 logger.info(
-                    f"Dolby Vision Profile 5 detected for {video_file}; "
+                    f"Dolby Vision detected for {video_file} ({dv_detail}); "
                     f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                 )
                 use_libplacebo = True
@@ -762,7 +777,7 @@ def generate_images(
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
             else:
-                # Standard HDR (HDR10, HLG, DV+HDR10 compat, etc.) — use
+                # Non-DV HDR (HDR10, HLG, HDR10+ without DV, etc.) — use
                 # zscale/tonemap to convert to SDR.
                 #
                 # Determine nominal peak luminance (npl) from MediaInfo MaxCLL.
@@ -841,7 +856,7 @@ def generate_images(
 
         args += ["-threads:v", "1"]
 
-        # Vulkan device required by the libplacebo filter (DV Profile 5 tone mapping).
+        # Vulkan device required by the libplacebo filter (Dolby Vision tone mapping).
         # Works with software Vulkan (lavapipe) when no GPU is present.
         if init_vulkan:
             args += ["-init_hw_device", "vulkan"]
@@ -1042,7 +1057,7 @@ def generate_images(
             for line in ffmpeg_output_lines:
                 line_lower = line.lower()
                 for keyword in permission_keywords:
-                    if keyword.lower() in line_lower:
+                    if keyword in line_lower:
                         permission_errors.append(line.strip())
                         break
 
@@ -1245,7 +1260,7 @@ def generate_images(
     # Rename images only after all retries and error checks are complete
     if image_count > 0:
         for image in glob.glob(f"{output_folder}/img*.jpg"):
-            frame_no = int(os.path.basename(image).strip("-img").strip(".jpg")) - 1
+            frame_no = int(re.search(r"(\d+)", os.path.basename(image)).group(1)) - 1
             frame_second = frame_no * config.plex_bif_frame_interval
             os.rename(image, os.path.join(output_folder, f"{frame_second:010d}.jpg"))
         image_count = len(glob.glob(os.path.join(output_folder, "*.jpg")))
@@ -1664,38 +1679,37 @@ def process_item(
                 _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
                 continue
 
-            if not os.path.isfile(index_bif):
-                logger.info(f"Generating BIF for {media_file} -> {index_bif}")
+            logger.info(f"Generating BIF for {media_file} -> {index_bif}")
 
-                if not _ensure_directories(indexes_path, tmp_path, media_file):
-                    _update_best(ProcessingResult.FAILED)
-                    continue
+            if not _ensure_directories(indexes_path, tmp_path, media_file):
+                _update_best(ProcessingResult.FAILED)
+                continue
 
-                try:
-                    _generate_and_save_bif(
-                        media_file,
-                        tmp_path,
-                        index_bif,
-                        gpu,
-                        gpu_device_path,
-                        config,
-                        progress_callback,
-                        ffmpeg_threads_override=ffmpeg_threads_override,
-                    )
-                    _update_best(ProcessingResult.GENERATED)
-                except CodecNotSupportedError:
-                    raise
-                except RuntimeError as e:
-                    logger.error(f"Error processing {media_file}: {str(e)}")
-                    _update_best(ProcessingResult.FAILED)
-                    continue
-                except Exception as e:
-                    logger.error(
-                        f"Error processing {media_file}: {type(e).__name__}: {str(e)}"
-                    )
-                    _update_best(ProcessingResult.FAILED)
-                    continue
-                finally:
-                    _cleanup_temp_directory(tmp_path)
+            try:
+                _generate_and_save_bif(
+                    media_file,
+                    tmp_path,
+                    index_bif,
+                    gpu,
+                    gpu_device_path,
+                    config,
+                    progress_callback,
+                    ffmpeg_threads_override=ffmpeg_threads_override,
+                )
+                _update_best(ProcessingResult.GENERATED)
+            except CodecNotSupportedError:
+                raise
+            except RuntimeError as e:
+                logger.error(f"Error processing {media_file}: {str(e)}")
+                _update_best(ProcessingResult.FAILED)
+                continue
+            except Exception as e:
+                logger.error(
+                    f"Error processing {media_file}: {type(e).__name__}: {str(e)}"
+                )
+                _update_best(ProcessingResult.FAILED)
+                continue
+            finally:
+                _cleanup_temp_directory(tmp_path)
 
     return best_result

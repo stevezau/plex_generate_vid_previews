@@ -470,14 +470,16 @@ Yes! In **Settings** → **Processing Options**, enable individual GPUs and set 
 
 Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating thumbnails:
 
-| Format | Status |
+| Format | Method |
 |--------|--------|
-| HDR10 | Fully tone mapped (configurable algorithm via zscale/tonemap, default: Hable) |
-| HLG | Fully tone mapped (configurable algorithm via zscale/tonemap, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 compatible base layer) | Fully tone mapped (configurable algorithm via zscale/tonemap, default: Hable) |
-| Dolby Vision Profile 5 (no backward-compatible layer) | Supported via `libplacebo` with BT.2390 ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172)) |
+| HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
+| HLG | zscale/tonemap (configurable algorithm, default: Hable) |
+| HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
+| All Dolby Vision (Profile 5, 7, 8, etc.) | libplacebo with BT.2390 via Vulkan ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
 
-The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.
+**Dolby Vision** content uses `libplacebo` for tone mapping because it correctly reads DV RPU reshaping metadata (via `apply_dolbyvision`, enabled by default in FFmpeg 8+). The zscale/tonemap chain cannot handle DV-reshaped pixels and produces dark or blank thumbnails. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+
+**Non-DV HDR** content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.
 
 Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
 

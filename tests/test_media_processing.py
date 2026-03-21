@@ -19,6 +19,7 @@ from plex_generate_previews.media_processing import (
     _detect_hwaccel_runtime_error,
     _detect_zscale_colorspace_error,
     _diagnose_ffmpeg_exit_code,
+    _is_dolby_vision,
     _is_dv_no_backward_compat,
     _save_ffmpeg_failure_log,
     _verify_tmp_folder_health,
@@ -1622,6 +1623,44 @@ class TestDVNoBackwardCompat:
         assert _is_dv_no_backward_compat(hdr_format) is expected
 
 
+class TestIsDolbyVision:
+    """Test _is_dolby_vision detection for all DV content."""
+
+    @pytest.mark.parametrize(
+        "hdr_format,expected",
+        [
+            # DV Profile 5 (no backward compat)
+            ("Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU", True),
+            # DV Profile 8 with HDR10 compat
+            (
+                "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086",
+                True,
+            ),
+            # DV Profile 7 with HDR10 compat
+            ("Dolby Vision / HDR10 / SMPTE ST 2086", True),
+            # DV with HLG compat
+            ("Dolby Vision, HLG compatible", True),
+            # DV + HDR10+
+            (
+                "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2094 App 4",
+                True,
+            ),
+            # Plain HDR10 (no DV) → False
+            ("HDR10", False),
+            ("SMPTE ST 2086, HDR10 compatible / SMPTE ST 2094 App 4", False),
+            # Plain HLG → False
+            ("HLG", False),
+            # None / empty → False
+            (None, False),
+            ("None", False),
+            ("", False),
+        ],
+    )
+    def test_detection(self, hdr_format: str, expected: bool) -> None:
+        """_is_dolby_vision correctly identifies any DV content."""
+        assert _is_dolby_vision(hdr_format) is expected
+
+
 class TestDetectZscaleColorspaceError:
     """Test zscale colorspace error detection in stderr."""
 
@@ -1663,7 +1702,78 @@ class TestDetectZscaleColorspaceError:
 
 
 class TestProactiveDVSkip:
-    """M5: Integration test verifying generate_images builds correct -vf for DV Profile 5."""
+    """Integration test verifying generate_images routes all DV content through libplacebo."""
+
+    def _run_dv_libplacebo_test(
+        self,
+        hdr_format_str,
+        video_filename,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Shared helper: verify a DV file uses libplacebo with Vulkan init."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=hdr_format_str)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = []
+        mock_detect.return_value = False
+
+        img1 = f"{temp_dir}/img-000001.jpg"
+        ts1 = f"{temp_dir}/0000000000.jpg"
+
+        def glob_side_effect(pattern):
+            if "img*.jpg" in pattern:
+                return [img1]
+            if pattern.endswith("*.jpg"):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
+
+        success, image_count, hw_used, seconds, speed = generate_images(
+            video_filename, temp_dir, None, None, mock_config
+        )
+
+        assert success is True
+        assert image_count >= 1
+        assert mock_popen.call_count == 1
+
+        first_args = mock_popen.call_args_list[0][0][0]
+
+        assert "-init_hw_device" in first_args
+        vulkan_idx = first_args.index("-init_hw_device")
+        assert first_args[vulkan_idx + 1] == "vulkan"
+
+        vf_index = first_args.index("-vf")
+        vf_value = first_args[vf_index + 1]
+        assert "libplacebo" in vf_value
+        assert "colorspace=bt709" in vf_value
+        assert "color_primaries=bt709" in vf_value
+        assert "color_trc=bt709" in vf_value
+        assert "hwupload" in vf_value
+        assert "hwdownload" in vf_value
+        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+        assert "zscale" not in vf_value
+        assert "tonemap=tonemap" not in vf_value
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -1690,69 +1800,109 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV Profile 5 should use libplacebo tone mapping with Vulkan init."""
-        # Arrange — heuristic probe succeeds (allows skip)
-        mock_run.return_value = MagicMock(returncode=0)
-
-        # MediaInfo: DV Profile 5 without backward-compat
-        mock_info = MagicMock()
-        mock_info.video_tracks = [
-            MagicMock(hdr_format="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU")
-        ]
-        mock_mediainfo.parse.return_value = mock_info
-
-        # FFmpeg succeeds on first call (with skip)
-        mock_proc = MagicMock()
-        mock_proc.poll.side_effect = [None, 0]
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        mock_exists.return_value = True
-        mock_file.return_value.readlines.return_value = []
-        mock_detect.return_value = False
-
-        img1 = f"{temp_dir}/img-000001.jpg"
-        ts1 = f"{temp_dir}/0000000000.jpg"
-
-        def glob_side_effect(pattern):
-            if "img*.jpg" in pattern:
-                return [img1]
-            if pattern.endswith("*.jpg"):
-                return [ts1]
-            return []
-
-        mock_glob.side_effect = glob_side_effect
-
-        # Act
-        success, image_count, hw_used, seconds, speed = generate_images(
-            "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
+        """DV Profile 5 (no backward compat) should use libplacebo."""
+        self._run_dv_libplacebo_test(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
         )
 
-        # Assert — success with libplacebo filter chain
-        assert success is True
-        assert image_count >= 1
-        assert mock_popen.call_count == 1
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile8_hdr10_uses_libplacebo(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV Profile 8 with HDR10 backward compat should also use libplacebo."""
+        self._run_dv_libplacebo_test(
+            "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086",
+            "/test/dv_profile8_hdr10.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+        )
 
-        first_args = mock_popen.call_args_list[0][0][0]
-
-        # Vulkan init must be present for libplacebo
-        assert "-init_hw_device" in first_args
-        vulkan_idx = first_args.index("-init_hw_device")
-        assert first_args[vulkan_idx + 1] == "vulkan"
-
-        # Filter chain must contain libplacebo with BT.709 SDR output
-        vf_index = first_args.index("-vf")
-        vf_value = first_args[vf_index + 1]
-        assert "libplacebo" in vf_value
-        assert "colorspace=bt709" in vf_value
-        assert "color_primaries=bt709" in vf_value
-        assert "color_trc=bt709" in vf_value
-        assert "hwupload" in vf_value
-        assert "hwdownload" in vf_value
-        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
-        # Must NOT contain zscale/tonemap
-        assert "zscale" not in vf_value
-        assert "tonemap=tonemap" not in vf_value
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_hdr10plus_uses_libplacebo(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV + HDR10+ (the Severance scenario from #178) should use libplacebo."""
+        self._run_dv_libplacebo_test(
+            "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2094 App 4",
+            "/test/dv_hdr10plus.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+        )
 
 
 class TestLibplaceboFallback:
