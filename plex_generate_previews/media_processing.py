@@ -773,7 +773,7 @@ def generate_images(
                     f"fps=fps={fps_value}:round=up,"
                     f"format=yuv420p10,hwupload,"
                     f"libplacebo=colorspace=bt709:color_primaries=bt709"
-                    f":color_trc=bt709:tonemapping=bt2390:format=yuv420p,"
+                    f":color_trc=bt709:tonemapping=auto:format=yuv420p,"
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
             else:
@@ -908,7 +908,7 @@ def generate_images(
         start_local = time.time()
         hw_label = "GPU" if gpu else "CPU"
         logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
-        logger.debug(f"Executing: {' '.join(args)}")
+        logger.info(f"FFmpeg command: {' '.join(args)}")
 
         # Use file polling approach for non-blocking, high-frequency progress monitoring
         thread_id = threading.get_ident()
