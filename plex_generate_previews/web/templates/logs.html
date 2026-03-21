@@ -27,7 +27,7 @@
         height: 100%;
         overflow-y: auto;
         font-size: 0.85rem;
-        padding: 0 0.75rem;
+        padding: 0 0.75rem 2rem;
     }
     #logContainer .log-line {
         padding: 1px 10px;
@@ -46,6 +46,25 @@
     .log-line.expanded .log-detail { display: block; }
     #logCount { font-size: 0.82rem; }
     #loadOlderBtn { display: none; }
+
+    #liveIndicator {
+        font-size: 0.78rem;
+        transition: opacity 0.2s;
+    }
+    #liveIndicator .live-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #20c997;
+        margin-right: 4px;
+        vertical-align: middle;
+        animation: livePulse 1.5s ease-in-out infinite;
+    }
+    @keyframes livePulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+    }
 
     /* Floating "new logs" pill shown when user scrolls up and live messages arrive */
     #followPill {
@@ -98,6 +117,7 @@
             </button>
 
             <span id="logCount" class="text-muted ms-auto">0 lines</span>
+            <span id="liveIndicator" class="text-success"><span class="live-dot"></span>Live</span>
             <span id="logConnStatus" class="badge bg-secondary">connecting...</span>
         </div>
     </div>
@@ -143,6 +163,7 @@
     const loadOlderBtn = document.getElementById('loadOlderBtn');
     const copyBtn = document.getElementById('logCopyBtn');
     const followPill = document.getElementById('followPill');
+    const liveIndicator = document.getElementById('liveIndicator');
     const placeholder = document.getElementById('logPlaceholder');
 
     let following = true;   // auto-scroll active
@@ -201,17 +222,18 @@
         following = true;
         newWhileAway = 0;
         followPill.style.display = 'none';
+        liveIndicator.style.opacity = '1';
         scrollToBottom();
     }
 
     function stopFollowing() {
         if (!following) return;
         following = false;
+        liveIndicator.style.opacity = '0.3';
     }
 
     function showFollowPill() {
         followPill.style.display = '';
-        followPill.querySelector('span') || null;
         followPill.innerHTML = '<i class="bi bi-arrow-down-short"></i> ' +
             (newWhileAway > 0 ? newWhileAway + ' new — click to follow' : 'Click to follow');
     }
