@@ -1230,7 +1230,7 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
 
 
 def _detect_windows_gpus() -> List[Tuple[str, str, dict]]:
-    """Detect Windows GPUs using D3D11VA.
+    """Detect Windows GPUs using CUDA (NVIDIA) or D3D11VA fallback.
 
     Returns:
         List[Tuple[str, str, dict]]: List of (gpu_type, gpu_device, gpu_info_dict)
@@ -1238,9 +1238,27 @@ def _detect_windows_gpus() -> List[Tuple[str, str, dict]]:
     """
     detected_gpus = []
 
-    # Try D3D11VA if ffmpeg reports it
     hwaccels = _get_ffmpeg_hwaccels()
     logger.debug(f"Windows platform detected; FFmpeg hwaccels: {hwaccels}")
+
+    # Try NVIDIA CUDA first
+    if "cuda" in hwaccels and _detect_nvidia_via_nvidia_smi() == "NVIDIA":
+        logger.info("  Checking Windows NVIDIA CUDA GPU...")
+        logger.info("    Testing CUDA acceleration...")
+        if _test_hwaccel_functionality("cuda"):
+            gpu_name = get_gpu_name("NVIDIA", "cuda")
+            gpu_info = {
+                "name": gpu_name,
+                "acceleration": "CUDA",
+                "device_path": "cuda",
+            }
+            detected_gpus.append(("NVIDIA", "cuda", gpu_info))
+            logger.info(f"  ✅ Windows NVIDIA CUDA working: {gpu_name}")
+            return detected_gpus
+        else:
+            logger.debug("  CUDA functionality test failed, falling back to D3D11VA")
+
+    # Fall back to D3D11VA
     if "d3d11va" in hwaccels:
         logger.info("  Checking Windows D3D11VA GPU...")
         logger.info("    Testing D3D11VA acceleration...")
