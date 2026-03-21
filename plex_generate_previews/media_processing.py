@@ -785,7 +785,7 @@ def generate_images(
                     f"fps=fps={fps_value}:round=up,"
                     f"format=yuv420p10,hwupload,"
                     f"libplacebo=colorspace=bt709:color_primaries=bt709"
-                    f":color_trc=bt709:tonemapping=auto:format=yuv420p,"
+                    f":color_trc=bt709:tonemapping={config.tonemap_algorithm}:format=yuv420p,"
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
             else:

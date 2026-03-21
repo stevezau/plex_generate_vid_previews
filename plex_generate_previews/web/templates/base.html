@@ -46,6 +46,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
+                            <i class="bi bi-terminal me-1"></i>Logs
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'main.webhooks_page' %}active{% endif %}" href="{{ url_for('main.webhooks_page') }}">
                             <i class="bi bi-broadcast me-1"></i>Webhooks
                         </a>

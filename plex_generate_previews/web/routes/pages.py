@@ -51,6 +51,13 @@ def settings():
     return render_template("settings.html")
 
 
+@main.route("/logs")
+@login_required
+def logs_page():
+    """Live logs viewer page."""
+    return render_template("logs.html")
+
+
 @main.route("/webhooks")
 @login_required
 def webhooks_page():

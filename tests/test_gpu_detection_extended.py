@@ -1216,9 +1216,13 @@ class TestWSL2NoDRMDevices:
         _mock_windows,
         _mock_macos,
     ):
-        """Container with render device but VAAPI test fails -> no GPU."""
+        """Container with render device but VAAPI test fails -> failed GPU entry."""
         gpus = detect_all_gpus()
-        assert gpus == []
+        assert len(gpus) == 1
+        _vendor, device, info = gpus[0]
+        assert device == "/dev/dri/renderD128"
+        assert info["status"] == "failed"
+        assert info["acceleration"] == "VAAPI"
 
     @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
     @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)

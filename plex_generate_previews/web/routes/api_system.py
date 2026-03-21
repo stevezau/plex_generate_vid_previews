@@ -1,5 +1,6 @@
-"""System, health, config, and library API routes."""
+"""System, health, config, library, and log-history API routes."""
 
+import json as _json
 import os
 import threading
 import time
@@ -8,6 +9,7 @@ import urllib3
 from flask import jsonify, request
 from loguru import logger
 
+from ...logging_config import LEVEL_ORDER, get_app_log_path
 from ..auth import api_token_required, setup_or_auth_required
 from ..jobs import get_job_manager
 from . import api
@@ -231,6 +233,99 @@ def get_version_info():
 def health_check():
     """Health check endpoint (no auth required)."""
     return jsonify({"status": "healthy"})
+
+
+# ---------------------------------------------------------------------------
+# Log history (reads from the JSONL app.log file)
+# ---------------------------------------------------------------------------
+
+_MAX_HISTORY_LINES = 2000
+_READ_CHUNK = 64 * 1024  # 64 KB chunks for reverse reading
+
+
+def _read_tail_lines(path: str, max_lines: int) -> list[str]:
+    """Read the last *max_lines* lines from *path* efficiently.
+
+    Reads backwards in fixed-size chunks to avoid loading the entire file.
+    Returns lines in chronological (oldest-first) order.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+
+    lines: list[str] = []
+    with open(path, "rb") as f:
+        offset = size
+        partial = b""
+        while offset > 0 and len(lines) < max_lines:
+            read_size = min(_READ_CHUNK, offset)
+            offset -= read_size
+            f.seek(offset)
+            chunk = f.read(read_size) + partial
+            chunk_lines = chunk.split(b"\n")
+            partial = chunk_lines[0]
+            for raw in reversed(chunk_lines[1:]):
+                if raw:
+                    lines.append(raw.decode("utf-8", errors="replace"))
+                if len(lines) >= max_lines:
+                    break
+        if partial and len(lines) < max_lines:
+            lines.append(partial.decode("utf-8", errors="replace"))
+
+    lines.reverse()
+    return lines
+
+
+@api.route("/logs/history")
+@setup_or_auth_required
+def get_log_history():
+    """Return recent log entries from the persistent app.log file.
+
+    Query params:
+        limit: Max lines to return (default 500, max 2000).
+        level: Minimum log level filter (default: configured log_level).
+        before: ISO timestamp cursor — only return entries older than this.
+    """
+    try:
+        limit = min(int(request.args.get("limit", 500)), _MAX_HISTORY_LINES)
+    except (ValueError, TypeError):
+        limit = 500
+    min_level = (request.args.get("level") or "").upper()
+    before = request.args.get("before", "")
+
+    if min_level not in LEVEL_ORDER:
+        min_level = ""
+    min_level_val = LEVEL_ORDER.get(min_level, 0)
+
+    log_path = get_app_log_path()
+    raw_lines = _read_tail_lines(log_path, max_lines=limit * 3)
+
+    result: list[dict] = []
+    for raw in raw_lines:
+        try:
+            entry = _json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        entry_level = entry.get("level", "")
+        if min_level_val and LEVEL_ORDER.get(entry_level, 0) < min_level_val:
+            continue
+        if before and entry.get("ts", "") >= before:
+            continue
+        result.append(entry)
+
+    # Trim to the requested limit (keep the newest entries)
+    if len(result) > limit:
+        result = result[-limit:]
+
+    oldest_ts = result[0]["ts"] if result else ""
+    return jsonify(
+        {
+            "lines": result,
+            "has_more": len(raw_lines) >= limit * 3,
+            "oldest_ts": oldest_ts,
+        }
+    )
 
 
 _GITHUB_RELEASES_URL = (

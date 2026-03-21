@@ -2140,6 +2140,14 @@ class TestPageRoutesAdditional:
         resp = authed_client.get("/webhooks")
         assert resp.status_code == 200
 
+    def test_logs_page_requires_auth(self, client):
+        resp = client.get("/logs", follow_redirects=False)
+        assert resp.status_code in (302, 308)
+
+    def test_logs_page_accessible_when_authenticated(self, authed_client):
+        resp = authed_client.get("/logs")
+        assert resp.status_code == 200
+
     def test_setup_wizard_page_redirects_when_configured(self, authed_client):
         resp = authed_client.get("/setup", follow_redirects=False)
         assert resp.status_code in (200, 302, 308)
@@ -2170,6 +2178,193 @@ class TestPageRoutesAdditional:
             resp = test_client.get("/", follow_redirects=False)
             assert resp.status_code in (200, 302, 308)
             reset_settings_manager()
+
+
+# ---------------------------------------------------------------------------
+# Log History API
+# ---------------------------------------------------------------------------
+
+
+class TestLogHistoryAPI:
+    """Test /api/logs/history endpoint.
+
+    Each test patches get_app_log_path to an isolated file so results
+    are not polluted by the app's own startup logs.
+    """
+
+    def _write_log(self, path, entries):
+        """Write JSONL entries to the given path."""
+        import json as _json
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(_json.dumps(e) + "\n")
+
+    def test_log_history_requires_auth(self, client):
+        resp = client.get("/api/logs/history")
+        assert resp.status_code in (401, 403)
+
+    def test_log_history_empty_when_no_file(self, app, authed_client, tmp_path):
+        fake = str(tmp_path / "nonexistent" / "app.log")
+        with patch(
+            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get("/api/logs/history", headers=_api_headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["lines"] == []
+        assert data["has_more"] is False
+
+    def test_log_history_returns_entries(self, app, authed_client, tmp_path):
+        fake = str(tmp_path / "logs" / "app.log")
+        entries = [
+            {
+                "ts": "2026-03-22 09:10:18.100",
+                "level": "INFO",
+                "msg": "first",
+                "mod": "a",
+                "func": "f",
+                "line": 1,
+            },
+            {
+                "ts": "2026-03-22 09:10:18.200",
+                "level": "WARNING",
+                "msg": "second",
+                "mod": "b",
+                "func": "g",
+                "line": 2,
+            },
+            {
+                "ts": "2026-03-22 09:10:18.300",
+                "level": "ERROR",
+                "msg": "third",
+                "mod": "c",
+                "func": "h",
+                "line": 3,
+            },
+        ]
+        self._write_log(fake, entries)
+
+        with patch(
+            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get("/api/logs/history", headers=_api_headers())
+        data = resp.get_json()
+        assert len(data["lines"]) == 3
+        assert data["lines"][0]["msg"] == "first"
+        assert data["lines"][2]["msg"] == "third"
+
+    def test_log_history_level_filter(self, app, authed_client, tmp_path):
+        fake = str(tmp_path / "logs" / "app.log")
+        entries = [
+            {
+                "ts": "2026-03-22 09:10:18.100",
+                "level": "DEBUG",
+                "msg": "debug",
+                "mod": "a",
+                "func": "f",
+                "line": 1,
+            },
+            {
+                "ts": "2026-03-22 09:10:18.200",
+                "level": "INFO",
+                "msg": "info",
+                "mod": "a",
+                "func": "f",
+                "line": 2,
+            },
+            {
+                "ts": "2026-03-22 09:10:18.300",
+                "level": "ERROR",
+                "msg": "error",
+                "mod": "a",
+                "func": "f",
+                "line": 3,
+            },
+        ]
+        self._write_log(fake, entries)
+
+        with patch(
+            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get(
+                "/api/logs/history?level=WARNING", headers=_api_headers()
+            )
+        data = resp.get_json()
+        assert len(data["lines"]) == 1
+        assert data["lines"][0]["msg"] == "error"
+
+    def test_log_history_before_cursor(self, app, authed_client, tmp_path):
+        fake = str(tmp_path / "logs" / "app.log")
+        entries = [
+            {
+                "ts": "2026-03-22 09:10:18.100",
+                "level": "INFO",
+                "msg": "old",
+                "mod": "a",
+                "func": "f",
+                "line": 1,
+            },
+            {
+                "ts": "2026-03-22 09:10:18.200",
+                "level": "INFO",
+                "msg": "mid",
+                "mod": "a",
+                "func": "f",
+                "line": 2,
+            },
+            {
+                "ts": "2026-03-22 09:10:18.300",
+                "level": "INFO",
+                "msg": "new",
+                "mod": "a",
+                "func": "f",
+                "line": 3,
+            },
+        ]
+        self._write_log(fake, entries)
+
+        with patch(
+            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get(
+                "/api/logs/history?before=2026-03-22 09:10:18.200",
+                headers=_api_headers(),
+            )
+        data = resp.get_json()
+        assert len(data["lines"]) == 1
+        assert data["lines"][0]["msg"] == "old"
+
+    def test_log_history_limit(self, app, authed_client, tmp_path):
+        fake = str(tmp_path / "logs" / "app.log")
+        entries = [
+            {
+                "ts": f"2026-03-22 09:10:18.{i:03d}",
+                "level": "INFO",
+                "msg": f"line{i}",
+                "mod": "a",
+                "func": "f",
+                "line": i,
+            }
+            for i in range(20)
+        ]
+        self._write_log(fake, entries)
+
+        with patch(
+            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get(
+                "/api/logs/history?limit=5", headers=_api_headers()
+            )
+        data = resp.get_json()
+        assert len(data["lines"]) == 5
+        assert data["lines"][-1]["msg"] == "line19"
 
 
 # ---------------------------------------------------------------------------

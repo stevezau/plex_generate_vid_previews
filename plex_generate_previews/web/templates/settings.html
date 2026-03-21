@@ -322,12 +322,11 @@
                 </button>
                 <div class="form-text mb-3">Applies immediately without restarting.</div>
 
-                <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-text me-1"></i>System Log Files</h6>
+                <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-text me-1"></i>System Log File</h6>
                 <p class="form-text mt-0 mb-2">
-                    Two log files are kept in <code>/config/logs/</code>:
-                    <strong>error.log</strong> (errors and crashes) and <strong>activity.log</strong> (warnings, retries, and failures).
-                    These are always written regardless of the log level above.
-                    When a file reaches the rotation size it is compressed and a new one starts.
+                    A structured log file is kept at <code>/config/logs/app.log</code> in JSONL format
+                    at the log level configured above. The <a href="/logs">Logs</a> page reads from this file
+                    to show historical entries. When the file reaches the rotation size it is compressed and a new one starts.
                 </p>
                 <div class="row mb-3">
                     <div class="col-md-3 mb-3">
@@ -740,7 +739,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
             card.className = 'card mb-2 border-danger';
             card.style.opacity = '0.85';
             const errorHtml = gpu.error_detail
-                ? `<br><span class="text-light mt-1 d-inline-block">${gpu.error_detail}</span>`
+                ? `<br><span class="text-light mt-1 d-inline-block">${escapeHtml(gpu.error_detail)}</span>`
                 : '';
             card.innerHTML = `
             <div class="card-body py-2 px-3">
@@ -749,15 +748,15 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                         <div class="form-check form-switch mb-0">
                             <input class="form-check-input" type="checkbox" disabled>
                             <label class="form-check-label fw-semibold text-muted">
-                                ${gpu.name || 'Unknown GPU'}
+                                ${escapeHtml(gpu.name || 'Unknown GPU')}
                             </label>
                         </div>
                         <span class="badge bg-danger ms-2">failed</span>
                     </div>
-                    <small class="text-muted mb-2">${gpu.type || 'UNKNOWN'} &mdash; ${gpu.device || 'N/A'}</small>
+                    <small class="text-muted mb-2">${escapeHtml(gpu.type || 'UNKNOWN')} &mdash; ${escapeHtml(gpu.device || 'N/A')}</small>
                     <div class="alert alert-danger mb-0 py-2 px-3" style="font-size: 0.85em;">
                         <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                        <strong>${gpu.error || 'Acceleration test failed'}</strong>
+                        <strong>${escapeHtml(gpu.error || 'Acceleration test failed')}</strong>
                         ${errorHtml}
                         <br><small class="text-muted">Fix the issue and click <strong>Re-scan GPUs</strong> below.</small>
                     </div>

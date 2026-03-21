@@ -256,8 +256,15 @@ def create_app(config_dir: str = None) -> Flask:
 
     run_migrations(sm)
 
-    # Apply saved log level so the web server starts with the correct verbosity
-    from ..logging_config import setup_logging
+    # Create the SocketIO log broadcaster so the live /logs page can stream
+    # log messages in real time.  Must be registered before setup_logging().
+    from ..logging_config import (
+        SocketIOLogBroadcaster,
+        set_log_broadcaster,
+        setup_logging,
+    )
+
+    set_log_broadcaster(SocketIOLogBroadcaster(socketio))
 
     setup_logging(
         log_level=sm.get("log_level", "INFO"),

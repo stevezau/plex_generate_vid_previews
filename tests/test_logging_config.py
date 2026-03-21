@@ -10,7 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import plex_generate_previews.logging_config as _logging_mod
-from plex_generate_previews.logging_config import _json_sink, setup_logging
+from plex_generate_previews.logging_config import (
+    _json_sink,
+    _jsonl_record_patcher,
+    get_app_log_path,
+    setup_logging,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -18,9 +23,12 @@ def _reset_logging_state():
     """Reset setup_logging module globals between tests."""
     _logging_mod._managed_handler_ids = []
     _logging_mod._initial_setup_done = False
+    old_broadcaster = _logging_mod._broadcaster
+    _logging_mod._broadcaster = None
     yield
     _logging_mod._managed_handler_ids = []
     _logging_mod._initial_setup_done = False
+    _logging_mod._broadcaster = old_broadcaster
 
 
 class TestLoggingConfig:
@@ -58,24 +66,18 @@ class TestLoggingConfig:
 
     @patch("plex_generate_previews.logging_config.os.makedirs")
     @patch("plex_generate_previews.logging_config.logger")
-    def test_setup_logging_adds_error_file_handler(self, mock_logger, mock_makedirs):
-        """Test that setup_logging adds a persistent error log file handler."""
+    def test_setup_logging_adds_app_log_handler(self, mock_logger, mock_makedirs):
+        """Test that setup_logging adds the consolidated JSONL app.log handler."""
         setup_logging()
 
-        # Should have 3 calls to add: stderr + error log file + activity log file
-        assert mock_logger.add.call_count == 3
+        # stderr + app.log = 2 handlers
+        assert mock_logger.add.call_count == 2
 
-        # Second call should be for the error log file
-        error_call = mock_logger.add.call_args_list[1]
-        assert error_call.kwargs.get("level") == "ERROR"
-        assert error_call.kwargs.get("rotation") == "10 MB"
-        assert error_call.kwargs.get("retention") == 5
-
-        # Third call should be for the activity log file
-        activity_call = mock_logger.add.call_args_list[2]
-        assert activity_call.kwargs.get("level") == "WARNING"
-        assert activity_call.kwargs.get("rotation") == "10 MB"
-        assert activity_call.kwargs.get("retention") == 5
+        app_log_call = mock_logger.add.call_args_list[1]
+        assert app_log_call.kwargs.get("level") == "INFO"
+        assert app_log_call.kwargs.get("rotation") == "10 MB"
+        assert app_log_call.kwargs.get("retention") == 5
+        assert "{extra[_jsonl]}" in (app_log_call.kwargs.get("format") or "")
 
     @patch("plex_generate_previews.logging_config.os.makedirs")
     @patch("plex_generate_previews.logging_config.logger")
@@ -83,15 +85,11 @@ class TestLoggingConfig:
         """Test setup_logging with custom rotation and retention values."""
         setup_logging(rotation="5 MB", retention=4)
 
-        assert mock_logger.add.call_count == 3
+        assert mock_logger.add.call_count == 2
 
-        error_call = mock_logger.add.call_args_list[1]
-        assert error_call.kwargs.get("rotation") == "5 MB"
-        assert error_call.kwargs.get("retention") == 4
-
-        activity_call = mock_logger.add.call_args_list[2]
-        assert activity_call.kwargs.get("rotation") == "5 MB"
-        assert activity_call.kwargs.get("retention") == 4
+        app_log_call = mock_logger.add.call_args_list[1]
+        assert app_log_call.kwargs.get("rotation") == "5 MB"
+        assert app_log_call.kwargs.get("retention") == 4
 
     @patch(
         "plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError
@@ -225,3 +223,229 @@ class TestJSONLogging:
                 break
         else:
             pytest.fail("Expected 'caught error' log line in JSON output")
+
+
+# -----------------------------------------------------------------------
+# SocketIO live-log broadcaster
+# -----------------------------------------------------------------------
+
+
+class TestSocketIOLogBroadcaster:
+    """Tests for the SocketIOLogBroadcaster and its module-level accessors."""
+
+    def test_get_set_broadcaster(self):
+        """get/set_log_broadcaster round-trips correctly."""
+        from plex_generate_previews.logging_config import (
+            SocketIOLogBroadcaster,
+            get_log_broadcaster,
+            set_log_broadcaster,
+        )
+
+        assert get_log_broadcaster() is None
+        mock_sio = MagicMock()
+        b = SocketIOLogBroadcaster(mock_sio)
+        set_log_broadcaster(b)
+        assert get_log_broadcaster() is b
+        set_log_broadcaster(None)
+        assert get_log_broadcaster() is None
+
+    def test_sink_emits_to_correct_room(self):
+        """sink() should call socketio.emit with room=level_name."""
+        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+
+        mock_sio = MagicMock()
+        broadcaster = SocketIOLogBroadcaster(mock_sio)
+
+        record = MagicMock()
+        record.record = {
+            "level": MagicMock(name="WARNING"),
+            "time": MagicMock(),
+            "message": "test warning",
+            "name": "plex_generate_previews.worker",
+            "function": "run",
+            "line": 42,
+        }
+        record.record["level"].name = "WARNING"
+        record.record["time"].strftime.return_value = "2026-03-22 09:10:18.123"
+
+        broadcaster.sink(record)
+
+        mock_sio.emit.assert_called_once()
+        call_kwargs = mock_sio.emit.call_args
+        assert call_kwargs.args[0] == "log_message"
+        assert call_kwargs.kwargs["namespace"] == "/logs"
+        assert call_kwargs.kwargs["room"] == "WARNING"
+
+        payload = call_kwargs.args[1]
+        assert payload["level"] == "WARNING"
+        assert payload["msg"] == "test warning"
+        assert payload["mod"] == "worker"
+
+    def test_sink_filters_out_trace_level(self):
+        """sink() should silently drop TRACE-level records."""
+        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+
+        mock_sio = MagicMock()
+        broadcaster = SocketIOLogBroadcaster(mock_sio)
+
+        record = MagicMock()
+        record.record = {
+            "level": MagicMock(name="TRACE"),
+            "time": MagicMock(),
+            "message": "trace msg",
+            "name": "x",
+            "function": "f",
+            "line": 1,
+        }
+        record.record["level"].name = "TRACE"
+
+        broadcaster.sink(record)
+        mock_sio.emit.assert_not_called()
+
+    def test_sink_swallows_emit_errors(self):
+        """sink() must not raise when socketio.emit fails."""
+        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+
+        mock_sio = MagicMock()
+        mock_sio.emit.side_effect = RuntimeError("boom")
+        broadcaster = SocketIOLogBroadcaster(mock_sio)
+
+        record = MagicMock()
+        record.record = {
+            "level": MagicMock(name="INFO"),
+            "time": MagicMock(),
+            "message": "test",
+            "name": "mod",
+            "function": "fn",
+            "line": 1,
+        }
+        record.record["level"].name = "INFO"
+        record.record["time"].strftime.return_value = "2026-03-22 09:10:18.123"
+
+        broadcaster.sink(record)  # should not raise
+
+    @patch("plex_generate_previews.logging_config.os.makedirs")
+    @patch("plex_generate_previews.logging_config.logger")
+    def test_setup_logging_attaches_broadcaster(self, mock_logger, mock_makedirs):
+        """When a broadcaster is registered, setup_logging adds it as a handler."""
+        from plex_generate_previews.logging_config import (
+            SocketIOLogBroadcaster,
+            set_log_broadcaster,
+        )
+
+        mock_sio = MagicMock()
+        set_log_broadcaster(SocketIOLogBroadcaster(mock_sio))
+
+        setup_logging()
+
+        # 2 base handlers (stderr + app.log) + 1 broadcaster = 3
+        assert mock_logger.add.call_count == 3
+        broadcaster_call = mock_logger.add.call_args_list[2]
+        assert broadcaster_call.kwargs.get("level") == "DEBUG"
+
+
+# -----------------------------------------------------------------------
+# JSONL file sink and app.log helpers
+# -----------------------------------------------------------------------
+
+
+class TestJsonlRecordPatcher:
+    """Tests for the _jsonl_record_patcher filter and get_app_log_path."""
+
+    def test_patcher_stores_jsonl_in_extra(self):
+        """_jsonl_record_patcher should store a valid JSON string in extra._jsonl."""
+        record = {
+            "time": MagicMock(),
+            "level": MagicMock(),
+            "message": "hello world",
+            "name": "plex_generate_previews.worker",
+            "function": "run",
+            "line": 42,
+            "extra": {},
+        }
+        record["time"].strftime.return_value = "2026-03-22 09:10:18.123000"
+        record["level"].name = "INFO"
+
+        result = _jsonl_record_patcher(record)
+
+        assert result is True
+        jsonl_str = record["extra"]["_jsonl"]
+        parsed = json.loads(jsonl_str)
+        assert parsed["ts"] == "2026-03-22 09:10:18.123"
+        assert parsed["level"] == "INFO"
+        assert parsed["msg"] == "hello world"
+        assert parsed["mod"] == "worker"
+        assert parsed["func"] == "run"
+        assert parsed["line"] == 42
+
+    def test_patcher_handles_empty_name(self):
+        """When record name is empty, mod should be empty."""
+        record = {
+            "time": MagicMock(),
+            "level": MagicMock(),
+            "message": "test",
+            "name": "",
+            "function": None,
+            "line": 1,
+            "extra": {},
+        }
+        record["time"].strftime.return_value = "2026-01-01 00:00:00.000000"
+        record["level"].name = "DEBUG"
+
+        _jsonl_record_patcher(record)
+        parsed = json.loads(record["extra"]["_jsonl"])
+        assert parsed["mod"] == ""
+        assert parsed["func"] == ""
+
+    def test_patcher_escapes_json_in_message(self):
+        """Messages with quotes/backslashes must produce valid JSON."""
+        record = {
+            "time": MagicMock(),
+            "level": MagicMock(),
+            "message": 'path "C:\\Users\\test"',
+            "name": "mod",
+            "function": "f",
+            "line": 1,
+            "extra": {},
+        }
+        record["time"].strftime.return_value = "2026-01-01 00:00:00.000000"
+        record["level"].name = "WARNING"
+
+        _jsonl_record_patcher(record)
+        parsed = json.loads(record["extra"]["_jsonl"])
+        assert parsed["msg"] == 'path "C:\\Users\\test"'
+
+    def test_get_app_log_path_default(self):
+        """get_app_log_path returns /config/logs/app.log by default."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CONFIG_DIR", None)
+            assert get_app_log_path() == "/config/logs/app.log"
+
+    def test_get_app_log_path_custom_config_dir(self):
+        """get_app_log_path respects CONFIG_DIR."""
+        with patch.dict(os.environ, {"CONFIG_DIR": "/my/config"}):
+            assert get_app_log_path() == "/my/config/logs/app.log"
+
+    def test_app_log_written_as_jsonl(self, tmp_path):
+        """Integration: setup_logging writes valid JSONL lines to app.log."""
+        from loguru import logger
+
+        with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
+            logger.remove()
+            setup_logging(log_level="DEBUG")
+            logger.info("integration test message")
+            import time
+
+            time.sleep(0.3)
+
+        logger.remove()
+        app_log = tmp_path / "logs" / "app.log"
+        assert app_log.exists(), "app.log should have been created"
+        lines = [ln for ln in app_log.read_text().strip().splitlines() if ln.strip()]
+        assert len(lines) >= 1
+
+        for line in lines:
+            record = json.loads(line)
+            assert "ts" in record
+            assert "level" in record
+            assert "msg" in record
