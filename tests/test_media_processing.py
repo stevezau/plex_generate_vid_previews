@@ -1763,6 +1763,11 @@ class TestProactiveDVSkip:
         vulkan_idx = first_args.index("-init_hw_device")
         assert first_args[vulkan_idx + 1] == "vulkan"
 
+        # No GPU passed → no Vulkan hwaccel, and -threads:v should be absent
+        # (libplacebo path lets FFmpeg auto-detect decoder thread count).
+        assert "-hwaccel" not in first_args
+        assert "-threads:v" not in first_args
+
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
         assert "libplacebo" in vf_value
@@ -1903,6 +1908,88 @@ class TestProactiveDVSkip:
             temp_dir,
             mock_config,
         )
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_dv_with_gpu_uses_vulkan_hwaccel(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV on a GPU worker should add -hwaccel vulkan for faster decode."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [
+            MagicMock(
+                hdr_format="Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086"
+            )
+        ]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = []
+        mock_detect.return_value = False
+
+        img1 = f"{temp_dir}/img-000001.jpg"
+        ts1 = f"{temp_dir}/0000000000.jpg"
+
+        def glob_side_effect(pattern):
+            if "img*.jpg" in pattern:
+                return [img1]
+            if pattern.endswith("*.jpg"):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
+
+        success, image_count, hw_used, seconds, speed = generate_images(
+            "/test/dv_gpu.mkv", temp_dir, "NVIDIA", None, mock_config
+        )
+
+        assert success is True
+        assert image_count >= 1
+
+        first_args = mock_popen.call_args_list[0][0][0]
+
+        assert "-init_hw_device" in first_args
+        assert first_args[first_args.index("-init_hw_device") + 1] == "vulkan"
+
+        assert "-hwaccel" in first_args
+        assert first_args[first_args.index("-hwaccel") + 1] == "vulkan"
+
+        # libplacebo path should not cap decoder threads to 1
+        assert "-threads:v" not in first_args
+
+        # Should NOT have CUDA hwaccel
+        assert "cuda" not in first_args
+
+        vf_index = first_args.index("-vf")
+        vf_value = first_args[vf_index + 1]
+        assert "libplacebo" in vf_value
 
 
 class TestLibplaceboFallback:

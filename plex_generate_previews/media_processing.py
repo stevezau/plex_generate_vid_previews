@@ -854,16 +854,18 @@ def generate_images(
                 str(effective_ffmpeg_threads),
             ]
 
-        args += ["-threads:v", "1"]
-
         # Vulkan device required by the libplacebo filter (Dolby Vision tone mapping).
-        # When using libplacebo, skip hardware decode acceleration — CUDA/VAAPI
-        # decoded frames live in device memory that cannot be uploaded to the
-        # Vulkan context.  Software decoding is used instead; at thumbnail fps
-        # rates (0.5 fps) this has negligible performance impact.
+        # Use -hwaccel vulkan so decode runs on the same GPU context as
+        # libplacebo; FFmpeg auto-falls-back to software decode when the
+        # driver lacks VK_KHR_video_decode_queue.  CUDA/VAAPI hwaccel is
+        # skipped because those decoded frames live in a different device
+        # memory context and cannot be uploaded to Vulkan.
         if init_vulkan:
             args += ["-init_hw_device", "vulkan"]
+            if effective_gpu is not None:
+                args += ["-hwaccel", "vulkan"]
         else:
+            args += ["-threads:v", "1"]
             # Add hardware acceleration for decoding (before -i flag)
             effective_gpu_device_path = (
                 gpu_device_path_override
