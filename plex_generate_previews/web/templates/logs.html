@@ -4,12 +4,31 @@
 
 {% block head %}
 <style>
-    #logContainer {
-        height: calc(100vh - 170px);
-        font-size: 0.85rem;
-        padding: 0.75rem;
+    /* Override base layout padding so the log viewer fills the viewport */
+    main.container-fluid { padding: 0 !important; }
+
+    .log-page {
+        display: flex;
+        flex-direction: column;
+        height: calc(100vh - 56px); /* below navbar */
+        overflow: hidden;
     }
-    /* Left-border level accents (additive to shared .log-level-* text colours) */
+    .log-toolbar {
+        flex-shrink: 0;
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+    .log-scroll-wrap {
+        flex: 1;
+        position: relative;
+        min-height: 0; /* allow flex child to shrink */
+    }
+    #logContainer {
+        height: 100%;
+        overflow-y: auto;
+        font-size: 0.85rem;
+        padding: 0 0.75rem;
+    }
     #logContainer .log-line {
         padding: 1px 10px;
         border-left: 3px solid transparent;
@@ -20,68 +39,89 @@
     #logContainer .log-line.log-level-warning { border-left-color: #ffc107; }
     #logContainer .log-line.log-level-error,
     #logContainer .log-line.log-level-critical { border-left-color: #dc3545; }
-    /* Structured spans within each line */
     .log-line .log-ts   { color: #6c757d; margin-right: 6px; }
     .log-line .log-lvl   { font-weight: 600; margin-right: 6px; min-width: 60px; display: inline-block; }
     .log-line .log-mod   { color: #888; margin-right: 6px; }
     .log-line .log-detail { display: none; font-size: 0.78rem; color: #777; padding-top: 2px; }
     .log-line.expanded .log-detail { display: block; }
-    .log-toolbar { position: sticky; top: 0; z-index: 10; }
     #logCount { font-size: 0.82rem; }
     #loadOlderBtn { display: none; }
+
+    /* Floating "new logs" pill shown when user scrolls up and live messages arrive */
+    #followPill {
+        display: none;
+        position: absolute;
+        bottom: 1rem;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 5;
+        cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+    .log-nav-btns {
+        position: absolute;
+        right: 1rem;
+        bottom: 1rem;
+        z-index: 5;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="log-toolbar bg-dark border-bottom pb-2 mb-0">
-    <div class="d-flex flex-wrap align-items-center gap-2">
-        <div class="btn-group btn-group-sm" role="group" aria-label="Log level">
-            <button type="button" class="btn btn-outline-secondary log-level-btn" data-level="DEBUG">Debug</button>
-            <button type="button" class="btn btn-outline-info log-level-btn" data-level="INFO">Info</button>
-            <button type="button" class="btn btn-outline-warning log-level-btn" data-level="WARNING">Warning</button>
-            <button type="button" class="btn btn-outline-danger log-level-btn" data-level="ERROR">Error</button>
+<div class="log-page">
+    <div class="log-toolbar bg-dark">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="btn-group btn-group-sm" role="group" aria-label="Log level">
+                <button type="button" class="btn btn-outline-secondary log-level-btn" data-level="DEBUG">Debug</button>
+                <button type="button" class="btn btn-outline-info log-level-btn" data-level="INFO">Info</button>
+                <button type="button" class="btn btn-outline-warning log-level-btn" data-level="WARNING">Warning</button>
+                <button type="button" class="btn btn-outline-danger log-level-btn" data-level="ERROR">Error</button>
+            </div>
+
+            <div class="input-group input-group-sm" style="max-width: 300px;">
+                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                <input type="text" class="form-control" id="logSearch" placeholder="Filter logs..." autocomplete="off">
+                <button class="btn btn-outline-secondary" type="button" id="logSearchRegex" title="Toggle regex mode">.*</button>
+                <button class="btn btn-outline-secondary" type="button" id="logSearchClear" title="Clear search">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+
+            <button class="btn btn-sm btn-outline-secondary" id="logClearBtn" title="Clear log buffer">
+                <i class="bi bi-trash"></i> Clear
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" id="logCopyBtn" title="Copy visible logs to clipboard">
+                <i class="bi bi-clipboard"></i> Copy
+            </button>
+
+            <span id="logCount" class="text-muted ms-auto">0 lines</span>
+            <span id="logConnStatus" class="badge bg-secondary">connecting...</span>
+        </div>
+    </div>
+
+    <div class="log-scroll-wrap">
+        <div id="logContainer" class="bg-dark text-light">
+            <button id="loadOlderBtn" class="btn btn-sm btn-outline-secondary w-100 my-1">
+                <i class="bi bi-clock-history me-1"></i>Load older...
+            </button>
+            <span id="logPlaceholder" class="text-muted">Loading log history...</span>
         </div>
 
-        <div class="input-group input-group-sm" style="max-width: 300px;">
-            <span class="input-group-text"><i class="bi bi-search"></i></span>
-            <input type="text" class="form-control" id="logSearch" placeholder="Filter logs..." autocomplete="off">
-            <button class="btn btn-outline-secondary" type="button" id="logSearchRegex" title="Toggle regex mode">.*</button>
-            <button class="btn btn-outline-secondary" type="button" id="logSearchClear" title="Clear search">
-                <i class="bi bi-x"></i>
+        <span id="followPill" class="badge rounded-pill bg-info text-dark px-3 py-2">
+            <i class="bi bi-arrow-down-short"></i> New logs — click to follow
+        </span>
+
+        <div class="log-nav-btns">
+            <button class="btn btn-sm btn-outline-light opacity-75" id="logScrollTop" title="Scroll to top">
+                <i class="bi bi-chevron-double-up"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-light opacity-75" id="logScrollBottom" title="Scroll to bottom & follow">
+                <i class="bi bi-chevron-double-down"></i>
             </button>
         </div>
-
-        <button class="btn btn-sm btn-outline-secondary" id="logPauseBtn" title="Pause auto-scroll">
-            <i class="bi bi-pause-fill"></i> Pause
-        </button>
-        <span id="logPausedBadge" class="badge bg-warning text-dark d-none">0 buffered</span>
-
-        <button class="btn btn-sm btn-outline-secondary" id="logClearBtn" title="Clear log buffer">
-            <i class="bi bi-trash"></i> Clear
-        </button>
-        <button class="btn btn-sm btn-outline-secondary" id="logCopyBtn" title="Copy visible logs to clipboard">
-            <i class="bi bi-clipboard"></i> Copy
-        </button>
-
-        <span id="logCount" class="text-muted ms-auto">0 lines</span>
-        <span id="logConnStatus" class="badge bg-secondary">connecting...</span>
-    </div>
-</div>
-
-<div class="position-relative">
-    <div id="logContainer" class="bg-dark text-light rounded log-viewer">
-        <button id="loadOlderBtn" class="btn btn-sm btn-outline-secondary w-100 mb-2">
-            <i class="bi bi-clock-history me-1"></i>Load older...
-        </button>
-        <span id="logPlaceholder" class="text-muted">Loading log history...</span>
-    </div>
-    <div class="position-absolute d-flex flex-column gap-1" style="right: 1.2rem; bottom: 0.7rem; z-index: 2;">
-        <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" id="logScrollTop" title="Scroll to top">
-            <i class="bi bi-chevron-double-up"></i>
-        </button>
-        <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" id="logScrollBottom" title="Scroll to bottom">
-            <i class="bi bi-chevron-double-down"></i>
-        </button>
     </div>
 </div>
 {% endblock %}
@@ -96,19 +136,18 @@
     const container = document.getElementById('logContainer');
     const countEl = document.getElementById('logCount');
     const connBadge = document.getElementById('logConnStatus');
-    const pauseBtn = document.getElementById('logPauseBtn');
-    const pausedBadge = document.getElementById('logPausedBadge');
     const clearBtn = document.getElementById('logClearBtn');
     const searchInput = document.getElementById('logSearch');
     const regexBtn = document.getElementById('logSearchRegex');
     const searchClearBtn = document.getElementById('logSearchClear');
     const loadOlderBtn = document.getElementById('loadOlderBtn');
     const copyBtn = document.getElementById('logCopyBtn');
+    const followPill = document.getElementById('followPill');
     const placeholder = document.getElementById('logPlaceholder');
 
-    let paused = false;
-    let bufferedWhilePaused = 0;
+    let following = true;   // auto-scroll active
     let lineCount = 0;
+    let newWhileAway = 0;   // live messages that arrived while not following
     let regexMode = false;
     let currentLevel = 'INFO';
     let socket = null;
@@ -147,6 +186,47 @@
             b.classList.toggle('active', b.dataset.level === level);
         });
     }
+
+    // --- Follow / scroll helpers ---
+    function isAtBottom() {
+        return container.scrollHeight - container.scrollTop - container.clientHeight < 40;
+    }
+
+    function scrollToBottom() {
+        suppressScroll = Date.now() + 300;
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function startFollowing() {
+        following = true;
+        newWhileAway = 0;
+        followPill.style.display = 'none';
+        scrollToBottom();
+    }
+
+    function stopFollowing() {
+        if (!following) return;
+        following = false;
+    }
+
+    function showFollowPill() {
+        followPill.style.display = '';
+        followPill.querySelector('span') || null;
+        followPill.innerHTML = '<i class="bi bi-arrow-down-short"></i> ' +
+            (newWhileAway > 0 ? newWhileAway + ' new — click to follow' : 'Click to follow');
+    }
+
+    container.addEventListener('scroll', () => {
+        if (Date.now() < suppressScroll) return;
+        if (isAtBottom()) {
+            if (!following) startFollowing();
+        } else {
+            stopFollowing();
+            if (newWhileAway > 0) showFollowPill();
+        }
+    });
+
+    followPill.addEventListener('click', startFollowing);
 
     // --- Build a log line DOM element ---
     function buildLogLine(data) {
@@ -225,6 +305,7 @@
             oldestTs = data.oldest_ts || oldestTs;
             hasMore = data.has_more;
             countEl.textContent = lineCount.toLocaleString() + ' log lines';
+            suppressScroll = Date.now() + 300;
             container.scrollTop += container.scrollHeight - scrollBefore;
         }
 
@@ -264,12 +345,6 @@
 
     // --- Live log message ---
     function onLogMessage(data) {
-        if (paused) {
-            bufferedWhilePaused++;
-            pausedBadge.textContent = bufferedWhilePaused + ' buffered';
-            pausedBadge.classList.remove('d-none');
-        }
-
         container.appendChild(buildLogLine(data));
         lineCount++;
 
@@ -280,12 +355,13 @@
         }
 
         countEl.textContent = lineCount.toLocaleString() + ' log lines';
-        if (!paused) scrollToBottom();
-    }
 
-    function scrollToBottom() {
-        suppressScroll = Date.now() + 300;
-        container.scrollTop = container.scrollHeight;
+        if (following) {
+            scrollToBottom();
+        } else {
+            newWhileAway++;
+            showFollowPill();
+        }
     }
 
     function clearLogContent() {
@@ -295,6 +371,8 @@
         lineCount = 0;
         oldestTs = '';
         hasMore = false;
+        newWhileAway = 0;
+        followPill.style.display = 'none';
         loadOlderBtn.style.display = 'none';
         countEl.textContent = '0 lines';
     }
@@ -368,54 +446,24 @@
                 socket.emit('set_level', { level: level });
             }
             clearLogContent();
+            following = true;
             await loadInitialHistory();
         });
-    });
-
-    // --- Pause / Resume ---
-    pauseBtn.addEventListener('click', () => {
-        paused = !paused;
-        if (paused) {
-            pauseBtn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
-            bufferedWhilePaused = 0;
-        } else {
-            pauseBtn.innerHTML = '<i class="bi bi-pause-fill"></i> Pause';
-            pausedBadge.classList.add('d-none');
-            scrollToBottom();
-        }
-    });
-
-    container.addEventListener('scroll', () => {
-        if (Date.now() < suppressScroll) return;
-        const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
-        if (!atBottom && !paused) {
-            paused = true;
-            pauseBtn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
-            bufferedWhilePaused = 0;
-        } else if (atBottom && paused) {
-            paused = false;
-            pauseBtn.innerHTML = '<i class="bi bi-pause-fill"></i> Pause';
-            pausedBadge.classList.add('d-none');
-        }
     });
 
     // --- Scroll nav buttons ---
     document.getElementById('logScrollTop').addEventListener('click', () => {
         suppressScroll = Date.now() + 600;
+        following = false;
         container.scrollTo({ top: 0, behavior: 'smooth' });
-        paused = true;
-        pauseBtn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
     });
-    document.getElementById('logScrollBottom').addEventListener('click', () => {
-        suppressScroll = Date.now() + 600;
-        paused = false;
-        pauseBtn.innerHTML = '<i class="bi bi-pause-fill"></i> Pause';
-        pausedBadge.classList.add('d-none');
-        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    });
+    document.getElementById('logScrollBottom').addEventListener('click', startFollowing);
 
     // --- Clear ---
-    clearBtn.addEventListener('click', () => clearLogContent());
+    clearBtn.addEventListener('click', () => {
+        clearLogContent();
+        following = true;
+    });
 
     // --- Copy visible logs to clipboard ---
     copyBtn.addEventListener('click', async () => {
