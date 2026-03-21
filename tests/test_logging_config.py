@@ -341,7 +341,7 @@ class TestSocketIOLogBroadcaster:
         # 2 base handlers (stderr + app.log) + 1 broadcaster = 3
         assert mock_logger.add.call_count == 3
         broadcaster_call = mock_logger.add.call_args_list[2]
-        assert broadcaster_call.kwargs.get("level") == "DEBUG"
+        assert broadcaster_call.kwargs.get("level") == "INFO"
 
 
 # -----------------------------------------------------------------------

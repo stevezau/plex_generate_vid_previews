@@ -173,6 +173,7 @@
     let newWhileAway = 0;   // live messages that arrived while not following
     let regexMode = false;
     let currentLevel = 'INFO';
+    let serverLevel = 'INFO';
     let socket = null;
     let oldestTs = '';
     let hasMore = false;
@@ -194,9 +195,19 @@
         WARNING: 'bg-warning text-dark', ERROR: 'bg-danger',
     };
 
-    function showServerLevel(level) {
+    const LEVEL_RANK = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+
+    function applyServerLevel(level) {
+        serverLevel = level;
         serverLevelBadge.textContent = 'Server: ' + level;
         serverLevelBadge.className = 'badge me-1 ' + (LEVEL_BADGE_CLASS[level] || 'bg-secondary');
+        const minRank = LEVEL_RANK[level] ?? 0;
+        document.querySelectorAll('.log-level-btn').forEach(btn => {
+            const rank = LEVEL_RANK[btn.dataset.level] ?? 0;
+            btn.disabled = rank < minRank;
+            if (rank < minRank) btn.title = 'Below server log level (' + level + ')';
+            else btn.title = '';
+        });
     }
 
     async function fetchServerLevel() {
@@ -206,12 +217,12 @@
                 const data = await resp.json();
                 const level = (data.log_level || 'INFO').toUpperCase();
                 if (['DEBUG','INFO','WARNING','ERROR','CRITICAL'].includes(level)) {
-                    showServerLevel(level);
+                    applyServerLevel(level);
                     return level;
                 }
             }
         } catch {}
-        showServerLevel('INFO');
+        applyServerLevel('INFO');
         return 'INFO';
     }
 

@@ -197,12 +197,14 @@ def setup_logging(
         except (PermissionError, OSError) as e:
             logger.warning(f"Could not create log files: {e}")
 
-        # Attach the SocketIO broadcaster if one has been registered
+        # Attach the SocketIO broadcaster if one has been registered.
+        # Uses the configured log_level so clients can't see below the
+        # server's minimum — the viewer's filter buttons are capped at this.
         broadcaster = get_log_broadcaster()
         if broadcaster is not None:
             hid = logger.add(
                 broadcaster.sink,
-                level="DEBUG",
+                level=log_level,
                 format="{message}",
                 enqueue=True,
             )
