@@ -16,6 +16,10 @@ from loguru import logger
 CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
 AUTH_FILE = os.path.join(CONFIG_DIR, "auth.json")
 
+# Auth method constants (mirrors *arr ecosystem AuthenticationMethod convention)
+AUTH_METHOD_INTERNAL = "internal"
+AUTH_METHOD_EXTERNAL = "external"
+
 
 def get_config_dir() -> str:
     """Get the configuration directory path."""
@@ -138,28 +142,49 @@ def set_auth_token(new_token: str) -> dict:
     return {"success": True}
 
 
+def get_auth_method() -> str:
+    """Get the configured authentication method.
+
+    Returns:
+        'internal' (default) or 'external'.
+        Set AUTH_METHOD=external when using a reverse proxy or VPN for auth.
+    """
+    method = os.environ.get("AUTH_METHOD", AUTH_METHOD_INTERNAL).lower().strip()
+    if method == AUTH_METHOD_EXTERNAL:
+        return AUTH_METHOD_EXTERNAL
+    return AUTH_METHOD_INTERNAL
+
+
+def is_auth_external() -> bool:
+    """Check if authentication is handled externally (reverse proxy, VPN, etc.)."""
+    return get_auth_method() == AUTH_METHOD_EXTERNAL
+
+
 def get_token_info() -> dict:
     """Get information about the current token for display in setup wizard.
 
     Returns:
-        dict with token info (masked for security) and control status
+        dict with token info (masked for security), control status, and auth method
 
     """
     env_controlled = is_token_env_controlled()
+    auth_method = get_auth_method()
     token = get_auth_token()
 
-    # Mask token: show only last 4 chars
     masked_token = "****" + token[-4:] if len(token) > 4 else "****"
     return {
         "env_controlled": env_controlled,
         "token": masked_token,
         "token_length": len(token),
         "source": "environment" if env_controlled else "config",
+        "auth_method": auth_method,
     }
 
 
 def is_authenticated() -> bool:
     """Check if the current session is authenticated."""
+    if is_auth_external():
+        return True
     return session.get("authenticated", False)
 
 
@@ -246,7 +271,16 @@ def log_token_on_startup() -> None:
     """Log authentication token information on startup.
 
     Tokens are never logged in full for security reasons.
+    When AUTH_METHOD=external, logs a warning instead of token info.
     """
+    if is_auth_external():
+        logger.warning("=" * 60)
+        logger.warning("AUTH_METHOD=external — built-in authentication DISABLED")
+        logger.warning("Ensure a reverse proxy, VPN, or other external")
+        logger.warning("mechanism is protecting access to this application.")
+        logger.warning("=" * 60)
+        return
+
     token = get_auth_token()
     masked = "****" + token[-4:] if len(token) > 4 else "****"
     logger.info("=" * 60)

@@ -56,6 +56,10 @@ services:
       # Timezone — ensures log timestamps and scheduled jobs use your local time
       # - TZ=America/New_York
 
+      # Disable built-in auth when behind a reverse proxy or VPN (Authelia, Tailscale, etc.)
+      # Webhook auth (Radarr/Sonarr) is not affected.
+      # - AUTH_METHOD=external
+
     volumes:
       # Your media files (read-only)
       - /path/to/your/media:/media:ro

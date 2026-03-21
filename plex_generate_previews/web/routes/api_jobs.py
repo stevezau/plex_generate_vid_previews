@@ -8,6 +8,7 @@ from loguru import logger
 
 from ..auth import (
     api_token_required,
+    get_auth_method,
     is_authenticated,
     regenerate_token,
     validate_token,
@@ -33,8 +34,13 @@ from ._helpers import (
 
 @api.route("/auth/status")
 def auth_status():
-    """Check authentication status."""
-    return jsonify({"authenticated": is_authenticated()})
+    """Check authentication status and auth method."""
+    return jsonify(
+        {
+            "authenticated": is_authenticated(),
+            "auth_method": get_auth_method(),
+        }
+    )
 
 
 @api.route("/auth/login", methods=["POST"])

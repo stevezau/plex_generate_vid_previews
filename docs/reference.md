@@ -90,6 +90,26 @@ These are not migrated to settings.json and remain in effect:
 | `HTTPS` | `false` | Enable HTTPS for cookies |
 | `DEV_RELOAD` | `false` | Enable Flask auto-reload (development) |
 | `WEB_AUTH_TOKEN` | Auto-generated | Fixed authentication token (overrides wizard-set token) |
+| `AUTH_METHOD` | `internal` | Set to `external` to disable built-in auth when using a reverse proxy or VPN (see below) |
+
+### External Authentication (AUTH_METHOD)
+
+If you secure access via a reverse proxy (Authelia, Authentik, Caddy Security, nginx basic auth, etc.) or a VPN (Tailscale, WireGuard), you can disable the built-in login screen:
+
+```yaml
+environment:
+  - AUTH_METHOD=external
+```
+
+When set to `external`:
+
+- The login page is bypassed; all browser and API requests are treated as authenticated.
+- Webhook authentication (`webhook_secret` / Bearer token) is **not** affected — external services like Radarr and Sonarr still need their shared secret.
+- The setup wizard still runs on first boot.
+- Removing the variable (or setting it back to `internal`) instantly re-enables built-in auth.
+
+> [!CAUTION]
+> Only use `AUTH_METHOD=external` when you are certain that network-level access control is in place. Without it, anyone who can reach the web UI has full access.
 
 ### Deprecated (no longer used)
 
