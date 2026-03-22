@@ -47,6 +47,7 @@ ARG GIT_SHA=unknown
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     mediainfo python3 python3-pip gosu pciutils git \
+    libchromaprint-tools \
     mesa-va-drivers libva2 libva-drm2 vainfo && \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       apt-get install -y --no-install-recommends \

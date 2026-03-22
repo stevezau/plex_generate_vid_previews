@@ -118,6 +118,22 @@ def get_settings():
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
+            # Credits/intro detection
+            "credits_detection_enabled": settings.get(
+                "credits_detection_enabled", False
+            ),
+            "credits_detection_overwrite": settings.get(
+                "credits_detection_overwrite", False
+            ),
+            "credits_scan_last_pct": settings.get("credits_scan_last_pct", 25.0),
+            "credits_min_duration": settings.get("credits_min_duration", 15.0),
+            "intro_detection_enabled": settings.get("intro_detection_enabled", False),
+            "intro_detection_overwrite": settings.get(
+                "intro_detection_overwrite", False
+            ),
+            "intro_scan_duration_sec": settings.get("intro_scan_duration_sec", 600.0),
+            "intro_min_duration_sec": settings.get("intro_min_duration_sec", 15.0),
+            "intro_max_duration_sec": settings.get("intro_max_duration_sec", 120.0),
         }
     )
 
@@ -162,6 +178,16 @@ def save_settings():
         "webhook_secret",
         "auto_requeue_on_restart",
         "requeue_max_age_minutes",
+        # Credits/intro detection
+        "credits_detection_enabled",
+        "credits_detection_overwrite",
+        "credits_scan_last_pct",
+        "credits_min_duration",
+        "intro_detection_enabled",
+        "intro_detection_overwrite",
+        "intro_scan_duration_sec",
+        "intro_min_duration_sec",
+        "intro_max_duration_sec",
     ]
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}

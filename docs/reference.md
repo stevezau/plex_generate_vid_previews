@@ -71,6 +71,44 @@ GPU settings are configured per-GPU in **Settings** → **Processing Options**. 
 > set `cpu_threads=0` and `cpu_fallback_threads>0`.
 > This prevents regular CPU main-queue work while still allowing GPU-failed items to be retried on CPU.
 
+### Marker Detection (Experimental)
+
+Detects intro and credits segments in media files and writes "Skip Intro" / "Skip Credits" markers directly to the Plex SQLite database. Markers appear as skip buttons in Plex clients.
+
+#### Credits Detection
+
+Analyzes the end of each video using FFmpeg's `blackdetect` and `silencedetect` filters to find where credits begin. Works on both movies and TV episodes.
+
+| Setting | Web UI | Default | Description |
+|---------|--------|---------|-------------|
+| `credits_detection_enabled` | Yes | `false` | Enable credits detection |
+| `credits_detection_overwrite` | Yes | `false` | Re-detect even if markers exist |
+| `credits_scan_last_pct` | Yes | `25` | Scan last N% of video (5–50) |
+| `credits_min_duration` | Yes | `15` | Minimum credits length in seconds (5–120) |
+
+#### Intro Detection
+
+Compares audio fingerprints across all episodes in a TV season to find the recurring intro theme. Uses `fpcalc` (chromaprint) for fingerprinting. Requires at least 2 episodes per season.
+
+| Setting | Web UI | Default | Description |
+|---------|--------|---------|-------------|
+| `intro_detection_enabled` | Yes | `false` | Enable intro detection |
+| `intro_detection_overwrite` | Yes | `false` | Re-detect even if markers exist |
+| `intro_scan_duration_sec` | Yes | `600` | Seconds of audio to fingerprint (first N seconds of each episode) |
+| `intro_min_duration_sec` | Yes | `15` | Minimum intro length in seconds |
+| `intro_max_duration_sec` | Yes | `120` | Maximum intro length in seconds |
+
+> [!WARNING]
+> Marker detection writes directly to the Plex SQLite database (`com.plexapp.plugins.library.db`).
+> Back up your database before enabling. Detection is safe while Plex is running (Plex uses WAL mode),
+> but **Docker on Windows** volume mounts do not support SQLite file locking — stop Plex before
+> running detection on Windows, or use a Linux/macOS host.
+
+> [!NOTE]
+> The Plex REST API only supports bookmark-type markers. Intro and credits markers must be written
+> directly to the database. This is the same approach used by [MarkerEditorForPlex](https://github.com/danrahn/MarkerEditorForPlex)
+> and other community tools.
+
 ---
 
 ## Environment Variables

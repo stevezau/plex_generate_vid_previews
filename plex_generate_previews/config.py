@@ -522,6 +522,19 @@ class Config:
     # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
     exclude_paths: Optional[List[Dict[str, str]]] = None
 
+    # Credits detection
+    credits_detection_enabled: bool = False
+    credits_detection_overwrite: bool = False
+    credits_scan_last_pct: float = 25.0
+    credits_min_duration: float = 15.0
+
+    # Intro detection
+    intro_detection_enabled: bool = False
+    intro_detection_overwrite: bool = False
+    intro_scan_duration_sec: float = 600.0  # first 10 minutes
+    intro_min_duration_sec: float = 15.0
+    intro_max_duration_sec: float = 120.0
+
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
         fields = []

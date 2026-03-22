@@ -96,6 +96,15 @@ def run_processing(
 
         logger.info("Running in headless mode (no console display)")
 
+        # Create fingerprint store for intro detection pass 1.
+        # Attached to config so it flows through the worker pipeline.
+        fingerprint_store = None
+        if getattr(config, "intro_detection_enabled", False):
+            from .intro_detection import IntroFingerprintStore
+
+            fingerprint_store = IntroFingerprintStore()
+            config._fingerprint_store = fingerprint_store
+
         _dispatch_started = False
 
         def _dispatch_items(items, library_name):
@@ -240,6 +249,10 @@ def run_processing(
                 cancellation_requested = cancellation_requested or result["cancelled"]
                 _merge_outcome(result)
 
+        # Intro detection pass 2: compare fingerprints within each season
+        if fingerprint_store and not cancellation_requested:
+            _process_intro_fingerprints(fingerprint_store, config, plex, cancel_check)
+
         generated = aggregate_outcome.get("generated", 0)
         bif_exists = aggregate_outcome.get("skipped_bif_exists", 0)
         not_found = aggregate_outcome.get("skipped_file_not_found", 0)
@@ -319,4 +332,97 @@ def run_processing(
             logger.warning(
                 f"Failed to clean up working temp folder "
                 f"{config.working_tmp_folder}: {cleanup_error}"
+            )
+
+
+def _process_intro_fingerprints(fingerprint_store, config, plex, cancel_check=None):
+    """Intro detection pass 2: compare fingerprints and write markers.
+
+    Iterates over each season with 2+ fingerprinted episodes, finds the
+    common intro segment, and writes intro markers for all episodes.
+
+    Args:
+        fingerprint_store: IntroFingerprintStore with pass-1 data.
+        config: Configuration object.
+        plex: Plex server instance.
+        cancel_check: Optional cancellation callable.
+
+    """
+    from .intro_detection import find_common_intro
+    from .plex_db import (
+        check_db_write_safety,
+        delete_markers,
+        get_marker_tag_id,
+        get_plex_db_path,
+        write_marker,
+    )
+
+    try:
+        db_path = get_plex_db_path(config.plex_config_folder)
+    except FileNotFoundError as exc:
+        logger.warning(f"Cannot write intro markers: {exc}")
+        return
+
+    safe, reason = check_db_write_safety(db_path)
+    if not safe:
+        logger.warning(f"Plex DB not safe to write: {reason}")
+        return
+
+    tag_id = get_marker_tag_id(db_path)
+    seasons = fingerprint_store.get_seasons()
+    logger.info(f"Intro detection pass 2: comparing {len(seasons)} season(s)")
+
+    for show_title, season_num, episodes in seasons:
+        if cancel_check and cancel_check():
+            logger.info("Intro detection cancelled")
+            break
+
+        logger.debug(
+            f"Comparing {len(episodes)} episodes of {show_title} S{season_num:02d}"
+        )
+
+        intro = find_common_intro(
+            episodes,
+            min_duration_sec=config.intro_min_duration_sec,
+            max_duration_sec=config.intro_max_duration_sec,
+        )
+
+        if intro is None:
+            logger.debug(f"No common intro found for {show_title} S{season_num:02d}")
+            continue
+
+        logger.info(
+            f"Intro found for {show_title} S{season_num:02d}: "
+            f"{intro.start_ms}ms–{intro.end_ms}ms "
+            f"(confidence: {intro.confidence:.0%})"
+        )
+
+        # Write intro markers for all episodes in this season
+        for rating_key, _fp in episodes:
+            if cancel_check and cancel_check():
+                break
+
+            # Check existing marker
+            if not config.intro_detection_overwrite:
+                try:
+                    item = plex.fetchItem(rating_key)
+                    if getattr(item, "hasIntroMarker", False):
+                        logger.debug(
+                            f"Intro marker exists for item {rating_key}, skipping"
+                        )
+                        continue
+                except Exception:
+                    pass
+
+            if config.intro_detection_overwrite:
+                delete_markers(db_path, rating_key, tag_id, "intro")
+
+            write_marker(
+                db_path=db_path,
+                metadata_item_id=rating_key,
+                tag_id=tag_id,
+                marker_type="intro",
+                start_ms=intro.start_ms,
+                end_ms=intro.end_ms,
+                is_final=False,
             )

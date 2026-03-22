@@ -223,6 +223,35 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     "plex_local_videos_path_mapping"
                 )
 
+            # Credits/intro detection settings
+            config.credits_detection_enabled = bool(
+                settings.get("credits_detection_enabled", False)
+            )
+            config.credits_detection_overwrite = bool(
+                settings.get("credits_detection_overwrite", False)
+            )
+            config.credits_scan_last_pct = float(
+                settings.get("credits_scan_last_pct", 25.0)
+            )
+            config.credits_min_duration = float(
+                settings.get("credits_min_duration", 15.0)
+            )
+            config.intro_detection_enabled = bool(
+                settings.get("intro_detection_enabled", False)
+            )
+            config.intro_detection_overwrite = bool(
+                settings.get("intro_detection_overwrite", False)
+            )
+            config.intro_scan_duration_sec = float(
+                settings.get("intro_scan_duration_sec", 600.0)
+            )
+            config.intro_min_duration_sec = float(
+                settings.get("intro_min_duration_sec", 15.0)
+            )
+            config.intro_max_duration_sec = float(
+                settings.get("intro_max_duration_sec", 120.0)
+            )
+
             if config_overrides:
                 for key, value in config_overrides.items():
                     if key == "selected_libraries":

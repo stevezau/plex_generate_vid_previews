@@ -61,6 +61,8 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
+| **Credits Detection** | Automatic "Skip Credits" markers for movies and episodes |
+| **Intro Detection** | Cross-episode audio fingerprinting finds recurring intros |
 | **Radarr/Sonarr** | Webhook integration for auto-processing on import |
 
 ---
