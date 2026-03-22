@@ -1983,9 +1983,11 @@ class TestProactiveDVSkip:
         assert "-filter_hw_device" in first_args
         assert first_args[first_args.index("-filter_hw_device") + 1] == "vk"
 
-        # Native CUDA hwaccel for fast decoding
-        assert "-hwaccel" in first_args
-        assert first_args[first_args.index("-hwaccel") + 1] == "cuda"
+        # CUDA hwaccel must NOT be used for DV content — CUDA decoders
+        # corrupt dual-layer DV frames (green tint / EL artifact).
+        # Software decode is used instead; GPU is still used for tone
+        # mapping via Vulkan/libplacebo.
+        assert "-hwaccel" not in first_args
 
         assert "-threads:v" in first_args
 

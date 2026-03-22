@@ -875,16 +875,19 @@ def generate_images(
         args += ["-threads:v", "1"]
 
         # Hardware acceleration for decoding (before -i flag).
-        # Compatible with both the zscale/tonemap and libplacebo paths:
-        # decoded frames auto-transfer to CPU memory, then hwupload sends
-        # them to the Vulkan device for libplacebo when needed.
+        # Dolby Vision dual-layer content (profiles 7/8) produces green/
+        # corrupted output when decoded by CUDA, VAAPI, or other HW
+        # decoders because they mishandle the DV enhancement layer.
+        # When init_vulkan is True we are on the libplacebo path (DV
+        # content) — skip HW decode and let software handle it.  The GPU
+        # is still used for tone mapping via Vulkan/libplacebo.
         effective_gpu_device_path = (
             gpu_device_path_override
             if gpu_device_path_override is not None
             else gpu_device_path
         )
         use_gpu = effective_gpu is not None
-        if use_gpu:
+        if use_gpu and not init_vulkan:
             if effective_gpu == "NVIDIA":
                 args += ["-hwaccel", "cuda"]
             elif effective_gpu == "WINDOWS_GPU":
@@ -900,6 +903,11 @@ def generate_images(
                     "-vaapi_device",
                     effective_gpu_device_path,
                 ]
+        elif use_gpu and init_vulkan:
+            logger.debug(
+                f"Skipping HW decode for Dolby Vision content ({video_file}); "
+                f"using software decode + Vulkan/libplacebo tone mapping"
+            )
 
         # Add skip_frame option for faster decoding (if safe)
         if use_skip:
