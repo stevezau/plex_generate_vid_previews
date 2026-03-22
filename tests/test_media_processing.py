@@ -1703,9 +1703,9 @@ class TestDetectZscaleColorspaceError:
 
 
 class TestProactiveDVSkip:
-    """Integration test verifying generate_images routes all DV content through libplacebo."""
+    """Integration test verifying DV routing: Profile 5 -> libplacebo, Profile 7/8 -> zscale."""
 
-    def _run_dv_libplacebo_test(
+    def _run_generate(
         self,
         hdr_format_str,
         video_filename,
@@ -1721,8 +1721,9 @@ class TestProactiveDVSkip:
         mock_mediainfo,
         temp_dir,
         mock_config,
+        gpu=None,
     ):
-        """Shared helper: verify a DV file uses libplacebo with Vulkan init."""
+        """Shared helper: run generate_images and return the FFmpeg args."""
         mock_run.return_value = MagicMock(returncode=0)
 
         mock_info = MagicMock()
@@ -1751,36 +1752,14 @@ class TestProactiveDVSkip:
         mock_glob.side_effect = glob_side_effect
 
         success, image_count, hw_used, seconds, speed = generate_images(
-            video_filename, temp_dir, None, None, mock_config
+            video_filename, temp_dir, gpu, None, mock_config
         )
 
         assert success is True
         assert image_count >= 1
         assert mock_popen.call_count == 1
 
-        first_args = mock_popen.call_args_list[0][0][0]
-
-        assert "-init_hw_device" in first_args
-        vulkan_idx = first_args.index("-init_hw_device")
-        assert first_args[vulkan_idx + 1] == "vulkan=vk"
-        assert "-filter_hw_device" in first_args
-        assert first_args[first_args.index("-filter_hw_device") + 1] == "vk"
-
-        assert "-threads:v" in first_args
-        # No GPU passed → no hwaccel flag
-        assert "-hwaccel" not in first_args
-
-        vf_index = first_args.index("-vf")
-        vf_value = first_args[vf_index + 1]
-        assert "libplacebo" in vf_value
-        assert "colorspace=bt709" in vf_value
-        assert "color_primaries=bt709" in vf_value
-        assert "color_trc=bt709" in vf_value
-        assert "hwupload" in vf_value
-        assert "hwdownload" in vf_value
-        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
-        assert "zscale" not in vf_value
-        assert "tonemap=tonemap" not in vf_value
+        return mock_popen.call_args_list[0][0][0]
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -1808,7 +1787,7 @@ class TestProactiveDVSkip:
         mock_config,
     ):
         """DV Profile 5 (no backward compat) should use libplacebo."""
-        self._run_dv_libplacebo_test(
+        args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
             "/test/dv_profile5.mkv",
             mock_detect,
@@ -1825,6 +1804,19 @@ class TestProactiveDVSkip:
             mock_config,
         )
 
+        # Profile 5 must use Vulkan/libplacebo
+        assert "-init_hw_device" in args
+        assert args[args.index("-init_hw_device") + 1] == "vulkan=vk"
+        assert "-filter_hw_device" in args
+        assert "-hwaccel" not in args
+        assert "-skip_frame:v" not in args
+
+        vf = args[args.index("-vf") + 1]
+        assert "libplacebo" in vf
+        assert "hwupload" in vf
+        assert "colorspace=bt709" not in vf
+        assert "zscale" not in vf
+
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
@@ -1835,7 +1827,7 @@ class TestProactiveDVSkip:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_generate_images_dv_profile8_hdr10_uses_libplacebo(
+    def test_generate_images_dv_profile8_hdr10_uses_zscale(
         self,
         mock_detect,
         mock_glob,
@@ -1850,8 +1842,8 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV Profile 8 with HDR10 backward compat should also use libplacebo."""
-        self._run_dv_libplacebo_test(
+        """DV Profile 8 with HDR10 fallback uses zscale/tonemap on the HDR10 base layer."""
+        args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086",
             "/test/dv_profile8_hdr10.mkv",
             mock_detect,
@@ -1868,6 +1860,13 @@ class TestProactiveDVSkip:
             mock_config,
         )
 
+        # Profile 7/8 uses the HDR10 base layer — no libplacebo needed
+        assert "-init_hw_device" not in args
+        vf = args[args.index("-vf") + 1]
+        assert "zscale" in vf
+        assert "tonemap" in vf
+        assert "libplacebo" not in vf
+
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
@@ -1878,7 +1877,7 @@ class TestProactiveDVSkip:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_generate_images_dv_hdr10plus_uses_libplacebo(
+    def test_generate_images_dv_hdr10plus_uses_zscale(
         self,
         mock_detect,
         mock_glob,
@@ -1893,8 +1892,8 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV + HDR10+ (the Severance scenario from #178) should use libplacebo."""
-        self._run_dv_libplacebo_test(
+        """DV + HDR10+ (the Severance scenario from #178) uses zscale via HDR10 base layer."""
+        args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2094 App 4",
             "/test/dv_hdr10plus.mkv",
             mock_detect,
@@ -1911,6 +1910,12 @@ class TestProactiveDVSkip:
             mock_config,
         )
 
+        assert "-init_hw_device" not in args
+        vf = args[args.index("-vf") + 1]
+        assert "zscale" in vf
+        assert "tonemap" in vf
+        assert "libplacebo" not in vf
+
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
@@ -1921,7 +1926,7 @@ class TestProactiveDVSkip:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_dv_with_gpu_uses_vulkan_hwaccel(
+    def test_dv_profile8_with_gpu_uses_cuda_and_zscale(
         self,
         mock_detect,
         mock_glob,
@@ -1936,64 +1941,34 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV on a GPU worker should use native hwaccel + Vulkan for libplacebo."""
-        mock_run.return_value = MagicMock(returncode=0)
-
-        mock_info = MagicMock()
-        mock_info.video_tracks = [
-            MagicMock(
-                hdr_format="Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086"
-            )
-        ]
-        mock_mediainfo.parse.return_value = mock_info
-
-        mock_proc = MagicMock()
-        mock_proc.poll.side_effect = [None, 0]
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        mock_exists.return_value = True
-        mock_file.return_value.readlines.return_value = []
-        mock_detect.return_value = False
-
-        img1 = f"{temp_dir}/img-000001.jpg"
-        ts1 = f"{temp_dir}/0000000000.jpg"
-
-        def glob_side_effect(pattern):
-            if "img*.jpg" in pattern:
-                return [img1]
-            if pattern.endswith("*.jpg"):
-                return [ts1]
-            return []
-
-        mock_glob.side_effect = glob_side_effect
-
-        success, image_count, hw_used, seconds, speed = generate_images(
-            "/test/dv_gpu.mkv", temp_dir, "NVIDIA", None, mock_config
+        """DV Profile 8 on GPU uses CUDA hwaccel + zscale (reads HDR10 base layer)."""
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086",
+            "/test/dv_gpu.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu="NVIDIA",
         )
 
-        assert success is True
-        assert image_count >= 1
+        # Profile 7/8 with HDR10 fallback — standard path with GPU decode
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "cuda"
+        assert "-init_hw_device" not in args
 
-        first_args = mock_popen.call_args_list[0][0][0]
-
-        # Vulkan device for libplacebo
-        assert "-init_hw_device" in first_args
-        assert first_args[first_args.index("-init_hw_device") + 1] == "vulkan=vk"
-        assert "-filter_hw_device" in first_args
-        assert first_args[first_args.index("-filter_hw_device") + 1] == "vk"
-
-        # CUDA hwaccel must NOT be used for DV content — CUDA decoders
-        # corrupt dual-layer DV frames (green tint / EL artifact).
-        # Software decode is used instead; GPU is still used for tone
-        # mapping via Vulkan/libplacebo.
-        assert "-hwaccel" not in first_args
-
-        assert "-threads:v" in first_args
-
-        vf_index = first_args.index("-vf")
-        vf_value = first_args[vf_index + 1]
-        assert "libplacebo" in vf_value
+        vf = args[args.index("-vf") + 1]
+        assert "zscale" in vf
+        assert "tonemap" in vf
+        assert "libplacebo" not in vf
 
 
 class TestLibplaceboFallback:
