@@ -420,6 +420,7 @@ async function loadWorkerConfigCounts(forceRefresh = false) {
         const config = await apiGet('/api/system/config');
         cachedWorkerConfigCounts = normalizeWorkerConfigCounts(config);
         cachedGpuConfig = config.gpu_config || [];
+        renderNoWorkersWarning(config.config_warning || '');
         return cachedWorkerConfigCounts;
     } catch (e) {
         console.warn('Failed to cache worker config counts:', e);
@@ -609,6 +610,33 @@ function updateSystemStatus(status) {
     renderDashboardGpuConfig();
 }
 
+function renderNoWorkersWarning(message) {
+    let banner = document.getElementById('noWorkersWarningBanner');
+    if (!message) {
+        if (banner) banner.classList.add('d-none');
+        return;
+    }
+    if (!banner) {
+        const row = document.createElement('div');
+        row.id = 'noWorkersWarningRow';
+        row.className = 'row';
+        row.innerHTML = `<div class="col-12 mb-3">
+            <div class="alert alert-warning mb-0 d-flex align-items-center" id="noWorkersWarningBanner">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                <span id="noWorkersWarningText"></span>
+            </div>
+        </div>`;
+        const workerSection = document.getElementById('workerStatusContainer');
+        if (workerSection) {
+            workerSection.closest('.row').before(row);
+        }
+        banner = document.getElementById('noWorkersWarningBanner');
+    }
+    const textEl = document.getElementById('noWorkersWarningText');
+    if (textEl) textEl.textContent = message;
+    banner.classList.remove('d-none');
+}
+
 function renderDashboardGpuConfig() {
     const container = document.getElementById('gpuWorkerConfig');
     if (!container) return;
@@ -665,7 +693,7 @@ function renderDashboardGpuConfig() {
             html += `<button type="button" class="btn btn-sm btn-outline-success gpu-scale-btn" onclick="scaleGpuWorkers('${safeDevice}', 1)" title="Add one worker"><i class="bi bi-plus-lg"></i></button>`;
             html += `</span>`;
         } else {
-            html += `<span class="text-muted small">--</span>`;
+            html += `<button type="button" class="btn btn-sm btn-outline-success" onclick="scaleGpuWorkers('${safeDevice}', 1)" title="Enable with 1 worker"><i class="bi bi-power me-1"></i>Enable</button>`;
         }
         html += `</div>`;
     }
@@ -697,22 +725,27 @@ async function scaleGpuWorkers(device, direction) {
         gpuConfig.push(entry);
     }
 
-    const currentWorkers = entry.workers || 0;
-    const newWorkers = Math.max(0, currentWorkers + direction);
-    if (newWorkers === currentWorkers) return;
+    const prevWorkers = entry.workers || 0;
+    const prevEnabled = entry.enabled !== false;
+    const newWorkers = Math.max(0, prevWorkers + direction);
+    if (newWorkers === prevWorkers) return;
     entry.workers = newWorkers;
+    if (newWorkers === 0) {
+        entry.enabled = false;
+    } else if (newWorkers > 0) {
+        entry.enabled = true;
+    }
 
     try {
-        await apiPost('/api/settings', { gpu_config: gpuConfig });
+        const saveResult = await apiPost('/api/settings', { gpu_config: gpuConfig });
         cachedGpuConfig = gpuConfig;
         cachedWorkerConfigCounts = null;
         await loadWorkerConfigCounts(true);
+        renderDashboardGpuConfig();
 
-        const badge = document.querySelector(`.gpu-worker-badge[data-device="${escapeHtml(device)}"]`);
-        if (badge) badge.textContent = String(newWorkers);
-
-        const minusBtn = badge ? badge.previousElementSibling : null;
-        if (minusBtn) minusBtn.disabled = newWorkers <= 0;
+        if (saveResult.warning) {
+            showToast('Warning', saveResult.warning, 'warning');
+        }
 
         const endpoint = direction > 0 ? 'add' : 'remove';
         try {
@@ -732,9 +765,14 @@ async function scaleGpuWorkers(device, direction) {
                 }
             }
         } catch (scaleErr) {
-            showToast('Setting Saved', `GPU workers for ${device} set to ${newWorkers}`, 'success');
+            if (!saveResult.warning) {
+                showToast('Setting Saved', `GPU workers for ${device} set to ${newWorkers}`, 'success');
+            }
         }
     } catch (error) {
+        entry.workers = prevWorkers;
+        entry.enabled = prevEnabled;
+        renderDashboardGpuConfig();
         showToast('Error', `Failed to update GPU workers: ${error.message}`, 'danger');
     }
 }
@@ -1847,7 +1885,7 @@ async function scaleWorkersGlobal(workerType, direction) {
     const settingsKey = settingsKeyForWorkerType(workerType);
 
     try {
-        await apiPost('/api/settings', { [settingsKey]: newCount });
+        const saveResult = await apiPost('/api/settings', { [settingsKey]: newCount });
         cachedWorkerConfigCounts = null;
         await loadWorkerConfigCounts(true);
 
@@ -1856,6 +1894,10 @@ async function scaleWorkersGlobal(workerType, direction) {
         );
         if (badgeEl) badgeEl.textContent = String(newCount);
         refreshWorkerScaleButtons();
+
+        if (saveResult.warning) {
+            showToast('Warning', saveResult.warning, 'warning');
+        }
 
         const endpoint = direction > 0 ? 'add' : 'remove';
         try {
@@ -1875,9 +1917,16 @@ async function scaleWorkersGlobal(workerType, direction) {
                 }
             }
         } catch (scaleErr) {
-            showToast('Setting Saved', `${workerType} workers set to ${newCount}`, 'success');
+            if (!saveResult.warning) {
+                showToast('Setting Saved', `${workerType} workers set to ${newCount}`, 'success');
+            }
         }
     } catch (error) {
+        const badgeEl = document.getElementById(
+            workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
+        );
+        if (badgeEl) badgeEl.textContent = String(currentCount);
+        refreshWorkerScaleButtons();
         showToast('Error', `Failed to update ${workerType} workers: ${error.message}`, 'danger');
     }
 }

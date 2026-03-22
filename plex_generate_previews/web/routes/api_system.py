@@ -92,26 +92,30 @@ def get_config():
                 }
             )
 
-        return jsonify(
-            {
-                "plex_url": config.plex_url or "",
-                "plex_token": "****" if config.plex_token else "",
-                "plex_config_folder": config.plex_config_folder or "",
-                "plex_verify_ssl": config.plex_verify_ssl,
-                "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping
-                or "",
-                "plex_videos_path_mapping": config.plex_videos_path_mapping or "",
-                "thumbnail_interval": config.plex_bif_frame_interval,
-                "thumbnail_quality": config.thumbnail_quality,
-                "regenerate_thumbnails": config.regenerate_thumbnails,
-                "gpu_config": config.gpu_config,
-                "gpu_threads": config.gpu_threads,
-                "cpu_threads": config.cpu_threads,
-                "cpu_fallback_threads": config.fallback_cpu_threads,
-                "ffmpeg_threads": config.ffmpeg_threads,
-                "log_level": config.log_level,
-            }
-        )
+        resp = {
+            "plex_url": config.plex_url or "",
+            "plex_token": "****" if config.plex_token else "",
+            "plex_config_folder": config.plex_config_folder or "",
+            "plex_verify_ssl": config.plex_verify_ssl,
+            "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping
+            or "",
+            "plex_videos_path_mapping": config.plex_videos_path_mapping or "",
+            "thumbnail_interval": config.plex_bif_frame_interval,
+            "thumbnail_quality": config.thumbnail_quality,
+            "regenerate_thumbnails": config.regenerate_thumbnails,
+            "gpu_config": config.gpu_config,
+            "gpu_threads": config.gpu_threads,
+            "cpu_threads": config.cpu_threads,
+            "cpu_fallback_threads": config.fallback_cpu_threads,
+            "ffmpeg_threads": config.ffmpeg_threads,
+            "log_level": config.log_level,
+        }
+        if config.gpu_threads == 0 and config.cpu_threads == 0:
+            resp["config_warning"] = (
+                "No workers configured — jobs will remain pending "
+                "until GPU or CPU workers are added."
+            )
+        return jsonify(resp)
     except Exception as e:
         logger.error(f"Failed to get config: {e}")
         return jsonify({"error": "Failed to retrieve configuration"}), 500

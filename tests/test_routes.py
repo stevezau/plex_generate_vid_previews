@@ -970,6 +970,31 @@ class TestSettingsAPI:
         )
         assert resp.status_code == 200
 
+    def test_save_settings_warns_zero_cpu_and_zero_gpu(self, client):
+        """Saving with both CPU and GPU workers at zero succeeds with a warning."""
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "cpu_threads": 0,
+                "gpu_config": [
+                    {
+                        "device": "/dev/dri/renderD128",
+                        "name": "Test GPU",
+                        "type": "vaapi",
+                        "enabled": True,
+                        "workers": 0,
+                        "ffmpeg_threads": 2,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert "warning" in data
+        assert "pending" in data["warning"].lower()
+
     def test_save_gpu_config_validates_list(self, client):
         """gpu_config must be a list; non-list values are rejected."""
         resp = client.post(

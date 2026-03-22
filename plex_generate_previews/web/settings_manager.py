@@ -5,6 +5,7 @@ Settings are the single source of truth for all application-level
 configuration.  Migration/upgrade logic lives in ``upgrade.py``.
 """
 
+import copy
 import json
 import os
 import threading
@@ -13,6 +14,57 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
+
+
+def _distribute_gpu_threads_into_dict(settings: Dict[str, Any], value: int) -> None:
+    """Distribute a total GPU worker count across enabled GPUs in ``gpu_config``.
+
+    Mutates ``settings`` in place (same rules as ``SettingsManager._distribute_gpu_threads``).
+
+    Args:
+        settings: Settings dict containing ``gpu_config``.
+        value: Total workers to assign across enabled GPUs.
+
+    """
+    raw = settings.get("gpu_config")
+    if not isinstance(raw, list):
+        return
+    config = [e for e in raw if isinstance(e, dict)]
+    enabled = [e for e in config if e.get("enabled", True)]
+    if not enabled:
+        return
+    per_gpu = max(0, value // len(enabled))
+    remainder = max(0, value - per_gpu * len(enabled))
+    for entry in config:
+        if entry.get("enabled", True):
+            entry["workers"] = per_gpu
+            if remainder > 0:
+                entry["workers"] += 1
+                remainder -= 1
+    settings["gpu_config"] = config
+
+
+def preview_settings_after_update(
+    base: Dict[str, Any], updates: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return settings dict after applying the same merge rules as ``SettingsManager.update``.
+
+    Produces the effective configuration state without mutating ``base``.
+
+    Args:
+        base: Current settings (e.g. from ``get_all()``).
+        updates: Incoming partial update (may include ``gpu_threads``).
+
+    Returns:
+        Deep copy of ``base`` with ``updates`` applied.
+
+    """
+    out = copy.deepcopy(base)
+    to_apply = {k: v for k, v in updates.items() if k != "gpu_threads"}
+    out.update(to_apply)
+    if "gpu_threads" in updates:
+        _distribute_gpu_threads_into_dict(out, int(updates["gpu_threads"]))
+    return out
 
 
 class SettingsManager:
@@ -246,22 +298,7 @@ class SettingsManager:
         Must be called while holding ``self._lock``.  Does nothing when
         there are no enabled GPUs or gpu_config is missing/invalid.
         """
-        raw = self._settings.get("gpu_config")
-        if not isinstance(raw, list):
-            return
-        config = [e for e in raw if isinstance(e, dict)]
-        enabled = [e for e in config if e.get("enabled", True)]
-        if not enabled:
-            return
-        per_gpu = max(0, value // len(enabled))
-        remainder = max(0, value - per_gpu * len(enabled))
-        for entry in config:
-            if entry.get("enabled", True):
-                entry["workers"] = per_gpu
-                if remainder > 0:
-                    entry["workers"] += 1
-                    remainder -= 1
-        self._settings["gpu_config"] = config
+        _distribute_gpu_threads_into_dict(self._settings, value)
 
     @property
     def cpu_threads(self) -> int:

@@ -5,6 +5,7 @@ import os
 from flask import jsonify, request
 from loguru import logger
 
+from ...config import validate_processing_thread_totals
 from ..auth import api_token_required, setup_or_auth_required
 from . import api
 from ._helpers import (
@@ -32,6 +33,42 @@ def _reconcile_live_gpu_workers(settings) -> None:
         pool.reconcile_gpu_workers(new_selected)
     except Exception:
         logger.warning("Failed to reconcile GPU workers", exc_info=True)
+
+
+def _auto_pause_if_needed(settings) -> None:
+    """Pause processing when all worker counts drop to zero."""
+    if settings.processing_paused:
+        return
+    settings.processing_paused = True
+    logger.info("Processing auto-paused — no workers configured")
+    try:
+        from ..jobs import get_job_manager
+
+        get_job_manager().emit_processing_paused_changed(True)
+    except Exception:
+        logger.debug("Could not emit pause event", exc_info=True)
+
+
+def _auto_resume_if_needed(settings) -> None:
+    """Resume processing when workers become available again."""
+    settings.processing_paused = False
+    logger.info("Processing auto-resumed — workers available")
+    try:
+        from ..jobs import get_job_manager
+        from .api_jobs import _start_job_async
+
+        jm = get_job_manager()
+        jm.emit_processing_paused_changed(False)
+        for running in jm.get_running_jobs():
+            jm.request_resume(running.id)
+        pending = sorted(
+            jm.get_pending_jobs(),
+            key=lambda j: (j.priority, j.created_at or ""),
+        )
+        for pj in pending:
+            _start_job_async(pj.id, pj.config or {})
+    except Exception:
+        logger.debug("Could not emit resume event", exc_info=True)
 
 
 # ============================================================================
@@ -129,21 +166,36 @@ def save_settings():
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}
 
-    # Sanitize gpu_config: must be a list of dicts with a device key
+    # Sanitize gpu_config: must be a list of dicts with a device key.
+    # Normalize: workers <= 0 forces enabled=false (contradictory state).
     if "gpu_config" in updates:
         raw = updates["gpu_config"]
         if not isinstance(raw, list):
             return jsonify({"error": "gpu_config must be a list"}), 400
-        updates["gpu_config"] = [
-            entry for entry in raw if isinstance(entry, dict) and entry.get("device")
-        ]
+        cleaned = []
+        for entry in raw:
+            if not isinstance(entry, dict) or not entry.get("device"):
+                continue
+            if entry.get("enabled") and (entry.get("workers") or 0) <= 0:
+                entry["enabled"] = False
+                entry["workers"] = 0
+            cleaned.append(entry)
+        updates["gpu_config"] = cleaned
 
+    thread_warning = ""
     if updates:
         settings.update(updates)
         logger.info(f"Settings updated: {list(updates.keys())}")
 
         if "gpu_config" in updates:
             _reconcile_live_gpu_workers(settings)
+
+        ok, thread_warning = validate_processing_thread_totals(settings.get_all())
+        if not ok:
+            logger.warning(thread_warning)
+            _auto_pause_if_needed(settings)
+        elif settings.processing_paused:
+            _auto_resume_if_needed(settings)
 
         # Invalidate the Plex library cache when connection details change
         # so the next libraries request fetches fresh data.
@@ -163,7 +215,10 @@ def save_settings():
                 retention=settings.get("log_retention_count", 5),
             )
 
-    return jsonify({"success": True})
+    result = {"success": True}
+    if thread_warning:
+        result["warning"] = thread_warning
+    return jsonify(result)
 
 
 @api.route("/settings/log-level", methods=["PUT"])

@@ -75,6 +75,33 @@ class TestSettingsManager:
         assert data["test"] == "value"
 
 
+class TestPreviewSettingsAfterUpdate:
+    """preview_settings_after_update matches SettingsManager.update for gpu_threads."""
+
+    def test_gpu_threads_distribution_matches_update(self, tmp_path):
+        from plex_generate_previews.config import validate_processing_thread_totals
+        from plex_generate_previews.web.settings_manager import (
+            SettingsManager,
+            preview_settings_after_update,
+        )
+
+        sm = SettingsManager(config_dir=str(tmp_path))
+        sm.gpu_config = [
+            {"device": "/a", "enabled": True, "workers": 1, "ffmpeg_threads": 2},
+            {"device": "/b", "enabled": True, "workers": 1, "ffmpeg_threads": 2},
+        ]
+        sm.set("cpu_threads", 1)
+        base = sm.get_all()
+        merged = preview_settings_after_update(base, {"gpu_threads": 3})
+        assert validate_processing_thread_totals(merged)[0] is True
+        total = sum(
+            e["workers"]
+            for e in merged["gpu_config"]
+            if isinstance(e, dict) and e.get("enabled", True)
+        )
+        assert total == 3
+
+
 class TestSettingsManagerProperties:
     """Tests for SettingsManager property methods."""
 

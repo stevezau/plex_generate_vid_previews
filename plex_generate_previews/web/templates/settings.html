@@ -809,8 +809,8 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                                title="How many items this GPU processes at the same time. More workers = faster overall, but each worker uses GPU memory. Start with 1 and increase if your GPU can handle it."></i>
                         </label>
                         <input type="number" class="form-control form-control-sm gpu-workers"
-                               data-device="${gpu.device}" min="0" max="16"
-                               value="${workers}" onchange="markDirty()">
+                               data-device="${gpu.device}" min="1" max="16"
+                               value="${workers}" onchange="onGpuWorkersChange(this, '${deviceId}')">
                     </div>
                     <div class="col-md-4 gpu-settings-${deviceId}" ${enabled ? '' : 'style="opacity:0.5;pointer-events:none"'}>
                         <label class="form-label form-label-sm mb-1">FFmpeg Threads
@@ -835,12 +835,33 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
 }
 
 function toggleGpuRow(deviceId) {
+    const toggle = document.getElementById('gpuEnable_' + deviceId);
+    const enabled = toggle.checked;
     const els = document.querySelectorAll('.gpu-settings-' + deviceId);
-    const enabled = document.getElementById('gpuEnable_' + deviceId).checked;
     els.forEach(el => {
         el.style.opacity = enabled ? '1' : '0.5';
         el.style.pointerEvents = enabled ? '' : 'none';
     });
+    if (enabled) {
+        const row = toggle.closest('.card');
+        const workersInput = row.querySelector('.gpu-workers');
+        if (workersInput && (parseInt(workersInput.value) || 0) < 1) {
+            workersInput.value = 1;
+        }
+    }
+}
+
+function onGpuWorkersChange(input, deviceId) {
+    markDirty();
+    const val = parseInt(input.value) || 0;
+    if (val <= 0) {
+        input.value = 0;
+        const toggle = document.getElementById('gpuEnable_' + deviceId);
+        if (toggle && toggle.checked) {
+            toggle.checked = false;
+            toggleGpuRow(deviceId);
+        }
+    }
 }
 
 function collectGpuConfig() {
@@ -850,12 +871,18 @@ function collectGpuConfig() {
         const row = toggle.closest('.card');
         const workersInput = row.querySelector('.gpu-workers');
         const ffmpegInput = row.querySelector('.gpu-ffmpeg-threads');
+        let enabled = toggle.checked;
+        let workers = parseInt(workersInput.value) || 0;
+        if (enabled && workers <= 0) {
+            enabled = false;
+            workers = 0;
+        }
         config.push({
             device: device,
             name: toggle.dataset.gpuName || 'GPU',
             type: toggle.dataset.gpuType || '',
-            enabled: toggle.checked,
-            workers: parseInt(workersInput.value) || 0,
+            enabled: enabled,
+            workers: workers,
             ffmpeg_threads: parseInt(ffmpegInput.value) || 0,
         });
     });
@@ -951,10 +978,14 @@ async function saveAllSettings() {
             job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
         };
 
-        await new SettingsManager().save(settings);
+        const result = await new SettingsManager().save(settings);
 
         isDirty = false;
-        showToast('Settings saved successfully', 'success');
+        if (result.warning) {
+            showToast(result.warning, 'warning');
+        } else {
+            showToast('Settings saved successfully', 'success');
+        }
 
     } catch (error) {
         showToast('Failed to save settings: ' + error.message, 'danger');

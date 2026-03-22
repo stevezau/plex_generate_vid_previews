@@ -24,6 +24,8 @@ from plex_generate_previews.config import (
     plex_path_to_local,
     show_docker_help,
     split_library_selectors,
+    thread_totals_from_ui_settings,
+    validate_processing_thread_totals,
 )
 
 
@@ -762,6 +764,83 @@ class TestLoadConfig:
         assert config.plex_verify_ssl is True
 
     @patch("shutil.which")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    @patch("os.access")
+    @patch("os.statvfs", create=True)
+    @patch("plex_generate_previews.logging_config.setup_logging")
+    def test_load_config_succeeds_when_both_cpu_and_gpu_zero(
+        self,
+        mock_logging,
+        mock_statvfs,
+        mock_access,
+        mock_listdir,
+        mock_isdir,
+        mock_exists,
+        mock_run,
+        mock_which,
+    ):
+        """Both CPU and GPU totals zero must return a valid Config (not crash/exit)."""
+        from plex_generate_previews.config import clear_config_cache
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
+
+        def mock_exists_fn(path):
+            return True
+
+        def mock_listdir_fn(path):
+            if "tmp" in path or path.startswith("/tmp"):
+                return []
+            if path.endswith("/localhost") or (
+                "/localhost" in path and not path.endswith("Media")
+            ):
+                return list("0123456789abcdef")
+            if path.endswith("/Media"):
+                return ["localhost"]
+            return ["Cache", "Media", "Metadata", "Plug-ins", "Logs"]
+
+        mock_exists.side_effect = mock_exists_fn
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = mock_listdir_fn
+        mock_access.return_value = True
+        statvfs_result = MagicMock()
+        statvfs_result.f_frsize = 4096
+        statvfs_result.f_bavail = 1024 * 1024 * 250
+        mock_statvfs.return_value = statvfs_result
+
+        sm = get_settings_manager()
+        sm.apply_changes(
+            {
+                "plex_url": "http://localhost:32400",
+                "plex_token": "test_token",
+                "plex_config_folder": (
+                    "/config/plex/Library/Application Support/Plex Media Server"
+                ),
+                "cpu_threads": 0,
+                "gpu_config": [
+                    {
+                        "device": "/dev/dri/foo",
+                        "name": "GPU",
+                        "type": "vaapi",
+                        "enabled": True,
+                        "workers": 0,
+                        "ffmpeg_threads": 2,
+                    }
+                ],
+            }
+        )
+        clear_config_cache()
+
+        config = load_config()
+        assert config is not None
+        assert config.gpu_threads == 0
+        assert config.cpu_threads == 0
+
+    @patch("shutil.which")
     @patch("plex_generate_previews.logging_config.setup_logging")
     def test_load_config_missing_plex_url(self, mock_logging, mock_which):
         """Test error when PLEX_URL is missing."""
@@ -1486,6 +1565,56 @@ class TestLoadConfig:
         assert "movies" in config.plex_libraries
         assert "tv shows" in config.plex_libraries
         assert "anime" in config.plex_libraries
+
+
+class TestValidateProcessingThreadTotals:
+    """Thread total helpers used by settings API validation."""
+
+    def test_warns_zero_cpu_and_zero_gpu_workers(self):
+        ok, msg = validate_processing_thread_totals(
+            {
+                "cpu_threads": 0,
+                "gpu_config": [
+                    {
+                        "device": "/dev/dri/foo",
+                        "enabled": True,
+                        "workers": 0,
+                    }
+                ],
+            }
+        )
+        assert ok is False
+        assert "pending" in msg.lower()
+
+    def test_accepts_zero_cpu_when_gpu_has_workers(self):
+        ok, msg = validate_processing_thread_totals(
+            {
+                "cpu_threads": 0,
+                "gpu_config": [
+                    {
+                        "device": "/dev/dri/foo",
+                        "enabled": True,
+                        "workers": 1,
+                    }
+                ],
+            }
+        )
+        assert ok is True
+        assert msg == ""
+
+    def test_thread_totals_match_gpu_config_sum(self):
+        gpu_t, cpu_t, fb = thread_totals_from_ui_settings(
+            {
+                "cpu_threads": 2,
+                "gpu_config": [
+                    {"device": "/a", "enabled": True, "workers": 2},
+                    {"device": "/b", "enabled": False, "workers": 5},
+                ],
+            }
+        )
+        assert gpu_t == 2
+        assert cpu_t == 2
+        assert fb == 0
 
 
 class TestDockerHelp:

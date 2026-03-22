@@ -861,7 +861,8 @@ def _validate_thread_config(
         validation_errors: List to append validation errors.
 
     Returns:
-        Tuple of (should_exit, error_message).
+        Tuple of ``(no_workers, message)`` — ``True`` when both CPU and GPU
+        totals are 0 (caller decides how to handle), ``False`` otherwise.
 
     """
     if gpu_threads < 0 or gpu_threads > 32:
@@ -887,11 +888,95 @@ def _validate_thread_config(
     if cpu_threads == 0 and gpu_threads == 0:
         return (
             True,
-            "Both cpu_threads and gpu_threads are 0. "
-            "At least one processing method must be enabled.",
+            "Both cpu_threads and gpu_threads are 0.",
         )
 
     return False, ""
+
+
+def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, int, int]:
+    """Compute ``gpu_threads``, ``cpu_threads``, and ``fallback_cpu_threads`` like ``load_config``.
+
+    Uses the same precedence as ``load_config`` (settings.json, then env, then defaults).
+
+    Args:
+        ui_settings: Settings dict (e.g. merged ``settings.json`` content).
+
+    Returns:
+        Tuple of ``(gpu_threads, cpu_threads, cpu_fallback_threads)``.
+
+    """
+
+    def get_value(settings_key, env_key, default, value_type=str):
+        if settings_key in ui_settings and ui_settings[settings_key] not in (None, ""):
+            val = ui_settings[settings_key]
+            if value_type is bool:
+                return bool(val)
+            if value_type is int:
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    return default
+            return str(val) if val else default
+
+        env_value = os.environ.get(env_key, "")
+        if env_value:
+            if value_type is bool:
+                return env_value.strip().lower() in ("true", "1", "yes")
+            if value_type is int:
+                try:
+                    return int(env_value)
+                except (ValueError, TypeError):
+                    return default
+            return env_value
+
+        return default
+
+    gpu_config = ui_settings.get("gpu_config", [])
+    if isinstance(gpu_config, list):
+        gpu_config = [
+            entry
+            for entry in gpu_config
+            if isinstance(entry, dict) and entry.get("device")
+        ]
+    else:
+        gpu_config = []
+
+    if gpu_config:
+        gpu_threads = sum(
+            entry.get("workers", 0)
+            for entry in gpu_config
+            if entry.get("enabled", True)
+        )
+    else:
+        gpu_threads = get_value("gpu_threads", "GPU_THREADS", 1, int)
+
+    cpu_threads = get_value("cpu_threads", "CPU_THREADS", 1, int)
+    fallback_cpu_threads = get_value(
+        "cpu_fallback_threads", "FALLBACK_CPU_THREADS", 0, int
+    )
+    return gpu_threads, cpu_threads, fallback_cpu_threads
+
+
+def validate_processing_thread_totals(ui_settings: Dict[str, Any]) -> Tuple[bool, str]:
+    """Check whether settings have any processing workers configured.
+
+    Args:
+        ui_settings: Full or merged settings dict.
+
+    Returns:
+        ``(True, "")`` when at least one worker type is > 0, or
+        ``(False, warning_message)`` when both CPU and GPU totals are 0.
+
+    """
+    gpu_t, cpu_t, _ = thread_totals_from_ui_settings(ui_settings)
+    if cpu_t == 0 and gpu_t == 0:
+        return (
+            False,
+            "No workers configured — jobs will remain pending "
+            "until GPU or CPU workers are added.",
+        )
+    return True, ""
 
 
 def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, bool]:
@@ -992,8 +1077,10 @@ def load_config() -> Config:
         Validated configuration object.
 
     Raises:
-        ConfigValidationError: If configuration validation fails.
-        SystemExit: If both CPU and GPU threads are set to 0.
+        ConfigValidationError: If configuration validation fails (e.g. missing
+            required params, invalid ranges).  Note: both CPU and GPU workers
+            being 0 is *not* treated as an error — a warning is logged and a
+            valid Config is returned so the web UI remains usable.
 
     """
     # Load .env file so environment variables are available
@@ -1213,7 +1300,7 @@ def load_config() -> Config:
         tonemap_algorithm,
         validation_errors,
     )
-    should_exit, thread_error = _validate_thread_config(
+    no_workers, _thread_note = _validate_thread_config(
         gpu_threads,
         cpu_threads,
         fallback_cpu_threads,
@@ -1246,16 +1333,16 @@ def load_config() -> Config:
             logger.error(f"   {i}. {error_msg}")
         raise ConfigValidationError(validation_errors)
 
-    # Check if both threads are 0 (requires immediate exit)
-    if should_exit:
-        logger.error(
-            "❌ Configuration Error: Both cpu_threads and gpu_threads are set to 0."
+    # Both CPU and GPU workers are 0 — not fatal; jobs will stay pending until the
+    # user adds workers.  Log a visible warning so it's obvious in the container log.
+    if no_workers:
+        logger.warning(
+            "⚠️  Both cpu_threads and gpu_threads are 0 — "
+            "jobs will remain pending until workers are configured."
         )
-        logger.error("📋 At least one processing method must be enabled.")
         logger.info(
-            "💡 Open the Settings page in the web UI to configure GPU or CPU workers."
+            "💡 Open the Settings page in the web UI to add GPU or CPU workers."
         )
-        sys.exit(1)
 
     config = Config(
         plex_url=plex_url,
