@@ -434,9 +434,15 @@
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    loadSettings().then(() => loadGpuInfo());
-    loadLibraries();
-    loadVersionInfo();
+    // Fire all API calls concurrently to avoid a sequential waterfall.
+    // GPU rendering needs window._gpuConfig from settings, so we start
+    // the GPU status fetch in parallel but render after both resolve.
+    const gpuPromise = fetchGpuStatus();
+    Promise.all([
+        loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
+        loadLibraries(),
+        loadVersionInfo(),
+    ]);
 
     // Track changes
     document.querySelectorAll('input, select').forEach(el => {
@@ -700,11 +706,13 @@ async function loadLibraries() {
     }
 }
 
-async function loadGpuInfo() {
-    try {
-        const response = await fetch('/api/system/status');
-        const data = await response.json();
+function fetchGpuStatus() {
+    return fetch('/api/system/status').then(r => r.json());
+}
 
+async function renderGpuFromFetch(gpuPromise) {
+    try {
+        const data = await gpuPromise;
         document.getElementById('gpuDetecting').classList.add('d-none');
 
         if (data.gpus && data.gpus.length > 0) {
@@ -721,6 +729,11 @@ async function loadGpuInfo() {
             '<div class="alert alert-danger mb-0">' +
             '<i class="bi bi-x-circle me-2"></i>Failed to detect GPUs.</div>';
     }
+}
+
+// Kept for the rescan button which doesn't need parallel loading.
+async function loadGpuInfo() {
+    return renderGpuFromFetch(fetchGpuStatus());
 }
 
 function renderGpuConfigPanel(detectedGpus, savedConfig) {
