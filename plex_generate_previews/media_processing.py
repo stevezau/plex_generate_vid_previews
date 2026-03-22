@@ -800,35 +800,15 @@ def generate_images(
             # For both DV-with-fallback (above) and non-DV HDR, use
             # the zscale/tonemap chain.
             if not use_libplacebo:
-                npl_param = ""
-                maxcll_raw = getattr(
-                    media_info.video_tracks[0],
-                    "maximum_content_light_level",
-                    None,
-                )
-                if maxcll_raw is not None:
-                    try:
-                        maxcll_value = int(str(maxcll_raw).split()[0])
-                        if maxcll_value > 0:
-                            npl_param = f":npl={maxcll_value}"
-                            logger.debug(
-                                f"Using MaxCLL={maxcll_value} as npl for {video_file}"
-                            )
-                    except (ValueError, IndexError):
-                        logger.debug(
-                            f"Could not parse MaxCLL={maxcll_raw!r} for {video_file}; "
-                            f"omitting npl (FFmpeg will auto-detect)"
-                        )
-                else:
-                    logger.debug(
-                        f"No MaxCLL metadata for {video_file}; "
-                        f"omitting npl (FFmpeg will auto-detect)"
-                    )
-
+                # npl=100 (SDR reference white) is the standard value
+                # for PQ-to-linear conversion.  Using MaxCLL here would
+                # normalise all luminance to the content peak, making
+                # typical scene content (50-200 nits) map to tiny linear
+                # values that barely get tone mapped → dark output.
                 vf_parameters = (
                     f"fps=fps={fps_value}:round=up,"
-                    f"zscale=t=linear{npl_param},format=gbrpf32le,"
-                    f"zscale=p=bt709,tonemap=tonemap={config.tonemap_algorithm}:desat=2,"
+                    f"zscale=t=linear:npl=100,format=gbrpf32le,"
+                    f"zscale=p=bt709,tonemap={config.tonemap_algorithm}:desat=0,"
                     f"zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
                 )
 

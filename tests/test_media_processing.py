@@ -2238,7 +2238,7 @@ class TestDVSafeRetryGpuFailure:
 
 
 class TestDynamicNpl:
-    """M7: Test that MaxCLL metadata drives npl in the tonemap filter chain."""
+    """M7: Test that npl is always 100 (SDR reference white) regardless of MaxCLL."""
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -2250,7 +2250,7 @@ class TestDynamicNpl:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_maxcll_present_sets_npl(
+    def test_npl_always_100_with_maxcll(
         self,
         mock_detect,
         mock_glob,
@@ -2265,7 +2265,7 @@ class TestDynamicNpl:
         temp_dir,
         mock_config,
     ):
-        """When MaxCLL is available, npl={maxcll} appears in the zscale filter."""
+        """npl is always 100 (SDR reference) even when MaxCLL is available."""
         mock_run.return_value = MagicMock(returncode=0)
 
         mock_info = MagicMock()
@@ -2304,8 +2304,8 @@ class TestDynamicNpl:
         first_args = mock_popen.call_args_list[0][0][0]
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
-        assert "npl=1000" in vf_value
-        assert "zscale=t=linear:npl=1000" in vf_value
+        assert "npl=100" in vf_value
+        assert "npl=1000" not in vf_value
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -2317,7 +2317,7 @@ class TestDynamicNpl:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_maxcll_absent_omits_npl(
+    def test_npl_always_100_without_maxcll(
         self,
         mock_detect,
         mock_glob,
@@ -2332,7 +2332,7 @@ class TestDynamicNpl:
         temp_dir,
         mock_config,
     ):
-        """When MaxCLL is absent, npl is omitted (FFmpeg auto-detects)."""
+        """npl is always 100 (SDR reference) even when MaxCLL is absent."""
         mock_run.return_value = MagicMock(returncode=0)
 
         mock_info = MagicMock()
@@ -2371,8 +2371,7 @@ class TestDynamicNpl:
         first_args = mock_popen.call_args_list[0][0][0]
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
-        assert "npl=" not in vf_value
-        assert "zscale=t=linear," in vf_value
+        assert "npl=100" in vf_value
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -2384,7 +2383,7 @@ class TestDynamicNpl:
     @patch("time.sleep")
     @patch("plex_generate_previews.media_processing.glob.glob")
     @patch("plex_generate_previews.media_processing._detect_codec_error")
-    def test_maxcll_unparseable_omits_npl(
+    def test_hdr_uses_desat_0(
         self,
         mock_detect,
         mock_glob,
@@ -2399,7 +2398,7 @@ class TestDynamicNpl:
         temp_dir,
         mock_config,
     ):
-        """When MaxCLL is unparseable (e.g. 'N/A'), npl is omitted gracefully."""
+        """HDR filter chain uses desat=0 to preserve colour saturation."""
         mock_run.return_value = MagicMock(returncode=0)
 
         mock_info = MagicMock()
@@ -2438,7 +2437,8 @@ class TestDynamicNpl:
         first_args = mock_popen.call_args_list[0][0][0]
         vf_index = first_args.index("-vf")
         vf_value = first_args[vf_index + 1]
-        assert "npl=" not in vf_value
+        assert "desat=0" in vf_value
+        assert "npl=100" in vf_value
 
 
 class TestDetectDolbyVisionRPUError:
