@@ -584,6 +584,7 @@
         // runs expensive GPU detection subprocesses).
         initDashboard();
         loadDashboardVersionInfo();
+        setTimeout(checkWhatsNew, 2000);
 
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
             new bootstrap.Tooltip(el);

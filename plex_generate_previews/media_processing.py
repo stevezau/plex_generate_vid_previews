@@ -388,17 +388,14 @@ def _detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
 
 
 def _is_dolby_vision(hdr_format: Optional[str]) -> bool:
-    """Detect any Dolby Vision content.
+    """Detect any Dolby Vision content (any profile).
 
-    All Dolby Vision content (with or without a backward-compatible base
-    layer) should be routed through libplacebo for tone mapping.  libplacebo's
-    ``apply_dolbyvision`` option (enabled by default in FFmpeg 8+) correctly
-    handles DV RPU reshaping metadata for all profiles.
+    Used to identify DV content so the caller can choose the correct
+    tone-mapping strategy:
 
-    The zscale/tonemap filter chain cannot properly tone-map DV content
-    because FFmpeg 7+/8 decoders apply DV RPU reshaping by default, changing
-    the decoded pixel values out of standard PQ.  This produces dark or blank
-    thumbnails regardless of which tonemap algorithm is selected.
+    * DV Profile 5 (no backward-compat HDR10 layer) — requires libplacebo.
+    * DV Profile 7/8 (with HDR10 fallback) — the standard zscale/tonemap
+      chain reads the HDR10 base layer and works correctly.
 
     Args:
         hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
@@ -416,8 +413,12 @@ def _is_dolby_vision(hdr_format: Optional[str]) -> bool:
 def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
     """Detect Dolby Vision content without a backward-compatible HDR base layer.
 
-    Used for logging and diagnostics.  DV Profile 5 (and similar) uses IPT-PQ
-    transfer characteristics with no HDR10/HLG fallback.
+    DV Profile 5 (and similar) uses IPT-PQ transfer characteristics with
+    no HDR10/HLG fallback.  These files **must** be processed via
+    libplacebo because there is no HDR10 base layer for zscale/tonemap.
+
+    DV Profile 7/8 (with HDR10 fallback) returns ``False`` here and can
+    safely use the standard zscale/tonemap chain on the HDR10 base layer.
 
     Args:
         hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
@@ -762,41 +763,43 @@ def generate_images(
     if media_info.video_tracks:
         hdr_fmt = media_info.video_tracks[0].hdr_format
         if hdr_fmt != "None" and hdr_fmt is not None:
-            if _is_dolby_vision(hdr_fmt):
-                # Dolby Vision — use libplacebo for proper tone mapping.
-                # libplacebo's apply_dolbyvision (enabled by default in
-                # FFmpeg 8+) correctly reads DV RPU reshaping metadata for
-                # all profiles (5, 7, 8, etc.).  The zscale/tonemap chain
-                # cannot handle DV-reshaped pixels and produces dark/blank
-                # output.  If libplacebo/Vulkan is unavailable, FFmpeg will
-                # fail and the existing DV-safe retry path falls back to
-                # basic fps+scale.
-                dv_detail = (
-                    "no backward-compat base layer"
-                    if _is_dv_no_backward_compat(hdr_fmt)
-                    else "with backward-compat base layer"
-                )
+            if _is_dv_no_backward_compat(hdr_fmt):
+                # Dolby Vision Profile 5 (no HDR10 base layer).
+                # Only libplacebo can handle these — there is no
+                # backward-compat HDR10 stream for zscale/tonemap to
+                # read.  libplacebo's apply_dolbyvision (enabled by
+                # default) applies DV RPU reshaping, outputs BT.2020+PQ,
+                # then tonemapping converts to SDR.
+                #
+                # Constraints for correct output:
+                #  - No filters before hwupload (preserve RPU side-data)
+                #  - No forced colorspace (apply_dolbyvision sets it)
+                #  - No -skip_frame (RPU has inter-frame dependencies)
+                #  - No HW decode (decoders mishandle DV enhancement layer)
                 logger.info(
-                    f"Dolby Vision detected for {video_file} ({dv_detail}); "
+                    f"Dolby Vision Profile 5 detected for {video_file}; "
                     f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                 )
                 use_libplacebo = True
                 vf_parameters = (
-                    f"fps=fps={fps_value}:round=up,"
-                    f"format=yuv420p10,hwupload,"
-                    f"libplacebo=colorspace=bt709:color_primaries=bt709"
-                    f":color_trc=bt709:tonemapping={config.tonemap_algorithm}:format=yuv420p,"
+                    f"hwupload,"
+                    f"libplacebo=tonemapping={config.tonemap_algorithm}"
+                    f":format=yuv420p:fps={fps_value},"
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
-            else:
-                # Non-DV HDR (HDR10, HLG, HDR10+ without DV, etc.) — use
-                # zscale/tonemap to convert to SDR.
-                #
-                # Determine nominal peak luminance (npl) from MediaInfo MaxCLL.
-                # If available, this gives zscale the actual mastering peak so
-                # tonemap can preserve highlight detail.  When absent, omit npl
-                # entirely so FFmpeg 7+ auto-detects from stream side-data
-                # (better than the old hardcoded npl=100 which lost highlights).
+            elif _is_dolby_vision(hdr_fmt):
+                # Dolby Vision Profile 7/8 with HDR10 backward-compat
+                # base layer.  FFmpeg reads the HDR10 base layer by
+                # default, so the standard zscale/tonemap chain works
+                # correctly.  This avoids all libplacebo/RPU complexity.
+                logger.info(
+                    f"Dolby Vision with HDR10 fallback detected for "
+                    f"{video_file}; using HDR10 base layer for tone "
+                    f"mapping (hdr_format={hdr_fmt!r})"
+                )
+            # For both DV-with-fallback (above) and non-DV HDR, use
+            # the zscale/tonemap chain.
+            if not use_libplacebo:
                 npl_param = ""
                 maxcll_raw = getattr(
                     media_info.video_tracks[0],
@@ -805,7 +808,6 @@ def generate_images(
                 )
                 if maxcll_raw is not None:
                     try:
-                        # MediaInfo returns e.g. "1000" or "1000 cd/m2"
                         maxcll_value = int(str(maxcll_raw).split()[0])
                         if maxcll_value > 0:
                             npl_param = f":npl={maxcll_value}"
@@ -875,16 +877,17 @@ def generate_images(
         args += ["-threads:v", "1"]
 
         # Hardware acceleration for decoding (before -i flag).
-        # Compatible with both the zscale/tonemap and libplacebo paths:
-        # decoded frames auto-transfer to CPU memory, then hwupload sends
-        # them to the Vulkan device for libplacebo when needed.
+        # Disabled for DV Profile 5 (init_vulkan=True) because HW
+        # decoders cannot process DV enhancement-layer-only content.
+        # DV Profile 7/8 uses init_vulkan=False and benefits from
+        # HW decode since FFmpeg reads the HDR10 base layer.
         effective_gpu_device_path = (
             gpu_device_path_override
             if gpu_device_path_override is not None
             else gpu_device_path
         )
         use_gpu = effective_gpu is not None
-        if use_gpu:
+        if use_gpu and not init_vulkan:
             if effective_gpu == "NVIDIA":
                 args += ["-hwaccel", "cuda"]
             elif effective_gpu == "WINDOWS_GPU":
@@ -900,9 +903,16 @@ def generate_images(
                     "-vaapi_device",
                     effective_gpu_device_path,
                 ]
+        elif use_gpu and init_vulkan:
+            logger.debug(
+                f"Skipping HW decode for DV Profile 5 ({video_file}); "
+                f"using software decode + Vulkan/libplacebo tone mapping"
+            )
 
-        # Add skip_frame option for faster decoding (if safe)
-        if use_skip:
+        # Add skip_frame option for faster decoding (if safe).
+        # Disabled for DV Profile 5 (init_vulkan) — RPU side-data has
+        # inter-frame dependencies that break with keyframe-only decode.
+        if use_skip and not init_vulkan:
             args += ["-skip_frame:v", "nokey"]
 
         # Add input file and output options

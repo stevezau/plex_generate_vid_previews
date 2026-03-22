@@ -223,3 +223,56 @@ class TestRequeueInterruptedOnStartup:
             max_age_minutes=45
         )
         mock_start_job.assert_called_once_with("job-123", {"foo": "bar"})
+
+
+class TestPrewarmCaches:
+    """Test background cache pre-warming at startup."""
+
+    @patch("plex_generate_previews.web.app._prewarm_caches")
+    def test_prewarm_called_during_create_app(self, mock_prewarm):
+        """create_app invokes _prewarm_caches so GPU/version caches are warm."""
+        import json
+        import os
+
+        from plex_generate_previews.web.app import create_app
+
+        config_dir = "/tmp/test_prewarm"
+        os.makedirs(config_dir, exist_ok=True)
+        auth_file = os.path.join(config_dir, "auth.json")
+        with open(auth_file, "w") as f:
+            json.dump({"token": "test-token-12345678"}, f)
+        settings_file = os.path.join(config_dir, "settings.json")
+        with open(settings_file, "w") as f:
+            json.dump({"setup_complete": True}, f)
+
+        with patch.dict(
+            os.environ,
+            {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
+        ):
+            create_app(config_dir=config_dir)
+            mock_prewarm.assert_called_once()
+
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+    @patch(
+        "plex_generate_previews.web.routes.api_system._get_version_info",
+        return_value={"current_version": "1.0.0"},
+    )
+    @patch("plex_generate_previews.web.routes._helpers._ensure_gpu_cache")
+    def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version):
+        """_prewarm_caches starts threads for GPU and version caches."""
+        import threading
+
+        from plex_generate_previews.web.app import _prewarm_caches
+
+        _prewarm_caches()
+
+        # Wait briefly for daemon threads to finish
+        for t in threading.enumerate():
+            if t.name in ("prewarm-gpu", "prewarm-version"):
+                t.join(timeout=5)
+
+        mock_gpu.assert_called_once()
+        mock_version.assert_called_once()

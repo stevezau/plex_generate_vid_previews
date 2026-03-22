@@ -65,6 +65,13 @@ def webhooks_page():
     return render_template("webhooks.html")
 
 
+@main.route("/bif-viewer")
+@login_required
+def bif_viewer():
+    """BIF thumbnail viewer for troubleshooting preview quality."""
+    return render_template("bif_viewer.html")
+
+
 @main.route("/setup")
 def setup_wizard():
     """Setup wizard page."""

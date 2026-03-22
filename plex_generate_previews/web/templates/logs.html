@@ -93,7 +93,8 @@
 <div class="log-page">
     <div class="log-toolbar bg-dark">
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <div class="btn-group btn-group-sm" role="group" aria-label="Log level">
+            <span id="serverLevelBadge" class="badge bg-secondary me-1" title="Server log level (change in Settings)">…</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Minimum level to show">
                 <button type="button" class="btn btn-outline-secondary log-level-btn" data-level="DEBUG">Debug</button>
                 <button type="button" class="btn btn-outline-info log-level-btn" data-level="INFO">Info</button>
                 <button type="button" class="btn btn-outline-warning log-level-btn" data-level="WARNING">Warning</button>
@@ -164,6 +165,7 @@
     const copyBtn = document.getElementById('logCopyBtn');
     const followPill = document.getElementById('followPill');
     const liveIndicator = document.getElementById('liveIndicator');
+    const serverLevelBadge = document.getElementById('serverLevelBadge');
     const placeholder = document.getElementById('logPlaceholder');
 
     let following = true;   // auto-scroll active
@@ -171,6 +173,7 @@
     let newWhileAway = 0;   // live messages that arrived while not following
     let regexMode = false;
     let currentLevel = 'INFO';
+    let serverLevel = 'INFO';
     let socket = null;
     let oldestTs = '';
     let hasMore = false;
@@ -186,19 +189,57 @@
         CRITICAL: 'log-level-critical',
     };
 
-    // --- Smart level default ---
-    async function resolveDefaultLevel() {
-        const stored = localStorage.getItem(LS_KEY);
-        if (stored && ['DEBUG','INFO','WARNING','ERROR'].includes(stored)) return stored;
+    // --- Server level badge ---
+    const LEVEL_BADGE_CLASS = {
+        DEBUG: 'bg-secondary', INFO: 'bg-info text-dark',
+        WARNING: 'bg-warning text-dark', ERROR: 'bg-danger',
+    };
+
+    const LEVEL_RANK = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+
+    function applyServerLevel(level) {
+        serverLevel = level;
+        serverLevelBadge.textContent = 'Server: ' + level;
+        serverLevelBadge.className = 'badge me-1 ' + (LEVEL_BADGE_CLASS[level] || 'bg-secondary');
+        const minRank = LEVEL_RANK[level] ?? 0;
+        document.querySelectorAll('.log-level-btn').forEach(btn => {
+            const rank = LEVEL_RANK[btn.dataset.level] ?? 0;
+            btn.disabled = rank < minRank;
+            if (rank < minRank) btn.title = 'Below server log level (' + level + ')';
+            else btn.title = '';
+        });
+    }
+
+    async function fetchServerLevel() {
         try {
             const resp = await fetch('/api/settings');
             if (resp.ok) {
                 const data = await resp.json();
-                const serverLevel = (data.log_level || 'INFO').toUpperCase();
-                if (['DEBUG','INFO','WARNING','ERROR'].includes(serverLevel)) return serverLevel;
+                const level = (data.log_level || 'INFO').toUpperCase();
+                if (['DEBUG','INFO','WARNING','ERROR','CRITICAL'].includes(level)) {
+                    applyServerLevel(level);
+                    return level;
+                }
             }
         } catch {}
+        applyServerLevel('INFO');
         return 'INFO';
+    }
+
+    // --- Smart level default ---
+    // Honour the user's localStorage override, but only if the server level
+    // hasn't changed since they set it.  This way, changing the level in
+    // Settings immediately takes effect in the log viewer on next visit.
+    async function resolveDefaultLevel() {
+        const serverLevel = await fetchServerLevel();
+        const stored = localStorage.getItem(LS_KEY);
+        const storedFor = localStorage.getItem(LS_KEY + '_server');
+        if (stored && storedFor === serverLevel && ['DEBUG','INFO','WARNING','ERROR'].includes(stored)) {
+            return stored;
+        }
+        localStorage.removeItem(LS_KEY);
+        localStorage.removeItem(LS_KEY + '_server');
+        return serverLevel;
     }
 
     function setLevelUI(level) {
@@ -464,6 +505,7 @@
             const level = btn.dataset.level;
             setLevelUI(level);
             localStorage.setItem(LS_KEY, level);
+            localStorage.setItem(LS_KEY + '_server', serverLevelBadge.textContent.replace('Server: ', ''));
             if (socket && socket.connected) {
                 socket.emit('set_level', { level: level });
             }

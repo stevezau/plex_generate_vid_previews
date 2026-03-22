@@ -13,6 +13,7 @@ api = Blueprint("api", __name__, url_prefix="/api")
 
 # Import sub-modules to register their route decorators with the blueprints.
 # Order doesn't matter; each module imports `main` or `api` from this package.
+from . import api_bif  # noqa: E402, F401
 from . import api_jobs  # noqa: E402, F401
 from . import api_plex  # noqa: E402, F401
 from . import api_schedules  # noqa: E402, F401
@@ -30,6 +31,6 @@ from ._helpers import (  # noqa: E402, F401
     clear_gpu_cache,
     limiter,
 )
-from .api_system import _fetch_libraries_via_http  # noqa: E402, F401
+from .api_system import _fetch_libraries_via_http, clear_library_cache  # noqa: E402, F401
 from .job_runner import _start_job_async  # noqa: E402, F401
 from .socketio_handlers import register_socketio_handlers  # noqa: E402, F401

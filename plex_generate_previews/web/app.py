@@ -155,6 +155,38 @@ def get_or_create_flask_secret(config_dir: str) -> str:
     return _derive_secret(random_seed, config_dir)
 
 
+def _prewarm_caches() -> None:
+    """Pre-warm GPU detection and version caches in background threads.
+
+    GPU detection runs FFmpeg subprocess tests and can take several seconds.
+    Version checks hit the GitHub API with network timeouts.  Running both
+    eagerly at startup means the first page load returns instantly instead
+    of blocking on these slow operations.
+    """
+    import threading
+
+    def _warm_gpu() -> None:
+        try:
+            from .routes._helpers import _ensure_gpu_cache
+
+            _ensure_gpu_cache()
+            logger.debug("GPU cache pre-warmed")
+        except Exception as exc:
+            logger.debug(f"GPU cache pre-warm failed (non-fatal): {exc}")
+
+    def _warm_version() -> None:
+        try:
+            from .routes.api_system import _get_version_info
+
+            _get_version_info()
+            logger.debug("Version cache pre-warmed")
+        except Exception as exc:
+            logger.debug(f"Version cache pre-warm failed (non-fatal): {exc}")
+
+    threading.Thread(target=_warm_gpu, name="prewarm-gpu", daemon=True).start()
+    threading.Thread(target=_warm_version, name="prewarm-version", daemon=True).start()
+
+
 def _requeue_interrupted_on_startup(config_dir: str) -> None:
     """Auto-requeue jobs that were running or pending when the server last stopped.
 
@@ -437,6 +469,10 @@ def create_app(config_dir: str = None) -> Flask:
 
     # Auto-requeue jobs that were interrupted by the server restart
     _requeue_interrupted_on_startup(config_dir)
+
+    # Pre-warm GPU and version caches in background threads so the first
+    # page load doesn't block on GPU detection or GitHub API calls.
+    _prewarm_caches()
 
     logger.info(f"Flask app created with config_dir: {config_dir}")
 
