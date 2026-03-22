@@ -339,9 +339,10 @@ def bif_search():
         for show_item in hub.get("Metadata", []):
             if len(results) >= _MAX_SEARCH_RESULTS:
                 break
-            show_key = show_item.get("key", "")
-            if not show_key:
+            rating_key = show_item.get("ratingKey", "")
+            if not rating_key:
                 continue
+            show_key = f"/library/metadata/{rating_key}"
             try:
                 episodes = _fetch_show_episodes(
                     plex_url,
