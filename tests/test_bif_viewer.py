@@ -308,6 +308,86 @@ class TestBifFrameEndpoint:
 # ---------------------------------------------------------------------------
 
 
+class TestParseSeasonEpisode:
+    """Test _parse_season_episode() pattern extraction."""
+
+    def test_full_season_episode(self):
+        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+
+        base, season, ep = _parse_season_episode("Rooster Fighter S01E02")
+        assert base == "Rooster Fighter"
+        assert season == 1
+        assert ep == 2
+
+    def test_season_only(self):
+        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+
+        base, season, ep = _parse_season_episode("Breaking Bad S03")
+        assert base == "Breaking Bad"
+        assert season == 3
+        assert ep is None
+
+    def test_no_pattern(self):
+        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+
+        base, season, ep = _parse_season_episode("Inception")
+        assert base == "Inception"
+        assert season is None
+        assert ep is None
+
+    def test_case_insensitive(self):
+        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+
+        base, season, ep = _parse_season_episode("The Wire s02e10")
+        assert base == "The Wire"
+        assert season == 2
+        assert ep == 10
+
+    def test_single_digit(self):
+        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+
+        base, season, ep = _parse_season_episode("Show S1E3")
+        assert base == "Show"
+        assert season == 1
+        assert ep == 3
+
+    def test_pattern_only_returns_original_query(self):
+        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+
+        base, season, ep = _parse_season_episode("S01E05")
+        assert base == "S01E05"
+        assert season == 1
+        assert ep == 5
+
+
+class TestBuildDisplayTitle:
+    """Test _build_display_title() formatting."""
+
+    def test_episode(self):
+        from plex_generate_previews.web.routes.api_bif import _build_display_title
+
+        item = {
+            "type": "episode",
+            "title": "The Caged Bird",
+            "grandparentTitle": "Rooster Fighter",
+            "parentIndex": 1,
+            "index": 2,
+        }
+        assert _build_display_title(item) == "Rooster Fighter S01E02 - The Caged Bird"
+
+    def test_movie_with_year(self):
+        from plex_generate_previews.web.routes.api_bif import _build_display_title
+
+        item = {"type": "movie", "title": "Inception", "year": 2010}
+        assert _build_display_title(item) == "Inception (2010)"
+
+    def test_movie_without_year(self):
+        from plex_generate_previews.web.routes.api_bif import _build_display_title
+
+        item = {"type": "movie", "title": "Memento", "year": ""}
+        assert _build_display_title(item) == "Memento"
+
+
 class TestBifSearchEndpoint:
     def test_requires_auth(self, client):
         resp = client.get("/api/bif/search?q=test")
