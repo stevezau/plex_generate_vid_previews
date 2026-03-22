@@ -295,14 +295,16 @@ class JobDispatcher:
             # 2. Check worker completions and route to trackers
             self._check_completions()
 
-            # 3. Emit periodic worker status updates for all active jobs
+            # 3. Assign items to available workers BEFORE emitting
+            #    updates so the first status emission reflects the newly
+            #    busy worker instead of stale "idle" data.
+            self._assign_tasks()
+
+            # 4. Emit periodic worker status updates for all active jobs
             self._emit_worker_updates()
 
-            # 4. Emit periodic progress updates for active jobs
+            # 5. Emit periodic progress updates for active jobs
             self._emit_progress_updates()
-
-            # 5. Assign items to available workers
-            self._assign_tasks()
 
             # 6. Drain fallback queue if no CPU workers remain
             self._drain_orphaned_fallback_items()
@@ -630,18 +632,55 @@ class JobDispatcher:
                 tracker._last_worker_update = now
 
     def _emit_progress_updates(self) -> None:
-        """Emit periodic progress updates for active trackers."""
+        """Emit periodic progress updates for active trackers.
+
+        Factors in per-file progress from busy workers so the job-level
+        percentage reflects in-progress work instead of staying at 0%
+        until the first file completes.
+        """
         now = time.time()
         with self._trackers_lock:
             active = [t for t in self._trackers.values() if not t.done_event.is_set()]
         for tracker in active:
             if tracker.progress_callback and now - tracker._last_progress_update >= 3.0:
+                # Include fractional progress from workers actively
+                # processing items for this job.
+                in_progress_fraction = self._get_in_progress_fraction(tracker.job_id)
+                effective = tracker.completed + in_progress_fraction
+                percent = (
+                    (effective / tracker.total_items * 100)
+                    if tracker.total_items > 0
+                    else 0
+                )
                 tracker.progress_callback(
                     tracker.completed,
                     tracker.total_items,
                     f"{tracker.library_prefix}{tracker.completed}/{tracker.total_items} completed",
+                    percent_override=percent,
                 )
                 tracker._last_progress_update = now
+
+    def _get_in_progress_fraction(self, job_id: str) -> float:
+        """Sum fractional progress of workers busy on a specific job.
+
+        Each busy worker contributes its per-file progress as a fraction
+        of one item (e.g. a worker at 60% contributes 0.6).
+
+        Args:
+            job_id: Job identifier to match against workers.
+
+        Returns:
+            Sum of fractional item progress across busy workers.
+        """
+        fraction = 0.0
+        for worker in self.worker_pool._snapshot_workers():
+            with self.worker_pool._progress_lock:
+                is_busy = worker.is_busy
+                wjob = worker.current_job_id
+                pct = worker.progress_percent
+            if is_busy and wjob == job_id and pct > 0:
+                fraction += pct / 100.0
+        return fraction
 
     def _build_worker_statuses(self) -> List[dict]:
         """Build the worker status list for the worker_callback."""

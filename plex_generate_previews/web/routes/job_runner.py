@@ -223,9 +223,17 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 else:
                     return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
-            def progress_callback(current: int, total: int, message: str):
+            def progress_callback(
+                current: int,
+                total: int,
+                message: str,
+                percent_override: float = None,
+            ):
                 """Update job progress from processing."""
-                percent = (current / total * 100) if total > 0 else 0
+                if percent_override is not None:
+                    percent = percent_override
+                else:
+                    percent = (current / total * 100) if total > 0 else 0
                 job_manager.update_progress(
                     job_id,
                     percent=percent,

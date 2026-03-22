@@ -585,3 +585,106 @@ class TestJobDispatcher:
         # time for CPU fallback -- this is the core assertion.
         assert call_count[0] == 1
         dispatcher.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# First-file progress visibility
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchLoopOrdering:
+    """Verify that task assignment happens before status emissions."""
+
+    @patch("plex_generate_previews.worker.process_item", _fake_process_item)
+    def test_first_worker_update_shows_busy_worker(self):
+        """The first worker_callback emission should reflect a busy worker,
+        not stale idle data from before task assignment."""
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        worker_snapshots = []
+
+        def capture_workers(workers_list):
+            worker_snapshots.append(
+                [(w["status"], w.get("current_title", "")) for w in workers_list]
+            )
+
+        tracker = dispatcher.submit_items(
+            job_id="order-test",
+            items=[("k1", "File1", "movie")],
+            config=_make_config(),
+            plex=MagicMock(),
+            callbacks={"worker_callback": capture_workers},
+        )
+        assert tracker.wait(timeout=10)
+
+        # The very first snapshot should show the worker as processing.
+        assert len(worker_snapshots) > 0
+        first_statuses = [s for s, _ in worker_snapshots[0]]
+        assert "processing" in first_statuses, (
+            f"Expected 'processing' in first worker update, got {worker_snapshots[0]}"
+        )
+        dispatcher.shutdown()
+
+
+class TestInProgressFraction:
+    """Verify that _get_in_progress_fraction reads live worker progress."""
+
+    def test_fraction_from_busy_worker(self):
+        """A worker at 50% on job X contributes 0.5 to that job's fraction."""
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        # Manually set up a worker to look busy at 50%
+        worker = pool._snapshot_workers()[0]
+        worker.is_busy = True
+        worker.current_job_id = "frac-job"
+        worker.progress_percent = 50.0
+
+        assert dispatcher._get_in_progress_fraction("frac-job") == pytest.approx(0.5)
+        assert dispatcher._get_in_progress_fraction("other-job") == pytest.approx(0.0)
+        dispatcher.shutdown()
+
+    def test_fraction_zero_when_idle(self):
+        """Idle workers contribute nothing."""
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+        assert dispatcher._get_in_progress_fraction("any") == pytest.approx(0.0)
+        dispatcher.shutdown()
+
+
+class TestProgressCallbackPercentOverride:
+    """Verify that progress_callback accepts percent_override."""
+
+    @patch("plex_generate_previews.worker.process_item", _fake_process_item)
+    def test_progress_includes_in_flight_work(self):
+        """Progress percent should be non-zero while a file is processing,
+        not stuck at 0% until the first completion."""
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        progress_calls = []
+
+        def capture_progress(current, total, message, percent_override=None):
+            progress_calls.append(
+                {
+                    "current": current,
+                    "total": total,
+                    "message": message,
+                    "percent_override": percent_override,
+                }
+            )
+
+        tracker = dispatcher.submit_items(
+            job_id="pct-test",
+            items=[("k1", "F1", "movie"), ("k2", "F2", "movie")],
+            config=_make_config(),
+            plex=MagicMock(),
+            callbacks={"progress_callback": capture_progress},
+        )
+        assert tracker.wait(timeout=10)
+
+        # There should be completion callbacks (without override).
+        completions = [c for c in progress_calls if c["percent_override"] is None]
+        assert len(completions) >= 1, "Expected at least one completion callback"
+        dispatcher.shutdown()

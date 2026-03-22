@@ -114,6 +114,12 @@ def run_processing(
                 if not _dispatch_started and on_dispatch_start:
                     on_dispatch_start()
                     _dispatch_started = True
+                    # Emit the initial 0% progress AFTER the job
+                    # transitions to RUNNING so the frontend's
+                    # active-job DOM elements exist before the
+                    # job_progress SocketIO event arrives.
+                    if progress_callback:
+                        progress_callback(0, len(items), f"Starting {library_name}")
 
                 callbacks = {
                     "progress_callback": progress_callback,
@@ -137,6 +143,10 @@ def run_processing(
                 tracker.wait()
                 return tracker.get_result()
             else:
+                # Local pool mode (no dispatcher) — emit initial progress
+                # before starting the pool.
+                if progress_callback:
+                    progress_callback(0, len(items), f"Starting {library_name}")
                 if worker_pool is None:
                     worker_pool = _create_worker_pool()
                 return worker_pool.process_items_headless(
@@ -169,13 +179,6 @@ def run_processing(
                     "No Plex items matched webhook file paths; skipping processing"
                 )
             else:
-                if progress_callback:
-                    progress_callback(
-                        0,
-                        len(webhook_resolution.items),
-                        "Processing webhook-targeted media",
-                    )
-
                 result = _dispatch_items(webhook_resolution.items, "Webhook Targets")
                 total_successful += result["completed"]
                 total_failed += result["failed"]
@@ -220,13 +223,6 @@ def run_processing(
                 )
                 for library_name, count in library_item_counts:
                     logger.info(f"Library queued: {library_name} ({count} items)")
-
-                if progress_callback:
-                    progress_callback(
-                        0,
-                        total_items,
-                        f"Processing all selected libraries ({len(library_item_counts)})",
-                    )
 
                 result = _dispatch_items(all_media_items, "All Libraries")
                 total_successful += result["completed"]

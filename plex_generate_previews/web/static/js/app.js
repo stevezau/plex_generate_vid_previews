@@ -458,6 +458,11 @@ async function loadJobs() {
         // Update active jobs section (supports multiple running jobs)
         const runningJobs = jobs.filter(j => j.status === 'running');
         updateActiveJobs(runningJobs);
+
+        // Replay any progress events that arrived before the DOM was ready.
+        for (const jid of Object.keys(_pendingProgress)) {
+            updateJobProgress(jid, _pendingProgress[jid]);
+        }
     } catch (error) {
         console.error('Failed to load jobs:', error);
         // Show empty state instead of error - jobs list may just be unavailable temporarily
@@ -1202,13 +1207,23 @@ function removeActiveJob(jobId) {
     }
 }
 
+// Cache latest progress per job so events arriving before the active-job
+// DOM card is created can be replayed once loadJobs() renders it.
+const _pendingProgress = {};
+
 function updateJobProgress(jobId, progress) {
     const progressBar = document.getElementById('activeJobProgress-' + jobId);
-    if (progressBar) {
-        const percent = progress.percent.toFixed(1);
-        progressBar.style.width = `${percent}%`;
-        progressBar.textContent = `${percent}%`;
+    if (!progressBar) {
+        // DOM not ready yet — cache for replay after next loadJobs().
+        _pendingProgress[jobId] = progress;
+        return;
     }
+    // DOM is ready — clear any pending cache for this job.
+    delete _pendingProgress[jobId];
+
+    const percent = progress.percent.toFixed(1);
+    progressBar.style.width = `${percent}%`;
+    progressBar.textContent = `${percent}%`;
 
     const itemEl = document.getElementById('activeJobItem-' + jobId);
     if (itemEl && progress.current_item) {
@@ -1224,7 +1239,6 @@ function updateJobProgress(jobId, progress) {
     if (row) {
         const queueBar = row.querySelector('.progress-bar');
         if (queueBar) {
-            const percent = progress.percent.toFixed(1);
             queueBar.style.width = `${percent}%`;
             queueBar.textContent = `${percent}%`;
         }
