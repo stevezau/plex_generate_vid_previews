@@ -162,7 +162,6 @@
 
     let bifPath = '';
     let bifMeta = null;
-    let debounceTimer = null;
 
     // --- Helpers ---
 
@@ -319,6 +318,12 @@
         $('currentTimestamp').textContent = formatTimestamp(index, bifMeta.frame_interval_ms);
         $('previewFrame').src = frameUrl(bifPath, index);
 
+        // Preload adjacent frames for smoother scrubbing
+        const max = bifMeta.frame_count - 1;
+        for (const adj of [index - 1, index + 1]) {
+            if (adj >= 0 && adj <= max) { new Image().src = frameUrl(bifPath, adj); }
+        }
+
         document.querySelectorAll('.grid-thumb.active').forEach(t => t.classList.remove('active'));
         const activeThumb = document.querySelector(`.grid-thumb[data-index="${index}"]`);
         if (activeThumb) {
@@ -364,11 +369,7 @@
     });
 
     $('frameSlider').addEventListener('input', e => {
-        clearTimeout(debounceTimer);
-        const idx = parseInt(e.target.value);
-        $('currentFrame').textContent = idx.toLocaleString();
-        $('currentTimestamp').textContent = formatTimestamp(idx, bifMeta.frame_interval_ms);
-        debounceTimer = setTimeout(() => setFrame(idx), 60);
+        setFrame(parseInt(e.target.value));
     });
 
     $('prevBtn').addEventListener('click', () => setFrame(parseInt($('frameSlider').value) - 1));
