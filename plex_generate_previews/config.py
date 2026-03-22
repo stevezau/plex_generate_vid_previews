@@ -1157,12 +1157,6 @@ def load_config() -> Config:
             f"SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})"
         )
 
-    # Update logging level early so debug statements work
-    if log_level in valid_log_levels:
-        from .logging_config import setup_logging
-
-        setup_logging(log_level)
-
     # Find FFmpeg path
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
