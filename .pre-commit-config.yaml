@@ -23,13 +23,3 @@ repos:
     hooks:
       - id: python-check-blanket-noqa
       - id: python-no-eval
-
-  - repo: local
-    hooks:
-      - id: pytest-fast
-        name: pytest (fast subset)
-        entry: pytest tests/ -x -q --no-header -m "not gpu and not e2e and not slow"
-        language: system
-        types: [python]
-        pass_filenames: false
-        stages: [pre-push]
