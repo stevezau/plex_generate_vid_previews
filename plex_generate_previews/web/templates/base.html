@@ -55,6 +55,18 @@
                             <i class="bi bi-broadcast me-1"></i>Webhooks
                         </a>
                     </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-tools me-1"></i>Tools
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li>
+                                <a class="dropdown-item {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="{{ url_for('main.bif_viewer') }}">
+                                    <i class="bi bi-film me-2"></i>BIF Viewer
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
                 </ul>
                 <ul class="navbar-nav">
                     <li class="nav-item">
