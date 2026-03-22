@@ -145,6 +145,14 @@ def save_settings():
         if "gpu_config" in updates:
             _reconcile_live_gpu_workers(settings)
 
+        # Invalidate the Plex library cache when connection details change
+        # so the next libraries request fetches fresh data.
+        plex_fields = {"plex_url", "plex_token", "plex_verify_ssl"}
+        if plex_fields & updates.keys():
+            from .api_system import clear_library_cache
+
+            clear_library_cache()
+
         log_fields = {"log_level", "log_rotation_size", "log_retention_count"}
         if log_fields & updates.keys():
             from ...logging_config import setup_logging

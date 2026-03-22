@@ -2268,6 +2268,5 @@ function _renderMarkdownBasic(md) {
     return html;
 }
 
-document.addEventListener('DOMContentLoaded', function () {
-    setTimeout(checkWhatsNew, 2000);
-});
+// checkWhatsNew() is called from the dashboard page (index.html) only,
+// to avoid hitting the GitHub API on every page navigation.

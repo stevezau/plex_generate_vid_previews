@@ -36,10 +36,11 @@ def _reset_singletons():
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
-    # Clear GPU detection cache
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    # Clear GPU detection and library caches
+    from plex_generate_previews.web.routes import clear_gpu_cache, clear_library_cache
 
     clear_gpu_cache()
+    clear_library_cache()
     yield
     reset_settings_manager()
     with jobs_mod._job_lock:
@@ -47,6 +48,7 @@ def _reset_singletons():
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
     clear_gpu_cache()
+    clear_library_cache()
 
 
 @pytest.fixture()
@@ -2605,3 +2607,72 @@ class TestParamToBool:
         )
         assert resp.status_code == 200
         assert mock_get.call_args.kwargs["verify"] is False
+
+
+# ---------------------------------------------------------------------------
+# Library cache
+# ---------------------------------------------------------------------------
+
+
+class TestLibraryCache:
+    """Test Plex library caching behaviour."""
+
+    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    def test_libraries_cached_on_second_call(self, mock_fetch, client):
+        """Second call to /api/libraries returns cached data without re-fetching."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+
+        resp1 = client.get("/api/libraries", headers=_api_headers())
+        resp2 = client.get("/api/libraries", headers=_api_headers())
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert resp2.get_json()["libraries"][0]["name"] == "Movies"
+        # Only one fetch — second call served from cache
+        assert mock_fetch.call_count == 1
+
+    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    def test_cache_bypassed_with_explicit_url(self, mock_fetch, client):
+        """Explicit url/token query params bypass the library cache."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+
+        # First call populates cache
+        client.get("/api/libraries", headers=_api_headers())
+        # Second call with explicit overrides should bypass cache
+        client.get(
+            "/api/libraries?url=http://other:32400&token=tok",
+            headers=_api_headers(),
+        )
+        assert mock_fetch.call_count == 2
+
+    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    def test_cache_invalidated_on_plex_url_change(self, mock_fetch, client):
+        """Saving a new plex_url clears the library cache."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+
+        client.get("/api/libraries", headers=_api_headers())
+        assert mock_fetch.call_count == 1
+
+        # Changing plex_url should invalidate the cache
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"plex_url": "http://new-plex:32400"},
+        )
+        client.get("/api/libraries", headers=_api_headers())
+        assert mock_fetch.call_count == 2

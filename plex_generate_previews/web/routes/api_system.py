@@ -440,6 +440,21 @@ def dismiss_whats_new():
     return jsonify({"ok": True})
 
 
+_library_cache: dict = {"result": None, "fetched_at": 0.0}
+_library_cache_lock = threading.Lock()
+_LIBRARY_CACHE_TTL = 300  # 5 minutes
+
+
+def clear_library_cache() -> None:
+    """Reset the Plex library cache.
+
+    Useful for tests and when settings change (e.g. Plex URL updated).
+    """
+    with _library_cache_lock:
+        _library_cache["result"] = None
+        _library_cache["fetched_at"] = 0.0
+
+
 def _fetch_libraries_via_http(
     plex_url: str,
     plex_token: str,
@@ -490,6 +505,9 @@ def get_libraries():
 
     Accepts optional query params 'url' and 'token' to override saved
     settings (used during setup wizard before config is persisted).
+
+    Results are cached for 5 minutes when using saved credentials to
+    avoid hitting the Plex server on every settings page load.
     """
     try:
         import requests as req_lib
@@ -503,6 +521,9 @@ def get_libraries():
         verify_ssl = _param_to_bool(
             request.args.get("verify_ssl"), settings.plex_verify_ssl
         )
+
+        # Track whether explicit overrides were provided (setup wizard)
+        has_overrides = bool(plex_url or plex_token)
 
         if not plex_url or not plex_token:
             plex_url = plex_url or settings.plex_url
@@ -545,11 +566,25 @@ def get_libraries():
                     }
                 ), 400
 
+        # Use cached result when loading with saved credentials (not
+        # during setup wizard where explicit overrides are provided).
+        if not has_overrides:
+            with _library_cache_lock:
+                cached = _library_cache["result"]
+                age = time.monotonic() - _library_cache["fetched_at"]
+            if cached is not None and age < _LIBRARY_CACHE_TTL:
+                return jsonify({"libraries": cached})
+
         libraries = _fetch_libraries_via_http(
             plex_url,
             plex_token,
             verify_ssl=verify_ssl,
         )
+
+        if not has_overrides:
+            with _library_cache_lock:
+                _library_cache["result"] = libraries
+                _library_cache["fetched_at"] = time.monotonic()
 
         return jsonify({"libraries": libraries})
 
