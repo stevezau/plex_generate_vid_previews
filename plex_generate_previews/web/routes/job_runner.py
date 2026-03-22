@@ -51,9 +51,12 @@ def _build_selected_gpus(settings) -> list:
         if entry is not None:
             if not entry.get("enabled", True):
                 continue
+            workers = entry.get("workers", 1)
+            if workers <= 0:
+                continue
             info = dict(g)
             info["ffmpeg_threads"] = entry.get("ffmpeg_threads", 2)
-            info["workers"] = entry.get("workers", 1)
+            info["workers"] = workers
             selected.append((g["type"], device, info))
         else:
             # GPU not in config yet (newly detected); include with defaults
