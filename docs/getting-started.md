@@ -125,7 +125,8 @@ Hardware-accelerated video processing for faster thumbnail generation.
 | **NVIDIA** | Linux | CUDA/NVENC | NVIDIA Container Toolkit |
 | **AMD** | Linux | VAAPI | Device passthrough |
 | **Intel** | Linux | VAAPI/QuickSync | Device passthrough |
-| **All GPUs** | Windows | D3D11VA | Native only |
+| **NVIDIA** | Windows | CUDA | Native only |
+| **AMD/Intel** | Windows | D3D11VA | Native only |
 | **Apple Silicon** | macOS | VideoToolbox | Native only |
 
 > [!NOTE]
@@ -207,12 +208,12 @@ AMD requires proper VAAPI drivers on the host system.
 
 ### Windows (Native Only)
 
-Windows uses D3D11VA hardware acceleration automatically with any GPU (NVIDIA, AMD, or Intel). This requires running the app **natively from source** — Docker Desktop on Windows uses WSL2 (a Linux VM) where D3D11VA is not available.
+Windows uses hardware acceleration automatically: NVIDIA GPUs use CUDA, while AMD and Intel GPUs use D3D11VA. This requires running the app **natively from source** — Docker Desktop on Windows uses WSL2 (a Linux VM) where these accelerators are not available.
 
-**Requirements:** Latest GPU drivers and FFmpeg with D3D11VA support.
+**Requirements:** Latest GPU drivers and FFmpeg with CUDA (NVIDIA) or D3D11VA (AMD/Intel) support.
 
 > [!WARNING]
-> Docker on Windows runs in a Linux VM (WSL2) and cannot access D3D11VA. If you run the Docker image on Windows, processing will use CPU only. For GPU acceleration on Windows, install from source with Python and FFmpeg.
+> Docker on Windows runs in a Linux VM (WSL2) and cannot access CUDA or D3D11VA. If you run the Docker image on Windows, processing will use CPU only. For GPU acceleration on Windows, install from source with Python and FFmpeg.
 
 ### macOS (Native Only)
 

@@ -68,9 +68,11 @@ graph TB
     subgraph Config["Configuration"]
         SM --> B[config.py]
         B --> G[gpu_detection.py]
+        UPG[upgrade.py]
     end
 
     subgraph Workers["Worker Pool"]
+        PROC[processing.py]
         D[worker.py]
         D --> E1[GPU Worker 1]
         D --> E2[GPU Worker 2]
@@ -81,6 +83,7 @@ graph TB
         F[media_processing.py]
         F --> H[FFmpeg]
         F --> I[BIF Generator]
+        BR[bif_reader.py]
     end
 
     subgraph External["External Services"]
@@ -88,8 +91,9 @@ graph TB
         K[plex_client.py]
     end
 
-    JM --> D
+    JM --> PROC
     JM --> G
+    PROC --> D
     D --> F
     K --> J
     L --> B

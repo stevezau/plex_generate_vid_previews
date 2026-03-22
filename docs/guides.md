@@ -423,7 +423,7 @@ No. This tool only generates **video preview thumbnails** (BIF files for timelin
 
 **Does this work on Windows?**
 
-Yes! Windows supports GPU acceleration via D3D11VA, which works with NVIDIA, AMD, and Intel GPUs. Install the latest GPU drivers and it just works.
+Yes! Windows supports GPU acceleration: NVIDIA GPUs use CUDA, and AMD/Intel GPUs use D3D11VA. Install the latest GPU drivers and it just works.
 
 **Can I use this without a GPU?**
 
@@ -475,9 +475,12 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 | HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| All Dolby Vision (Profile 5, 7, 8, etc.) | libplacebo via Vulkan with GPU-accelerated decode ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| Dolby Vision Profile 5 (no backward-compat layer) | libplacebo via Vulkan ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
 
-**Dolby Vision** content uses `libplacebo` for tone mapping because it correctly reads DV RPU reshaping metadata (via `apply_dolbyvision`, enabled by default in FFmpeg 8+). The zscale/tonemap chain cannot handle DV-reshaped pixels and produces dark or blank thumbnails. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires `libplacebo` for tone mapping because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. libplacebo's `apply_dolbyvision` (enabled by default in FFmpeg 8+) handles this correctly. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+
+**Dolby Vision Profile 7/8** (with HDR10 fallback) uses the standard zscale/tonemap chain. FFmpeg reads the HDR10 base layer by default, so no libplacebo or special handling is needed.
 
 **Non-DV HDR** content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.
 
@@ -533,7 +536,7 @@ Use [Authentication Token](getting-started.md#authentication-token).
 
 **Does GPU passthrough work with Docker Desktop on Windows?**
 
-Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, run natively with D3D11VA instead of Docker.
+Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, run natively (CUDA for NVIDIA, D3D11VA for AMD/Intel) instead of Docker.
 
 **Windows: paths in config must use forward slashes**
 

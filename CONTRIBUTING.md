@@ -142,8 +142,11 @@ plex_generate_previews/
 ├── config.py              # Configuration management
 ├── worker.py              # Thread pool workers
 ├── media_processing.py    # FFmpeg, BIF generation
+├── processing.py          # Core processing workflow orchestration
+├── bif_reader.py          # BIF file parsing for viewer
 ├── plex_client.py         # Plex API client
 ├── gpu_detection.py       # GPU discovery
+├── upgrade.py             # Settings migration and schema upgrades
 ├── utils.py               # Path sanitization, Docker detection
 ├── logging_config.py      # Loguru + Rich console setup
 ├── version_check.py       # GitHub release version checking
@@ -225,7 +228,7 @@ See [Development Environment](docs/getting-started.md#development-environment) f
 ## Debugging
 
 ```bash
-LOG_LEVEL=DEBUG python -m plex_generate_previews  # Debug logging
+LOG_LEVEL=DEBUG python -m plex_generate_previews.web.app  # Debug logging
 docker exec -it plex-generate-previews /bin/bash   # Inspect container
 ```
 

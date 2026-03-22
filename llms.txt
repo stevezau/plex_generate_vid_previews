@@ -53,7 +53,8 @@ Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-p
 | NVIDIA   | Linux    | CUDA/NVENC       | `--gpus all`             |
 | AMD      | Linux    | VAAPI            | `--device /dev/dri`      |
 | Intel    | Linux    | QuickSync/VAAPI  | `--device /dev/dri`      |
-| All      | Windows  | D3D11VA          | Native only              |
+| NVIDIA   | Windows  | CUDA             | Native only              |
+| AMD/Intel| Windows  | D3D11VA          | Native only              |
 | Apple    | macOS    | VideoToolbox     | Native only              |
 
 ## Configuration
