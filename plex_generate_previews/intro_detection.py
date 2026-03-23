@@ -222,6 +222,10 @@ def _compare_fingerprints(
     Slides fp2 over fp1 at various offsets and finds runs of matching
     items (where Hamming distance ≤ threshold).
 
+    Complexity: O(max_offset * overlap_length) per pair — pure Python.
+    Acceptable for v1; can be optimized with numpy or Cython if needed
+    for very large seasons.
+
     Args:
         fp1: First fingerprint array.
         fp2: Second fingerprint array.
@@ -352,21 +356,35 @@ def find_common_intro(
     if len(fingerprints) < 2:
         return None
 
-    all_matches: List[MatchRegion] = []
+    # Multi-reference comparison: compare several pairs instead of just
+    # episode[0] vs all others.  This avoids false negatives when the
+    # first episode is a pilot/special with a different intro.
+    # For N episodes, compare pairs: (0,1), (0,2), (1,2), ... up to a
+    # reasonable limit, then vote on the best segment.
+    n = len(fingerprints)
+    pairs = []
+    # Compare first 3 episodes pairwise (up to 3 pairs)
+    for i in range(min(n, 3)):
+        for j in range(i + 1, min(n, 3)):
+            pairs.append((i, j))
+    # Also compare episode 0 vs later episodes for broader coverage
+    for j in range(3, min(n, 6)):
+        pairs.append((0, j))
 
-    # Pairwise comparison (first episode compared to all others)
-    base_key, base_fp = fingerprints[0]
-    for other_key, other_fp in fingerprints[1:]:
-        matches = _compare_fingerprints(base_fp, other_fp)
+    all_matches: List[MatchRegion] = []
+    for i, j in pairs:
+        _, fp_i = fingerprints[i]
+        _, fp_j = fingerprints[j]
+        matches = _compare_fingerprints(fp_i, fp_j)
         all_matches.extend(matches)
 
     if not all_matches:
-        logger.debug("No matching audio segments found across episodes")
+        logger.info("No matching audio segments found across episodes")
         return None
 
     result = _find_best_common_segment(all_matches, min_duration_sec, max_duration_sec)
     if result:
-        logger.debug(
+        logger.info(
             f"Found common intro: {result.start_ms}ms–{result.end_ms}ms "
             f"(confidence: {result.confidence:.0%})"
         )

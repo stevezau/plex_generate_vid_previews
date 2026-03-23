@@ -1758,9 +1758,7 @@ def process_item(
     _video_el = data.find(".//Video")
     _media_type = _video_el.attrib.get("type", "") if _video_el is not None else ""
 
-    # Resolve fingerprint store (passed directly or via config)
-    if fingerprint_store is None:
-        fingerprint_store = getattr(config, "_fingerprint_store", None)
+    # fingerprint_store is passed explicitly through the worker pipeline
 
     def _update_best(result: ProcessingResult) -> None:
         nonlocal best_result
@@ -1956,6 +1954,7 @@ def _run_marker_detection(
     config: Config,
     cancel_check=None,
     fingerprint_store=None,
+    detection_stats: dict = None,
 ) -> None:
     """Run credits detection and/or intro fingerprinting for a media item.
 
@@ -1979,7 +1978,9 @@ def _run_marker_detection(
     # Credits detection (movies + episodes)
     if config.credits_detection_enabled:
         try:
-            _detect_and_write_credits(item_key, media_file, plex, config, cancel_check)
+            _detect_and_write_credits(
+                item_key, media_file, plex, config, cancel_check, detection_stats
+            )
         except CancellationError:
             raise
         except Exception as exc:
@@ -2007,6 +2008,7 @@ def _detect_and_write_credits(
     plex,
     config: Config,
     cancel_check=None,
+    detection_stats: dict = None,
 ) -> None:
     """Detect credits and write marker to Plex database.
 
@@ -2028,7 +2030,11 @@ def _detect_and_write_credits(
         try:
             item = retry_plex_call(plex.fetchItem, rating_key)
             if getattr(item, "hasCreditsMarker", False):
-                logger.debug(f"Credits marker exists for {media_file}, skipping")
+                logger.info(f"Credits marker exists for {media_file}, skipping")
+                if detection_stats is not None:
+                    detection_stats["credits_skipped"] = (
+                        detection_stats.get("credits_skipped", 0) + 1
+                    )
                 return
         except Exception as exc:
             logger.debug(f"Could not check existing markers: {exc}")
@@ -2075,7 +2081,15 @@ def _detect_and_write_credits(
     )
 
     if segment is None:
-        logger.debug(f"No credits detected in {media_file}")
+        logger.info(f"No credits detected in {media_file}")
+        return
+
+    # Skip low-confidence detections to reduce false positives
+    if segment.confidence < 0.5:
+        logger.info(
+            f"Credits detection below confidence threshold for {media_file} "
+            f"({segment.confidence:.0%} < 50%)"
+        )
         return
 
     tag_id = get_marker_tag_id(db_path)
@@ -2095,6 +2109,10 @@ def _detect_and_write_credits(
     )
 
     if success:
+        if detection_stats is not None:
+            detection_stats["credits_written"] = (
+                detection_stats.get("credits_written", 0) + 1
+            )
         logger.info(
             f"Credits marker: {media_file} "
             f"{segment.start_ms}ms–{segment.end_ms}ms "
@@ -2118,31 +2136,29 @@ def _fingerprint_for_intro(
     from .intro_detection import check_fpcalc_available, fingerprint_episode
 
     if not check_fpcalc_available():
-        logger.debug("fpcalc not available, skipping intro fingerprinting")
+        logger.info("fpcalc not available, skipping intro fingerprinting")
         return
 
     rating_key = int(item_key.rstrip("/").split("/")[-1])
 
-    # Check existing markers
-    if not config.intro_detection_overwrite:
-        try:
-            item = retry_plex_call(plex.fetchItem, rating_key)
-            if getattr(item, "hasIntroMarker", False):
-                logger.debug(f"Intro marker exists for {media_file}, skipping")
-                return
-        except Exception:
-            pass
-
-    # Get show title and season number for grouping
+    # Single fetch for both marker check and metadata extraction
     try:
         item = retry_plex_call(plex.fetchItem, rating_key)
-        show_title = getattr(item, "grandparentTitle", None)
-        season_number = getattr(item, "parentIndex", None)
-        if not show_title or season_number is None:
-            logger.debug(f"Cannot determine show/season for {media_file}")
-            return
     except Exception as exc:
         logger.debug(f"Cannot fetch episode metadata for grouping: {exc}")
+        return
+
+    # Check existing markers
+    if not config.intro_detection_overwrite:
+        if getattr(item, "hasIntroMarker", False):
+            logger.info(f"Intro marker exists for {media_file}, skipping")
+            return
+
+    # Get show title and season number for grouping
+    show_title = getattr(item, "grandparentTitle", None)
+    season_number = getattr(item, "parentIndex", None)
+    if not show_title or season_number is None:
+        logger.debug(f"Cannot determine show/season for {media_file}")
         return
 
     fp = fingerprint_episode(

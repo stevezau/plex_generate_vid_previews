@@ -345,8 +345,8 @@ def detect_credits(
     # Scan the last N% of the video
     seek_to = total_duration_sec * (1.0 - config.scan_last_pct / 100.0)
 
-    logger.debug(
-        f"Credits detection: scanning from {seek_to:.0f}s "
+    logger.info(
+        f"Credits scan: scanning from {seek_to:.0f}s "
         f"(last {config.scan_last_pct}% of {total_duration_sec:.0f}s)"
     )
 

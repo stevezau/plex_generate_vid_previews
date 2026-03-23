@@ -173,7 +173,7 @@ def get_marker_tag_id(db_path: str) -> int:
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            "SELECT id FROM tags WHERE tag_type = ? LIMIT 1",
+            "SELECT id FROM tags WHERE tag_type = ? ORDER BY id LIMIT 1",
             (_MARKER_TAG_TYPE,),
         ).fetchone()
         if row is None:

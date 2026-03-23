@@ -97,13 +97,12 @@ def run_processing(
         logger.info("Running in headless mode (no console display)")
 
         # Create fingerprint store for intro detection pass 1.
-        # Attached to config so it flows through the worker pipeline.
+        # Passed explicitly through the worker pipeline (not attached to config).
         fingerprint_store = None
         if getattr(config, "intro_detection_enabled", False):
             from .intro_detection import IntroFingerprintStore
 
             fingerprint_store = IntroFingerprintStore()
-            config._fingerprint_store = fingerprint_store
 
         _dispatch_started = False
 
@@ -144,6 +143,7 @@ def run_processing(
                     "on_item_complete": item_complete_callback,
                     "cancel_check": cancel_check,
                     "pause_check": pause_check,
+                    "fingerprint_store": fingerprint_store,
                 }
                 from .web.jobs import PRIORITY_NORMAL
 
@@ -251,7 +251,16 @@ def run_processing(
 
         # Intro detection pass 2: compare fingerprints within each season
         if fingerprint_store and not cancellation_requested:
-            _process_intro_fingerprints(fingerprint_store, config, plex, cancel_check)
+            if progress_callback:
+                seasons = fingerprint_store.get_seasons()
+                progress_callback(
+                    total_processed,
+                    total_processed,
+                    f"Intro detection: comparing {len(seasons)} season(s)...",
+                )
+            _process_intro_fingerprints(
+                fingerprint_store, config, plex, cancel_check, progress_callback
+            )
 
         generated = aggregate_outcome.get("generated", 0)
         bif_exists = aggregate_outcome.get("skipped_bif_exists", 0)
@@ -335,7 +344,9 @@ def run_processing(
             )
 
 
-def _process_intro_fingerprints(fingerprint_store, config, plex, cancel_check=None):
+def _process_intro_fingerprints(
+    fingerprint_store, config, plex, cancel_check=None, progress_callback=None
+):
     """Intro detection pass 2: compare fingerprints and write markers.
 
     Iterates over each season with 2+ fingerprinted episodes, finds the

@@ -1347,7 +1347,7 @@ function toggleIntroOptions() {
 
 async function loadPlexDbStatus() {
     try {
-        const data = await fetch('/api/system/plex-db-status').then(r => r.json());
+        const data = await apiGet('/api/system/plex-db-status');
         if (!data.safe && data.reason) {
             document.getElementById('plexDbUnsafeWarning').classList.remove('d-none');
             document.getElementById('plexDbUnsafeReason').textContent = data.reason;
