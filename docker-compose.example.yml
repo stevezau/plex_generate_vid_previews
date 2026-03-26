@@ -25,11 +25,9 @@ services:
 
     # --- Intel / AMD GPU (VAAPI) ---
     # Both use /dev/dri passthrough. Verify with: ls -la /dev/dri
+    # GPU device groups (render/video) are auto-detected at startup.
     devices:
       - /dev/dri:/dev/dri
-    # AMD may also need the video group:
-    # group_add:
-    #   - "109"  # video group ID — check with: getent group video
 
     # --- NVIDIA GPU ---
     # Comment out the 'devices' block above and uncomment the deploy block.

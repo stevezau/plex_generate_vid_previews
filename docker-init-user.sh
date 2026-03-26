@@ -1,6 +1,8 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
 # Simplified init-adduser without branding
+# GPU device groups are handled by the base image's init-device-perms
+# service via ATTACHED_DEVICES_PERMS (set in Dockerfile).
 
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}

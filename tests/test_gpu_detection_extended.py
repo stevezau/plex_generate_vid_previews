@@ -8,6 +8,7 @@ and device enumeration using extensive mocking.
 from unittest.mock import MagicMock, patch
 
 from plex_generate_previews.gpu_detection import (
+    _build_gpu_error_detail,
     _detect_windows_gpus,
     _get_ffmpeg_hwaccels,
     _get_gpu_devices,
@@ -816,6 +817,66 @@ class TestCheckDeviceAccess:
         ok, reason = _check_device_access("/dev/dri/renderD999")
         assert ok is False
         assert reason == "not_found"
+
+
+class TestBuildGpuErrorDetail:
+    """Test _build_gpu_error_detail error messages."""
+
+    VAAPI_CONFIG = {"primary": "VAAPI", "fallback": None}
+
+    @patch("os.getgroups", return_value=[1000])
+    @patch("os.stat")
+    @patch("os.access", return_value=False)
+    @patch("os.path.exists", return_value=True)
+    def test_vaapi_permission_denied_no_group_add_advice(
+        self, _exists, _access, mock_stat, _groups
+    ):
+        """Error detail must not suggest --group-add (it doesn't work through gosu)."""
+        mock_stat.return_value = MagicMock(st_gid=105)
+
+        error, detail = _build_gpu_error_detail(
+            "VAAPI", "/dev/dri/renderD128", "/dev/dri/renderD128", self.VAAPI_CONFIG
+        )
+        assert "permission denied" in error.lower()
+        assert "--group-add" not in detail
+        assert "auto-detect" in detail.lower()
+
+    @patch("os.getgroups", return_value=[105])
+    @patch("os.stat")
+    @patch("os.access", return_value=False)
+    @patch("os.path.exists", return_value=True)
+    def test_vaapi_permission_denied_in_group(
+        self, _exists, _access, mock_stat, _groups
+    ):
+        """When already in the device group, suggest checking host permissions."""
+        mock_stat.return_value = MagicMock(st_gid=105)
+
+        error, detail = _build_gpu_error_detail(
+            "VAAPI", "/dev/dri/renderD128", "/dev/dri/renderD128", self.VAAPI_CONFIG
+        )
+        assert "permission denied" in error.lower()
+        assert "host device permissions" in detail.lower()
+
+    @patch("os.stat", side_effect=OSError("no device"))
+    @patch("os.access", return_value=False)
+    @patch("os.path.exists", return_value=True)
+    def test_vaapi_permission_denied_stat_fails(self, _exists, _access, _stat):
+        """Fallback message when stat() fails must not suggest --group-add."""
+        error, detail = _build_gpu_error_detail(
+            "VAAPI", "/dev/dri/renderD128", "/dev/dri/renderD128", self.VAAPI_CONFIG
+        )
+        assert "permission denied" in error.lower()
+        assert "--group-add" not in detail
+
+    @patch("os.access", return_value=False)
+    @patch("os.path.exists", return_value=False)
+    def test_vaapi_device_not_found(self, _exists, _access):
+        """Missing device should suggest --device flag."""
+        error, detail = _build_gpu_error_detail(
+            "VAAPI", "/dev/dri/renderD128", "/dev/dri/renderD128", self.VAAPI_CONFIG
+        )
+        assert "not found" in error.lower()
+        assert "--device" in detail
 
 
 class TestLspciEdgeCases:

@@ -83,7 +83,8 @@ RUN chmod +x /app/wrapper.sh
 
 # Default PUID/PGID (override with environment variables)
 ENV PUID=1000 \
-    PGID=1000
+    PGID=1000 \
+    ATTACHED_DEVICES_PERMS="/dev/dri -type c"
 
 # Tell s6-overlay to preserve environment variables
 ENV S6_KEEP_ENV=1

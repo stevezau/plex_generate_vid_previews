@@ -308,12 +308,11 @@ def _test_hwaccel_functionality(
                         )
 
                         if device_gid not in user_groups:
-                            current_uid = os.getuid()
                             logger.warning(
-                                f"⚠ Solution: Set PGID to {device_gid} to access this device"
+                                "⚠ The container should auto-detect GPU device groups at startup"
                             )
                             logger.warning(
-                                f"⚠ Example: docker run -e PUID={current_uid} -e PGID={device_gid} --device /dev/dri:/dev/dri ..."
+                                "⚠ Verify you are passing --device /dev/dri:/dev/dri (not a single device)"
                             )
                         else:
                             logger.warning(
@@ -327,10 +326,7 @@ def _test_hwaccel_functionality(
                             f"⚠ VAAPI device {device_path} is not accessible (permission denied)"
                         )
                         logger.warning(
-                            "⚠ Solution: Add your user to the 'render' or 'video' group, or set PGID to match the device group"
-                        )
-                        logger.warning(
-                            "⚠ Example: docker run -e PGID=<device_group_id> --device /dev/dri:/dev/dri ..."
+                            "⚠ Verify --device /dev/dri:/dev/dri is passed and the device is readable on the host"
                         )
                 # If device doesn't exist, just skip silently (expected for wrong GPU type)
                 return False
@@ -1090,7 +1086,9 @@ def _build_gpu_error_detail(
                     return (
                         f"VAAPI device {check_path} permission denied",
                         f"Device group is {device_gid} but container runs as groups {user_groups}. "
-                        f"Fix: set PGID={device_gid} or add --group-add {device_gid} to your docker run command.",
+                        f"The container auto-detects GPU device groups at startup. "
+                        f"Verify --device /dev/dri:/dev/dri is passed (not a single sub-device). "
+                        f"Check container startup logs for 'adding' and 'permissions' messages.",
                     )
                 return (
                     f"VAAPI device {check_path} permission denied",
@@ -1100,7 +1098,7 @@ def _build_gpu_error_detail(
             except Exception:
                 return (
                     f"VAAPI device {check_path} permission denied",
-                    "Add your user to the 'render' or 'video' group, or set PGID to match the device group.",
+                    "Verify --device /dev/dri:/dev/dri is passed and the device is readable on the host.",
                 )
         if not accessible and reason == "not_found":
             return (

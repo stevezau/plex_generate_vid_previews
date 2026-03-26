@@ -155,12 +155,23 @@ ls -la /dev/dri
 # Should show: card0, renderD128
 ```
 
-If permission denied:
+The container auto-detects GPU device groups at startup and adds the
+internal user to them. If you still see permission errors, check that you are
+passing the entire `/dev/dri` directory (not a single sub-device):
 
 ```bash
-# Find video group ID
-getent group video
-# Add to Docker: --group-add <gid>
+# Correct — pass the whole directory
+--device /dev/dri:/dev/dri
+
+# Wrong — single device may prevent group auto-detection for other nodes
+--device /dev/dri/renderD128:/dev/dri/renderD128
+```
+
+To debug, find the device group on the host:
+
+```bash
+stat -c '%g' /dev/dri/renderD128
+# Common groups: 'video' (44), 'render' (105) — varies by distro
 ```
 
 ### NVIDIA GPU
@@ -198,13 +209,13 @@ services:
 ```bash
 docker run -d \
   --device /dev/dri:/dev/dri \
-  --group-add video \
   -e PUID=1000 \
   -e PGID=1000 \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
-AMD requires proper VAAPI drivers on the host system.
+AMD requires proper VAAPI drivers on the host system. GPU device groups
+are auto-detected at container startup.
 
 ### Windows (Native Only)
 
