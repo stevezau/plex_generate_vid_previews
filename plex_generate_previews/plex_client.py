@@ -523,6 +523,77 @@ def trigger_plex_partial_scan(
     return scanned
 
 
+VIDEO_EXTENSIONS = frozenset(
+    {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov", ".flv", ".webm"}
+)
+
+
+def _expand_directory_to_media_files(
+    paths: List[str],
+    path_mappings: Optional[List[Dict]] = None,
+) -> List[str]:
+    """Expand directory paths into contained media files; pass file paths through unchanged.
+
+    When a user submits a directory (e.g. a TV series root folder) via the
+    manual trigger or webhook, this walks the directory tree and returns all
+    video files found within it.  Non-directory paths are returned as-is so
+    existing file-path behaviour is preserved.
+
+    Path mappings are applied before the directory check so that a webhook-style
+    path (e.g. ``/data/TV Shows/...``) can resolve to a local directory even
+    when the local mount point differs (e.g. ``/data_16tb/TV Shows/...``).
+
+    Args:
+        paths: Absolute paths that may be files or directories.
+        path_mappings: Optional path-mapping rows from config for resolving
+            webhook/Plex paths to local equivalents.
+
+    Returns:
+        Flat list of file paths with directories replaced by their media files.
+    """
+    expanded: List[str] = []
+    for path in paths:
+        if not isinstance(path, str):
+            expanded.append(path)
+            continue
+
+        candidates = (
+            expand_path_mapping_candidates(path, path_mappings)
+            if path_mappings
+            else [path]
+        )
+        resolved_dir = None
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                resolved_dir = candidate
+                break
+
+        if resolved_dir is not None:
+            media_files = sorted(
+                os.path.join(root, f)
+                for root, _, files in os.walk(resolved_dir, followlinks=True)
+                for f in files
+                if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
+            )
+            if media_files:
+                if resolved_dir != path:
+                    logger.info(f"Mapped directory '{path}' -> '{resolved_dir}'")
+                logger.info(
+                    f"Expanded directory '{resolved_dir}' into "
+                    f"{len(media_files)} media file(s)"
+                )
+                expanded.extend(media_files)
+            else:
+                logger.warning(
+                    f"Directory '{resolved_dir}' contains no recognized media "
+                    f"files; passing through original path as-is"
+                )
+                expanded.append(path)
+        else:
+            expanded.append(path)
+    return expanded
+
+
 @dataclass
 class WebhookResolutionResult:
     """Result of resolving webhook file paths to Plex media items."""
@@ -554,6 +625,7 @@ def get_media_items_by_paths(
 
     """
     mappings = getattr(config, "path_mappings", None) or []
+    file_paths = _expand_directory_to_media_files(file_paths or [], mappings)
     normalized_targets = set()
     input_paths: List[str] = []
     input_to_candidates: Dict[str, List[str]] = {}

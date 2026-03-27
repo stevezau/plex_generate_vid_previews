@@ -5,6 +5,7 @@ Tests Plex server connection, retry logic, library queries,
 and duplicate filtering.
 """
 
+import os
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, call, patch
 
@@ -12,7 +13,9 @@ import pytest
 import requests
 
 from plex_generate_previews.plex_client import (
+    VIDEO_EXTENSIONS,
     WebhookResolutionResult,
+    _expand_directory_to_media_files,
     filter_duplicate_locations,
     get_library_sections,
     get_media_items_by_paths,
@@ -1393,3 +1396,139 @@ class TestGetMediaItemsByPaths:
             "unselected libraries" in str(call).lower()
             for call in mock_warning.call_args_list
         )
+
+
+class TestExpandDirectoryToMediaFiles:
+    """Test directory-to-media-file expansion for manual trigger / webhook paths."""
+
+    def test_video_files_discovered_recursively(self, tmp_path):
+        """Directory with nested season folders expands into all media files."""
+        show_dir = tmp_path / "Show (2024) [tvdb-12345]"
+        s01 = show_dir / "Season 01"
+        s02 = show_dir / "Season 02"
+        s01.mkdir(parents=True)
+        s02.mkdir(parents=True)
+
+        (s01 / "S01E01.mkv").write_text("")
+        (s01 / "S01E02.mp4").write_text("")
+        (s02 / "S02E01.avi").write_text("")
+        (s01 / "S01E01.srt").write_text("")
+        (show_dir / "poster.jpg").write_text("")
+
+        result = _expand_directory_to_media_files([str(show_dir)])
+
+        assert len(result) == 3
+        basenames = [os.path.basename(p) for p in result]
+        assert "S01E01.mkv" in basenames
+        assert "S01E02.mp4" in basenames
+        assert "S02E01.avi" in basenames
+        assert "S01E01.srt" not in basenames
+        assert "poster.jpg" not in basenames
+
+    def test_empty_directory_passes_through(self, tmp_path):
+        """Directory with no media files passes through as-is for downstream error reporting."""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        (empty_dir / "readme.txt").write_text("")
+
+        result = _expand_directory_to_media_files([str(empty_dir)])
+
+        assert result == [str(empty_dir)]
+
+    def test_nonexistent_path_passes_through(self):
+        """Path that doesn't exist on disk passes through unchanged (file or unmapped path)."""
+        fake_path = "/nonexistent/media/Movie (2024)/movie.mkv"
+
+        result = _expand_directory_to_media_files([fake_path])
+
+        assert result == [fake_path]
+
+    def test_file_path_passes_through(self, tmp_path):
+        """An existing file path is returned unchanged (not treated as a directory)."""
+        video = tmp_path / "movie.mkv"
+        video.write_text("")
+
+        result = _expand_directory_to_media_files([str(video)])
+
+        assert result == [str(video)]
+
+    def test_mixed_files_and_directories(self, tmp_path):
+        """Mix of file paths and directory paths expands correctly."""
+        show_dir = tmp_path / "Show"
+        show_dir.mkdir()
+        (show_dir / "S01E01.mkv").write_text("")
+        (show_dir / "S01E02.mkv").write_text("")
+
+        standalone = tmp_path / "movie.mp4"
+        standalone.write_text("")
+
+        result = _expand_directory_to_media_files([str(standalone), str(show_dir)])
+
+        assert len(result) == 3
+        assert result[0] == str(standalone)
+        assert all(os.path.basename(p).endswith(".mkv") for p in result[1:])
+
+    def test_results_are_sorted_within_directory(self, tmp_path):
+        """Media files from a single directory are returned in sorted order."""
+        show_dir = tmp_path / "Show"
+        show_dir.mkdir()
+        (show_dir / "S01E03.mkv").write_text("")
+        (show_dir / "S01E01.mkv").write_text("")
+        (show_dir / "S01E02.mkv").write_text("")
+
+        result = _expand_directory_to_media_files([str(show_dir)])
+
+        basenames = [os.path.basename(p) for p in result]
+        assert basenames == ["S01E01.mkv", "S01E02.mkv", "S01E03.mkv"]
+
+    def test_all_video_extensions_recognized(self, tmp_path):
+        """Every extension in VIDEO_EXTENSIONS is picked up from a directory."""
+        media_dir = tmp_path / "media"
+        media_dir.mkdir()
+        for ext in VIDEO_EXTENSIONS:
+            (media_dir / f"test{ext}").write_text("")
+        (media_dir / "test.txt").write_text("")
+
+        result = _expand_directory_to_media_files([str(media_dir)])
+
+        assert len(result) == len(VIDEO_EXTENSIONS)
+
+    def test_mapped_directory_expanded_via_path_mappings(self, tmp_path):
+        """Directory that only exists under a mapped prefix is expanded."""
+        local_root = tmp_path / "data_16tb" / "TV Shows" / "Show (2024)"
+        s01 = local_root / "Season 01"
+        s01.mkdir(parents=True)
+        (s01 / "S01E01.mkv").write_text("")
+        (s01 / "S01E02.mkv").write_text("")
+
+        mappings = [
+            {
+                "plex_prefix": "/data",
+                "local_prefix": str(tmp_path / "data_16tb"),
+                "webhook_prefixes": [],
+            }
+        ]
+        webhook_path = "/data/TV Shows/Show (2024)"
+
+        result = _expand_directory_to_media_files([webhook_path], mappings)
+
+        assert len(result) == 2
+        basenames = [os.path.basename(p) for p in result]
+        assert "S01E01.mkv" in basenames
+        assert "S01E02.mkv" in basenames
+        assert all(str(tmp_path / "data_16tb") in p for p in result)
+
+    def test_unmapped_nonexistent_directory_passes_through(self):
+        """Path that doesn't exist even after mapping passes through unchanged."""
+        mappings = [
+            {
+                "plex_prefix": "/plex",
+                "local_prefix": "/local",
+                "webhook_prefixes": [],
+            }
+        ]
+        path = "/data/TV Shows/Nonexistent Show"
+
+        result = _expand_directory_to_media_files([path], mappings)
+
+        assert result == [path]
