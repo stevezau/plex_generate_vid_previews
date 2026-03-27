@@ -232,24 +232,26 @@ def _is_hwaccel_available(hwaccel: str) -> bool:
 
 
 def _check_device_access(device_path: str) -> tuple[bool, str]:
-    """Check if a device is accessible (exists and readable).
+    """Check if a device is accessible (exists with read+write permission).
+
+    VAAPI opens render devices with O_RDWR, so both read and write access are
+    required for hardware acceleration to work.
 
     Args:
         device_path: Path to device to check
 
     Returns:
         tuple[bool, str]: (is_accessible, reason) where reason is:
-            'accessible' - device exists and is readable
+            'accessible' - device exists and is read+write accessible
             'not_found' - device does not exist
-            'permission_denied' - device exists but is not readable
+            'permission_denied' - device exists but lacks required permissions
 
     """
     if not os.path.exists(device_path):
         logger.debug(f"✗ Device does not exist: {device_path}")
         return False, "not_found"
 
-    if not os.access(device_path, os.R_OK):
-        # Get device file stats for better diagnostics
+    if not os.access(device_path, os.R_OK | os.W_OK):
         try:
             stat_info = os.stat(device_path)
             import stat as stat_module
@@ -259,13 +261,15 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
             group_gid = stat_info.st_gid
             perms = stat_module.filemode(mode)
 
-            logger.debug(f"✗ Device exists but is not readable: {device_path}")
+            has_read = os.access(device_path, os.R_OK)
+            detail = "read-only" if has_read else "not readable"
+            logger.debug(f"✗ Device exists but is {detail}: {device_path}")
             logger.debug(
                 f"  Device permissions: {perms} (owner={owner_uid}, group={group_gid})"
             )
             logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
         except Exception as e:
-            logger.debug(f"✗ Device exists but is not readable: {device_path}")
+            logger.debug(f"✗ Device exists but is not accessible: {device_path}")
             logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
             logger.debug(f"  Could not get device stats: {e}")
         return False, "permission_denied"
@@ -406,16 +410,30 @@ def _test_hwaccel_functionality(
                 f"✗ {hwaccel} functionality test failed (exit code: {result.returncode})"
             )
 
-            # Show the actual FFmpeg error
             if result.stderr:
-                stderr_text = result.stderr.decode("utf-8", "ignore")
-                stderr_lines = stderr_text.split("\n")[-3:]
-                logger.debug(
-                    f"Error output: {' '.join(line.strip() for line in stderr_lines if line.strip())}"
-                )
-
-                # Add helpful context for common errors
+                stderr_text = result.stderr.decode("utf-8", "ignore").strip()
                 stderr_lower = stderr_text.lower()
+
+                # VAAPI failures directly affect user-visible GPU status — log at WARNING
+                if hwaccel == "vaapi":
+                    logger.warning(
+                        f"⚠ FFmpeg VAAPI test failed on {device_path} "
+                        f"(exit code {result.returncode}):"
+                    )
+                    for line in stderr_text.splitlines()[-15:]:
+                        if line.strip():
+                            logger.warning(f"  {line.rstrip()}")
+
+                    if "permission denied" in stderr_lower:
+                        logger.warning(
+                            "⚠ The container should auto-detect GPU device groups at startup"
+                        )
+                        logger.warning(
+                            "⚠ Verify --device /dev/dri:/dev/dri is passed (not a single device)"
+                        )
+                else:
+                    logger.debug(f"FFmpeg {hwaccel} stderr: {stderr_text[-500:]}")
+
                 if hwaccel == "cuda":
                     if (
                         "/dev/null" in stderr_lower
@@ -427,17 +445,25 @@ def _test_hwaccel_functionality(
                         logger.debug(
                             "      Run with --gpus all or configure nvidia-docker runtime"
                         )
-                elif hwaccel == "vaapi":
-                    if "permission denied" in stderr_lower:
-                        logger.warning("⚠ VAAPI device permission denied")
-                        logger.warning(
-                            "⚠ Add user to 'render' or 'video' group, or adjust PGID"
-                        )
 
             return False
 
-    except subprocess.TimeoutExpired:
-        logger.debug(f"✗ {hwaccel} functionality test timed out")
+    except subprocess.TimeoutExpired as e:
+        logger.warning(
+            f"⚠ {hwaccel} test timed out on {device_path or 'default device'} (>10s)"
+        )
+        if e.stderr:
+            stderr_text = e.stderr.decode("utf-8", "ignore").strip()
+            if stderr_text:
+                logger.warning("⚠ FFmpeg output before hang:")
+                for line in stderr_text.splitlines()[-15:]:
+                    if line.strip():
+                        logger.warning(f"  {line.rstrip()}")
+        if hwaccel == "vaapi" and device_path:
+            logger.warning(
+                f"⚠ Debug: run 'vainfo --display drm --device {device_path}' "
+                f"inside the container to check driver support"
+            )
         return False
     except Exception as e:
         logger.debug(f"✗ {hwaccel} functionality test failed with exception: {e}")
@@ -1104,6 +1130,14 @@ def _build_gpu_error_detail(
             return (
                 f"Device {check_path} not found",
                 "The render device does not exist. Ensure --device /dev/dri:/dev/dri is passed to docker.",
+            )
+        if accessible:
+            return (
+                f"VAAPI test failed on {check_path} (device accessible)",
+                "FFmpeg could not use this device for hardware decoding. "
+                f"Run 'vainfo --display drm --device {check_path}' inside the "
+                "container to check driver support. Check container logs for "
+                "FFmpeg error output.",
             )
 
     # CUDA: likely missing nvidia-docker runtime
