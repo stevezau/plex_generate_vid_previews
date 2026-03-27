@@ -399,7 +399,7 @@ def _test_hwaccel_functionality(
         ]
 
         logger.debug(f"Testing {hwaccel} functionality: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, timeout=20)
 
         # FFmpeg returns 0 for success, 141 for SIGPIPE (which is OK for our test)
         if result.returncode in [0, 141]:
@@ -450,7 +450,7 @@ def _test_hwaccel_functionality(
 
     except subprocess.TimeoutExpired as e:
         logger.warning(
-            f"⚠ {hwaccel} test timed out on {device_path or 'default device'} (>10s)"
+            f"⚠ {hwaccel} test timed out on {device_path or 'default device'} (>20s)"
         )
         if e.stderr:
             stderr_text = e.stderr.decode("utf-8", "ignore").strip()
