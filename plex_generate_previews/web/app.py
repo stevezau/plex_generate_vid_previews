@@ -355,11 +355,13 @@ def create_app(config_dir: str = None) -> Flask:
         "api.rescan_gpus",
         # Libraries
         "api.get_libraries",
-        # Webhooks — external POST from Radarr/Sonarr
+        # Webhooks — external POST from Radarr/Sonarr/Custom
         "webhooks_bp.radarr_webhook",
         "webhooks_bp.sonarr_webhook",
+        "webhooks_bp.custom_webhook",
         "webhooks_bp.get_webhook_history",
         "webhooks_bp.clear_webhook_history",
+        "webhooks_bp.get_pending_webhooks",
     ]
     for _ep in _csrf_exempt_endpoints:
         _view = app.view_functions.get(_ep)

@@ -314,9 +314,16 @@ def _execute_webhook_job(debounce_key: str) -> None:
 @_authenticate_webhook
 def radarr_webhook():
     """Receive Radarr webhook payloads."""
-    data = request.get_json(silent=True)
+    data = request.get_json(force=True, silent=True)
     if not data:
-        logger.warning("Webhook: Radarr request ignored (invalid or missing JSON body)")
+        logger.warning(
+            "Webhook: Radarr request ignored (invalid or missing JSON body) "
+            "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            request.host,
+            request.content_type,
+            request.content_length,
+            request.remote_addr,
+        )
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
     event_type = str(data.get("eventType", "")).strip()
@@ -367,9 +374,16 @@ def radarr_webhook():
 @_authenticate_webhook
 def sonarr_webhook():
     """Receive Sonarr webhook payloads."""
-    data = request.get_json(silent=True)
+    data = request.get_json(force=True, silent=True)
     if not data:
-        logger.warning("Webhook: Sonarr request ignored (invalid or missing JSON body)")
+        logger.warning(
+            "Webhook: Sonarr request ignored (invalid or missing JSON body) "
+            "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            request.host,
+            request.content_type,
+            request.content_length,
+            request.remote_addr,
+        )
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
     event_type = str(data.get("eventType", "")).strip()
@@ -432,9 +446,16 @@ def custom_webhook():
 
     At least one of ``file_path`` or ``file_paths`` is required (unless eventType is "Test").
     """
-    data = request.get_json(silent=True)
+    data = request.get_json(force=True, silent=True)
     if not data:
-        logger.warning("Webhook: Custom request ignored (invalid or missing JSON body)")
+        logger.warning(
+            "Webhook: Custom request ignored (invalid or missing JSON body) "
+            "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            request.host,
+            request.content_type,
+            request.content_length,
+            request.remote_addr,
+        )
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
     event_type = str(data.get("eventType", "")).strip()
