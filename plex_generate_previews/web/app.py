@@ -208,7 +208,16 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
             logger.info("Auto-requeue on restart is disabled")
             return
 
-        max_age = int(settings.get("requeue_max_age_minutes", 60))
+        # A pause from the previous session should not block requeued
+        # jobs — the restart itself signals intent to resume work.
+        if settings.processing_paused:
+            settings.processing_paused = False
+            logger.info(
+                "Cleared processing_paused on startup — "
+                "pausing does not survive restarts"
+            )
+
+        max_age = int(settings.get("requeue_max_age_minutes", 720))
         job_manager = get_job_manager()
         new_jobs = job_manager.requeue_interrupted_jobs(max_age_minutes=max_age)
 

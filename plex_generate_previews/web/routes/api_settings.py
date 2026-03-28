@@ -117,7 +117,7 @@ def get_settings():
             "webhook_retry_delay": settings.get("webhook_retry_delay", 30),
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
-            "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 60),
+            "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
         }
     )
 

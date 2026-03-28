@@ -140,9 +140,9 @@
 
         <div class="mb-3" id="requeueMaxAgeGroup">
             <label for="requeueMaxAge" class="form-label">
-                Max requeue age: <strong><span id="requeueMaxAgeValue">60</span> min</strong>
+                Max requeue age: <strong><span id="requeueMaxAgeValue">720</span> min</strong>
             </label>
-            <input type="range" class="form-range" id="requeueMaxAge" min="5" max="1440" step="5" value="60">
+            <input type="range" class="form-range" id="requeueMaxAge" min="5" max="1440" step="5" value="720">
             <div class="form-text">
                 How old a job can be to qualify for automatic requeue after restart (5 min &ndash; 24 hours).
             </div>
@@ -339,7 +339,7 @@ async function loadWebhookSettings() {
         // Restart recovery settings
         const autoRequeue = data.auto_requeue_on_restart !== false;
         document.getElementById('autoRequeueOnRestart').checked = autoRequeue;
-        const maxAge = Math.min(1440, Math.max(5, parseInt(data.requeue_max_age_minutes, 10) || 60));
+        const maxAge = Math.min(1440, Math.max(5, parseInt(data.requeue_max_age_minutes, 10) || 720));
         document.getElementById('requeueMaxAge').value = maxAge;
         document.getElementById('requeueMaxAgeValue').textContent = maxAge;
         document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
@@ -361,7 +361,7 @@ async function saveWebhookSettings() {
         webhook_retry_count: retryCount,
         webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
         auto_requeue_on_restart: document.getElementById('autoRequeueOnRestart').checked,
-        requeue_max_age_minutes: parseInt(document.getElementById('requeueMaxAge').value, 10) || 60,
+        requeue_max_age_minutes: parseInt(document.getElementById('requeueMaxAge').value, 10) || 720,
     };
 
     const secretVal = document.getElementById('webhookSecret').value;

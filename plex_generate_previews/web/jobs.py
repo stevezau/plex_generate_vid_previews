@@ -390,7 +390,7 @@ class JobManager:
         logger.info(f"Created job {job.id} for library {library_name}")
         return job
 
-    def requeue_interrupted_jobs(self, max_age_minutes: int = 60) -> List[Job]:
+    def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> List[Job]:
         """Create new jobs for any that were interrupted by the last restart.
 
         For each interrupted job (was running or pending when the server
@@ -401,9 +401,11 @@ class JobManager:
         alongside the new clone.
 
         Args:
-            max_age_minutes: Only requeue jobs created within this many
-                minutes of the current time.  Older jobs are considered
-                stale and skipped.  Range: 5 – 1440 (1 day).
+            max_age_minutes: Only requeue jobs whose last activity
+                (``started_at``, falling back to ``created_at``) is
+                within this many minutes of the current time.  Older
+                jobs are considered stale and skipped.
+                Range: 5 – 1440 (1 day).
 
         Returns:
             List of newly created ``Job`` objects ready to be started.
@@ -423,15 +425,18 @@ class JobManager:
                 )
                 continue
 
-            # Check age — skip stale jobs
+            # Check age — skip stale jobs.  Use started_at (when
+            # available) so long-running jobs aren't wrongly considered
+            # "too old" based on their creation timestamp.
             try:
-                created = datetime.fromisoformat(orig.created_at.replace("Z", "+00:00"))
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if created < cutoff:
+                ref_str = orig.started_at or orig.created_at
+                ref_time = datetime.fromisoformat(ref_str.replace("Z", "+00:00"))
+                if ref_time.tzinfo is None:
+                    ref_time = ref_time.replace(tzinfo=timezone.utc)
+                if ref_time < cutoff:
                     logger.debug(
                         f"Skipping requeue of job {orig.id[:8]} — "
-                        f"too old ({orig.created_at})"
+                        f"too old (ref={ref_str})"
                     )
                     continue
             except (ValueError, AttributeError):

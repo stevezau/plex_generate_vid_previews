@@ -362,6 +362,38 @@ class TestRequeueInterruptedJobs:
         assert result == []
         assert jm.get_all_jobs() == [job]
 
+    def test_old_created_at_but_recent_started_at_requeued(self, config_dir):
+        """A long-running job with old created_at but recent started_at is requeued."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Long Runner")
+        job.created_at = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        job.started_at = (
+            datetime.now(timezone.utc) - timedelta(minutes=10)
+        ).isoformat()
+        job.status = JobStatus.FAILED
+        job.error = "Job was interrupted by server restart"
+        jm._interrupted_jobs = [job]
+
+        result = jm.requeue_interrupted_jobs(max_age_minutes=60)
+
+        assert len(result) == 1
+        assert result[0].library_name == "Long Runner"
+
+    def test_stale_started_at_also_skipped(self, config_dir):
+        """Jobs whose started_at is also past the max age are skipped."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Very Old Runner")
+        job.created_at = (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+        job.started_at = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        job.status = JobStatus.FAILED
+        jm._interrupted_jobs = [job]
+
+        result = jm.requeue_interrupted_jobs(max_age_minutes=60)
+
+        assert result == []
+
     def test_pending_job_cancelled_and_requeued(self, config_dir):
         """Pending jobs are cancelled and replaced by a fresh pending clone."""
         os.makedirs(config_dir, exist_ok=True)

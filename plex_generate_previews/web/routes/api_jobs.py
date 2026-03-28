@@ -739,6 +739,14 @@ def reprocess_job(job_id):
         config=new_config,
         priority=job.priority,
     )
+    from ..settings_manager import get_settings_manager
+
+    sm = get_settings_manager()
+    if sm.processing_paused:
+        sm.processing_paused = False
+        job_manager.emit_processing_paused_changed(False)
+        logger.info("Processing auto-resumed — user requested reprocess")
+
     _start_job_async(new_job.id, new_job.config)
     return jsonify(new_job.to_dict()), 201
 

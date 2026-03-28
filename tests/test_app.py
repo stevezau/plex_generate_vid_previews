@@ -224,6 +224,30 @@ class TestRequeueInterruptedOnStartup:
         )
         mock_start_job.assert_called_once_with("job-123", {"foo": "bar"})
 
+    @patch("plex_generate_previews.web.routes._start_job_async")
+    @patch("plex_generate_previews.web.app.get_job_manager")
+    @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
+    def test_processing_paused_cleared_on_startup(
+        self, mock_get_settings_manager, mock_get_job_manager, mock_start_job
+    ):
+        """processing_paused is cleared on restart so requeued jobs can start."""
+        sm = mock_get_settings_manager.return_value
+        sm.get.side_effect = lambda key, default=None: {
+            "auto_requeue_on_restart": True,
+            "requeue_max_age_minutes": 720,
+        }.get(key, default)
+        sm.processing_paused = True
+
+        requeued_job = type("RequeuedJob", (), {"id": "job-456", "config": {}})()
+        mock_get_job_manager.return_value.requeue_interrupted_jobs.return_value = [
+            requeued_job
+        ]
+
+        _requeue_interrupted_on_startup("/tmp/config")
+
+        assert sm.processing_paused is False
+        mock_start_job.assert_called_once_with("job-456", {})
+
 
 class TestPrewarmCaches:
     """Test background cache pre-warming at startup."""
