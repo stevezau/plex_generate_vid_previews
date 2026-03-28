@@ -391,24 +391,22 @@ class JobManager:
         return job
 
     def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> List[Job]:
-        """Create new jobs for any that were interrupted by the last restart.
+        """Revive jobs that were interrupted by the last restart.
 
-        For each interrupted job (was running or pending when the server
-        stopped), a **new** job is created with the same configuration.
-        The original job is left in history for auditability.
-
-        Pending jobs that are superseded are cancelled so they don't run
-        alongside the new clone.
+        Each interrupted job is restored to ``PENDING`` in place (same
+        job ID, same ``created_at``) so it can be restarted.  No new
+        jobs are created.  The library will be re-scanned on start and
+        items that already have previews are skipped automatically.
 
         Args:
-            max_age_minutes: Only requeue jobs whose last activity
+            max_age_minutes: Only revive jobs whose last activity
                 (``started_at``, falling back to ``created_at``) is
                 within this many minutes of the current time.  Older
-                jobs are considered stale and skipped.
+                jobs are considered stale and left as-is.
                 Range: 5 – 1440 (1 day).
 
         Returns:
-            List of newly created ``Job`` objects ready to be started.
+            List of revived ``Job`` objects ready to be started.
 
         """
         if not self._interrupted_jobs:
@@ -416,77 +414,48 @@ class JobManager:
 
         max_age_minutes = max(5, min(1440, max_age_minutes))
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
-        requeued: List[Job] = []
+        revived: List[Job] = []
 
-        for orig in self._interrupted_jobs:
-            if (orig.config or {}).get("requeued_from"):
-                logger.debug(
-                    f"Skipping requeue of job {orig.id[:8]} - already requeued"
-                )
-                continue
-
+        for job in self._interrupted_jobs:
             # Check age — skip stale jobs.  Use started_at (when
             # available) so long-running jobs aren't wrongly considered
             # "too old" based on their creation timestamp.
             try:
-                ref_str = orig.started_at or orig.created_at
+                ref_str = job.started_at or job.created_at
                 ref_time = datetime.fromisoformat(ref_str.replace("Z", "+00:00"))
                 if ref_time.tzinfo is None:
                     ref_time = ref_time.replace(tzinfo=timezone.utc)
                 if ref_time < cutoff:
                     logger.debug(
-                        f"Skipping requeue of job {orig.id[:8]} — "
-                        f"too old (ref={ref_str})"
+                        f"Skipping revive of job {job.id[:8]} — too old (ref={ref_str})"
                     )
                     continue
             except (ValueError, AttributeError):
                 # Can't parse date — skip to be safe
                 continue
 
-            # Clone config, stripping retry metadata so it starts fresh
-            new_config = dict(orig.config or {})
-            for key in (
-                "is_retry",
-                "retry_delay",
-                "retry_attempt",
-                "max_retries",
-                "parent_job_id",
-            ):
-                new_config.pop(key, None)
-            new_config["requeued_from"] = orig.id
+            # Revive the job in place — same ID, same created_at
+            with self._lock:
+                job.status = JobStatus.PENDING
+                job.error = None
+                job.completed_at = None
+                job.paused = False
+                job.progress = JobProgress()
 
-            # Cancel stale pending jobs so they don't also run
-            if orig.status == JobStatus.PENDING:
-                with self._lock:
-                    orig.status = JobStatus.CANCELLED
-                    orig.error = "Superseded by auto-requeue after restart"
-                    orig.completed_at = datetime.now(timezone.utc).isoformat()
-
-            # Create the new job, preserving original priority
-            new_job = self.create_job(
-                library_id=orig.library_id,
-                library_name=orig.library_name,
-                config=new_config,
-                priority=orig.priority,
-            )
             self.add_log(
-                new_job.id,
-                f"INFO - Auto-requeued: original job {orig.id[:8]} was "
-                f"interrupted by server restart",
+                job.id,
+                "INFO - Job revived after server restart; processing will resume.",
             )
-            requeued.append(new_job)
-            logger.info(
-                f"Requeued job {orig.id[:8]} as {new_job.id[:8]} ({orig.library_name})"
-            )
+            revived.append(job)
+            logger.info(f"Revived interrupted job {job.id[:8]} ({job.library_name})")
 
-        # Persist the cancelled pending jobs
-        if requeued:
+        if revived:
             with self._lock:
                 self._save_jobs()
 
         # Clear the list so it's not processed again
         self._interrupted_jobs = []
-        return requeued
+        return revived
 
     def get_job(self, job_id: str) -> Optional[Job]:
         """Get a job by ID."""

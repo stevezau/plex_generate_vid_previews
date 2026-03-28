@@ -336,7 +336,7 @@ class TestCompleteJobWarning:
 
 
 class TestRequeueInterruptedJobs:
-    """Interrupted job recovery creates clean replacement jobs."""
+    """Interrupted job recovery revives the original job in place."""
 
     def test_no_interrupted_returns_empty(self, config_dir):
         """No interrupted jobs means no new jobs are created."""
@@ -362,8 +362,8 @@ class TestRequeueInterruptedJobs:
         assert result == []
         assert jm.get_all_jobs() == [job]
 
-    def test_old_created_at_but_recent_started_at_requeued(self, config_dir):
-        """A long-running job with old created_at but recent started_at is requeued."""
+    def test_old_created_at_but_recent_started_at_revived(self, config_dir):
+        """A long-running job with old created_at but recent started_at is revived."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(library_name="Long Runner")
@@ -378,7 +378,9 @@ class TestRequeueInterruptedJobs:
         result = jm.requeue_interrupted_jobs(max_age_minutes=60)
 
         assert len(result) == 1
-        assert result[0].library_name == "Long Runner"
+        assert result[0] is job
+        assert job.status == JobStatus.PENDING
+        assert job.error is None
 
     def test_stale_started_at_also_skipped(self, config_dir):
         """Jobs whose started_at is also past the max age are skipped."""
@@ -394,8 +396,8 @@ class TestRequeueInterruptedJobs:
 
         assert result == []
 
-    def test_pending_job_cancelled_and_requeued(self, config_dir):
-        """Pending jobs are cancelled and replaced by a fresh pending clone."""
+    def test_pending_job_revived_in_place(self, config_dir):
+        """Pending jobs are returned as-is, still pending."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(
@@ -406,87 +408,35 @@ class TestRequeueInterruptedJobs:
         result = jm.requeue_interrupted_jobs()
 
         assert len(result) == 1
-        replacement = result[0]
-        assert job.status == JobStatus.CANCELLED
-        assert job.error == "Superseded by auto-requeue after restart"
-        assert job.completed_at is not None
-        assert replacement.id != job.id
-        assert replacement.status == JobStatus.PENDING
-        assert replacement.library_name == "Pending Job"
-        assert replacement.config["selected_libraries"] == ["1"]
+        assert result[0] is job
+        assert job.status == JobStatus.PENDING
+        assert job.error is None
+        assert job.library_name == "Pending Job"
+        assert job.config["selected_libraries"] == ["1"]
 
-    def test_running_job_requeued(self, config_dir):
-        """Interrupted running jobs that were marked failed get a fresh clone."""
+    def test_failed_job_revived_in_place(self, config_dir):
+        """Interrupted running jobs (marked failed) are revived to pending."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(library_name="Interrupted Job")
+        original_id = job.id
+        original_created = job.created_at
         job.status = JobStatus.FAILED
         job.error = "Job was interrupted by server restart"
+        job.completed_at = datetime.now(timezone.utc).isoformat()
         jm._interrupted_jobs = [job]
 
         result = jm.requeue_interrupted_jobs()
 
         assert len(result) == 1
-        replacement = result[0]
-        assert job.status == JobStatus.FAILED
-        assert replacement.id != job.id
-        assert replacement.library_name == "Interrupted Job"
-        assert replacement.status == JobStatus.PENDING
-
-    def test_config_cloned_without_retry_metadata(self, config_dir):
-        """Retry metadata is stripped while normal config is preserved."""
-        os.makedirs(config_dir, exist_ok=True)
-        jm = JobManager(config_dir=config_dir)
-        job = jm.create_job(
-            library_name="Retry Job",
-            config={
-                "selected_libraries": ["2"],
-                "webhook_paths": ["/data/show/file.mkv"],
-                "is_retry": True,
-                "retry_delay": 30,
-                "retry_attempt": 2,
-                "max_retries": 3,
-                "parent_job_id": "parent-123",
-            },
-        )
-        jm._interrupted_jobs = [job]
-
-        [replacement] = jm.requeue_interrupted_jobs()
-
-        assert replacement.config["selected_libraries"] == ["2"]
-        assert replacement.config["webhook_paths"] == ["/data/show/file.mkv"]
-        assert "is_retry" not in replacement.config
-        assert "retry_delay" not in replacement.config
-        assert "retry_attempt" not in replacement.config
-        assert "max_retries" not in replacement.config
-        assert "parent_job_id" not in replacement.config
-
-    def test_requeued_from_set(self, config_dir):
-        """Replacement jobs record the original job id for traceability."""
-        os.makedirs(config_dir, exist_ok=True)
-        jm = JobManager(config_dir=config_dir)
-        job = jm.create_job(library_name="Traceable Job")
-        jm._interrupted_jobs = [job]
-
-        [replacement] = jm.requeue_interrupted_jobs()
-
-        assert replacement.config["requeued_from"] == job.id
-
-    def test_already_requeued_job_skipped(self, config_dir):
-        """Jobs that are already auto-requeued are not requeued again."""
-        os.makedirs(config_dir, exist_ok=True)
-        jm = JobManager(config_dir=config_dir)
-        job = jm.create_job(
-            library_name="Already Requeued",
-            config={"requeued_from": "older-job-id"},
-        )
-        jm._interrupted_jobs = [job]
-
-        result = jm.requeue_interrupted_jobs()
-
-        assert result == []
-        assert len(jm.get_all_jobs()) == 1
-        assert jm.get_all_jobs()[0].id == job.id
+        assert result[0] is job
+        assert job.id == original_id
+        assert job.created_at == original_created
+        assert job.status == JobStatus.PENDING
+        assert job.error is None
+        assert job.completed_at is None
+        assert job.paused is False
+        assert job.progress.percent == 0.0
 
     def test_unparseable_date_skipped(self, config_dir):
         """Jobs with invalid created_at timestamps are ignored safely."""
@@ -502,7 +452,7 @@ class TestRequeueInterruptedJobs:
         assert len(jm.get_all_jobs()) == 1
         assert jm.get_all_jobs()[0].id == job.id
 
-    def test_list_cleared_after_requeue(self, config_dir):
+    def test_list_cleared_after_revive(self, config_dir):
         """Interrupted list is cleared after processing so it only runs once."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
@@ -513,5 +463,7 @@ class TestRequeueInterruptedJobs:
         second = jm.requeue_interrupted_jobs()
 
         assert len(first) == 1
+        assert first[0] is job
         assert second == []
         assert jm._interrupted_jobs == []
+        assert len(jm.get_all_jobs()) == 1

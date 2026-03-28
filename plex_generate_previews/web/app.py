@@ -188,11 +188,12 @@ def _prewarm_caches() -> None:
 
 
 def _requeue_interrupted_on_startup(config_dir: str) -> None:
-    """Auto-requeue jobs that were running or pending when the server last stopped.
+    """Revive jobs that were running or pending when the server last stopped.
 
     Reads the ``auto_requeue_on_restart`` and ``requeue_max_age_minutes``
-    settings to decide whether and which jobs to re-create.  New jobs are
-    cloned from the originals and started via the normal async path.
+    settings to decide whether and which jobs to revive.  Revived jobs
+    keep their original ID and ``created_at`` and are started via the
+    normal async path.
     """
     try:
         from .settings_manager import get_settings_manager
@@ -219,19 +220,19 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
 
         max_age = int(settings.get("requeue_max_age_minutes", 720))
         job_manager = get_job_manager()
-        new_jobs = job_manager.requeue_interrupted_jobs(max_age_minutes=max_age)
+        revived = job_manager.requeue_interrupted_jobs(max_age_minutes=max_age)
 
-        if not new_jobs:
+        if not revived:
             return
 
         from .routes import _start_job_async
 
-        for job in new_jobs:
+        for job in revived:
             _start_job_async(job.id, job.config)
 
-        logger.info(f"Auto-requeued {len(new_jobs)} interrupted job(s) on startup")
+        logger.info(f"Revived {len(revived)} interrupted job(s) on startup")
     except Exception as e:
-        logger.warning(f"Failed to auto-requeue interrupted jobs: {e}")
+        logger.warning(f"Failed to revive interrupted jobs: {e}")
 
 
 def create_app(config_dir: str = None) -> Flask:
