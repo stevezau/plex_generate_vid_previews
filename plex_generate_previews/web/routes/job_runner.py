@@ -104,6 +104,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 clear_failures,
                 get_failures,
                 log_failure_summary,
+                set_file_result_callback,
             )
             from ...utils import setup_working_directory as create_working_directory
             from ...worker import is_job_thread, register_job_thread
@@ -338,6 +339,17 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 else:
                     clear_failures()
 
+                    def _file_result_cb(file_path, outcome_str, reason, worker):
+                        job_manager.record_file_result(
+                            job_id,
+                            file_path,
+                            outcome_str,
+                            reason,
+                            worker,
+                        )
+
+                    set_file_result_callback(_file_result_cb)
+
                     def _on_item_complete(display_name, title, success):
                         outcome = "success" if success else "failed"
                         logger.info(f"{display_name} completed: {title!r} ({outcome})")
@@ -387,6 +399,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         on_dispatch_start=_on_dispatch_start,
                         priority=job.priority,
                     )
+                    set_file_result_callback(None)
                     log_failure_summary()
 
                     result = result or {}
@@ -655,6 +668,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job_manager.add_log(job_id, f"ERROR - Job failed: {e}")
             job_manager.complete_job(job_id, error=str(e))
         finally:
+            set_file_result_callback(None)
             from ...worker import unregister_job_thread
 
             unregister_job_thread()

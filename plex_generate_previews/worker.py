@@ -344,6 +344,7 @@ class Worker:
                 progress_callback,
                 ffmpeg_threads_override=self.ffmpeg_threads,
                 cancel_check=self.cancel_check,
+                worker_name=self.display_name,
             )
             self.outcome_counts[result.value] += 1
             if result == ProcessingResult.FAILED:

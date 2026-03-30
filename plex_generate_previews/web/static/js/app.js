@@ -1379,6 +1379,23 @@ function showLogsModal(jobId) {
     document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
     document.getElementById('logsSearchInput').value = '';
 
+    // Reset Files tab state
+    _fileResultsData = [];
+    _fileResultsActiveFilter = '';
+    _fileResultsLoaded = false;
+    document.getElementById('fileResultsSummary').innerHTML = '';
+    document.getElementById('fileResultsBody').innerHTML =
+        '<tr><td colspan="4" class="text-muted text-center">Click to load file results</td></tr>';
+    document.getElementById('fileResultsCount').textContent = '';
+    document.getElementById('fileResultsSearch').value = '';
+
+    // Reset to Logs tab
+    var logsTabBtn = document.getElementById('logsTab');
+    if (logsTabBtn) {
+        var tab = new bootstrap.Tab(logsTabBtn);
+        tab.show();
+    }
+
     const job = jobs.find(j => j.id === targetId);
     const isRunning = job && job.status === 'running';
     const autoScrollEl = document.getElementById('logsAutoScroll');
@@ -1391,7 +1408,14 @@ function showLogsModal(jobId) {
 
     if (logsRefreshInterval) clearInterval(logsRefreshInterval);
     if (isRunning) {
-        logsRefreshInterval = setInterval(refreshLogs, 5000);
+        logsRefreshInterval = setInterval(function() {
+            refreshLogs();
+            // Also refresh file results if the Files tab is active
+            var filesPane = document.getElementById('filesTabPane');
+            if (filesPane && filesPane.classList.contains('active')) {
+                refreshFileResults();
+            }
+        }, 5000);
     }
 
     document.getElementById('logsModal').addEventListener('hidden.bs.modal', function() {
@@ -1539,6 +1563,138 @@ function downloadLogs() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+}
+
+// ========================================================================
+// Per-File Results (Files tab in the Job Details modal)
+// ========================================================================
+
+var _fileResultsData = [];
+var _fileResultsActiveFilter = '';
+var _fileResultsLoaded = false;
+
+var FILE_OUTCOME_META = {
+    'generated':              { label: 'Generated',     badge: 'bg-success' },
+    'skipped_bif_exists':     { label: 'Already Existed', badge: 'bg-info text-dark' },
+    'failed':                 { label: 'Failed',        badge: 'bg-danger' },
+    'skipped_file_not_found': { label: 'Not Found',     badge: 'bg-warning text-dark' },
+    'skipped_excluded':       { label: 'Excluded',      badge: 'bg-secondary' },
+    'skipped_invalid_hash':   { label: 'Invalid Hash',  badge: 'bg-warning text-dark' },
+    'no_media_parts':         { label: 'No Media Parts', badge: 'bg-light text-dark' },
+};
+
+function onFilesTabActivated() {
+    if (!_fileResultsLoaded) {
+        refreshFileResults();
+    }
+}
+
+async function refreshFileResults() {
+    var targetId = _logsModalJobId;
+    if (!targetId) return;
+    try {
+        var data = await apiGet('/api/jobs/' + targetId + '/files');
+        _fileResultsData = data.files || [];
+        _fileResultsLoaded = true;
+        renderFileResultsSummary(data.summary || {}, data.total || 0);
+        renderFileResultsTable(_fileResultsData);
+    } catch (e) {
+        document.getElementById('fileResultsBody').innerHTML =
+            '<tr><td colspan="4" class="text-muted text-center">Could not load file results</td></tr>';
+    }
+}
+
+function renderFileResultsSummary(summary, total) {
+    var container = document.getElementById('fileResultsSummary');
+    if (!summary || Object.keys(summary).length === 0) {
+        container.innerHTML = '<span class="text-muted">No file results recorded for this job</span>';
+        return;
+    }
+    var html = '';
+
+    var ordered = [
+        'generated', 'skipped_bif_exists', 'failed',
+        'skipped_file_not_found', 'skipped_excluded',
+        'skipped_invalid_hash', 'no_media_parts'
+    ];
+    for (var i = 0; i < ordered.length; i++) {
+        var key = ordered[i];
+        var count = summary[key];
+        if (!count) continue;
+        var meta = FILE_OUTCOME_META[key] || { label: key, badge: 'bg-secondary' };
+        var active = (_fileResultsActiveFilter === key) ? ' outline' : '';
+        var btnClass = active
+            ? meta.badge.replace('bg-', 'btn-outline-').replace(' text-dark', '')
+            : meta.badge.replace('bg-', 'btn-').replace(' text-dark', '');
+        html += '<button class="btn btn-sm ' + btnClass + '" onclick="toggleFileOutcomeFilter(\'' + key + '\')">'
+            + meta.label + ': ' + count + '</button>';
+    }
+    container.innerHTML = html;
+}
+
+function renderFileResultsTable(files) {
+    var tbody = document.getElementById('fileResultsBody');
+    var countEl = document.getElementById('fileResultsCount');
+
+    if (!files || files.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No matching files</td></tr>';
+        countEl.textContent = '';
+        return;
+    }
+
+    countEl.textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
+
+    var html = '';
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var meta = FILE_OUTCOME_META[f.outcome] || { label: f.outcome, badge: 'bg-secondary' };
+        var fileName = f.file || '';
+        var shortName = fileName.split('/').pop() || fileName;
+        var reason = escapeHtml(f.reason || '');
+        var worker = escapeHtml(f.worker || '');
+
+        html += '<tr>'
+            + '<td class="text-truncate" style="max-width: 400px;" title="' + escapeHtml(fileName) + '">'
+            + '<small>' + escapeHtml(shortName) + '</small></td>'
+            + '<td><span class="badge ' + meta.badge + '">' + meta.label + '</span></td>'
+            + '<td><small class="text-muted" title="' + reason + '">' + reason + '</small></td>'
+            + '<td><small class="text-muted">' + worker + '</small></td>'
+            + '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function toggleFileOutcomeFilter(outcome) {
+    if (_fileResultsActiveFilter === outcome) {
+        _fileResultsActiveFilter = '';
+    } else {
+        _fileResultsActiveFilter = outcome;
+    }
+    filterFileResults();
+}
+
+function filterFileResults() {
+    var search = (document.getElementById('fileResultsSearch').value || '').toLowerCase();
+    var filtered = _fileResultsData;
+    if (_fileResultsActiveFilter) {
+        filtered = filtered.filter(function(f) { return f.outcome === _fileResultsActiveFilter; });
+    }
+    if (search) {
+        filtered = filtered.filter(function(f) { return (f.file || '').toLowerCase().indexOf(search) !== -1; });
+    }
+    // Re-render summary to show active filter highlight
+    var summary = {};
+    for (var i = 0; i < _fileResultsData.length; i++) {
+        var k = _fileResultsData[i].outcome || 'unknown';
+        summary[k] = (summary[k] || 0) + 1;
+    }
+    renderFileResultsSummary(summary, _fileResultsData.length);
+    renderFileResultsTable(filtered);
+}
+
+function clearFileSearch() {
+    document.getElementById('fileResultsSearch').value = '';
+    filterFileResults();
 }
 
 // Browser Notifications

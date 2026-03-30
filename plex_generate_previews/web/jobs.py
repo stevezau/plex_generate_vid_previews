@@ -158,6 +158,9 @@ class JobManager:
         self.config_dir = config_dir
         self.jobs_file = os.path.join(config_dir, "jobs.json")
         self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
+        self._job_file_results_dir = os.path.join(
+            config_dir, "logs", "job_file_results"
+        )
         self.socketio = socketio
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.RLock()
@@ -185,6 +188,7 @@ class JobManager:
         self._load_jobs()
         try:
             os.makedirs(self._job_logs_dir, exist_ok=True)
+            os.makedirs(self._job_file_results_dir, exist_ok=True)
             self._enforce_log_retention()
         except OSError as e:
             logger.warning(
@@ -316,6 +320,7 @@ class JobManager:
         if expired_ids:
             for job_id in expired_ids:
                 self._delete_job_log_file(job_id)
+                self._delete_file_results(job_id)
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             self._save_jobs()
@@ -323,6 +328,7 @@ class JobManager:
                 f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)"
             )
 
+        # Clean orphaned job log files
         if os.path.isdir(self._job_logs_dir):
             for name in os.listdir(self._job_logs_dir):
                 if not name.endswith(".log"):
@@ -333,6 +339,20 @@ class JobManager:
                     try:
                         os.remove(path)
                         logger.debug(f"Removed orphaned job log: {path}")
+                    except OSError:
+                        pass
+
+        # Clean orphaned file-result JSONL files
+        if os.path.isdir(self._job_file_results_dir):
+            for name in os.listdir(self._job_file_results_dir):
+                if not name.endswith(".jsonl"):
+                    continue
+                job_id = name[:-6]
+                if job_id not in self._jobs:
+                    path = os.path.join(self._job_file_results_dir, name)
+                    try:
+                        os.remove(path)
+                        logger.debug(f"Removed orphaned file results: {path}")
                     except OSError:
                         pass
 
@@ -680,6 +700,7 @@ class JobManager:
                 if job_id in self._running_job_ids:
                     return False  # Can't delete running job
                 self._delete_job_log_file(job_id)
+                self._delete_file_results(job_id)
                 if job_id in self._job_logs:
                     del self._job_logs[job_id]
                 del self._jobs[job_id]
@@ -712,6 +733,7 @@ class JobManager:
             ]
             for job_id in to_delete:
                 self._delete_job_log_file(job_id)
+                self._delete_file_results(job_id)
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             if to_delete:
@@ -786,6 +808,97 @@ class JobManager:
             self._delete_job_log_file(job_id)
             if job_id in self._job_logs:
                 del self._job_logs[job_id]
+
+    # ========================================================================
+    # Per-File Result Tracking
+    # ========================================================================
+
+    def _file_results_path(self, job_id: str) -> str:
+        """Return the JSONL file path for per-file results of a job."""
+        return os.path.join(self._job_file_results_dir, f"{job_id}.jsonl")
+
+    def record_file_result(
+        self,
+        job_id: str,
+        file_path: str,
+        outcome: str,
+        reason: str = "",
+        worker: str = "",
+    ) -> None:
+        """Append a per-file processing result to the job's JSONL file.
+
+        Args:
+            job_id: Job identifier.
+            file_path: Absolute path of the media file processed.
+            outcome: ProcessingResult value string (e.g. "generated", "failed").
+            reason: Human-readable detail (skip/failure reason).
+            worker: Worker display name (e.g. "GPU Worker 1 (NVIDIA TITAN RTX)").
+        """
+        record = {
+            "file": file_path,
+            "outcome": outcome,
+            "reason": reason,
+            "worker": worker,
+            "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        }
+        path = self._file_results_path(job_id)
+        try:
+            with open(path, "a") as f:
+                f.write(json.dumps(record, separators=(",", ":")) + "\n")
+        except OSError as e:
+            logger.debug(f"Could not append file result to {path}: {e}")
+
+    def get_file_results(
+        self,
+        job_id: str,
+        outcome_filter: str = "",
+        search: str = "",
+    ) -> List[dict]:
+        """Read per-file results for a job from its JSONL file.
+
+        Args:
+            job_id: Job identifier.
+            outcome_filter: If set, only return records matching this outcome.
+            search: If set, only return records whose file path contains this substring (case-insensitive).
+
+        Returns:
+            List of result dicts, each with keys: file, outcome, reason, worker, ts.
+        """
+        path = self._file_results_path(job_id)
+        if not os.path.isfile(path):
+            return []
+        results: List[dict] = []
+        search_lower = search.lower() if search else ""
+        try:
+            with open(path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if outcome_filter and record.get("outcome") != outcome_filter:
+                        continue
+                    if (
+                        search_lower
+                        and search_lower not in record.get("file", "").lower()
+                    ):
+                        continue
+                    results.append(record)
+        except OSError as e:
+            logger.debug(f"Could not read file results from {path}: {e}")
+        return results
+
+    def _delete_file_results(self, job_id: str) -> None:
+        """Remove the per-file results JSONL file for a job. Caller must hold _lock."""
+        path = self._file_results_path(job_id)
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            logger.debug(f"Could not remove file results {path}: {e}")
 
     # ========================================================================
     # Worker Status Management

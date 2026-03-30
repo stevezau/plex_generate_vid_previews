@@ -555,6 +555,48 @@ def get_job_logs(job_id):
     )
 
 
+@api.route("/jobs/<job_id>/files", methods=["GET"])
+@api_token_required
+def get_job_file_results(job_id):
+    """Get per-file processing results for a job.
+
+    Query params:
+        outcome: Filter by outcome value (e.g. "failed", "generated").
+        search: Case-insensitive filename substring search.
+    """
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    outcome_filter = request.args.get("outcome", "").strip()
+    search = request.args.get("search", "").strip()
+
+    all_results = job_manager.get_file_results(job_id)
+
+    summary: dict = {}
+    for r in all_results:
+        key = r.get("outcome", "unknown")
+        summary[key] = summary.get(key, 0) + 1
+
+    filtered = all_results
+    if outcome_filter:
+        filtered = [r for r in filtered if r.get("outcome") == outcome_filter]
+    if search:
+        search_lower = search.lower()
+        filtered = [r for r in filtered if search_lower in r.get("file", "").lower()]
+
+    return jsonify(
+        {
+            "job_id": job_id,
+            "files": filtered,
+            "summary": summary,
+            "count": len(filtered),
+            "total": len(all_results),
+        }
+    )
+
+
 @api.route("/jobs/workers", methods=["GET"])
 @api_token_required
 def get_worker_statuses():

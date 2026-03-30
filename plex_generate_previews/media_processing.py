@@ -97,6 +97,40 @@ def clear_failures() -> None:
         _failures.clear()
 
 
+# ---------------------------------------------------------------------------
+# Per-file result callback — set by the job runner to capture every outcome
+# ---------------------------------------------------------------------------
+
+_file_result_callback_lock = threading.Lock()
+_file_result_callback = None
+
+
+def set_file_result_callback(callback) -> None:
+    """Set the per-file result callback (called for each media part outcome).
+
+    The callback signature is: callback(file_path, outcome_str, reason, worker)
+
+    Args:
+        callback: Callable or None to clear.
+    """
+    global _file_result_callback
+    with _file_result_callback_lock:
+        _file_result_callback = callback
+
+
+def _notify_file_result(
+    file_path: str, outcome: "ProcessingResult", reason: str = "", worker: str = ""
+) -> None:
+    """Invoke the file-result callback if one is set."""
+    with _file_result_callback_lock:
+        cb = _file_result_callback
+    if cb is not None:
+        try:
+            cb(file_path, outcome.value, reason, worker)
+        except Exception:
+            logger.debug(f"File result callback error for {file_path}", exc_info=True)
+
+
 def log_failure_summary() -> None:
     """Log a summary table of all failures recorded during this run."""
     failures = get_failures()
@@ -1595,6 +1629,7 @@ def process_item(
     progress_callback=None,
     ffmpeg_threads_override: Optional[int] = None,
     cancel_check=None,
+    worker_name: str = "",
 ) -> ProcessingResult:
     """Process a single media item: generate thumbnails and BIF file.
 
@@ -1617,6 +1652,7 @@ def process_item(
         ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
             config.ffmpeg_threads when set).
         cancel_check: Optional callable returning True when job is cancelled.
+        worker_name: Display name of the worker processing this item.
 
     Returns:
         ProcessingResult indicating the outcome. When an item has multiple
@@ -1637,6 +1673,12 @@ def process_item(
                 for k, v in e.request.headers.items()
             }
             logger.error(f"Request headers: {safe_headers}")
+        _notify_file_result(
+            f"item:{item_key}",
+            ProcessingResult.FAILED,
+            f"Plex API query failed: {type(e).__name__}",
+            worker_name,
+        )
         return ProcessingResult.FAILED
 
     best_result = ProcessingResult.NO_MEDIA_PARTS
@@ -1659,6 +1701,12 @@ def process_item(
             if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
                 logger.info(f"Skipping (excluded path): {media_file}")
                 _update_best(ProcessingResult.SKIPPED_EXCLUDED)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.SKIPPED_EXCLUDED,
+                    "Path excluded by filter",
+                    worker_name,
+                )
                 continue
 
             if not bundle_hash or len(bundle_hash) < 2:
@@ -1667,11 +1715,23 @@ def process_item(
                     f"Skipping {media_file} due to invalid bundle hash from Plex: {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)"
                 )
                 _update_best(ProcessingResult.SKIPPED_INVALID_HASH)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.SKIPPED_INVALID_HASH,
+                    f"Invalid bundle hash: {hash_value}",
+                    worker_name,
+                )
                 continue
 
             if not os.path.isfile(media_file):
                 logger.warning(f"Skipping as file not found {media_file}")
                 _update_best(ProcessingResult.SKIPPED_FILE_NOT_FOUND)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.SKIPPED_FILE_NOT_FOUND,
+                    "File not found on disk",
+                    worker_name,
+                )
                 continue
 
             try:
@@ -1683,6 +1743,12 @@ def process_item(
                     f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}"
                 )
                 _update_best(ProcessingResult.FAILED)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.FAILED,
+                    f"Bundle path error: {type(e).__name__}: {e}",
+                    worker_name,
+                )
                 continue
 
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
@@ -1696,6 +1762,12 @@ def process_item(
                         f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}"
                     )
                     _update_best(ProcessingResult.FAILED)
+                    _notify_file_result(
+                        media_file,
+                        ProcessingResult.FAILED,
+                        f"Could not delete existing BIF: {e}",
+                        worker_name,
+                    )
                     continue
 
             if os.path.isfile(index_bif):
@@ -1703,12 +1775,24 @@ def process_item(
                     f"Skipping {media_file} — BIF already exists at {index_bif}"
                 )
                 _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.SKIPPED_BIF_EXISTS,
+                    f"BIF exists at {index_bif}",
+                    worker_name,
+                )
                 continue
 
             logger.info(f"Generating BIF for {media_file} -> {index_bif}")
 
             if not _ensure_directories(indexes_path, tmp_path, media_file):
                 _update_best(ProcessingResult.FAILED)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.FAILED,
+                    "Failed to create output directories",
+                    worker_name,
+                )
                 continue
 
             try:
@@ -1724,17 +1808,35 @@ def process_item(
                     cancel_check=cancel_check,
                 )
                 _update_best(ProcessingResult.GENERATED)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.GENERATED,
+                    "",
+                    worker_name,
+                )
             except (CancellationError, CodecNotSupportedError):
                 raise
             except RuntimeError as e:
                 logger.error(f"Error processing {media_file}: {str(e)}")
                 _update_best(ProcessingResult.FAILED)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.FAILED,
+                    str(e),
+                    worker_name,
+                )
                 continue
             except Exception as e:
                 logger.error(
                     f"Error processing {media_file}: {type(e).__name__}: {str(e)}"
                 )
                 _update_best(ProcessingResult.FAILED)
+                _notify_file_result(
+                    media_file,
+                    ProcessingResult.FAILED,
+                    f"{type(e).__name__}: {e}",
+                    worker_name,
+                )
                 continue
             finally:
                 _cleanup_temp_directory(tmp_path)
