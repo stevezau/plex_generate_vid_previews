@@ -144,9 +144,15 @@ class Worker:
         self.requeued_to_cpu = False  # Set when GPU re-queues item to CPU fallback
         self.outcome_counts = {r.value: 0 for r in ProcessingResult}
 
+        # Per-worker removal flag set by reconcile_gpu_workers for busy
+        # workers that should be retired after completing their current task.
+        # Unlike the type-level _pending_removals counter, this is
+        # device-aware and avoids retiring workers from the wrong GPU.
+        self._pending_removal = False
+
     def is_available(self) -> bool:
         """Check if this worker is available for a new task."""
-        return not self.is_busy
+        return not self.is_busy and not self._pending_removal
 
     def _format_gpu_name_for_display(self) -> str:
         """Format GPU name for consistent display width."""
@@ -665,15 +671,30 @@ class WorkerPool:
         return {"removed": removed, "scheduled": scheduled, "unavailable": unavailable}
 
     def _retire_idle_worker_if_scheduled(self, worker: "Worker") -> bool:
-        """Retire an idle worker if deferred removal was requested for its type."""
+        """Retire an idle worker if deferred removal was requested.
+
+        Checks both the per-worker ``_pending_removal`` flag (set by
+        reconcile_gpu_workers for device-aware deferral) and the type-level
+        ``_pending_removals`` counter (set by remove_workers).
+        """
         if worker.is_busy:
             return False
 
         with self._workers_lock:
+            if worker not in self.workers:
+                return False
+
+            # Per-worker flag takes priority (device-aware reconciliation)
+            if worker._pending_removal:
+                self.workers.remove(worker)
+                logger.info(
+                    f"Retired {worker.display_name} after deferred "
+                    f"reconciliation removal"
+                )
+                return True
+
             pending = int(self._pending_removals.get(worker.worker_type, 0))
             if pending <= 0:
-                return False
-            if worker not in self.workers:
                 return False
             self.workers.remove(worker)
             self._pending_removals[worker.worker_type] = pending - 1
@@ -699,11 +720,12 @@ class WorkerPool:
         *new_selected_gpus* and adds/removes workers so the pool matches
         the desired state.
 
-        Workers are removed from the pool immediately.  Any in-flight
-        FFmpeg processes continue running to completion in their own
-        thread; only pool tracking and future task assignment stop.
-        This avoids the type-level ``_pending_removals`` counter which
-        cannot distinguish between devices in a multi-GPU setup.
+        Idle workers are removed from the pool immediately.  Busy workers
+        are flagged with ``_pending_removal`` so the dispatcher can still
+        track their in-flight task completions; they are retired
+        automatically once they become idle.  This avoids the type-level
+        ``_pending_removals`` counter which cannot distinguish between
+        devices in a multi-GPU setup.
 
         Args:
             new_selected_gpus: List of (gpu_type, gpu_device, gpu_info) tuples
@@ -711,7 +733,7 @@ class WorkerPool:
                 contain a ``workers`` key with the desired worker count.
 
         Returns:
-            Summary dict with keys ``added`` and ``removed``.
+            Summary dict with keys ``added``, ``removed``, and ``deferred``.
 
         """
         new_by_device: dict[str, tuple] = {
@@ -721,6 +743,7 @@ class WorkerPool:
 
         added = 0
         removed = 0
+        deferred = 0
 
         with self._workers_lock:
             current_by_device: dict[str, list] = defaultdict(list)
@@ -732,8 +755,12 @@ class WorkerPool:
             for device, workers in current_by_device.items():
                 if device not in new_by_device:
                     for w in workers:
-                        self.workers.remove(w)
-                        removed += 1
+                        if w.is_busy:
+                            w._pending_removal = True
+                            deferred += 1
+                        else:
+                            self.workers.remove(w)
+                            removed += 1
 
             # Adjust worker counts for devices still enabled
             for device, gpu_tuple in new_by_device.items():
@@ -746,8 +773,12 @@ class WorkerPool:
                     excess = current_count - desired
                     idle_first = sorted(current_workers, key=lambda w: w.is_busy)
                     for w in idle_first[:excess]:
-                        self.workers.remove(w)
-                        removed += 1
+                        if w.is_busy:
+                            w._pending_removal = True
+                            deferred += 1
+                        else:
+                            self.workers.remove(w)
+                            removed += 1
                 elif current_count < desired:
                     deficit = desired - current_count
 
@@ -772,9 +803,12 @@ class WorkerPool:
             self.selected_gpus = list(new_selected_gpus)
             self._next_gpu_assignment_index = 0
 
-        if removed or added:
-            logger.info(f"GPU reconciliation: added={added}, removed={removed}")
-        return {"added": added, "removed": removed}
+        if removed or added or deferred:
+            logger.info(
+                f"GPU reconciliation: added={added}, removed={removed}, "
+                f"deferred={deferred}"
+            )
+        return {"added": added, "removed": removed, "deferred": deferred}
 
     def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
         """Find an available worker.

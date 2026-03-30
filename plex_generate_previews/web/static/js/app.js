@@ -742,32 +742,12 @@ async function scaleGpuWorkers(device, direction) {
         cachedWorkerConfigCounts = null;
         await loadWorkerConfigCounts(true);
         renderDashboardGpuConfig();
+        await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
 
         if (saveResult.warning) {
             showToast('Warning', saveResult.warning, 'warning');
-        }
-
-        const endpoint = direction > 0 ? 'add' : 'remove';
-        try {
-            const result = await apiPost(`/api/workers/${endpoint}`, {
-                worker_type: 'GPU',
-                count: 1
-            });
-            await Promise.all([loadJobs(), loadWorkerStatuses(), refreshStatus()]);
-            if (endpoint === 'add') {
-                showToast('Workers Updated', `Added ${result.added} GPU worker(s)`, 'success');
-            } else {
-                const scheduled = result.scheduled_removal || 0;
-                if (scheduled > 0) {
-                    showToast('Workers Updated', `Removed ${result.removed} GPU; ${scheduled} scheduled after current tasks`, 'warning');
-                } else {
-                    showToast('Workers Updated', `Removed ${result.removed} GPU worker(s)`, 'info');
-                }
-            }
-        } catch (scaleErr) {
-            if (!saveResult.warning) {
-                showToast('Setting Saved', `GPU workers for ${device} set to ${newWorkers}`, 'success');
-            }
+        } else {
+            showToast('Workers Updated', `GPU workers for ${device} set to ${newWorkers}`, 'success');
         }
     } catch (error) {
         entry.workers = prevWorkers;

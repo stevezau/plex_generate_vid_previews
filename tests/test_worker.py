@@ -967,6 +967,140 @@ class TestWorkerPool:
         assert pool.workers[0].completed == 0
 
 
+class TestReconcileGpuWorkers:
+    """Test that reconcile_gpu_workers defers busy worker removal."""
+
+    def test_reconcile_removes_idle_workers_immediately(self):
+        """Idle excess workers are removed from the pool at once."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
+        ]
+        pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
+        assert len(pool.workers) == 3
+
+        new_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 1})]
+        result = pool.reconcile_gpu_workers(new_gpus)
+
+        assert result["removed"] == 2
+        assert result["deferred"] == 0
+        assert len(pool.workers) == 1
+
+    def test_reconcile_defers_busy_workers(self):
+        """Busy workers stay in the pool with _pending_removal set."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
+        ]
+        pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
+        for w in pool.workers:
+            w.is_busy = True
+
+        new_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 1})]
+        result = pool.reconcile_gpu_workers(new_gpus)
+
+        assert result["removed"] == 0
+        assert result["deferred"] == 2
+        assert len(pool.workers) == 3
+
+        deferred = [w for w in pool.workers if w._pending_removal]
+        assert len(deferred) == 2
+
+    def test_reconcile_mixed_idle_and_busy(self):
+        """Idle workers removed first; only remaining busy workers deferred."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 4})
+        ]
+        pool = WorkerPool(gpu_workers=4, cpu_workers=0, selected_gpus=selected_gpus)
+        pool.workers[0].is_busy = True
+        pool.workers[1].is_busy = True
+
+        new_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 1})]
+        result = pool.reconcile_gpu_workers(new_gpus)
+
+        assert result["removed"] == 2
+        assert result["deferred"] == 1
+        assert len(pool.workers) == 2
+        kept = [w for w in pool.workers if not w._pending_removal]
+        assert len(kept) == 1
+
+    def test_pending_removal_prevents_task_assignment(self):
+        """Workers flagged for removal are not considered available."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
+        ]
+        pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
+        for w in pool.workers:
+            w.is_busy = True
+
+        new_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 1})]
+        pool.reconcile_gpu_workers(new_gpus)
+
+        deferred = [w for w in pool.workers if w._pending_removal]
+        assert len(deferred) == 2
+        for w in deferred:
+            assert not w.is_available()
+
+        # After finishing, still not available (pending removal flag blocks it)
+        for w in deferred:
+            w.is_busy = False
+            assert not w.is_available()
+
+    def test_deferred_worker_retired_after_completion(self):
+        """Deferred workers are retired by _retire_idle_worker_if_scheduled."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 2})
+        ]
+        pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
+        for w in pool.workers:
+            w.is_busy = True
+
+        new_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 1})]
+        pool.reconcile_gpu_workers(new_gpus)
+        assert len(pool.workers) == 2
+
+        deferred_worker = [w for w in pool.workers if w._pending_removal][0]
+        deferred_worker.is_busy = False
+
+        retired = pool._retire_idle_worker_if_scheduled(deferred_worker)
+        assert retired is True
+        assert len(pool.workers) == 1
+        assert deferred_worker not in pool.workers
+
+    def test_deferred_workers_cleaned_by_apply_deferred_removals(self):
+        """_apply_deferred_removals sweeps all idle deferred workers."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
+        ]
+        pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
+        for w in pool.workers:
+            w.is_busy = True
+
+        new_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 1})]
+        pool.reconcile_gpu_workers(new_gpus)
+
+        for w in pool.workers:
+            if w._pending_removal:
+                w.is_busy = False
+
+        retired = pool._apply_deferred_removals()
+        assert retired == 2
+        assert len(pool.workers) == 1
+
+    def test_reconcile_disabled_device_defers_busy(self):
+        """Disabling an entire device defers busy workers instead of dropping them."""
+        selected_gpus = [
+            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 2})
+        ]
+        pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
+        pool.workers[0].is_busy = True
+
+        result = pool.reconcile_gpu_workers([])
+
+        assert result["removed"] == 1
+        assert result["deferred"] == 1
+        assert len(pool.workers) == 1
+        assert pool.workers[0]._pending_removal is True
+
+
 class TestWorkerProgressCount:
     """Test that GPU→CPU fallback does not double-count completed_tasks (H2)."""
 
