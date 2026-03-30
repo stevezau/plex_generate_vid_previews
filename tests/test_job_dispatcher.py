@@ -766,3 +766,84 @@ class TestReapRetrySkipThroughput:
         result = tracker.get_result()
         assert result["completed"] == 5
         dispatcher.shutdown()
+
+
+class TestPoolReconciliationOnDispatch:
+    """Verify that _dispatch_items reconciles the pool with current settings
+    even when the pool was originally created with 0 workers."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        reset_dispatcher()
+        yield
+        reset_dispatcher()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_pool_gains_workers_via_callback(self, mock_process):
+        """A pool created with 0 GPU workers should gain workers when the
+        worker_pool_callback reconciles with fresh settings."""
+        mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
+
+        pool = WorkerPool(gpu_workers=0, cpu_workers=0, selected_gpus=[])
+        assert len(pool.workers) == 0
+
+        gpu_info = {
+            "name": "Test GPU",
+            "workers": 2,
+            "ffmpeg_threads": 2,
+            "type": "nvidia",
+            "device": "/dev/dri/renderD128",
+        }
+        fresh_gpus = [("nvidia", "/dev/dri/renderD128", gpu_info)]
+
+        pool.reconcile_gpu_workers(fresh_gpus)
+        assert len(pool.workers) == 2
+        assert all(w.worker_type == "GPU" for w in pool.workers)
+
+        dispatcher = JobDispatcher(pool)
+        items = [(f"/key/{i}", f"Item {i}", "movie") for i in range(4)]
+        tracker = dispatcher.submit_items(
+            job_id="reconciled",
+            items=items,
+            config=_make_config(gpu_threads=2, cpu_threads=0),
+            plex=MagicMock(),
+        )
+        assert tracker.wait(timeout=5), "Items should complete after reconciliation"
+        assert tracker.get_result()["completed"] == 4
+        dispatcher.shutdown()
+
+
+class TestInflightJobGuard:
+    """Verify _start_job_async skips duplicate calls for the same job ID."""
+
+    def test_duplicate_call_is_skipped(self):
+        from plex_generate_previews.web.routes.job_runner import (
+            _inflight_jobs,
+            _inflight_lock,
+            _start_job_async,
+        )
+
+        fake_id = "test-guard-12345"
+        calls = []
+
+        with _inflight_lock:
+            _inflight_jobs.discard(fake_id)
+
+        original_Thread = threading.Thread
+
+        class SpyThread(original_Thread):
+            def __init__(self, *a, **kw):
+                calls.append("spawned")
+                super().__init__(*a, **kw)
+
+        with patch(
+            "plex_generate_previews.web.routes.job_runner.threading.Thread", SpyThread
+        ):
+            with _inflight_lock:
+                _inflight_jobs.add(fake_id)
+
+            _start_job_async(fake_id)
+            assert len(calls) == 0, "Second call should not spawn a thread"
+
+        with _inflight_lock:
+            _inflight_jobs.discard(fake_id)

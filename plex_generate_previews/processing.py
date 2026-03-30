@@ -111,6 +111,14 @@ def run_processing(
                     worker_pool = _create_worker_pool()
                 dispatcher = get_dispatcher(worker_pool)
 
+                # Reconcile the pool with the latest settings.  The pool
+                # may have been created minutes ago with stale config
+                # (e.g. 0 workers because the user hadn't configured GPUs
+                # yet at startup).  The callback re-reads current settings
+                # and calls reconcile_gpu_workers so the pool matches.
+                if worker_pool_callback:
+                    worker_pool_callback(worker_pool)
+
                 if not _dispatch_started and on_dispatch_start:
                     on_dispatch_start()
                     _dispatch_started = True

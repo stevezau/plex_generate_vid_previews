@@ -11,6 +11,12 @@ from loguru import logger
 
 from ..jobs import get_job_manager
 
+# Tracks job IDs that already have a run_job thread in flight so that
+# resume / auto-resume calls during the long library scan don't spawn
+# duplicate threads for the same job.
+_inflight_jobs: set = set()
+_inflight_lock = threading.Lock()
+
 
 def _build_selected_gpus(settings) -> list:
     """Build the selected_gpus list from gpu_config and GPU cache.
@@ -69,7 +75,19 @@ def _build_selected_gpus(settings) -> list:
 
 
 def _start_job_async(job_id: str, config_overrides: dict = None):
-    """Start job execution in a background thread."""
+    """Start job execution in a background thread.
+
+    If a thread is already in-flight for *job_id* (e.g. still scanning
+    libraries after a revive), the call is silently skipped to avoid
+    duplicate work.
+    """
+    with _inflight_lock:
+        if job_id in _inflight_jobs:
+            logger.info(
+                f"Skipping duplicate _start_job_async for {job_id} — already in flight"
+            )
+            return
+        _inflight_jobs.add(job_id)
 
     def run_job():
         log_handler_id = None
@@ -329,6 +347,28 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         job_manager.start_job(job_id)
                         job_manager.add_log(job_id, "INFO - Job started")
 
+                    def _on_pool_available(pool):
+                        """Register pool and reconcile workers with current settings.
+
+                        The pool may have been created with stale config (e.g. 0
+                        workers because the user hadn't configured GPUs yet at
+                        startup).  Re-reading settings here ensures the pool
+                        matches whatever the user configured in the meantime.
+                        """
+                        if pool is None:
+                            job_manager.clear_active_worker_pool(job_id)
+                            return
+                        job_manager.set_active_worker_pool(job_id, pool)
+                        try:
+                            fresh_gpus = _build_selected_gpus(get_settings_manager())
+                            if fresh_gpus:
+                                pool.reconcile_gpu_workers(fresh_gpus)
+                        except Exception:
+                            logger.debug(
+                                "Could not reconcile pool on dispatch",
+                                exc_info=True,
+                            )
+
                     result = run_processing(
                         config,
                         selected_gpus,
@@ -342,11 +382,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             job_manager.is_pause_requested(job_id)
                             or get_settings_manager().processing_paused
                         ),
-                        worker_pool_callback=lambda pool: (
-                            job_manager.set_active_worker_pool(job_id, pool)
-                            if pool is not None
-                            else job_manager.clear_active_worker_pool(job_id)
-                        ),
+                        worker_pool_callback=_on_pool_available,
                         job_id=job_id,
                         on_dispatch_start=_on_dispatch_start,
                         priority=job.priority,
@@ -622,6 +658,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             from ...worker import unregister_job_thread
 
             unregister_job_thread()
+            with _inflight_lock:
+                _inflight_jobs.discard(job_id)
             if log_handler_id is not None:
                 try:
                     from loguru import logger as loguru_logger
