@@ -194,6 +194,13 @@ class JobDispatcher:
         self._dispatch_thread: Optional[threading.Thread] = None
         self._has_work = threading.Event()
         self._shutdown = False
+        # Signalled by worker threads on completion so the dispatch loop
+        # wakes immediately instead of sleeping through the full cycle.
+        self._worker_done = threading.Event()
+        worker_pool._worker_done_event = self._worker_done
+        # Backfill existing workers that were created before this event existed
+        for w in worker_pool._snapshot_workers():
+            w._done_event = self._worker_done
 
     def submit_items(
         self,
@@ -278,7 +285,13 @@ class JobDispatcher:
         self._dispatch_thread.start()
 
     def _dispatch_loop(self) -> None:
-        """Persistent loop: check completions, assign tasks, sleep adaptively."""
+        """Persistent loop: check completions, assign tasks, sleep adaptively.
+
+        Uses ``_worker_done`` to wake immediately when a worker thread
+        finishes, which is critical for fast-completing tasks like
+        BIF-exists skips that would otherwise sit idle for the full
+        sleep duration (~5 ms) per item.
+        """
         logger.info("Dispatcher: dispatch loop started")
         last_progress_log = time.time()
 
@@ -320,9 +333,12 @@ class JobDispatcher:
             if self._all_idle():
                 self._has_work.clear()
 
-            # Adaptive sleep
+            # Event-based sleep: wake immediately when any worker
+            # completes instead of burning a fixed 5 ms.  Falls back
+            # to a longer idle sleep when no workers are active.
             if self.worker_pool.has_busy_workers():
-                time.sleep(0.005)
+                self._worker_done.wait(timeout=0.005)
+                self._worker_done.clear()
             else:
                 time.sleep(0.01)
 
@@ -340,12 +356,18 @@ class JobDispatcher:
                     f"({tracker.completed}/{tracker.total_items} done)"
                 )
 
-    def _check_completions(self) -> None:
-        """Check all workers for completed tasks and update the owning tracker."""
+    def _check_completions(self) -> int:
+        """Check all workers for completed tasks and update the owning tracker.
+
+        Returns:
+            Number of workers that completed since last check.
+        """
+        reaped = 0
         for worker in self.worker_pool._snapshot_workers():
             if not worker.check_completion():
                 continue
 
+            reaped += 1
             title = worker.media_title or "(unknown)"
             job_id = worker.current_job_id
 
@@ -372,6 +394,7 @@ class JobDispatcher:
 
             # Retire deferred-removal workers
             self.worker_pool._retire_idle_worker_if_scheduled(worker)
+        return reaped
 
     def _merge_worker_outcome(self, worker: Worker, tracker: JobTracker) -> None:
         """Merge the latest outcome delta from a worker into the tracker.
@@ -389,7 +412,6 @@ class JobDispatcher:
         self.worker_pool._apply_deferred_removals()
 
         while True:
-            # Determine if we should only look for CPU workers
             has_main_items = self._has_dispatchable_items()
             cpu_only = not has_main_items
             worker = self.worker_pool._find_available_worker(cpu_only=cpu_only)

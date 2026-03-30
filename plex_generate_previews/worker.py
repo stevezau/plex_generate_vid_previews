@@ -150,6 +150,11 @@ class Worker:
         # device-aware and avoids retiring workers from the wrong GPU.
         self._pending_removal = False
 
+        # Optional event signalled when _process_item finishes, allowing the
+        # dispatch loop to wake immediately instead of polling on a timer.
+        # Set by WorkerPool when the pool has a _worker_done_event.
+        self._done_event: Optional[threading.Event] = None
+
     def is_available(self) -> bool:
         """Check if this worker is available for a new task."""
         return not self.is_busy and not self._pending_removal
@@ -417,6 +422,9 @@ class Worker:
             )
             self.outcome_counts["failed"] += 1
             self.failed += 1
+        finally:
+            if self._done_event is not None:
+                self._done_event.set()
 
     def check_completion(self) -> bool:
         """Check if this worker has completed its current task.
@@ -544,6 +552,9 @@ class WorkerPool:
         # Deferred scale-down requests by worker type; busy workers are retired
         # when they finish their current task.
         self._pending_removals = defaultdict(int)
+        # Optional event set by worker threads on task completion to wake
+        # the dispatch loop immediately (set by JobDispatcher).
+        self._worker_done_event: Optional[threading.Event] = None
         self.add_workers("GPU", gpu_workers)
         self.add_workers("CPU", cpu_workers)
         self.add_workers("CPU_FALLBACK", fallback_cpu_workers)
@@ -619,7 +630,9 @@ class WorkerPool:
         added = 0
         with self._workers_lock:
             for _ in range(count):
-                self.workers.append(self._create_worker(worker_type))
+                w = self._create_worker(worker_type)
+                w._done_event = self._worker_done_event
+                self.workers.append(w)
                 added += 1
         if added > 0:
             logger.info(f"Added {added} {worker_type.upper()} worker(s)")

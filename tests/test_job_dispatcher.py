@@ -688,3 +688,81 @@ class TestProgressCallbackPercentOverride:
         completions = [c for c in progress_calls if c["percent_override"] is None]
         assert len(completions) >= 1, "Expected at least one completion callback"
         dispatcher.shutdown()
+
+
+class TestReapRetrySkipThroughput:
+    """Verify that fast-completing tasks (BIF-exists skips) are reaped
+    within _assign_tasks so the worker can immediately receive the next
+    item instead of waiting for the next dispatch cycle."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        reset_dispatcher()
+        yield
+        reset_dispatcher()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_fast_items_complete_quickly(self, mock_process):
+        """Items that complete nearly instantly (< 1ms) should not each
+        cost a full 5ms dispatch cycle.  With 10 instant items and 1
+        worker, total wall time should be well under 100ms."""
+
+        def instant_process(*args, **kwargs):
+            return ProcessingResult.SKIPPED_BIF_EXISTS
+
+        mock_process.side_effect = instant_process
+
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        items = [(f"/key/{i}", f"Skip {i}", "movie") for i in range(10)]
+        t0 = time.monotonic()
+        tracker = dispatcher.submit_items(
+            job_id="skip-fast",
+            items=items,
+            config=_make_config(),
+            plex=MagicMock(),
+        )
+        assert tracker.wait(timeout=5), "Fast-skip items should complete quickly"
+        elapsed = time.monotonic() - t0
+        assert tracker.get_result()["completed"] == 10
+        # Without reap-retry: 10 items × ~10ms = ~100ms minimum.
+        # With reap-retry: significantly faster due to in-loop reaping.
+        assert elapsed < 0.5, f"Expected < 500ms, took {elapsed:.3f}s"
+        dispatcher.shutdown()
+
+    @patch("plex_generate_previews.worker.process_item")
+    def test_slow_and_fast_items_mixed(self, mock_process):
+        """When one worker is busy with a slow item, another worker
+        should still cycle through fast items efficiently."""
+        call_order = []
+
+        def mixed_process(item_key, *args, **kwargs):
+            call_order.append(item_key)
+            if "slow" in item_key:
+                time.sleep(0.1)
+                return ProcessingResult.GENERATED
+            return ProcessingResult.SKIPPED_BIF_EXISTS
+
+        mock_process.side_effect = mixed_process
+
+        pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        items = [
+            ("/slow/1", "Slow Item", "movie"),
+            ("/fast/1", "Fast 1", "movie"),
+            ("/fast/2", "Fast 2", "movie"),
+            ("/fast/3", "Fast 3", "movie"),
+            ("/fast/4", "Fast 4", "movie"),
+        ]
+        tracker = dispatcher.submit_items(
+            job_id="mixed",
+            items=items,
+            config=_make_config(),
+            plex=MagicMock(),
+        )
+        assert tracker.wait(timeout=5)
+        result = tracker.get_result()
+        assert result["completed"] == 5
+        dispatcher.shutdown()
