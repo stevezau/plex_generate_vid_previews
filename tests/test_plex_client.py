@@ -15,6 +15,7 @@ import requests
 from plex_generate_previews.plex_client import (
     VIDEO_EXTENSIONS,
     WebhookResolutionResult,
+    _detect_path_prefix_mismatches,
     _expand_directory_to_media_files,
     filter_duplicate_locations,
     get_library_sections,
@@ -1532,3 +1533,98 @@ class TestExpandDirectoryToMediaFiles:
         result = _expand_directory_to_media_files([path], mappings)
 
         assert result == [path]
+
+
+class TestDetectPathPrefixMismatches:
+    """Tests for _detect_path_prefix_mismatches helper."""
+
+    def test_trash_guides_docker_mismatch(self):
+        """Detects the classic TRaSH Guides mismatch: /data/media vs /media."""
+        unresolved = [
+            "/data/media/tv/For All Mankind (2019)/Season 05/"
+            "For All Mankind (2019) - S05E01 - First Light.mkv"
+        ]
+        plex_locations = ["/media/tv", "/media/movies"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert len(result) == 1
+        webhook_pfx, plex_pfx = result[0]
+        assert webhook_pfx == "/data/media"
+        assert plex_pfx == "/media"
+
+    def test_no_mismatch_when_prefix_matches(self):
+        """No suggestions when the webhook path already starts with a Plex root."""
+        unresolved = ["/media/tv/Show/S01E01.mkv"]
+        plex_locations = ["/media/tv"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert result == []
+
+    def test_empty_inputs(self):
+        """Returns empty list when either input is empty."""
+        assert _detect_path_prefix_mismatches([], ["/media/tv"]) == []
+        assert _detect_path_prefix_mismatches(["/data/tv/f.mkv"], []) == []
+        assert _detect_path_prefix_mismatches([], []) == []
+
+    def test_single_level_plex_location(self):
+        """Falls back to direct mapping when Plex location has no meaningful parent."""
+        unresolved = ["/nas/tv/Show/S01E01.mkv"]
+        plex_locations = ["/tv"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert len(result) == 1
+        assert result[0] == ("/nas/tv", "/tv")
+
+    def test_deep_extra_prefix(self):
+        """Handles multiple extra leading components in the webhook path."""
+        unresolved = ["/a/b/media/tv/Show/file.mkv"]
+        plex_locations = ["/media/tv"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert len(result) == 1
+        assert result[0] == ("/a/b/media", "/media")
+
+    def test_partial_segment_not_matched(self):
+        """Plex location /media/tv must not match a path containing /media/tv2."""
+        unresolved = ["/data/media/tv2/Show/file.mkv"]
+        plex_locations = ["/media/tv"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert result == []
+
+    def test_deduplicates_across_paths(self):
+        """Same mismatch detected from multiple files is reported once."""
+        unresolved = [
+            "/data/media/tv/Show1/S01E01.mkv",
+            "/data/media/tv/Show2/S02E01.mkv",
+        ]
+        plex_locations = ["/media/tv", "/media/movies"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert len(result) == 1
+        assert result[0] == ("/data/media", "/media")
+
+    def test_case_insensitive_matching(self):
+        """Detection is case-insensitive for cross-platform compatibility."""
+        unresolved = ["/Data/Media/TV/Show/S01E01.mkv"]
+        plex_locations = ["/media/tv"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert len(result) == 1
+
+    def test_longest_location_wins(self):
+        """More-specific Plex locations are preferred over shorter ones."""
+        unresolved = ["/extra/data/media/tv/Show/file.mkv"]
+        plex_locations = ["/data/media/tv", "/media/tv"]
+
+        result = _detect_path_prefix_mismatches(unresolved, plex_locations)
+
+        assert len(result) == 1
+        assert result[0] == ("/extra/data/media", "/data/media")

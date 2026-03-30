@@ -180,6 +180,7 @@ def run_processing(
                     "skipped_paths": list(webhook_resolution.skipped_paths),
                     "resolved_count": len(webhook_resolution.items),
                     "total_paths": len(config.webhook_paths),
+                    "path_hints": list(webhook_resolution.path_hints),
                 }
             }
             if not webhook_resolution.items:

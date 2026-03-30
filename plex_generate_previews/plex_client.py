@@ -381,6 +381,77 @@ def _extract_item_locations(item) -> List[str]:
     return [str(location).strip() for location in locations if str(location).strip()]
 
 
+def _detect_path_prefix_mismatches(
+    unresolved_paths: List[str],
+    plex_locations: List[str],
+) -> List[Tuple[str, str]]:
+    """Detect likely prefix mismatches between webhook paths and Plex library roots.
+
+    For each unresolved path, checks whether any Plex library location appears
+    as a path-boundary-aligned substring inside it.  When found, the differing
+    prefixes are returned so callers can suggest the exact mapping the user needs.
+
+    Args:
+        unresolved_paths: Webhook paths that could not be resolved to Plex items.
+        plex_locations: Root folder paths reported by Plex library sections.
+
+    Returns:
+        De-duplicated list of ``(webhook_prefix, plex_prefix)`` tuples, e.g.
+        ``[("/data/media", "/media")]``.
+
+    """
+    if not unresolved_paths or not plex_locations:
+        return []
+
+    # Longest-first so more-specific locations match before broader ones.
+    norm_locations = sorted(
+        {loc.rstrip("/") for loc in plex_locations if loc.strip()},
+        key=len,
+        reverse=True,
+    )
+
+    seen: set[Tuple[str, str]] = set()
+    results: List[Tuple[str, str]] = []
+
+    for upath in unresolved_paths:
+        upath_norm = upath.replace("\\", "/")
+        upath_lower = upath_norm.lower()
+        for plex_loc in norm_locations:
+            plex_loc_lower = plex_loc.lower()
+
+            idx = upath_lower.find(plex_loc_lower)
+            if idx <= 0:
+                continue
+
+            # Ensure the Plex location isn't a partial segment match
+            # (e.g. /media/tv must not match /media/tv2).
+            end_idx = idx + len(plex_loc_lower)
+            if end_idx < len(upath_lower) and upath_lower[end_idx] != "/":
+                continue
+
+            # Characters before the match are the extra webhook-only prefix.
+            extra = upath_norm[:idx]
+
+            # Suggest a mapping at the parent of the Plex location when
+            # possible so it covers sibling libraries under the same root
+            # (e.g. /media covers both /media/tv and /media/movies).
+            plex_parent = os.path.dirname(plex_loc)
+            if plex_parent and plex_parent != "/":
+                plex_prefix = plex_parent
+                webhook_prefix = extra.rstrip("/") + plex_parent
+            else:
+                plex_prefix = plex_loc
+                webhook_prefix = extra.rstrip("/") + plex_loc
+
+            pair = (webhook_prefix, plex_prefix)
+            if pair not in seen:
+                seen.add(pair)
+                results.append(pair)
+            break
+
+    return results
+
+
 def _resolve_item_media_type(section_type: str) -> Optional[str]:
     """Map Plex section metadata type to internal media type."""
     if section_type == "movie":
@@ -601,6 +672,7 @@ class WebhookResolutionResult:
     items: List[Tuple[str, str, str]]  # (key, title, media_type)
     unresolved_paths: List[str]
     skipped_paths: List[str]
+    path_hints: List[str]
 
 
 def get_media_items_by_paths(
@@ -659,7 +731,9 @@ def get_media_items_by_paths(
         normalized_targets.update(input_targets)
     if not normalized_targets:
         logger.info("Webhook path resolution skipped (no valid file paths provided)")
-        return WebhookResolutionResult(items=[], unresolved_paths=[], skipped_paths=[])
+        return WebhookResolutionResult(
+            items=[], unresolved_paths=[], skipped_paths=[], path_hints=[]
+        )
 
     num_input_files = len(input_paths)
     logger.info(f"Received {num_input_files} webhook input file(s) to resolve")
@@ -672,7 +746,9 @@ def get_media_items_by_paths(
         xml.etree.ElementTree.ParseError,
     ) as e:
         logger.error(f"Failed to get Plex library sections for webhook paths: {e}")
-        return WebhookResolutionResult(items=[], unresolved_paths=[], skipped_paths=[])
+        return WebhookResolutionResult(
+            items=[], unresolved_paths=[], skipped_paths=[], path_hints=[]
+        )
 
     matched_items = []
     seen_keys = set()
@@ -1084,6 +1160,7 @@ def get_media_items_by_paths(
                 else ", ".join(sorted(selected_library_ids))
             )
         )
+    path_hints: List[str] = []
     if unresolved_input_paths:
         cap = 10
         paths_to_log = unresolved_input_paths[:cap]
@@ -1094,6 +1171,29 @@ def get_media_items_by_paths(
             )
         else:
             logger.warning("  Unresolved: " + ", ".join(repr(p) for p in paths_to_log))
+
+        plex_roots = sorted(
+            {
+                str(loc).rstrip("/")
+                for section in sections
+                for loc in (getattr(section, "locations", None) or [])
+                if str(loc).strip()
+            }
+        )
+        if plex_roots:
+            logger.info(f"Plex library paths: {', '.join(plex_roots)}")
+
+        mismatches = _detect_path_prefix_mismatches(unresolved_input_paths, plex_roots)
+        for webhook_pfx, plex_pfx in mismatches:
+            hint = (
+                f"Possible prefix mismatch: webhook sends '{webhook_pfx}' "
+                f"but Plex uses '{plex_pfx}'. Consider adding a path mapping "
+                f"in Settings: Plex path = {plex_pfx}, "
+                f"Sonarr/Radarr path = {webhook_pfx}"
+            )
+            path_hints.append(hint)
+            logger.info(hint)
+
         logger.info(
             "If this app, Plex, or Sonarr/Radarr use different paths for the same files, "
             "configure Path mapping in Settings."
@@ -1113,4 +1213,5 @@ def get_media_items_by_paths(
         items=matched_items,
         unresolved_paths=unresolved_input_paths,
         skipped_paths=skipped_input_paths,
+        path_hints=path_hints,
     )

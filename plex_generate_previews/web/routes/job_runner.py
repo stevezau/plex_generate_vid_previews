@@ -119,6 +119,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             if get_settings_manager().processing_paused:
                 merged = {**(job.config or {}), **(config_overrides or {})}
+                wp = merged.get("webhook_paths")
+                if wp and not merged.get("webhook_basenames"):
+                    merged["webhook_basenames"] = [os.path.basename(p) for p in wp][:20]
+                    if not merged.get("path_count"):
+                        merged["path_count"] = len(wp)
                 job_manager.update_job_config(job_id, merged)
                 logger.info(
                     f"Job {job_id} not started — global processing paused; job remains pending"
@@ -150,6 +155,20 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             if job and config_overrides:
                 merged = {**(job.config or {}), **(config_overrides or {})}
                 job_manager.update_job_config(job_id, merged)
+
+            # Ensure webhook_basenames is populated for UI file display.
+            # Some code paths (resume from pause, requeue after restart)
+            # pass config_overrides without basenames, so derive them from
+            # webhook_paths when missing.
+            job = job_manager.get_job(job_id)
+            if job:
+                cfg = job.config or {}
+                wp = cfg.get("webhook_paths")
+                if wp and not cfg.get("webhook_basenames"):
+                    cfg["webhook_basenames"] = [os.path.basename(p) for p in wp][:20]
+                    if not cfg.get("path_count"):
+                        cfg["path_count"] = len(wp)
+                    job_manager.update_job_config(job_id, cfg)
 
             job_manager.update_progress(
                 job_id,
@@ -421,6 +440,25 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     unresolved_paths = resolution.get("unresolved_paths") or []
                     total_paths = resolution.get("total_paths", 0)
                     resolved_count = resolution.get("resolved_count", 0)
+                    path_hints = resolution.get("path_hints") or []
+
+                    if path_hints:
+                        for hint in path_hints:
+                            job_manager.add_log(job_id, f"INFO - {hint}")
+
+                    unresolved_detail = (
+                        path_hints[0]
+                        if path_hints
+                        else "file may not be scanned yet, "
+                        "or path mappings in Settings may need adjusting"
+                    )
+                    for upath in unresolved_paths:
+                        job_manager.record_file_result(
+                            job_id,
+                            upath,
+                            "unresolved_plex",
+                            f"Not found in Plex \u2014 {unresolved_detail}",
+                        )
                     is_retry = job_config.get("is_retry", False)
                     retry_attempt = int(job_config.get("retry_attempt", 0))
                     max_retries = int(job_config.get("max_retries", 0))
@@ -439,11 +477,22 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         parent_lib = current_job.library_name if current_job else ""
                         if parent_lib.startswith("Retry: "):
                             parent_lib = parent_lib[len("Retry: ") :]
-                        retry_library_name = (
-                            f"Retry: {parent_lib}"
-                            if parent_lib
-                            else f"Retry: {basenames[0]}"
+                        # Extract source prefix (e.g. "Sonarr") and build
+                        # a name reflecting the actual unresolved count.
+                        colon_pos = parent_lib.find(": ")
+                        source_prefix = (
+                            parent_lib[:colon_pos] if colon_pos > 0 else parent_lib
                         )
+                        if len(paths) == 1:
+                            retry_library_name = (
+                                f"Retry: {source_prefix}: {basenames[0]}"
+                            )
+                        elif source_prefix:
+                            retry_library_name = (
+                                f"Retry: {source_prefix}: {len(paths)} files"
+                            )
+                        else:
+                            retry_library_name = f"Retry: {basenames[0]}"
                         parent_id = job_config.get("parent_job_id") or job_id
                         backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
                         scheduled_at = (

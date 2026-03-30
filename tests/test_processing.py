@@ -161,11 +161,14 @@ class TestLibraryScanFlow:
 class TestWebhookFlow:
     """Tests for the webhook-targeted processing path."""
 
-    def _webhook_resolution(self, items=None, unresolved=None, skipped=None):
+    def _webhook_resolution(
+        self, items=None, unresolved=None, skipped=None, path_hints=None
+    ):
         return SimpleNamespace(
             items=items or [],
             unresolved_paths=unresolved or [],
             skipped_paths=skipped or [],
+            path_hints=path_hints or [],
         )
 
     def test_webhook_with_resolved_items(self, tmp_path):
