@@ -1587,6 +1587,48 @@ function showNotification(title, body, type = 'info') {
     });
 }
 
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function describeSchedule(triggerType, triggerValue) {
+    if (triggerType === 'interval') {
+        const mins = parseInt(triggerValue, 10);
+        if (mins >= 60 && mins % 60 === 0) {
+            const hrs = mins / 60;
+            return hrs === 1 ? 'Every hour' : `Every ${hrs} hours`;
+        }
+        return mins === 1 ? 'Every minute' : `Every ${mins} minutes`;
+    }
+
+    if (triggerType !== 'cron' || !triggerValue) return triggerValue || '-';
+
+    const parts = triggerValue.split(/\s+/);
+    if (parts.length !== 5) return triggerValue;
+
+    const [minute, hour, dom, month, dow] = parts;
+    const isSimple = /^\d+$/.test(minute) && /^\d+$/.test(hour)
+        && dom === '*' && month === '*' && /^[\d,]+$/.test(dow);
+
+    if (isSimple) {
+        const timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+        const dayNums = dow.split(',').map(Number);
+        const allDays = dayNums.length === 7;
+        const weekdays = dayNums.length === 5
+            && [1,2,3,4,5].every(d => dayNums.includes(d));
+        const weekends = dayNums.length === 2
+            && [0,6].every(d => dayNums.includes(d));
+
+        let dayLabel;
+        if (allDays) dayLabel = 'Daily';
+        else if (weekdays) dayLabel = 'Weekdays';
+        else if (weekends) dayLabel = 'Weekends';
+        else dayLabel = dayNums.map(d => DAY_NAMES[d] || d).join(', ');
+
+        return `${timeStr} ${dayLabel}`;
+    }
+
+    return triggerValue;
+}
+
 function updateScheduleList() {
     const tbody = document.getElementById('scheduleList');
 
@@ -1608,9 +1650,7 @@ function updateScheduleList() {
             '<span class="badge bg-success">Enabled</span>' :
             '<span class="badge bg-secondary">Disabled</span>';
 
-        const cronDisplay = schedule.trigger_type === 'cron' ?
-            schedule.trigger_value :
-            `Every ${schedule.trigger_value} minutes`;
+        const cronDisplay = describeSchedule(schedule.trigger_type, schedule.trigger_value);
 
         const nextRun = schedule.next_run ? formatDate(schedule.next_run) : '-';
 
@@ -1994,6 +2034,17 @@ async function clearJobsByStatus() {
     }
 }
 
+function onScheduleTypeChange() {
+    const selected = document.querySelector('input[name="scheduleType"]:checked').value;
+    document.getElementById('scheduleFieldsTime').classList.toggle('d-none', selected !== 'specific-time');
+    document.getElementById('scheduleFieldsInterval').classList.toggle('d-none', selected !== 'interval');
+    document.getElementById('scheduleFieldsCron').classList.toggle('d-none', selected !== 'cron');
+}
+
+function _getSelectedScheduleType() {
+    return document.querySelector('input[name="scheduleType"]:checked').value;
+}
+
 function _resetScheduleForm() {
     document.getElementById('scheduleName').value = '';
     document.getElementById('scheduleLibrary').value = '';
@@ -2001,13 +2052,24 @@ function _resetScheduleForm() {
     document.getElementById('scheduleEditId').value = '';
     document.getElementById('scheduleEnabled').checked = true;
     document.getElementById('schedulePriority').value = '2';
-    document.getElementById('scheduleTime').value = '02:00';
 
-    // Default days: Mon-Fri checked
+    // Reset schedule type to Specific Time
+    document.getElementById('scheduleTypeTime').checked = true;
+    onScheduleTypeChange();
+
+    // Reset Specific Time fields
+    document.getElementById('scheduleTime').value = '02:00';
     const defaultDays = new Set(['1', '2', '3', '4', '5']);
     document.querySelectorAll('.schedule-day').forEach(cb => {
         cb.checked = defaultDays.has(cb.value);
     });
+
+    // Reset Interval fields
+    document.getElementById('scheduleIntervalValue').value = '2';
+    document.getElementById('scheduleIntervalUnit').value = 'hours';
+
+    // Reset Cron Expression field
+    document.getElementById('scheduleCronInput').value = '';
 }
 
 function showNewScheduleModal() {
@@ -2036,20 +2098,42 @@ function showEditScheduleModal(scheduleId) {
     document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
     document.getElementById('schedulePriority').value = String(schedule.priority || 2);
 
-    // Parse cron expression back to time and days
-    if (schedule.trigger_type === 'cron' && schedule.trigger_value) {
+    if (schedule.trigger_type === 'interval' && schedule.trigger_value) {
+        // Interval schedule: populate interval fields
+        document.getElementById('scheduleTypeInterval').checked = true;
+        const totalMinutes = parseInt(schedule.trigger_value, 10);
+        if (totalMinutes >= 60 && totalMinutes % 60 === 0) {
+            document.getElementById('scheduleIntervalValue').value = String(totalMinutes / 60);
+            document.getElementById('scheduleIntervalUnit').value = 'hours';
+        } else {
+            document.getElementById('scheduleIntervalValue').value = String(totalMinutes);
+            document.getElementById('scheduleIntervalUnit').value = 'minutes';
+        }
+    } else if (schedule.trigger_type === 'cron' && schedule.trigger_value) {
         const parts = schedule.trigger_value.split(/\s+/);
-        if (parts.length >= 5) {
-            const minute = parts[0].padStart(2, '0');
-            const hour = parts[1].padStart(2, '0');
-            document.getElementById('scheduleTime').value = `${hour}:${minute}`;
+        const isSimpleTimeDays = parts.length === 5
+            && /^\d+$/.test(parts[0])
+            && /^\d+$/.test(parts[1])
+            && parts[2] === '*'
+            && parts[3] === '*'
+            && /^[\d,]+$/.test(parts[4]);
 
+        if (isSimpleTimeDays) {
+            // Simple time+days pattern: use the Specific Time UI
+            document.getElementById('scheduleTypeTime').checked = true;
+            document.getElementById('scheduleTime').value =
+                `${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}`;
             const cronDays = parts[4].split(',').map(d => d.trim());
             document.querySelectorAll('.schedule-day').forEach(cb => {
                 cb.checked = cronDays.includes(cb.value);
             });
+        } else {
+            // Complex cron: show the raw cron input
+            document.getElementById('scheduleTypeCron').checked = true;
+            document.getElementById('scheduleCronInput').value = schedule.trigger_value;
         }
     }
+    onScheduleTypeChange();
 
     document.getElementById('scheduleModalTitle').innerHTML =
         '<i class="bi bi-pencil me-2"></i>Edit Schedule';
@@ -2068,31 +2152,52 @@ async function saveSchedule() {
         return;
     }
 
-    const timeValue = document.getElementById('scheduleTime').value;
-    if (!timeValue) {
-        showToast('Error', 'Time is required', 'danger');
-        return;
-    }
-
-    const selectedDays = Array.from(document.querySelectorAll('.schedule-day:checked')).map(cb => cb.value);
-    if (selectedDays.length === 0) {
-        showToast('Error', 'Select at least one day', 'danger');
-        return;
-    }
-
-    const [hours, minutes] = timeValue.split(':');
-    const cronExpr = `${parseInt(minutes)} ${parseInt(hours)} * * ${selectedDays.join(',')}`;
+    const scheduleType = _getSelectedScheduleType();
     const libraryId = document.getElementById('scheduleLibrary').value;
     const library = libraries.find(l => l.id === libraryId);
 
     const payload = {
         name: name,
-        cron_expression: cronExpr,
         library_id: libraryId || null,
         library_name: library ? library.name : 'All Libraries',
         enabled: document.getElementById('scheduleEnabled').checked,
         priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2
     };
+
+    if (scheduleType === 'specific-time') {
+        const timeValue = document.getElementById('scheduleTime').value;
+        if (!timeValue) {
+            showToast('Error', 'Time is required', 'danger');
+            return;
+        }
+        const selectedDays = Array.from(document.querySelectorAll('.schedule-day:checked')).map(cb => cb.value);
+        if (selectedDays.length === 0) {
+            showToast('Error', 'Select at least one day', 'danger');
+            return;
+        }
+        const [hours, minutes] = timeValue.split(':');
+        payload.cron_expression = `${parseInt(minutes)} ${parseInt(hours)} * * ${selectedDays.join(',')}`;
+    } else if (scheduleType === 'interval') {
+        const intervalValue = parseInt(document.getElementById('scheduleIntervalValue').value, 10);
+        if (!intervalValue || intervalValue < 1) {
+            showToast('Error', 'Interval must be at least 1', 'danger');
+            return;
+        }
+        const unit = document.getElementById('scheduleIntervalUnit').value;
+        payload.interval_minutes = unit === 'hours' ? intervalValue * 60 : intervalValue;
+    } else if (scheduleType === 'cron') {
+        const cronInput = document.getElementById('scheduleCronInput').value.trim();
+        if (!cronInput) {
+            showToast('Error', 'Cron expression is required', 'danger');
+            return;
+        }
+        const parts = cronInput.split(/\s+/);
+        if (parts.length !== 5) {
+            showToast('Error', 'Cron expression must have 5 fields (minute hour day-of-month month day-of-week)', 'danger');
+            return;
+        }
+        payload.cron_expression = cronInput;
+    }
 
     try {
         if (editId) {

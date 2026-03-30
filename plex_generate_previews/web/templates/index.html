@@ -449,42 +449,84 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label for="scheduleTime" class="form-label">Time</label>
-                        <input type="time" class="form-control" id="scheduleTime" value="02:00" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Days</label>
-                        <div class="d-flex flex-wrap gap-2">
+                        <label class="form-label">Schedule Type</label>
+                        <div class="d-flex gap-3">
                             <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="0" id="daySun">
-                                <label class="form-check-label" for="daySun">Sun</label>
+                                <input class="form-check-input" type="radio" name="scheduleType" id="scheduleTypeTime" value="specific-time" checked onchange="onScheduleTypeChange()">
+                                <label class="form-check-label" for="scheduleTypeTime">Specific Time</label>
                             </div>
                             <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="1" id="dayMon" checked>
-                                <label class="form-check-label" for="dayMon">Mon</label>
+                                <input class="form-check-input" type="radio" name="scheduleType" id="scheduleTypeInterval" value="interval" onchange="onScheduleTypeChange()">
+                                <label class="form-check-label" for="scheduleTypeInterval">Interval</label>
                             </div>
                             <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="2" id="dayTue" checked>
-                                <label class="form-check-label" for="dayTue">Tue</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="3" id="dayWed" checked>
-                                <label class="form-check-label" for="dayWed">Wed</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="4" id="dayThu" checked>
-                                <label class="form-check-label" for="dayThu">Thu</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="5" id="dayFri" checked>
-                                <label class="form-check-label" for="dayFri">Fri</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input schedule-day" type="checkbox" value="6" id="daySat">
-                                <label class="form-check-label" for="daySat">Sat</label>
+                                <input class="form-check-input" type="radio" name="scheduleType" id="scheduleTypeCron" value="cron" onchange="onScheduleTypeChange()">
+                                <label class="form-check-label" for="scheduleTypeCron">Cron Expression</label>
                             </div>
                         </div>
-                        <div class="form-text">Select which days to run</div>
+                    </div>
+                    <div id="scheduleFieldsTime">
+                        <div class="mb-3">
+                            <label for="scheduleTime" class="form-label">Time</label>
+                            <input type="time" class="form-control" id="scheduleTime" value="02:00">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Days</label>
+                            <div class="d-flex flex-wrap gap-2">
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="0" id="daySun">
+                                    <label class="form-check-label" for="daySun">Sun</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="1" id="dayMon" checked>
+                                    <label class="form-check-label" for="dayMon">Mon</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="2" id="dayTue" checked>
+                                    <label class="form-check-label" for="dayTue">Tue</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="3" id="dayWed" checked>
+                                    <label class="form-check-label" for="dayWed">Wed</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="4" id="dayThu" checked>
+                                    <label class="form-check-label" for="dayThu">Thu</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="5" id="dayFri" checked>
+                                    <label class="form-check-label" for="dayFri">Fri</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input schedule-day" type="checkbox" value="6" id="daySat">
+                                    <label class="form-check-label" for="daySat">Sat</label>
+                                </div>
+                            </div>
+                            <div class="form-text">Select which days to run</div>
+                        </div>
+                    </div>
+                    <div id="scheduleFieldsInterval" class="d-none">
+                        <div class="mb-3">
+                            <label for="scheduleIntervalValue" class="form-label">Run every</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="scheduleIntervalValue" min="1" value="2" placeholder="2">
+                                <select class="form-select" id="scheduleIntervalUnit" style="max-width: 120px;">
+                                    <option value="minutes">Minutes</option>
+                                    <option value="hours" selected>Hours</option>
+                                </select>
+                            </div>
+                            <div class="form-text">How often the schedule should repeat</div>
+                        </div>
+                    </div>
+                    <div id="scheduleFieldsCron" class="d-none">
+                        <div class="mb-3">
+                            <label for="scheduleCronInput" class="form-label">Cron Expression</label>
+                            <input type="text" class="form-control font-monospace" id="scheduleCronInput" placeholder="0 */2 * * *">
+                            <div class="form-text">
+                                Format: <code>minute hour day-of-month month day-of-week</code><br>
+                                Examples: <code>0 */2 * * *</code> (every 2 hrs), <code>0,30 * * * *</code> (every 30 min), <code>0 3 * * 0</code> (Sun 3 AM)
+                            </div>
+                        </div>
                     </div>
                     <div class="mb-3">
                         <label for="schedulePriority" class="form-label">Job Priority</label>
