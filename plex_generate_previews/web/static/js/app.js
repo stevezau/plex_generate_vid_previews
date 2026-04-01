@@ -969,9 +969,12 @@ function updateJobQueue() {
                              </button>`;
         }
 
-        const webhookBasenames = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
+        let webhookBasenames = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
             ? job.config.webhook_basenames
             : [];
+        if (webhookBasenames.length === 0 && job.config && Array.isArray(job.config.webhook_paths) && job.config.webhook_paths.length > 0) {
+            webhookBasenames = job.config.webhook_paths.map(function (p) { return p.split('/').pop() || p; });
+        }
         const hasMultiFile = webhookBasenames.length > 1;
         const isFilesExpanded = expandedJobFileRows.has(String(job.id));
         const libraryTitle = webhookBasenames.length > 0
@@ -1147,9 +1150,12 @@ function updateActiveJobs(runningJobs) {
 
         // Build collapsible file list (matching Job Queue pattern)
         let webhookFilesHtml = '';
-        const webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
+        let webhookFiles = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
             ? job.config.webhook_basenames
             : null;
+        if (!webhookFiles && job.config && Array.isArray(job.config.webhook_paths) && job.config.webhook_paths.length > 0) {
+            webhookFiles = job.config.webhook_paths.map(function (p) { return p.split('/').pop() || p; });
+        }
         if (webhookFiles && webhookFiles.length > 1) {
             const filesId = `active-job-files-${jid}`;
             const isExpanded = expandedActiveJobFiles.has(String(job.id));
@@ -1581,6 +1587,7 @@ var FILE_OUTCOME_META = {
     'skipped_excluded':       { label: 'Excluded',      badge: 'bg-secondary' },
     'skipped_invalid_hash':   { label: 'Invalid Hash',  badge: 'bg-warning text-dark' },
     'no_media_parts':         { label: 'No Media Parts', badge: 'bg-light text-dark' },
+    'unresolved_plex':        { label: 'Not In Plex',    badge: 'bg-danger' },
 };
 
 function onFilesTabActivated() {

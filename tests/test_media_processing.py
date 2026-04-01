@@ -560,7 +560,7 @@ class TestGenerateImages:
         mock_time.sleep.return_value = None
         mock_time.time_ns.return_value = 0  # for temp output filename
 
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/video.mp4", temp_dir, None, None, mock_config
         )
 
@@ -1046,7 +1046,7 @@ class TestGenerateImages:
         # Enable CPU threads
         mock_config.cpu_threads = 1
 
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/video.mp4", temp_dir, "NVIDIA", None, mock_config
         )
 
@@ -1140,7 +1140,7 @@ class TestGenerateImages:
         mock_detect.return_value = False
         mock_config.cpu_threads = 1
 
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/video_dv.mp4", temp_dir, "NVIDIA", None, mock_config
         )
 
@@ -1212,7 +1212,7 @@ class TestGenerateImages:
         mock_glob.return_value = []
         mock_detect.return_value = False
 
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/video_dv.mp4", temp_dir, None, None, mock_config
         )
 
@@ -1295,7 +1295,7 @@ class TestGenerateImages:
 
         mock_detect.return_value = False
 
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/video_dv.mp4", temp_dir, None, None, mock_config
         )
 
@@ -1751,7 +1751,7 @@ class TestProactiveDVSkip:
 
         mock_glob.side_effect = glob_side_effect
 
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             video_filename, temp_dir, gpu, None, mock_config
         )
 
@@ -2045,7 +2045,7 @@ class TestLibplaceboFallback:
         mock_glob.side_effect = glob_side_effect
 
         # Act
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
         )
 
@@ -2153,7 +2153,7 @@ class TestZscaleErrorRetry:
         mock_config.cpu_threads = 1
 
         # Act
-        success, image_count, hw_used, seconds, speed = generate_images(
+        success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/hdr10_zscale_crash.mkv", temp_dir, "NVIDIA", None, mock_config
         )
 

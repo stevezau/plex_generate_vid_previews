@@ -241,6 +241,64 @@ def _is_signal_killed(returncode: int) -> bool:
     return _diagnose_ffmpeg_exit_code(returncode).startswith("signal:")
 
 
+def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
+    """Extract a concise, human-readable error summary from FFmpeg stderr.
+
+    Scans the last lines for the most informative error messages (e.g.
+    "Error opening input", "Invalid data found", codec errors) and
+    returns the single best line suitable for UI display.
+
+    Args:
+        stderr_lines: Full FFmpeg stderr output lines.
+
+    Returns:
+        Short error string, or empty string if nothing useful was found.
+    """
+    if not stderr_lines:
+        return ""
+
+    error_keywords = (
+        "error",
+        "invalid",
+        "permission denied",
+        "no such file",
+        "cannot",
+        "failed",
+        "unknown",
+        "unrecognized",
+        "not found",
+        "codec",
+        "corrupt",
+    )
+
+    candidates: List[str] = []
+    for line in stderr_lines[-10:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if not any(kw in lower for kw in error_keywords):
+            continue
+        # Drop FFmpeg internal address prefixes like "[in#0 @ 0x...]"
+        # and demuxer tags like "[matroska,webm @ 0x...]"
+        clean = re.sub(r"\[.*?@\s*0x[0-9a-fA-F]+\]\s*", "", stripped).strip()
+        if not clean:
+            continue
+        candidates.append(clean)
+
+    if not candidates:
+        return ""
+
+    # Prefer the last line that starts with "Error" — FFmpeg puts the
+    # most user-readable summary there (e.g. "Error opening input files:
+    # Invalid data found when processing input").
+    for candidate in reversed(candidates):
+        if candidate.lower().startswith("error"):
+            return candidate
+
+    return candidates[-1]
+
+
 def _save_ffmpeg_failure_log(
     video_file: str, returncode: int, stderr_lines: List[str]
 ) -> None:
@@ -774,13 +832,15 @@ def generate_images(
         cancel_check: Optional callable returning True when job is cancelled
 
     Returns:
-        (success, image_count, hw_used, seconds, speed):
+        (success, image_count, hw_used, seconds, speed, error_summary):
             success (bool): True if at least one image was produced
             image_count (int): Number of images written
             hw_used (bool): Whether hardware acceleration was actually used
                            (False if CPU fallback occurred)
             seconds (float): Elapsed processing time (last attempt)
             speed (str): Reported or computed FFmpeg speed string
+            error_summary (str): Concise FFmpeg error excerpt on failure,
+                empty string on success.
 
     """
     media_info = MediaInfo.parse(video_file)
@@ -1322,6 +1382,7 @@ def generate_images(
 
     hw = gpu is not None
     success = image_count > 0
+    error_summary = ""
 
     if success:
         fallback_suffix = (
@@ -1341,15 +1402,18 @@ def generate_images(
         logger.error(
             f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}"
         )
+        error_summary = _extract_ffmpeg_error_summary(stderr_lines_all)
         worker_ctx = "GPU" if gpu is not None else "CPU"
         reason = (
             f"FFmpeg exit {rc} ({_diagnose_ffmpeg_exit_code(rc)}){fallback_suffix}"
             if rc != 0
             else f"0 images{fallback_suffix}"
         )
+        if error_summary:
+            reason = f"{reason} — {error_summary}"
         record_failure(video_file, rc, reason, worker_type=worker_ctx)
 
-    return success, image_count, hw, seconds, speed
+    return success, image_count, hw, seconds, speed, error_summary
 
 
 def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str]:
@@ -1492,10 +1556,13 @@ def _generate_and_save_bif(
         _cleanup_temp_directory(tmp_path)
         raise RuntimeError(f"Failed to generate images: {e}") from e
 
-    # Determine image count from result or by scanning
+    # Determine image count and error summary from result or by scanning
     image_count = 0
+    ffmpeg_error = ""
     if isinstance(gen_result, tuple) and len(gen_result) >= 2:
         _, image_count = bool(gen_result[0]), int(gen_result[1])
+        if len(gen_result) >= 6:
+            ffmpeg_error = gen_result[5] or ""
     else:
         if os.path.isdir(tmp_path):
             image_count = len(glob.glob(os.path.join(tmp_path, "*.jpg")))
@@ -1503,7 +1570,10 @@ def _generate_and_save_bif(
     if image_count == 0:
         logger.error(f"No thumbnails generated for {media_file}; skipping BIF creation")
         _cleanup_temp_directory(tmp_path)
-        raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}")
+        detail = f" ({ffmpeg_error})" if ffmpeg_error else ""
+        raise RuntimeError(
+            f"Thumbnail generation produced 0 images for {media_file}{detail}"
+        )
 
     # Generate BIF file
     try:

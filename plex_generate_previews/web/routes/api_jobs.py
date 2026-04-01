@@ -531,7 +531,13 @@ def remove_job_workers(job_id):
 @api.route("/jobs/<job_id>/logs", methods=["GET"])
 @api_token_required
 def get_job_logs(job_id):
-    """Get logs for a specific job."""
+    """Get logs for a specific job with optional offset/limit pagination.
+
+    Query params:
+        offset: 0-based line index to start from (default 0).
+        limit: Max lines to return (default: all). Capped at 5000.
+        last: Return only the last N lines (legacy; ignored if offset is set).
+    """
     from ..jobs import LOG_RETENTION_CLEARED_MESSAGE
 
     job_manager = get_job_manager()
@@ -539,8 +545,24 @@ def get_job_logs(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
+    offset = request.args.get("offset", type=int)
+    limit = request.args.get("limit", type=int)
     last_n = request.args.get("last", type=int)
-    logs = job_manager.get_logs(job_id, last_n)
+
+    if offset is not None or limit is not None:
+        result = job_manager.get_logs_paginated(
+            job_id,
+            offset=offset or 0,
+            limit=min(limit, 5000) if limit else None,
+        )
+        logs = result["lines"]
+        total_lines = result["total_lines"]
+        actual_offset = result["offset"]
+    else:
+        logs = job_manager.get_logs(job_id, last_n)
+        total_lines = len(logs)
+        actual_offset = 0
+
     log_cleared_by_retention = (
         len(logs) == 1 and logs[0] == LOG_RETENTION_CLEARED_MESSAGE
     )
@@ -550,6 +572,8 @@ def get_job_logs(job_id):
             "job_id": job_id,
             "logs": logs,
             "count": len(logs),
+            "total_lines": total_lines,
+            "offset": actual_offset,
             "log_cleared_by_retention": log_cleared_by_retention,
         }
     )
@@ -558,12 +582,16 @@ def get_job_logs(job_id):
 @api.route("/jobs/<job_id>/files", methods=["GET"])
 @api_token_required
 def get_job_file_results(job_id):
-    """Get per-file processing results for a job.
+    """Get per-file processing results for a job with server-side pagination.
 
     Query params:
         outcome: Filter by outcome value (e.g. "failed", "generated").
         search: Case-insensitive filename substring search.
+        page: 1-based page number (default 1).
+        per_page: Results per page (default 100, max 500).
     """
+    import math
+
     job_manager = get_job_manager()
     job = job_manager.get_job(job_id)
     if not job:
@@ -571,6 +599,8 @@ def get_job_file_results(job_id):
 
     outcome_filter = request.args.get("outcome", "").strip()
     search = request.args.get("search", "").strip()
+    page = max(1, request.args.get("page", 1, type=int))
+    per_page = min(500, max(1, request.args.get("per_page", 100, type=int)))
 
     all_results = job_manager.get_file_results(job_id)
 
@@ -586,13 +616,23 @@ def get_job_file_results(job_id):
         search_lower = search.lower()
         filtered = [r for r in filtered if search_lower in r.get("file", "").lower()]
 
+    filtered_count = len(filtered)
+    total_pages = max(1, math.ceil(filtered_count / per_page))
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    page_slice = filtered[start : start + per_page]
+
     return jsonify(
         {
             "job_id": job_id,
-            "files": filtered,
+            "files": page_slice,
             "summary": summary,
-            "count": len(filtered),
+            "count": len(page_slice),
+            "filtered_count": filtered_count,
             "total": len(all_results),
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
         }
     )
 
@@ -754,7 +794,12 @@ def delete_job(job_id):
 @api.route("/jobs/<job_id>/reprocess", methods=["POST"])
 @api_token_required
 def reprocess_job(job_id):
-    """Create and start a new job with the same parameters as the given job."""
+    """Create and start a new job with the same parameters as the given job.
+
+    When reprocessing a retry job, recovers the full file set and library
+    name from the original parent job so every file is retried — not just
+    the subset that remained unresolved.
+    """
     job_manager = get_job_manager()
     job = job_manager.get_job(job_id)
     if not job:
@@ -765,6 +810,23 @@ def reprocess_job(job_id):
             409,
         )
     new_config = dict(job.config or {})
+
+    # When reprocessing a retry, restore the original job's full file set
+    # and library name so all files are processed again.
+    parent_id = new_config.get("parent_job_id")
+    library_name = job.library_name
+    if parent_id:
+        parent_job = job_manager.get_job(parent_id)
+        if parent_job:
+            parent_cfg = parent_job.config or {}
+            if parent_cfg.get("webhook_paths"):
+                new_config["webhook_paths"] = parent_cfg["webhook_paths"]
+            if parent_cfg.get("webhook_basenames"):
+                new_config["webhook_basenames"] = parent_cfg["webhook_basenames"]
+            if parent_cfg.get("path_count"):
+                new_config["path_count"] = parent_cfg["path_count"]
+            library_name = parent_job.library_name or library_name
+
     for key in (
         "is_retry",
         "retry_delay",
@@ -773,11 +835,13 @@ def reprocess_job(job_id):
         "parent_job_id",
         "webhook_retry_count",
         "webhook_retry_delay",
+        "resolution_summary",
+        "scheduled_at",
     ):
         new_config.pop(key, None)
     new_job = job_manager.create_job(
         library_id=job.library_id,
-        library_name=job.library_name,
+        library_name=library_name,
         config=new_config,
         priority=job.priority,
     )
