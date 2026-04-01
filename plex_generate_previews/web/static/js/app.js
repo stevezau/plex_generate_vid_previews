@@ -36,6 +36,17 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+var _libraryTypeLabels = {movie: 'Movies', show: 'TV Shows', sports: 'Sports', other_videos: 'Other Videos'};
+var _libraryTypeIcons = {movie: 'bi-film', show: 'bi-tv', sports: 'bi-trophy', other_videos: 'bi-camera-video'};
+
+function libraryTypeLabel(lib) {
+    return _libraryTypeLabels[lib.display_type] || _libraryTypeLabels[lib.type] || lib.type;
+}
+
+function libraryTypeIcon(lib) {
+    return _libraryTypeIcons[lib.display_type] || _libraryTypeIcons[lib.type] || 'bi-folder';
+}
+
 async function copyToClipboard(text, successMessage = 'Copied to clipboard', errorMessage = 'Failed to copy to clipboard') {
     const stringValue = String(text ?? '');
 
@@ -788,8 +799,8 @@ async function updateLibraryList() {
     }
 
     for (const lib of libraries) {
-        const icon = lib.type === 'movie' ? 'bi-film' : 'bi-tv';
-        const typeLabel = lib.type === 'movie' ? 'Movies' : 'TV Shows';
+        const icon = libraryTypeIcon(lib);
+        const typeLabel = libraryTypeLabel(lib);
         const isSelected = allSelected || selectedNames.includes(lib.name.toLowerCase());
         const dimClass = isSelected ? '' : ' opacity-50';
 
@@ -819,7 +830,7 @@ function updateLibrarySelects() {
         for (const lib of libraries) {
             const option = document.createElement('option');
             option.value = lib.id;
-            option.textContent = `${lib.name} (${lib.type})`; // textContent auto-escapes
+            option.textContent = `${lib.name} (${libraryTypeLabel(lib)})`;
             select.appendChild(option);
         }
     }
@@ -2117,7 +2128,7 @@ function showNewJobModal() {
                 <input class="form-check-input job-library-checkbox" type="checkbox"
                        value="${lib.id}" id="jobLib_${lib.id}" disabled>
                 <label class="form-check-label" for="jobLib_${lib.id}">
-                    ${lib.name} <span class="text-muted small">(${lib.type})</span>
+                    ${lib.name} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
                 </label>
             </div>
         `).join('');

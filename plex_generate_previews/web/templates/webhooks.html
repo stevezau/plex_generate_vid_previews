@@ -24,6 +24,7 @@
     .status-badge.disabled { background-color: rgba(108,117,125,0.2); color: var(--bs-secondary); }
     .source-badge.radarr { background-color: rgba(255,165,0,0.2); color: #ffa500; }
     .source-badge.sonarr { background-color: rgba(25,135,84,0.2); color: var(--bs-success); }
+    .source-badge.sportarr { background-color: rgba(13,202,240,0.2); color: #0dcaf0; }
     .source-badge.custom { background-color: rgba(111,66,193,0.2); color: #8b5cf6; }
 </style>
 {% endblock %}
@@ -61,6 +62,14 @@
         <div class="input-group mb-3">
             <input type="text" class="form-control webhook-url" id="sonarrUrl" readonly>
             <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('sonarrUrl')">
+                <i class="bi bi-clipboard"></i>
+            </button>
+        </div>
+
+        <label class="form-label">Sportarr Webhook URL</label>
+        <div class="input-group mb-3">
+            <input type="text" class="form-control webhook-url" id="sportarrUrl" readonly>
+            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('sportarrUrl')">
                 <i class="bi bi-clipboard"></i>
             </button>
         </div>
@@ -188,6 +197,21 @@
                 <li>Click <strong>Test</strong> then <strong>Save</strong></li>
             </ol>
 
+            <h6 class="mt-3">Sportarr</h6>
+            <ol>
+                <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
+                <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
+                <li>Set <strong>URL</strong>: copy the Sportarr Webhook URL above</li>
+                <li>Under <strong>Events</strong>, enable <em>On File Import</em> and <em>On File Upgrade</em></li>
+                <li><strong>Authentication</strong> (use one):
+                    <ul class="mb-0">
+                        <li><strong>Username/Password</strong>: Leave <strong>Username</strong> blank and put your API token or webhook secret in <strong>Password</strong>.</li>
+                        <li><strong>Headers</strong>: If your webhook form has a Headers section, add <code>X-Auth-Token</code> = your API token or webhook secret.</li>
+                    </ul>
+                </li>
+                <li>Click <strong>Test</strong> then <strong>Save</strong></li>
+            </ol>
+
             <h6 class="mt-3">Custom Webhook (Tdarr, scripts, etc.)</h6>
             <p class="small text-muted mb-2">Use the custom endpoint to trigger preview generation from any tool that can send HTTP requests. The expected JSON payload is:</p>
             <pre class="bg-dark p-2 rounded small mb-2"><code>{% raw %}{
@@ -278,6 +302,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Set webhook URLs from current origin
     document.getElementById('radarrUrl').value = window.location.origin + '/api/webhooks/radarr';
     document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
+    document.getElementById('sportarrUrl').value = window.location.origin + '/api/webhooks/sportarr';
     document.getElementById('customUrl').value = window.location.origin + '/api/webhooks/custom';
 
     var savedHistoryPerPage = localStorage.getItem('historyPerPage');
@@ -427,8 +452,9 @@ function renderHistoryPage() {
         const time = new Date(evt.timestamp);
         const relative = timeAgo(time);
 
-        var sourceBadgeClass = evt.source === 'radarr' ? 'radarr' : evt.source === 'custom' ? 'custom' : 'sonarr';
-        var sourceBadgeLabel = evt.source === 'radarr' ? 'Radarr' : evt.source === 'custom' ? 'Custom' : 'Sonarr';
+        var sourceBadgeMap = {radarr: 'Radarr', sonarr: 'Sonarr', sportarr: 'Sportarr', custom: 'Custom'};
+        var sourceBadgeClass = sourceBadgeMap[evt.source] ? evt.source : 'custom';
+        var sourceBadgeLabel = sourceBadgeMap[evt.source] || evt.source;
         const sourceBadge = '<span class="badge source-badge ' + sourceBadgeClass + '">' + sourceBadgeLabel + '</span>';
 
         const statusClass = evt.status || 'ignored';

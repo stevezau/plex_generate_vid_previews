@@ -459,6 +459,32 @@ def clear_library_cache() -> None:
         _library_cache["fetched_at"] = 0.0
 
 
+_SPORTS_AGENT_PATTERNS = ("sportarr", "sportscanner")
+
+
+def classify_library_type(section_type: str, agent: str) -> str:
+    """Derive a display-friendly library type from Plex section type and agent.
+
+    Args:
+        section_type: Plex library type (``"movie"``, ``"show"``, etc.).
+        agent: Plex metadata agent identifier string.
+
+    Returns:
+        One of ``"movie"``, ``"show"``, ``"sports"``, or ``"other_videos"``.
+    """
+    agent_lower = (agent or "").lower()
+    if section_type == "show":
+        for pattern in _SPORTS_AGENT_PATTERNS:
+            if pattern in agent_lower:
+                return "sports"
+        return "show"
+    if section_type == "movie":
+        if agent_lower == "com.plexapp.agents.none":
+            return "other_videos"
+        return "movie"
+    return section_type
+
+
 def _fetch_libraries_via_http(
     plex_url: str,
     plex_token: str,
@@ -472,8 +498,7 @@ def _fetch_libraries_via_http(
         verify_ssl: Whether to verify the server's TLS certificate
 
     Returns:
-        List of library dicts with id, name, type
-
+        List of library dicts with id, name, type, agent, and display_type.
     """
     import requests
 
@@ -491,14 +516,19 @@ def _fetch_libraries_via_http(
 
     libraries = []
     for section in data.get("MediaContainer", {}).get("Directory", []):
-        if section.get("type") in ("movie", "show"):
-            libraries.append(
-                {
-                    "id": str(section.get("key")),
-                    "name": section.get("title"),
-                    "type": section.get("type"),
-                }
-            )
+        section_type = section.get("type")
+        if section_type not in ("movie", "show"):
+            continue
+        agent = section.get("agent", "")
+        libraries.append(
+            {
+                "id": str(section.get("key")),
+                "name": section.get("title"),
+                "type": section_type,
+                "agent": agent,
+                "display_type": classify_library_type(section_type, agent),
+            }
+        )
     return libraries
 
 
@@ -552,11 +582,16 @@ def get_libraries():
                 libraries = []
                 for section in plex.library.sections():
                     if section.type in ("movie", "show"):
+                        agent = getattr(section, "agent", "") or ""
                         libraries.append(
                             {
                                 "id": str(section.key),
                                 "name": section.title,
                                 "type": section.type,
+                                "agent": agent,
+                                "display_type": classify_library_type(
+                                    section.type, agent
+                                ),
                             }
                         )
 

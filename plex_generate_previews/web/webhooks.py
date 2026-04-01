@@ -481,15 +481,22 @@ def radarr_webhook():
     )
 
 
-@webhooks_bp.route("/sonarr", methods=["POST"])
-@_authenticate_webhook
-def sonarr_webhook():
-    """Receive Sonarr webhook payloads."""
+def _handle_sonarr_compatible_webhook(source: str):
+    """Shared handler for Sonarr-compatible webhook payloads (Sonarr, Sportarr).
+
+    Args:
+        source: Identifier for history/debounce (e.g. ``"sonarr"``, ``"sportarr"``).
+
+    Returns:
+        Flask response tuple.
+    """
+    label = source.title()
     data = request.get_json(force=True, silent=True)
     if not data:
         logger.warning(
-            "Webhook: Sonarr request ignored (invalid or missing JSON body) "
+            "Webhook: %s request ignored (invalid or missing JSON body) "
             "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            label,
             request.host,
             request.content_type,
             request.content_length,
@@ -500,20 +507,22 @@ def sonarr_webhook():
     event_type = str(data.get("eventType", "")).strip()
 
     if event_type == "Test":
-        _add_history_entry("sonarr", "Test", "", "test")
+        _add_history_entry(source, "Test", "", "test")
         return jsonify(
-            {"success": True, "message": "Sonarr webhook configured successfully"}
+            {"success": True, "message": f"{label} webhook configured successfully"}
         )
 
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
-        _add_history_entry("sonarr", event_type, "", "disabled")
-        logger.info(f"Webhook: Sonarr event '{event_type}' ignored (webhooks disabled)")
+        _add_history_entry(source, event_type, "", "disabled")
+        logger.info(
+            f"Webhook: {label} event '{event_type}' ignored (webhooks disabled)"
+        )
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
-    if event_type != "Download":
-        _add_history_entry("sonarr", event_type, "", "ignored")
-        logger.info(f"Webhook: Sonarr event '{event_type}' ignored")
+    if event_type not in ("Download", "OnDownload"):
+        _add_history_entry(source, event_type, "", "ignored")
+        logger.info(f"Webhook: {label} event '{event_type}' ignored")
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
     series = _as_dict(data.get("series"))
@@ -521,13 +530,14 @@ def sonarr_webhook():
     display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
     episode_file_path = _extract_sonarr_file_path(data)
 
-    was_queued = _schedule_webhook_job("sonarr", display_title, episode_file_path)
+    was_queued = _schedule_webhook_job(source, display_title, episode_file_path)
     if not was_queued:
         logger.debug(
-            "Webhook: Sonarr payload structure for failed path extraction: %s",
+            "Webhook: %s payload structure for failed path extraction: %s",
+            label,
             _summarize_payload(data),
         )
-        _add_history_entry("sonarr", "Download", display_title, "ignored_no_path")
+        _add_history_entry(source, "Download", display_title, "ignored_no_path")
         return (
             jsonify(
                 {
@@ -538,7 +548,7 @@ def sonarr_webhook():
             200,
         )
 
-    _add_history_entry("sonarr", "Download", display_title, "queued")
+    _add_history_entry(source, "Download", display_title, "queued")
 
     return (
         jsonify(
@@ -546,6 +556,20 @@ def sonarr_webhook():
         ),
         202,
     )
+
+
+@webhooks_bp.route("/sonarr", methods=["POST"])
+@_authenticate_webhook
+def sonarr_webhook():
+    """Receive Sonarr webhook payloads."""
+    return _handle_sonarr_compatible_webhook("sonarr")
+
+
+@webhooks_bp.route("/sportarr", methods=["POST"])
+@_authenticate_webhook
+def sportarr_webhook():
+    """Receive Sportarr webhook payloads (Sonarr-compatible format)."""
+    return _handle_sonarr_compatible_webhook("sportarr")
 
 
 @webhooks_bp.route("/custom", methods=["POST"])

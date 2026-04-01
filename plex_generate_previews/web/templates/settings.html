@@ -691,7 +691,7 @@ async function loadLibraries() {
                        ${isSelected ? 'checked' : ''} onchange="markDirty()">
                 <label for="lib-${lib.id}">
                     <strong>${lib.name}</strong>
-                    <span class="text-muted ms-2">(${lib.type})</span>
+                    <span class="text-muted ms-2">(${libraryTypeLabel(lib)})</span>
                 </label>
             `;
             list.appendChild(div);
