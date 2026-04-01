@@ -6,12 +6,14 @@ file path(s) from the payload(s) — no full-library scan.
 """
 
 import base64
+import json
 import os
 import secrets
 import threading
 from collections import deque
 from datetime import datetime, timezone
 from functools import wraps
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 from loguru import logger
@@ -27,8 +29,54 @@ _pending_timers: dict[str, threading.Timer] = {}
 _pending_batches: dict[str, dict[str, object]] = {}
 _pending_lock = threading.Lock()
 
-# In-memory log of received webhook events (diagnostic/transient)
-_webhook_history: deque = deque(maxlen=100)
+# In-memory log of received webhook events, persisted to disk on each write.
+_HISTORY_MAX = 100
+_webhook_history: deque = deque(maxlen=_HISTORY_MAX)
+_history_lock = threading.Lock()
+
+
+def _history_file_path() -> Path:
+    """Resolve the persistent webhook history file inside the config directory."""
+    config_dir = os.environ.get("CONFIG_DIR", "/config")
+    return Path(config_dir) / "webhook_history.json"
+
+
+def _load_history_from_disk() -> None:
+    """Load webhook history from the persistent JSON file on startup.
+
+    Silently no-ops if the file is missing or corrupt — the in-memory deque
+    will simply start empty.
+    """
+    path = _history_file_path()
+    if not path.exists():
+        return
+    try:
+        with open(path, "r") as f:
+            entries = json.load(f)
+        if isinstance(entries, list):
+            with _history_lock:
+                _webhook_history.clear()
+                _webhook_history.extend(entries[-_HISTORY_MAX:])
+            logger.debug(
+                "Loaded %d webhook history entries from %s", len(_webhook_history), path
+            )
+    except Exception as exc:
+        logger.warning("Failed to load webhook history from %s: %s", path, exc)
+
+
+def _save_history_to_disk() -> None:
+    """Persist the current webhook history deque to disk.
+
+    Best-effort — failures are logged but never propagated.
+    """
+    try:
+        from ..utils import atomic_json_save
+
+        with _history_lock:
+            snapshot = list(_webhook_history)
+        atomic_json_save(str(_history_file_path()), snapshot)
+    except Exception as exc:
+        logger.debug("Failed to persist webhook history: %s", exc)
 
 
 def _authenticate_webhook(f):
@@ -55,6 +103,13 @@ def _authenticate_webhook(f):
             token = request.headers.get("X-Auth-Token", "")
 
         if not token:
+            logger.warning(
+                "Webhook: authentication failed (no token provided) — "
+                "Remote=%s, Path=%s, Method=%s",
+                request.remote_addr,
+                request.path,
+                request.method,
+            )
             return jsonify({"error": "Authentication required"}), 401
 
         settings = get_settings_manager()
@@ -66,6 +121,20 @@ def _authenticate_webhook(f):
         if validate_token(token):
             return f(*args, **kwargs)
 
+        auth_method = (
+            "Bearer"
+            if auth_header.startswith("Bearer ")
+            else "Basic"
+            if auth_header.startswith("Basic ")
+            else "X-Auth-Token"
+        )
+        logger.warning(
+            "Webhook: authentication failed (invalid token via %s) — "
+            "Remote=%s, Path=%s",
+            auth_method,
+            request.remote_addr,
+            request.path,
+        )
         return jsonify({"error": "Authentication required"}), 401
 
     return decorated_function
@@ -85,7 +154,7 @@ def _add_history_entry(
     path_count: int | None = None,
     files_preview: list[str] | None = None,
 ) -> None:
-    """Append an event to the in-memory webhook history.
+    """Append an event to the webhook history and persist to disk.
 
     Optional batch metadata (job_id, path_count, files_preview) is included
     for triggered debounced batches so the UI can show which files were in the batch.
@@ -103,7 +172,32 @@ def _add_history_entry(
         entry["path_count"] = path_count
     if files_preview is not None:
         entry["files_preview"] = files_preview[:_HISTORY_FILES_PREVIEW_CAP]
-    _webhook_history.append(entry)
+    with _history_lock:
+        _webhook_history.append(entry)
+    _save_history_to_disk()
+
+
+def _summarize_payload(data: dict, max_depth: int = 2) -> dict | str:
+    """Return a shallow summary of a webhook payload for diagnostic logging.
+
+    Replaces leaf values with their type/length to avoid leaking sensitive data
+    while still showing the payload structure. Returns a string placeholder for
+    non-dict inputs or when max_depth is exhausted.
+    """
+    if max_depth <= 0 or not isinstance(data, dict):
+        return f"<{type(data).__name__}>"
+
+    summary = {}
+    for key, value in list(data.items())[:30]:
+        if isinstance(value, dict):
+            summary[key] = _summarize_payload(value, max_depth - 1)
+        elif isinstance(value, list):
+            summary[key] = f"<list[{len(value)}]>"
+        elif isinstance(value, str):
+            summary[key] = value if len(value) <= 120 else f"{value[:120]}…"
+        else:
+            summary[key] = repr(value)
+    return summary
 
 
 def _debounce_key(source: str) -> str:
@@ -230,7 +324,11 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
 
 
 def _execute_webhook_job(debounce_key: str) -> None:
-    """Execute a debounced batch of webhook file paths."""
+    """Execute a debounced batch of webhook file paths.
+
+    Runs inside a threading.Timer callback, so all exceptions must be caught
+    here — unhandled errors would be silently swallowed by the thread.
+    """
     from .routes import _start_job_async
 
     with _pending_lock:
@@ -243,66 +341,75 @@ def _execute_webhook_job(debounce_key: str) -> None:
 
     source = str(batch.get("source", "unknown"))
     batch_titles = batch.get("titles") or []
-    webhook_paths = sorted(
-        path
-        for path in batch.get("file_paths", set())
-        if isinstance(path, str) and path
-    )
-    if not webhook_paths:
-        logger.warning(
-            f"Webhook: debounced batch for source '{source}' had no valid paths"
+
+    try:
+        webhook_paths = sorted(
+            path
+            for path in batch.get("file_paths", set())
+            if isinstance(path, str) and path
         )
-        _add_history_entry(source, "Download", "", "ignored_no_paths")
-        return
+        if not webhook_paths:
+            logger.warning(
+                f"Webhook: debounced batch for source '{source}' had no valid paths"
+            )
+            _add_history_entry(source, "Download", "", "ignored_no_paths")
+            return
 
-    # Display label: one path → "Sonarr: Show Name S01E05"; multiple → "Sonarr: 3 files"
-    basenames = [os.path.basename(p) for p in webhook_paths]
-    first_title = batch_titles[0] if batch_titles else None
-    if len(webhook_paths) == 1 and first_title:
-        library_display = f"{source.title()}: {first_title}"
-    elif len(webhook_paths) == 1:
-        library_display = f"{source.title()}: {basenames[0]}"
-    else:
-        library_display = f"{source.title()}: {len(webhook_paths)} files"
+        basenames = [os.path.basename(p) for p in webhook_paths]
+        first_title = batch_titles[0] if batch_titles else None
+        if len(webhook_paths) == 1 and first_title:
+            library_display = f"{source.title()}: {first_title}"
+        elif len(webhook_paths) == 1:
+            library_display = f"{source.title()}: {basenames[0]}"
+        else:
+            library_display = f"{source.title()}: {len(webhook_paths)} files"
 
-    job_manager = get_job_manager()
-    job = job_manager.create_job(
-        library_name=library_display,
-        config={
-            "source": source,
-            "path_count": len(webhook_paths),
-            "webhook_basenames": basenames[:20],  # First 20 for UI; avoid huge payloads
-        },
-    )
-    settings = get_settings_manager()
-    selected_libraries = settings.get("selected_libraries", [])
-    if not isinstance(selected_libraries, list):
-        selected_libraries = []
-    selected_libraries = [
-        str(name).strip() for name in selected_libraries if str(name).strip()
-    ]
-    retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
-    retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
+        job_manager = get_job_manager()
+        job = job_manager.create_job(
+            library_name=library_display,
+            config={
+                "source": source,
+                "path_count": len(webhook_paths),
+                "webhook_basenames": basenames[:20],
+            },
+        )
+        settings = get_settings_manager()
+        selected_libraries = settings.get("selected_libraries", [])
+        if not isinstance(selected_libraries, list):
+            selected_libraries = []
+        selected_libraries = [
+            str(name).strip() for name in selected_libraries if str(name).strip()
+        ]
+        retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
+        retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
-    _start_job_async(
-        job.id,
-        {
-            "selected_libraries": selected_libraries,
-            "sort_by": "newest",
-            "webhook_paths": webhook_paths,
-            "webhook_retry_count": retry_count,
-            "webhook_retry_delay": retry_delay,
-        },
-    )
-    _add_history_entry(
-        source,
-        "Download",
-        first_title or source,
-        "triggered",
-        job_id=job.id,
-        path_count=len(webhook_paths),
-        files_preview=basenames,
-    )
+        _start_job_async(
+            job.id,
+            {
+                "selected_libraries": selected_libraries,
+                "sort_by": "newest",
+                "webhook_paths": webhook_paths,
+                "webhook_retry_count": retry_count,
+                "webhook_retry_delay": retry_delay,
+            },
+        )
+        _add_history_entry(
+            source,
+            "Download",
+            first_title or source,
+            "triggered",
+            job_id=job.id,
+            path_count=len(webhook_paths),
+            files_preview=basenames,
+        )
+    except Exception:
+        title_label = batch_titles[0] if batch_titles else source
+        logger.exception(
+            "Webhook: failed to execute debounced job for source '%s' (%s)",
+            source,
+            title_label,
+        )
+        _add_history_entry(source, "Download", title_label, "error")
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +458,10 @@ def radarr_webhook():
 
     was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
     if not was_queued:
+        logger.debug(
+            "Webhook: Radarr payload structure for failed path extraction: %s",
+            _summarize_payload(data),
+        )
         _add_history_entry("radarr", "Download", movie_title, "ignored_no_path")
         return (
             jsonify(
@@ -412,6 +523,10 @@ def sonarr_webhook():
 
     was_queued = _schedule_webhook_job("sonarr", display_title, episode_file_path)
     if not was_queued:
+        logger.debug(
+            "Webhook: Sonarr payload structure for failed path extraction: %s",
+            _summarize_payload(data),
+        )
         _add_history_entry("sonarr", "Download", display_title, "ignored_no_path")
         return (
             jsonify(
@@ -474,6 +589,10 @@ def custom_webhook():
 
     paths = _extract_custom_paths(data)
     if not paths:
+        logger.debug(
+            "Webhook: Custom payload structure for failed path extraction: %s",
+            _summarize_payload(data),
+        )
         _add_history_entry("custom", "Custom", "", "ignored_no_path")
         return (
             jsonify(
@@ -536,14 +655,18 @@ def _extract_custom_paths(data: dict) -> list[str]:
 @api_token_required
 def get_webhook_history():
     """Return recent webhook events (newest first)."""
-    return jsonify({"events": list(reversed(_webhook_history))})
+    with _history_lock:
+        events = list(reversed(_webhook_history))
+    return jsonify({"events": events})
 
 
 @webhooks_bp.route("/history", methods=["DELETE"])
 @api_token_required
 def clear_webhook_history():
-    """Clear all webhook history."""
-    _webhook_history.clear()
+    """Clear all webhook history (memory and disk)."""
+    with _history_lock:
+        _webhook_history.clear()
+    _save_history_to_disk()
     return jsonify({"success": True})
 
 

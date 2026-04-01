@@ -329,11 +329,13 @@ def create_app(config_dir: str = None) -> Flask:
 
     # Register blueprints
     from .routes import api, limiter, main, register_socketio_handlers
-    from .webhooks import webhooks_bp
+    from .webhooks import _load_history_from_disk, webhooks_bp
 
     app.register_blueprint(main)
     app.register_blueprint(api)
     app.register_blueprint(webhooks_bp)
+
+    _load_history_from_disk()
 
     # Selectively exempt API endpoints that use Bearer/X-Auth-Token
     # (external API calls, not browser-initiated).  Browser-initiated
