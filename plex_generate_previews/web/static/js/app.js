@@ -1376,6 +1376,10 @@ async function loadWorkerStatuses() {
 // Logs Functions
 let _rawLogs = [];
 let _logsModalJobId = null;
+let _logsTotalLines = 0;
+let _logsLoadedOffset = 0;
+let _logsKnownCount = 0;
+const _LOGS_CHUNK_SIZE = 500;
 
 function showLogsModal(jobId) {
     const targetId = jobId || _lastNotifiedJobId;
@@ -1385,15 +1389,24 @@ function showLogsModal(jobId) {
     document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
     document.getElementById('logsSearchInput').value = '';
 
+    _rawLogs = [];
+    _logsTotalLines = 0;
+    _logsLoadedOffset = 0;
+    _logsKnownCount = 0;
+    _updateEarlierLogsButton();
+
     // Reset Files tab state
-    _fileResultsData = [];
     _fileResultsActiveFilter = '';
     _fileResultsLoaded = false;
+    _filePage = 1;
+    _fileSummary = {};
     document.getElementById('fileResultsSummary').innerHTML = '';
     document.getElementById('fileResultsBody').innerHTML =
         '<tr><td colspan="4" class="text-muted text-center">Click to load file results</td></tr>';
     document.getElementById('fileResultsCount').textContent = '';
     document.getElementById('fileResultsSearch').value = '';
+    var pFooter = document.getElementById('filePaginationFooter');
+    if (pFooter) pFooter.classList.add('d-none');
 
     // Reset to Logs tab
     var logsTabBtn = document.getElementById('logsTab');
@@ -1415,8 +1428,7 @@ function showLogsModal(jobId) {
     if (logsRefreshInterval) clearInterval(logsRefreshInterval);
     if (isRunning) {
         logsRefreshInterval = setInterval(function() {
-            refreshLogs();
-            // Also refresh file results if the Files tab is active
+            pollNewLogs();
             var filesPane = document.getElementById('filesTabPane');
             if (filesPane && filesPane.classList.contains('active')) {
                 refreshFileResults();
@@ -1474,13 +1486,18 @@ async function refreshLogs() {
     if (!targetId) return;
 
     try {
-        const data = await apiGet(`/api/jobs/${targetId}/logs`);
+        const probe = await apiGet(`/api/jobs/${targetId}/logs?offset=0&limit=0`);
+        const total = probe.total_lines || 0;
+        _logsTotalLines = total;
+
         const logsContent = document.getElementById('logsContent');
         const lineCountEl = document.getElementById('logsLineCount');
         const autoScroll = document.getElementById('logsAutoScroll').checked;
 
-        if (data.log_cleared_by_retention) {
+        if (probe.log_cleared_by_retention) {
             _rawLogs = [];
+            _logsLoadedOffset = 0;
+            _logsKnownCount = 0;
             logsContent.innerHTML = [
                 '<div class="alert alert-info mb-0" role="alert">',
                 '<i class="bi bi-info-circle me-2"></i>',
@@ -1488,18 +1505,38 @@ async function refreshLogs() {
                 '</div>'
             ].join('');
             if (lineCountEl) lineCountEl.textContent = '';
-        } else if (data.logs && data.logs.length > 0) {
-            _rawLogs = data.logs;
-            logsContent.innerHTML = data.logs.map(colorizeLogLine).join('\n');
-            filterLogs();
-            if (lineCountEl) {
-                lineCountEl.textContent = `${data.logs.length.toLocaleString()} log lines`;
-            }
-        } else {
+            _updateEarlierLogsButton();
+            return;
+        }
+
+        if (total === 0) {
             _rawLogs = [];
+            _logsLoadedOffset = 0;
+            _logsKnownCount = 0;
             logsContent.innerHTML = '<span class="text-muted">No logs available yet...</span>';
             if (lineCountEl) lineCountEl.textContent = '';
+            _updateEarlierLogsButton();
+            return;
         }
+
+        const startOffset = Math.max(0, total - _LOGS_CHUNK_SIZE);
+        const data = await apiGet(`/api/jobs/${targetId}/logs?offset=${startOffset}&limit=${_LOGS_CHUNK_SIZE}`);
+        const lines = data.logs || [];
+
+        _rawLogs = lines;
+        _logsLoadedOffset = startOffset;
+        _logsKnownCount = total;
+
+        logsContent.innerHTML = lines.map(colorizeLogLine).join('\n');
+        filterLogs();
+
+        if (lineCountEl) {
+            const showing = startOffset > 0
+                ? `Showing last ${lines.length.toLocaleString()} of ${total.toLocaleString()} log lines`
+                : `${total.toLocaleString()} log lines`;
+            lineCountEl.textContent = showing;
+        }
+        _updateEarlierLogsButton();
 
         if (autoScroll) {
             _suppressScrollDetect = Date.now() + 600;
@@ -1507,6 +1544,164 @@ async function refreshLogs() {
         }
     } catch (error) {
         console.error('Failed to load logs:', error);
+    }
+}
+
+async function pollNewLogs() {
+    const targetId = _logsModalJobId;
+    if (!targetId) return;
+
+    try {
+        const data = await apiGet(`/api/jobs/${targetId}/logs?offset=${_logsKnownCount}&limit=${_LOGS_CHUNK_SIZE}`);
+        const newLines = data.logs || [];
+        const newTotal = data.total_lines || _logsKnownCount;
+
+        if (newLines.length === 0) {
+            _logsTotalLines = newTotal;
+            return;
+        }
+
+        const logsContent = document.getElementById('logsContent');
+        const lineCountEl = document.getElementById('logsLineCount');
+        const autoScroll = document.getElementById('logsAutoScroll').checked;
+
+        _rawLogs = _rawLogs.concat(newLines);
+        _logsKnownCount = newTotal;
+        _logsTotalLines = newTotal;
+
+        const fragment = document.createDocumentFragment();
+        const query = (document.getElementById('logsSearchInput').value || '').toLowerCase();
+        newLines.forEach(line => {
+            const wrapper = document.createElement('span');
+            wrapper.innerHTML = colorizeLogLine(line);
+            const el = wrapper.firstChild;
+            if (query && !(line.toLowerCase().includes(query))) {
+                el.classList.add('log-line-hidden');
+            }
+            fragment.appendChild(el);
+            fragment.appendChild(document.createTextNode('\n'));
+        });
+
+        const placeholder = logsContent.querySelector('.text-muted');
+        if (placeholder && !logsContent.querySelector('.log-line')) {
+            logsContent.innerHTML = '';
+        }
+
+        logsContent.appendChild(fragment);
+
+        if (lineCountEl) {
+            const loaded = _rawLogs.length;
+            const showing = _logsLoadedOffset > 0
+                ? `Showing ${loaded.toLocaleString()} of ${newTotal.toLocaleString()} log lines`
+                : `${newTotal.toLocaleString()} log lines`;
+            lineCountEl.textContent = showing;
+        }
+
+        if (autoScroll) {
+            _suppressScrollDetect = Date.now() + 600;
+            logsContent.scrollTo({ top: logsContent.scrollHeight, behavior: 'smooth' });
+        }
+    } catch (error) {
+        console.error('Failed to poll new logs:', error);
+    }
+}
+
+async function loadEarlierLogs() {
+    const targetId = _logsModalJobId;
+    if (!targetId || _logsLoadedOffset <= 0) return;
+
+    const btn = document.getElementById('logsLoadEarlierBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+
+    try {
+        const newStart = Math.max(0, _logsLoadedOffset - _LOGS_CHUNK_SIZE);
+        const limit = _logsLoadedOffset - newStart;
+        const data = await apiGet(`/api/jobs/${targetId}/logs?offset=${newStart}&limit=${limit}`);
+        const earlierLines = data.logs || [];
+
+        if (earlierLines.length === 0) {
+            _logsLoadedOffset = 0;
+            _updateEarlierLogsButton();
+            return;
+        }
+
+        const logsContent = document.getElementById('logsContent');
+        const prevScrollHeight = logsContent.scrollHeight;
+
+        _rawLogs = earlierLines.concat(_rawLogs);
+        _logsLoadedOffset = newStart;
+
+        const fragment = document.createDocumentFragment();
+        const query = (document.getElementById('logsSearchInput').value || '').toLowerCase();
+        earlierLines.forEach(line => {
+            const wrapper = document.createElement('span');
+            wrapper.innerHTML = colorizeLogLine(line);
+            const el = wrapper.firstChild;
+            if (query && !(line.toLowerCase().includes(query))) {
+                el.classList.add('log-line-hidden');
+            }
+            fragment.appendChild(el);
+            fragment.appendChild(document.createTextNode('\n'));
+        });
+
+        logsContent.insertBefore(fragment, logsContent.firstChild);
+        logsContent.scrollTop += logsContent.scrollHeight - prevScrollHeight;
+
+        const lineCountEl = document.getElementById('logsLineCount');
+        if (lineCountEl) {
+            const loaded = _rawLogs.length;
+            const showing = _logsLoadedOffset > 0
+                ? `Showing ${loaded.toLocaleString()} of ${_logsTotalLines.toLocaleString()} log lines`
+                : `${_logsTotalLines.toLocaleString()} log lines`;
+            lineCountEl.textContent = showing;
+        }
+        _updateEarlierLogsButton();
+    } catch (error) {
+        console.error('Failed to load earlier logs:', error);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-up me-1"></i>Load earlier logs'; }
+    }
+}
+
+async function loadAllLogs() {
+    const targetId = _logsModalJobId;
+    if (!targetId) return;
+
+    const btn = document.getElementById('logsLoadAllBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+
+    try {
+        const data = await apiGet(`/api/jobs/${targetId}/logs`);
+        const allLines = data.logs || [];
+
+        _rawLogs = allLines;
+        _logsTotalLines = allLines.length;
+        _logsLoadedOffset = 0;
+        _logsKnownCount = allLines.length;
+
+        const logsContent = document.getElementById('logsContent');
+        logsContent.innerHTML = allLines.map(colorizeLogLine).join('\n');
+        filterLogs();
+
+        const lineCountEl = document.getElementById('logsLineCount');
+        if (lineCountEl) {
+            lineCountEl.textContent = `${allLines.length.toLocaleString()} log lines`;
+        }
+        _updateEarlierLogsButton();
+    } catch (error) {
+        console.error('Failed to load all logs:', error);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Load all'; }
+    }
+}
+
+function _updateEarlierLogsButton() {
+    const wrap = document.getElementById('logsEarlierWrap');
+    if (!wrap) return;
+    if (_logsLoadedOffset > 0) {
+        wrap.classList.remove('d-none');
+    } else {
+        wrap.classList.add('d-none');
     }
 }
 
@@ -1540,44 +1735,57 @@ function clearLogSearch() {
 }
 
 async function copyLogs() {
-    const renderedLogs = Array.from(document.querySelectorAll('#logsContent .log-line'))
-        .filter((line) => !line.classList.contains('log-line-hidden'))
-        .map((line) => (line.textContent || '').trim())
-        .filter((line) => line.length > 0);
-
-    const text = _rawLogs.length > 0 ? _rawLogs.join('\n') : renderedLogs.join('\n');
+    const text = _rawLogs.length > 0 ? _rawLogs.join('\n') : '';
     if (!text.trim()) {
         showToast('Warning', 'No logs to copy', 'warning');
         return;
     }
-
     await copyToClipboard(text, 'Logs copied to clipboard', 'Failed to copy logs');
 }
 
-function downloadLogs() {
-    if (_rawLogs.length === 0) {
+async function downloadLogs() {
+    const targetId = _logsModalJobId;
+    if (!targetId) {
         showToast('Warning', 'No logs to download', 'warning');
         return;
     }
-    const text = _rawLogs.join('\n');
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `job-${_logsModalJobId || 'unknown'}-logs.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+
+    try {
+        const data = await apiGet(`/api/jobs/${targetId}/logs`);
+        const allLines = data.logs || [];
+        if (allLines.length === 0) {
+            showToast('Warning', 'No logs to download', 'warning');
+            return;
+        }
+        const text = allLines.join('\n');
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `job-${targetId}-logs.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error('Failed to download logs:', error);
+        showToast('Error', 'Failed to download logs', 'danger');
+    }
 }
 
 // ========================================================================
 // Per-File Results (Files tab in the Job Details modal)
 // ========================================================================
 
-var _fileResultsData = [];
 var _fileResultsActiveFilter = '';
 var _fileResultsLoaded = false;
+var _filePage = 1;
+var _filePerPage = parseInt(localStorage.getItem('filePerPage'), 10) || 100;
+var _fileTotalPages = 1;
+var _fileFilteredCount = 0;
+var _fileTotal = 0;
+var _fileSummary = {};
+var _fileSearchDebounce = null;
 
 var FILE_OUTCOME_META = {
     'generated':              { label: 'Generated',     badge: 'bg-success' },
@@ -1600,11 +1808,22 @@ async function refreshFileResults() {
     var targetId = _logsModalJobId;
     if (!targetId) return;
     try {
-        var data = await apiGet('/api/jobs/' + targetId + '/files');
-        _fileResultsData = data.files || [];
+        var params = 'page=' + _filePage + '&per_page=' + _filePerPage;
+        if (_fileResultsActiveFilter) params += '&outcome=' + encodeURIComponent(_fileResultsActiveFilter);
+        var search = (document.getElementById('fileResultsSearch').value || '').trim();
+        if (search) params += '&search=' + encodeURIComponent(search);
+
+        var data = await apiGet('/api/jobs/' + targetId + '/files?' + params);
         _fileResultsLoaded = true;
-        renderFileResultsSummary(data.summary || {}, data.total || 0);
-        renderFileResultsTable(_fileResultsData);
+        _filePage = data.page || 1;
+        _fileTotalPages = data.total_pages || 1;
+        _fileFilteredCount = data.filtered_count || 0;
+        _fileTotal = data.total || 0;
+        _fileSummary = data.summary || {};
+
+        renderFileResultsSummary(_fileSummary, _fileTotal);
+        renderFileResultsTable(data.files || []);
+        renderFilePagination();
     } catch (e) {
         document.getElementById('fileResultsBody').innerHTML =
             '<tr><td colspan="4" class="text-muted text-center">Could not load file results</td></tr>';
@@ -1622,15 +1841,15 @@ function renderFileResultsSummary(summary, total) {
     var ordered = [
         'generated', 'skipped_bif_exists', 'failed',
         'skipped_file_not_found', 'skipped_excluded',
-        'skipped_invalid_hash', 'no_media_parts'
+        'skipped_invalid_hash', 'no_media_parts',
+        'unresolved_plex'
     ];
     for (var i = 0; i < ordered.length; i++) {
         var key = ordered[i];
         var count = summary[key];
         if (!count) continue;
         var meta = FILE_OUTCOME_META[key] || { label: key, badge: 'bg-secondary' };
-        var active = (_fileResultsActiveFilter === key) ? ' outline' : '';
-        var btnClass = active
+        var btnClass = (_fileResultsActiveFilter === key)
             ? meta.badge.replace('bg-', 'btn-outline-').replace(' text-dark', '')
             : meta.badge.replace('bg-', 'btn-').replace(' text-dark', '');
         html += '<button class="btn btn-sm ' + btnClass + '" onclick="toggleFileOutcomeFilter(\'' + key + '\')">'
@@ -1645,11 +1864,17 @@ function renderFileResultsTable(files) {
 
     if (!files || files.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No matching files</td></tr>';
-        countEl.textContent = '';
+        countEl.textContent = _fileFilteredCount === 0 && _fileTotal > 0
+            ? '0 of ' + _fileTotal + ' files match'
+            : '';
         return;
     }
 
-    countEl.textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
+    var start = (_filePage - 1) * _filePerPage + 1;
+    var end = start + files.length - 1;
+    var label = 'Showing ' + start + '\u2013' + end + ' of ' + _fileFilteredCount.toLocaleString();
+    if (_fileFilteredCount !== _fileTotal) label += ' (' + _fileTotal.toLocaleString() + ' total)';
+    countEl.textContent = label;
 
     var html = '';
     for (var i = 0; i < files.length; i++) {
@@ -1671,37 +1896,88 @@ function renderFileResultsTable(files) {
     tbody.innerHTML = html;
 }
 
-function toggleFileOutcomeFilter(outcome) {
-    if (_fileResultsActiveFilter === outcome) {
-        _fileResultsActiveFilter = '';
-    } else {
-        _fileResultsActiveFilter = outcome;
+function renderFilePagination() {
+    var footer = document.getElementById('filePaginationFooter');
+    var info = document.getElementById('filePaginationInfo');
+    var controls = document.getElementById('filePaginationControls');
+    var perPageSelect = document.getElementById('filePerPageSelect');
+    if (!footer) return;
+
+    if (_fileTotal === 0) {
+        footer.classList.add('d-none');
+        return;
     }
-    filterFileResults();
+    footer.classList.remove('d-none');
+    perPageSelect.value = String(_filePerPage);
+
+    var start = (_filePage - 1) * _filePerPage + 1;
+    var end = Math.min(_filePage * _filePerPage, _fileFilteredCount);
+    info.textContent = 'Showing ' + start + '\u2013' + end + ' of ' + _fileFilteredCount;
+
+    var pagesHtml = '';
+    pagesHtml += '<li class="page-item ' + (_filePage <= 1 ? 'disabled' : '') + '">'
+        + '<a class="page-link" href="#" onclick="goToFilePage(' + (_filePage - 1) + '); return false;" aria-label="Previous">&lsaquo;</a></li>';
+
+    var maxVisible = 5;
+    var rangeStart = Math.max(1, _filePage - Math.floor(maxVisible / 2));
+    var rangeEnd = Math.min(_fileTotalPages, rangeStart + maxVisible - 1);
+    if (rangeEnd - rangeStart + 1 < maxVisible) {
+        rangeStart = Math.max(1, rangeEnd - maxVisible + 1);
+    }
+
+    if (rangeStart > 1) {
+        pagesHtml += '<li class="page-item"><a class="page-link" href="#" onclick="goToFilePage(1); return false;">1</a></li>';
+        if (rangeStart > 2) {
+            pagesHtml += '<li class="page-item disabled"><span class="page-link">&hellip;</span></li>';
+        }
+    }
+    for (var p = rangeStart; p <= rangeEnd; p++) {
+        pagesHtml += '<li class="page-item ' + (p === _filePage ? 'active' : '') + '">'
+            + '<a class="page-link" href="#" onclick="goToFilePage(' + p + '); return false;">' + p + '</a></li>';
+    }
+    if (rangeEnd < _fileTotalPages) {
+        if (rangeEnd < _fileTotalPages - 1) {
+            pagesHtml += '<li class="page-item disabled"><span class="page-link">&hellip;</span></li>';
+        }
+        pagesHtml += '<li class="page-item"><a class="page-link" href="#" onclick="goToFilePage(' + _fileTotalPages + '); return false;">' + _fileTotalPages + '</a></li>';
+    }
+    pagesHtml += '<li class="page-item ' + (_filePage >= _fileTotalPages ? 'disabled' : '') + '">'
+        + '<a class="page-link" href="#" onclick="goToFilePage(' + (_filePage + 1) + '); return false;" aria-label="Next">&rsaquo;</a></li>';
+
+    controls.innerHTML = pagesHtml;
+}
+
+function goToFilePage(page) {
+    if (page < 1 || page > _fileTotalPages) return;
+    _filePage = page;
+    refreshFileResults();
+}
+
+function changeFilePerPage(value) {
+    _filePerPage = parseInt(value, 10) || 100;
+    _filePage = 1;
+    localStorage.setItem('filePerPage', String(_filePerPage));
+    refreshFileResults();
+}
+
+function toggleFileOutcomeFilter(outcome) {
+    _fileResultsActiveFilter = (_fileResultsActiveFilter === outcome) ? '' : outcome;
+    _filePage = 1;
+    refreshFileResults();
 }
 
 function filterFileResults() {
-    var search = (document.getElementById('fileResultsSearch').value || '').toLowerCase();
-    var filtered = _fileResultsData;
-    if (_fileResultsActiveFilter) {
-        filtered = filtered.filter(function(f) { return f.outcome === _fileResultsActiveFilter; });
-    }
-    if (search) {
-        filtered = filtered.filter(function(f) { return (f.file || '').toLowerCase().indexOf(search) !== -1; });
-    }
-    // Re-render summary to show active filter highlight
-    var summary = {};
-    for (var i = 0; i < _fileResultsData.length; i++) {
-        var k = _fileResultsData[i].outcome || 'unknown';
-        summary[k] = (summary[k] || 0) + 1;
-    }
-    renderFileResultsSummary(summary, _fileResultsData.length);
-    renderFileResultsTable(filtered);
+    if (_fileSearchDebounce) clearTimeout(_fileSearchDebounce);
+    _fileSearchDebounce = setTimeout(function() {
+        _filePage = 1;
+        refreshFileResults();
+    }, 300);
 }
 
 function clearFileSearch() {
     document.getElementById('fileResultsSearch').value = '';
-    filterFileResults();
+    _filePage = 1;
+    refreshFileResults();
 }
 
 // Browser Notifications

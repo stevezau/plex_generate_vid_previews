@@ -552,8 +552,8 @@ def get_job_logs(job_id):
     if offset is not None or limit is not None:
         result = job_manager.get_logs_paginated(
             job_id,
-            offset=offset or 0,
-            limit=min(limit, 5000) if limit else None,
+            offset=offset if offset is not None else 0,
+            limit=min(limit, 5000) if limit is not None else None,
         )
         logs = result["lines"]
         total_lines = result["total_lines"]

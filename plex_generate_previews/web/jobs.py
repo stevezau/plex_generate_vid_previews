@@ -802,6 +802,55 @@ class JobManager:
                 return [LOG_RETENTION_CLEARED_MESSAGE]
             return []
 
+    def get_logs_paginated(
+        self, job_id: str, offset: int = 0, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Get a slice of log lines with total count for pagination.
+
+        Args:
+            job_id: The job identifier.
+            offset: 0-based line index to start from.
+            limit: Maximum number of lines to return (None = all from offset).
+
+        Returns:
+            Dict with keys: lines, total_lines, offset.
+        """
+        with self._lock:
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                total = len(logs)
+                sliced = (
+                    logs[offset : offset + limit]
+                    if limit is not None
+                    else logs[offset:]
+                )
+                return {"lines": sliced, "total_lines": total, "offset": offset}
+
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            if os.path.isfile(log_path):
+                try:
+                    with open(log_path, "r") as f:
+                        all_lines = [line.rstrip("\n") for line in f if line]
+                    total = len(all_lines)
+                    end = offset + limit if limit is not None else total
+                    sliced = all_lines[offset:end]
+                    return {"lines": sliced, "total_lines": total, "offset": offset}
+                except OSError:
+                    pass
+
+            job = self._jobs.get(job_id)
+            if job and job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                return {
+                    "lines": [LOG_RETENTION_CLEARED_MESSAGE],
+                    "total_lines": 1,
+                    "offset": 0,
+                }
+            return {"lines": [], "total_lines": 0, "offset": 0}
+
     def clear_logs(self, job_id: str) -> None:
         """Clear logs for a job (memory and file)."""
         with self._lock:
