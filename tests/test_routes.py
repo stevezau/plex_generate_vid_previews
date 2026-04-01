@@ -1149,8 +1149,8 @@ class TestJobConfigPathMappings:
             ),
         ):
             resp = client.post("/api/jobs", headers=_api_headers(), json={})
-        assert resp.status_code == 201
-        assert done.wait(timeout=2.0), "run_processing was not called"
+            assert resp.status_code == 201
+            assert done.wait(timeout=2.0), "run_processing was not called"
         assert len(captured_configs) == 1
         expected = normalize_path_mappings({"path_mappings": settings_path_mappings})
         assert captured_configs[0].path_mappings == expected
@@ -1216,8 +1216,8 @@ class TestJobConfigPathMappings:
                 headers=_api_headers(),
                 json={"config": {"path_mappings": override_mappings}},
             )
-        assert resp.status_code == 201
-        assert done.wait(timeout=2.0), "run_processing was not called"
+            assert resp.status_code == 201
+            assert done.wait(timeout=2.0), "run_processing was not called"
         assert len(captured_configs) == 1
         assert captured_configs[0].path_mappings == override_mappings
 
@@ -1277,8 +1277,8 @@ class TestJobConfigPathMappings:
                 headers=_api_headers(),
                 json={"config": {"webhook_paths": ["/data/Movies/foo.mkv"]}},
             )
-        assert resp.status_code == 201
-        assert done.wait(timeout=2.0), "run_processing was not called"
+            assert resp.status_code == 201
+            assert done.wait(timeout=2.0), "run_processing was not called"
         assert len(captured_configs) == 1
         cfg = captured_configs[0]
         assert cfg.webhook_paths == ["/data/Movies/foo.mkv"]
@@ -1331,8 +1331,8 @@ class TestJobConfigPathMappings:
                 headers=_api_headers(),
                 json={"library_ids": ["1", "2"]},
             )
-        assert resp.status_code == 201
-        assert done.wait(timeout=2.0), "run_processing was not called"
+            assert resp.status_code == 201
+            assert done.wait(timeout=2.0), "run_processing was not called"
         assert len(captured_configs) == 1
         cfg = captured_configs[0]
         assert cfg.plex_library_ids == ["1", "2"]
@@ -1380,8 +1380,8 @@ class TestJobConfigPathMappings:
                 headers=_api_headers(),
                 json={"library_names": ["1", "2"]},
             )
-        assert resp.status_code == 201
-        assert done.wait(timeout=2.0), "run_processing was not called"
+            assert resp.status_code == 201
+            assert done.wait(timeout=2.0), "run_processing was not called"
         assert len(captured_configs) == 1
         cfg = captured_configs[0]
         assert cfg.plex_library_ids == ["1", "2"]

@@ -185,11 +185,21 @@ class TestJSONLogging:
         output = captured.getvalue().strip()
         assert output, "Expected JSON output on stderr"
 
-        # Should be parseable JSON
-        line = output.splitlines()[-1]
-        record = json.loads(line)
+        # Find the line containing our test message (background threads may
+        # inject other log lines, so we can't assume a fixed position).
+        record = None
+        for line in output.splitlines():
+            try:
+                parsed = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if "hello structured world" in parsed.get("message", ""):
+                record = parsed
+                break
+        assert record is not None, (
+            f"Expected JSON line with 'hello structured world' in output:\n{output}"
+        )
         assert record["level"] == "INFO"
-        assert "hello structured world" in record["message"]
         assert "timestamp" in record
         assert "function" in record
 
