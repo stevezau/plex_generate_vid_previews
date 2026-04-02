@@ -53,6 +53,9 @@ def save_auth_config(config: dict) -> None:
         logger.error(f"Failed to save auth config: {e}")
 
 
+_logged_env_token = False
+
+
 def get_auth_token() -> str:
     """Get the authentication token.
 
@@ -61,12 +64,15 @@ def get_auth_token() -> str:
     2. Token from /config/auth.json
     3. Generate new token and save it
     """
+    global _logged_env_token  # noqa: PLW0603
     # Check environment variable first
     env_token = os.environ.get("WEB_AUTH_TOKEN")
     if env_token:
-        logger.info(
-            "Using authentication token from WEB_AUTH_TOKEN environment variable"
-        )
+        if not _logged_env_token:
+            logger.info(
+                "Using authentication token from WEB_AUTH_TOKEN environment variable"
+            )
+            _logged_env_token = True
         return env_token
 
     # Check saved config
@@ -202,25 +208,38 @@ def login_required(f):
     return decorated_function
 
 
+def _check_token_headers() -> bool:
+    """Validate Authorization Bearer or X-Auth-Token headers against the app token.
+
+    Returns:
+        True if a valid token was found in the request headers.
+
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token and validate_token(token):
+            return True
+
+    x_token = request.headers.get("X-Auth-Token", "").strip()
+    if x_token and validate_token(x_token):
+        return True
+
+    return False
+
+
 def api_token_required(f):
-    """Decorator to require API token for API routes."""
+    """Decorator to require API token for API routes.
+
+    Accepts session cookies, Authorization Bearer, or X-Auth-Token headers.
+    """
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check session first
         if is_authenticated():
             return f(*args, **kwargs)
 
-        # Check Authorization header
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            if validate_token(token):
-                return f(*args, **kwargs)
-
-        # Check X-Auth-Token header
-        token = request.headers.get("X-Auth-Token", "")
-        if token and validate_token(token):
+        if _check_token_headers():
             return f(*args, **kwargs)
 
         return jsonify({"error": "Authentication required"}), 401
@@ -234,7 +253,7 @@ def setup_or_auth_required(f):
     If the setup wizard has not been completed, the request is allowed without
     authentication (the wizard needs open access to configure the app).
     Once setup is complete, falls through to the same logic as
-    ``api_token_required`` — checking session, Bearer token, and X-Auth-Token.
+    ``api_token_required`` -- checking session, Bearer token, and X-Auth-Token.
     """
 
     @wraps(f)
@@ -243,23 +262,12 @@ def setup_or_auth_required(f):
 
         settings = get_settings_manager()
         if not settings.is_setup_complete():
-            # Setup not complete — allow unauthenticated access
             return f(*args, **kwargs)
 
-        # Setup complete — require authentication (same checks as api_token_required)
         if is_authenticated():
             return f(*args, **kwargs)
 
-        # Check Authorization header
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            if validate_token(token):
-                return f(*args, **kwargs)
-
-        # Check X-Auth-Token header
-        token = request.headers.get("X-Auth-Token", "")
-        if token and validate_token(token):
+        if _check_token_headers():
             return f(*args, **kwargs)
 
         return jsonify({"error": "Authentication required"}), 401

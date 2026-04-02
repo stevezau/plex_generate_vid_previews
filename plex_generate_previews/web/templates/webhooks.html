@@ -229,8 +229,15 @@
                 <li>Open your Tdarr <strong>Flow</strong> and add a <strong>Send Web Request</strong> plugin after your transcode step</li>
                 <li>Set <strong>Method</strong>: <code>POST</code></li>
                 <li>Set <strong>Request URL</strong>: copy the Custom Webhook URL above</li>
-                <li>Set <strong>Request Headers</strong>: <code>{% raw %}{"Content-Type": "application/json", "X-Auth-Token": "YOUR_TOKEN"}{% endraw %}</code></li>
-                <li>Set <strong>Request Body</strong>: <code>{% raw %}{"file_path": "{{{args.inputFileObj._id}}}"}{% endraw %}</code></li>
+                <li>Set <strong>Request Headers</strong>:
+                    <pre class="bg-dark p-2 rounded small mt-1 mb-1"><code>{% raw %}{
+  "Content-Type": "application/json",
+  "X-Auth-Token": "YOUR_TOKEN"
+}{% endraw %}</code></pre>
+                </li>
+                <li>Set <strong>Request Body</strong>:
+                    <pre class="bg-dark p-2 rounded small mt-1 mb-1"><code>{% raw %}{"file_path": "{{{args.inputFileObj._id}}}"}{% endraw %}</code></pre>
+                </li>
                 <li>Save the flow</li>
             </ol>
             <p class="small text-muted">The <code>{% raw %}{{{args.inputFileObj._id}}}{% endraw %}</code> template is replaced by Tdarr with the full file path of the transcoded file at runtime.</p>

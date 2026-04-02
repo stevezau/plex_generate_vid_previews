@@ -12,6 +12,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask
+from flask_cors import CORS
 from flask_socketio import SocketIO
 from flask_wtf.csrf import CSRFProtect
 from loguru import logger
@@ -270,6 +271,9 @@ def create_app(config_dir: str = None) -> Flask:
 
     # Get CORS configuration
     cors_origins = get_cors_origins()
+
+    # Allow cross-origin requests on all routes (token-auth, not cookie-based)
+    CORS(app, origins=cors_origins)
 
     # Initialize CSRF protection
     csrf.init_app(app)

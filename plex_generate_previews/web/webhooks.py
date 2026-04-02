@@ -80,29 +80,41 @@ def _save_history_to_disk() -> None:
 
 
 def _authenticate_webhook(f):
-    """Check X-Auth-Token, Authorization Bearer, or Basic auth password as token."""
+    """Check X-Auth-Token, Authorization Bearer, or Basic auth password as token.
+
+    Collects candidate tokens from all sources and tries each against the
+    webhook secret and app auth token.  ``X-Auth-Token`` is checked first
+    because it is the dedicated webhook header; ``Authorization`` (Bearer /
+    Basic) is a fallback.  This prevents browser-injected JWTs (e.g. from
+    Tdarr's session) from shadowing the explicit webhook token.
+    """
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        token = ""
+        candidates: list[tuple[str, str]] = []
+
+        x_token = request.headers.get("X-Auth-Token", "").strip()
+        if x_token:
+            candidates.append(("X-Auth-Token", x_token))
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+            bearer = auth_header[7:].strip()
+            if bearer:
+                candidates.append(("Bearer", bearer))
         elif auth_header.startswith("Basic "):
             try:
                 decoded = base64.b64decode(auth_header[6:].encode()).decode(
                     "utf-8", errors="replace"
                 )
                 if ":" in decoded:
-                    _, token = decoded.split(":", 1)
+                    _, basic_pw = decoded.split(":", 1)
+                    if basic_pw:
+                        candidates.append(("Basic", basic_pw))
             except (ValueError, UnicodeDecodeError):
                 logger.debug("Failed to decode Basic auth header")
 
-        if not token:
-            token = request.headers.get("X-Auth-Token", "")
-
-        if not token:
+        if not candidates:
             logger.warning(
                 "Webhook: authentication failed (no token provided) — "
                 "Remote=%s, Path=%s, Method=%s",
@@ -115,23 +127,16 @@ def _authenticate_webhook(f):
         settings = get_settings_manager()
         webhook_secret = settings.get("webhook_secret", "")
 
-        if webhook_secret and secrets.compare_digest(token, webhook_secret):
-            return f(*args, **kwargs)
+        for _method, token in candidates:
+            if webhook_secret and secrets.compare_digest(token, webhook_secret):
+                return f(*args, **kwargs)
+            if validate_token(token):
+                return f(*args, **kwargs)
 
-        if validate_token(token):
-            return f(*args, **kwargs)
-
-        auth_method = (
-            "Bearer"
-            if auth_header.startswith("Bearer ")
-            else "Basic"
-            if auth_header.startswith("Basic ")
-            else "X-Auth-Token"
-        )
         logger.warning(
             "Webhook: authentication failed (invalid token via %s) — "
             "Remote=%s, Path=%s",
-            auth_method,
+            candidates[0][0],
             request.remote_addr,
             request.path,
         )
