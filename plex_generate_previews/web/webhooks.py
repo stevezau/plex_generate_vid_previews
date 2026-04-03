@@ -58,10 +58,10 @@ def _load_history_from_disk() -> None:
                 _webhook_history.clear()
                 _webhook_history.extend(entries[-_HISTORY_MAX:])
             logger.debug(
-                "Loaded %d webhook history entries from %s", len(_webhook_history), path
+                "Loaded {} webhook history entries from {}", len(_webhook_history), path
             )
     except Exception as exc:
-        logger.warning("Failed to load webhook history from %s: %s", path, exc)
+        logger.warning("Failed to load webhook history from {}: {}", path, exc)
 
 
 def _save_history_to_disk() -> None:
@@ -76,7 +76,7 @@ def _save_history_to_disk() -> None:
             snapshot = list(_webhook_history)
         atomic_json_save(str(_history_file_path()), snapshot)
     except Exception as exc:
-        logger.debug("Failed to persist webhook history: %s", exc)
+        logger.debug("Failed to persist webhook history: {}", exc)
 
 
 def _authenticate_webhook(f):
@@ -117,7 +117,7 @@ def _authenticate_webhook(f):
         if not candidates:
             logger.warning(
                 "Webhook: authentication failed (no token provided) — "
-                "Remote=%s, Path=%s, Method=%s",
+                "Remote={}, Path={}, Method={}",
                 request.remote_addr,
                 request.path,
                 request.method,
@@ -134,8 +134,8 @@ def _authenticate_webhook(f):
                 return f(*args, **kwargs)
 
         logger.warning(
-            "Webhook: authentication failed (invalid token via %s) — "
-            "Remote=%s, Path=%s",
+            "Webhook: authentication failed (invalid token via {}) — "
+            "Remote={}, Path={}",
             candidates[0][0],
             request.remote_addr,
             request.path,
@@ -410,7 +410,7 @@ def _execute_webhook_job(debounce_key: str) -> None:
     except Exception:
         title_label = batch_titles[0] if batch_titles else source
         logger.exception(
-            "Webhook: failed to execute debounced job for source '%s' (%s)",
+            "Webhook: failed to execute debounced job for source '{}' ({})",
             source,
             title_label,
         )
@@ -430,7 +430,7 @@ def radarr_webhook():
     if not data:
         logger.warning(
             "Webhook: Radarr request ignored (invalid or missing JSON body) "
-            "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            "— Host={}, Content-Type={}, Content-Length={}, Remote={}",
             request.host,
             request.content_type,
             request.content_length,
@@ -464,8 +464,10 @@ def radarr_webhook():
     was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
     if not was_queued:
         logger.debug(
-            "Webhook: Radarr payload structure for failed path extraction: %s",
+            "Webhook: Radarr payload had no extractable file path. "
+            "Structure: {}\nFull payload: {}",
             _summarize_payload(data),
+            json.dumps(data, default=str, ensure_ascii=False),
         )
         _add_history_entry("radarr", "Download", movie_title, "ignored_no_path")
         return (
@@ -499,8 +501,8 @@ def _handle_sonarr_compatible_webhook(source: str):
     data = request.get_json(force=True, silent=True)
     if not data:
         logger.warning(
-            "Webhook: %s request ignored (invalid or missing JSON body) "
-            "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            "Webhook: {} request ignored (invalid or missing JSON body) "
+            "— Host={}, Content-Type={}, Content-Length={}, Remote={}",
             label,
             request.host,
             request.content_type,
@@ -538,9 +540,11 @@ def _handle_sonarr_compatible_webhook(source: str):
     was_queued = _schedule_webhook_job(source, display_title, episode_file_path)
     if not was_queued:
         logger.debug(
-            "Webhook: %s payload structure for failed path extraction: %s",
+            "Webhook: {} payload had no extractable file path. "
+            "Structure: {}\nFull payload: {}",
             label,
             _summarize_payload(data),
+            json.dumps(data, default=str, ensure_ascii=False),
         )
         _add_history_entry(source, "Download", display_title, "ignored_no_path")
         return (
@@ -594,7 +598,7 @@ def custom_webhook():
     if not data:
         logger.warning(
             "Webhook: Custom request ignored (invalid or missing JSON body) "
-            "— Host=%s, Content-Type=%s, Content-Length=%s, Remote=%s",
+            "— Host={}, Content-Type={}, Content-Length={}, Remote={}",
             request.host,
             request.content_type,
             request.content_length,
@@ -619,8 +623,10 @@ def custom_webhook():
     paths = _extract_custom_paths(data)
     if not paths:
         logger.debug(
-            "Webhook: Custom payload structure for failed path extraction: %s",
+            "Webhook: Custom payload had no extractable file path. "
+            "Structure: {}\nFull payload: {}",
             _summarize_payload(data),
+            json.dumps(data, default=str, ensure_ascii=False),
         )
         _add_history_entry("custom", "Custom", "", "ignored_no_path")
         return (
