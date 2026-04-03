@@ -468,6 +468,31 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     )
                     effective_max = max_retries or retry_count
 
+                    # Plex resolved these items but returned stale file paths
+                    # that don't exist on disk.  Collect them so we can trigger
+                    # a Plex partial scan and schedule a retry.
+                    not_found_on_disk: list[str] = []
+                    if outcome and outcome.get("skipped_file_not_found", 0) > 0:
+                        for fr in job_manager.get_file_results(job_id):
+                            if fr.get("outcome") == "skipped_file_not_found":
+                                not_found_on_disk.append(fr["file"])
+
+                    # Combine paths that need a Plex rescan: unresolved
+                    # (Plex doesn't know the file) + not-found-on-disk (Plex
+                    # returned a stale path).
+                    all_scan_paths = list(unresolved_paths) + not_found_on_disk
+
+                    # For retries, start with unresolved webhook paths and add
+                    # original webhook paths when files were not found on disk
+                    # (we can't reverse-map stale Plex paths back to webhook
+                    # paths, so resubmit the originals — already-processed
+                    # items will be skipped as bif_exists).
+                    retry_paths = list(unresolved_paths)
+                    if not_found_on_disk:
+                        for wp in settings.get("webhook_paths") or []:
+                            if wp not in retry_paths:
+                                retry_paths.append(wp)
+
                     def _spawn_retry_job(paths, attempt):
                         """Create and start a retry job for unresolved webhook paths."""
                         import os as _os
@@ -532,7 +557,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         )
                         return rj.id
 
-                    if unresolved_paths and not (
+                    if all_scan_paths and not (
                         result.get("cancelled") or status_value == "cancelled"
                     ):
                         try:
@@ -541,15 +566,21 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             scan_results = trigger_plex_partial_scan(
                                 plex_url=config.plex_url,
                                 plex_token=config.plex_token,
-                                unresolved_paths=unresolved_paths,
+                                unresolved_paths=all_scan_paths,
                                 path_mappings=config.path_mappings,
                                 verify_ssl=config.plex_verify_ssl,
                             )
                             if scan_results:
+                                parts = []
+                                if unresolved_paths:
+                                    parts.append(f"{len(unresolved_paths)} unresolved")
+                                if not_found_on_disk:
+                                    parts.append(f"{len(not_found_on_disk)} stale")
+                                detail = " + ".join(parts) or "affected"
                                 job_manager.add_log(
                                     job_id,
                                     f"INFO - Triggered Plex scan for "
-                                    f"{len(scan_results)} unresolved path(s)",
+                                    f"{len(scan_results)} path(s) ({detail})",
                                 )
                         except Exception as scan_exc:  # noqa: BLE001
                             logger.debug(
@@ -557,28 +588,47 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             )
 
                     spawned_retry_id = None
-                    if unresolved_paths and not (
+                    if retry_paths and not (
                         result.get("cancelled") or status_value == "cancelled"
                     ):
                         if is_retry and retry_attempt < effective_max:
                             next_attempt = retry_attempt + 1
                             spawned_retry_id = _spawn_retry_job(
-                                unresolved_paths, next_attempt
+                                retry_paths, next_attempt
                             )
                             next_delay = min(
                                 300, retry_delay_sec * (2 ** (next_attempt - 1))
                             )
+                            reason_parts = []
+                            if unresolved_paths:
+                                reason_parts.append(
+                                    f"{len(unresolved_paths)} unresolved"
+                                )
+                            if not_found_on_disk:
+                                reason_parts.append(
+                                    f"{len(not_found_on_disk)} stale path(s)"
+                                )
+                            reason = " + ".join(reason_parts) or "issues"
                             job_manager.add_log(
                                 job_id,
                                 f"INFO - Retry {retry_attempt}/{effective_max}: "
-                                f"{len(unresolved_paths)} still unresolved, "
-                                f"next retry in {next_delay}s",
+                                f"{reason}, next retry in {next_delay}s",
                             )
                         elif not is_retry and effective_max > 0:
-                            spawned_retry_id = _spawn_retry_job(unresolved_paths, 1)
+                            spawned_retry_id = _spawn_retry_job(retry_paths, 1)
+                            reason_parts = []
+                            if unresolved_paths:
+                                reason_parts.append(
+                                    f"{len(unresolved_paths)} not found in Plex"
+                                )
+                            if not_found_on_disk:
+                                reason_parts.append(
+                                    f"{len(not_found_on_disk)} stale path(s)"
+                                )
+                            reason = ", ".join(reason_parts) or "issues"
                             job_manager.add_log(
                                 job_id,
-                                f"INFO - {len(unresolved_paths)} item(s) not found in Plex, "
+                                f"INFO - {reason}, "
                                 f"retry scheduled in {retry_delay_sec}s",
                             )
 
@@ -609,23 +659,32 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             not_found = outcome.get("skipped_file_not_found", 0)
                             generated = outcome.get("generated", 0)
                             total_outcome = sum(outcome.values())
-                            if total_outcome > 0 and not_found > 0 and generated == 0:
-                                msg = (
-                                    f"{not_found} of {total_outcome} items skipped "
-                                    "(file not found locally) — check path mapping configuration"
-                                )
+                            if not_found > 0 and generated == 0:
+                                if spawned_retry_id:
+                                    msg = (
+                                        f"{not_found} of {total_outcome} items "
+                                        "had stale Plex paths — Plex rescan "
+                                        "triggered, retry scheduled"
+                                    )
+                                else:
+                                    msg = (
+                                        f"{not_found} of {total_outcome} items "
+                                        "skipped (file not found locally) — "
+                                        "check path mapping configuration"
+                                    )
                                 job_manager.add_log(job_id, f"WARNING - {msg}")
                                 error_parts.append(msg)
 
                         if spawned_retry_id:
                             error_parts.append(
-                                f"{len(unresolved_paths)} sent for retry"
+                                f"{len(retry_paths)} path(s) sent for retry"
                             )
                             summary = dict(job_config)
                             summary["resolution_summary"] = {
                                 "total": total_paths,
                                 "resolved": resolved_count,
                                 "unresolved": len(unresolved_paths),
+                                "not_found_on_disk": len(not_found_on_disk),
                                 "retry_job_ids": [spawned_retry_id],
                             }
                             job_manager.update_job_config(job_id, summary)
@@ -652,6 +711,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 outcome
                                 and outcome.get("generated", 0) == 0
                                 and outcome.get("skipped_file_not_found", 0) > 0
+                                and not spawned_retry_id
                             )
                             nothing_resolved = (
                                 total_paths > 0
@@ -660,11 +720,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             )
                             is_hard_failure = (
                                 bool(failures)
-                                or (
-                                    is_retry
-                                    and unresolved_paths
-                                    and not spawned_retry_id
-                                )
+                                or (is_retry and retry_paths and not spawned_retry_id)
                                 or all_not_found
                                 or nothing_resolved
                             )
