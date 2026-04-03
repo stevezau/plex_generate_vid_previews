@@ -236,7 +236,13 @@ def _extract_radarr_file_path(payload: dict) -> str:
 
 
 def _extract_sonarr_file_path(payload: dict) -> str:
-    """Extract a target file path from a Sonarr Download webhook payload."""
+    """Extract a target file path from a Sonarr/Sportarr Download webhook payload.
+
+    Checks (in order):
+    1. ``episodeFile.path``  (standard Sonarr)
+    2. ``series.path`` + ``episodeFile.relativePath``  (Sonarr fallback)
+    3. ``filePath``  (Sportarr flat payload)
+    """
     episode_file = _as_dict(payload.get("episodeFile"))
     if episode_file.get("path"):
         return str(episode_file.get("path")).strip()
@@ -245,7 +251,12 @@ def _extract_sonarr_file_path(payload: dict) -> str:
         str(_as_dict(payload.get("series")).get("path", "")).strip(),
         str(episode_file.get("relativePath", "")).strip(),
     )
-    return combined.strip()
+    if combined.strip():
+        return combined.strip()
+
+    # Sportarr uses a flat filePath key at the root level
+    file_path = str(payload.get("filePath", "")).strip()
+    return file_path
 
 
 def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:
@@ -533,7 +544,14 @@ def _handle_sonarr_compatible_webhook(source: str):
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
     series = _as_dict(data.get("series"))
-    series_title = str(series.get("title", "Unknown")).strip() or "Unknown"
+    series_title = str(series.get("title", "")).strip()
+    # Sportarr uses eventTitle / instanceName instead of series.title
+    if not series_title:
+        series_title = (
+            str(data.get("eventTitle", "")).strip()
+            or str(data.get("instanceName", "")).strip()
+            or "Unknown"
+        )
     display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
     episode_file_path = _extract_sonarr_file_path(data)
 
