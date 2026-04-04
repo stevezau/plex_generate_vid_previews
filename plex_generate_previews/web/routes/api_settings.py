@@ -248,6 +248,58 @@ def update_log_level():
     return jsonify({"success": True, "log_level": level})
 
 
+@api.route("/settings/validate-local-path", methods=["POST"])
+@setup_or_auth_required
+def validate_local_path():
+    """Check whether a single local path exists and is readable.
+
+    Used for inline validation of the 'Path in this app' field in
+    path mapping rows.  Only the local_prefix is validated because
+    it is the only path the app can verify on disk.
+
+    Request JSON: ``{"path": "/mnt/data"}``
+
+    Returns JSON:
+        ``{"exists": bool, "readable": bool, "error": str|null}``
+
+    """
+    data = request.get_json() or {}
+    raw_path = (data.get("path") or "").strip()
+    if not raw_path:
+        return jsonify({"exists": False, "readable": False, "error": None})
+    if "\x00" in raw_path:
+        return jsonify({"exists": False, "readable": False, "error": "Invalid path"})
+
+    resolved = _safe_resolve_within(raw_path, MEDIA_ROOT)
+    if resolved is None:
+        return jsonify(
+            {
+                "exists": False,
+                "readable": False,
+                "error": "Path is outside the allowed media root",
+            }
+        )
+    if not os.path.exists(resolved):
+        return jsonify({"exists": False, "readable": False, "error": None})
+    if not os.path.isdir(resolved):
+        return jsonify(
+            {
+                "exists": True,
+                "readable": False,
+                "error": "Path exists but is not a directory",
+            }
+        )
+    if not os.access(resolved, os.R_OK):
+        return jsonify(
+            {
+                "exists": True,
+                "readable": False,
+                "error": "Directory exists but is not readable",
+            }
+        )
+    return jsonify({"exists": True, "readable": True, "error": None})
+
+
 # ============================================================================
 # Setup Wizard
 # ============================================================================

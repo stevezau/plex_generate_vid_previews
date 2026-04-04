@@ -452,6 +452,45 @@ def _detect_path_prefix_mismatches(
     return results
 
 
+def _mismatch_covered_by_mappings(
+    webhook_pfx: str,
+    plex_pfx: str,
+    path_mappings: List[Dict],
+) -> bool:
+    """Check whether a detected prefix mismatch is already handled by a configured mapping.
+
+    A mismatch is considered covered when any mapping row maps between the
+    Plex prefix (or its children) and the webhook prefix (via plex_prefix,
+    local_prefix, or webhook_prefixes).
+
+    Args:
+        webhook_pfx: Webhook-side prefix detected by _detect_path_prefix_mismatches.
+        plex_pfx: Plex-side prefix detected by _detect_path_prefix_mismatches.
+        path_mappings: List from normalize_path_mappings().
+
+    Returns:
+        True if an existing mapping already covers this prefix pair.
+
+    """
+    if not path_mappings:
+        return False
+    wp = webhook_pfx.rstrip("/").lower()
+    pp = plex_pfx.rstrip("/").lower()
+    for row in path_mappings:
+        row_plex = (row.get("plex_prefix") or "").strip().rstrip("/").lower()
+        row_local = (row.get("local_prefix") or "").strip().rstrip("/").lower()
+        row_webhooks = [
+            w.strip().rstrip("/").lower()
+            for w in (row.get("webhook_prefixes") or [])
+            if w and str(w).strip()
+        ]
+        plex_side = {row_plex, row_local}
+        webhook_side = set(row_webhooks) | plex_side
+        if pp in plex_side and wp in webhook_side:
+            return True
+    return False
+
+
 def _resolve_item_media_type(section_type: str) -> Optional[str]:
     """Map Plex section metadata type to internal media type."""
     if section_type == "movie":
@@ -702,6 +741,7 @@ def get_media_items_by_paths(
     input_paths: List[str] = []
     input_to_candidates: Dict[str, List[str]] = {}
     input_to_targets: Dict[str, Set[str]] = {}
+    basename_plex_locations: Dict[str, List[str]] = {}
     for path in file_paths or []:
         if path is None:
             continue
@@ -846,12 +886,25 @@ def get_media_items_by_paths(
                         f"Skipping library '{section_title}' file-path search: {e}"
                     )
                     continue
+                if not items:
+                    logger.debug(
+                        f"Plex file query returned 0 items for basename '{basename}' "
+                        f"in library '{section_title}'"
+                    )
                 for item in items:
                     item_targets = _collect_item_targets(item)
                     if not item_targets:
                         continue
                     matched_for_item = target_paths.intersection(item_targets)
                     if not matched_for_item:
+                        plex_locs = _extract_item_locations(item)
+                        logger.debug(
+                            f"Plex item '{getattr(item, 'title', '?')}' matched basename "
+                            f"but paths differ — Plex locations: {plex_locs}"
+                        )
+                        basename_plex_locations.setdefault(basename, []).extend(
+                            plex_locs
+                        )
                         continue
                     plex_locations = _extract_item_locations(item)
                     plex_path = plex_locations[0] if plex_locations else ""
@@ -1113,7 +1166,17 @@ def get_media_items_by_paths(
             logger.warning(
                 f"        Trying path mappings: {', '.join(mapping_prefixes)}"
             )
-        logger.warning("        Result: not found")
+        bn = os.path.basename(input_path)
+        plex_locs = basename_plex_locations.get(bn)
+        if plex_locs:
+            logger.warning(f"        Plex has file with same name at: {plex_locs[0]}")
+            if mapped_candidates:
+                logger.warning(f"        Webhook mapped to: {mapped_candidates[0]}")
+            logger.warning(
+                "        Result: not found (file exists in Plex but full paths differ)"
+            )
+        else:
+            logger.warning("        Result: not found")
 
     # Classify any input paths beyond the per-file detail window (same formula as loop).
     for input_path in input_paths[max_detail_logs:]:
@@ -1184,20 +1247,29 @@ def get_media_items_by_paths(
             logger.info(f"Plex library paths: {', '.join(plex_roots)}")
 
         mismatches = _detect_path_prefix_mismatches(unresolved_input_paths, plex_roots)
+        has_uncovered_mismatch = False
         for webhook_pfx, plex_pfx in mismatches:
-            hint = (
-                f"Possible prefix mismatch: webhook sends '{webhook_pfx}' "
-                f"but Plex uses '{plex_pfx}'. Consider adding a path mapping "
-                f"in Settings: Plex path = {plex_pfx}, "
-                f"Sonarr/Radarr path = {webhook_pfx}"
-            )
+            if _mismatch_covered_by_mappings(webhook_pfx, plex_pfx, mappings):
+                hint = (
+                    f"Path mapping '{webhook_pfx}' \u2192 '{plex_pfx}' is configured "
+                    f"but file not found in Plex (may not be indexed yet)"
+                )
+            else:
+                has_uncovered_mismatch = True
+                hint = (
+                    f"Possible prefix mismatch: webhook sends '{webhook_pfx}' "
+                    f"but Plex uses '{plex_pfx}'. Consider adding a path mapping "
+                    f"in Settings: Plex path = {plex_pfx}, "
+                    f"Sonarr/Radarr path = {webhook_pfx}"
+                )
             path_hints.append(hint)
             logger.info(hint)
 
-        logger.info(
-            "If this app, Plex, or Sonarr/Radarr use different paths for the same files, "
-            "configure Path mapping in Settings."
-        )
+        if has_uncovered_mismatch:
+            logger.info(
+                "If this app, Plex, or Sonarr/Radarr use different paths for the same files, "
+                "configure Path mapping in Settings."
+            )
     if excluded_count > 0 and len(matched_items) == 0:
         logger.info(
             f"Matched {len(matched_targets) + len(excluded_by_path_targets)} path(s) in Plex; "

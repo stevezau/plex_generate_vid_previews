@@ -17,6 +17,7 @@ from plex_generate_previews.plex_client import (
     WebhookResolutionResult,
     _detect_path_prefix_mismatches,
     _expand_directory_to_media_files,
+    _mismatch_covered_by_mappings,
     filter_duplicate_locations,
     get_library_sections,
     get_media_items_by_paths,
@@ -1628,3 +1629,90 @@ class TestDetectPathPrefixMismatches:
 
         assert len(result) == 1
         assert result[0] == ("/extra/data/media", "/data/media")
+
+
+class TestMismatchCoveredByMappings:
+    """Tests for _mismatch_covered_by_mappings helper."""
+
+    def test_exact_webhook_prefix_match(self):
+        """Returns True when a mapping row has the webhook prefix in webhook_prefixes."""
+        mappings = [
+            {
+                "plex_prefix": "/series",
+                "local_prefix": "/series",
+                "webhook_prefixes": ["/Volumes/NAS2/series"],
+            }
+        ]
+        assert _mismatch_covered_by_mappings(
+            "/Volumes/NAS2/series", "/series", mappings
+        )
+
+    def test_plex_and_local_cover_mismatch(self):
+        """Returns True when plex_prefix and local_prefix span the mismatch."""
+        mappings = [
+            {
+                "plex_prefix": "/media",
+                "local_prefix": "/data/media",
+                "webhook_prefixes": [],
+            }
+        ]
+        assert _mismatch_covered_by_mappings("/data/media", "/media", mappings)
+
+    def test_no_mapping_configured(self):
+        """Returns False when no mappings are configured."""
+        assert not _mismatch_covered_by_mappings("/data/media", "/media", [])
+
+    def test_unrelated_mapping_not_matched(self):
+        """Returns False when the configured mapping covers different prefixes."""
+        mappings = [
+            {
+                "plex_prefix": "/movies",
+                "local_prefix": "/mnt/movies",
+                "webhook_prefixes": ["/nas/movies"],
+            }
+        ]
+        assert not _mismatch_covered_by_mappings("/data/tv", "/tv", mappings)
+
+    def test_case_insensitive(self):
+        """Matching is case-insensitive for cross-platform paths."""
+        mappings = [
+            {
+                "plex_prefix": "/Series",
+                "local_prefix": "/Series",
+                "webhook_prefixes": ["/Volumes/NAS2/Series"],
+            }
+        ]
+        assert _mismatch_covered_by_mappings(
+            "/volumes/nas2/series", "/series", mappings
+        )
+
+    def test_trailing_slashes_ignored(self):
+        """Trailing slashes on prefixes don't affect matching."""
+        mappings = [
+            {
+                "plex_prefix": "/media/",
+                "local_prefix": "/data/media/",
+                "webhook_prefixes": [],
+            }
+        ]
+        assert _mismatch_covered_by_mappings("/data/media/", "/media/", mappings)
+
+    def test_none_mappings(self):
+        """Returns False when mappings is None."""
+        assert not _mismatch_covered_by_mappings("/data", "/media", None)
+
+    def test_multiple_rows_second_matches(self):
+        """Returns True when the second mapping row covers the mismatch."""
+        mappings = [
+            {
+                "plex_prefix": "/movies",
+                "local_prefix": "/mnt/movies",
+                "webhook_prefixes": [],
+            },
+            {
+                "plex_prefix": "/tv",
+                "local_prefix": "/tv",
+                "webhook_prefixes": ["/nas/tv"],
+            },
+        ]
+        assert _mismatch_covered_by_mappings("/nas/tv", "/tv", mappings)

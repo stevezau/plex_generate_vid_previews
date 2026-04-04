@@ -295,6 +295,18 @@
                 </div>
 
                 <div id="setupPathMappingsContainer">
+                    <div class="d-flex gap-2 mb-1 path-mapping-header">
+                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                            <span class="form-label small mb-0">Path in Plex</span>
+                        </div>
+                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                            <span class="form-label small mb-0">Path in this app</span>
+                        </div>
+                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                            <span class="form-label small mb-0 text-muted">Path from Sonarr/Radarr (if different)</span>
+                        </div>
+                        <div class="flex-shrink-0" style="width: 38px;"></div>
+                    </div>
                     <div class="path-mapping-rows mb-2"></div>
                     <button type="button" class="btn btn-outline-light btn-sm" id="setupAddPathMappingBtn">
                         <i class="bi bi-plus-lg me-1"></i>Add another mapping
@@ -786,19 +798,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function setupCreatePathMappingRow(row) {
         const div = document.createElement('div');
-        div.className = 'path-mapping-row d-flex align-items-end gap-2 mb-2';
+        div.className = 'path-mapping-row d-flex align-items-start gap-2 mb-2';
         const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
         div.innerHTML = `
             <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <label class="form-label small mb-0">Path in Plex</label>
                 <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${(row.plex_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
             </div>
             <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <label class="form-label small mb-0">Path in this app</label>
                 <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${(row.local_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
+                <div class="invalid-feedback"></div>
+                <div class="valid-feedback">Path exists</div>
             </div>
             <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <label class="form-label small mb-0 text-muted">Path from Sonarr/Radarr (if different)</label>
                 <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${(webhookVal || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
             </div>
             <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove flex-shrink-0" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
@@ -808,7 +819,53 @@ document.addEventListener('DOMContentLoaded', function() {
             const rows = parent ? parent.querySelectorAll('.path-mapping-row') : [];
             if (rows.length > 1) div.remove();
         });
+        const localInput = div.querySelector('.path-mapping-local');
+        localInput.addEventListener('input', setupDebounceValidate(localInput));
+        if (row.local_prefix) setupValidateLocalPath(localInput);
         return div;
+    }
+
+    let _setupValidateTimers = new WeakMap();
+    function setupDebounceValidate(input) {
+        return function() {
+            clearTimeout(_setupValidateTimers.get(input));
+            _setupValidateTimers.set(input, setTimeout(() => setupValidateLocalPath(input), 400));
+        };
+    }
+
+    async function setupValidateLocalPath(input) {
+        const path = (input.value || '').trim();
+        const feedback = input.nextElementSibling;
+        if (!path) {
+            input.classList.remove('is-invalid', 'is-valid');
+            return;
+        }
+        try {
+            const resp = await fetch('/api/settings/validate-local-path', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : ''
+                },
+                body: JSON.stringify({path})
+            });
+            const data = await resp.json();
+            if (input.value.trim() !== path) return;
+            if (data.error) {
+                input.classList.remove('is-valid');
+                input.classList.add('is-invalid');
+                feedback.textContent = data.error;
+            } else if (!data.exists) {
+                input.classList.remove('is-valid');
+                input.classList.add('is-invalid');
+                feedback.textContent = 'Directory not found';
+            } else {
+                input.classList.remove('is-invalid');
+                input.classList.add('is-valid');
+            }
+        } catch {
+            input.classList.remove('is-valid', 'is-invalid');
+        }
     }
 
     function setupRenderPathMappingRows(rows) {
