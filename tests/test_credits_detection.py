@@ -128,20 +128,47 @@ class TestCombineDetections:
         )
         assert result is not None
         assert result.method == "black+silence"
-        assert result.confidence == 0.9
+        assert result.confidence == 0.8  # single black + silence
         assert result.start_ms == int(1799.5 * 1000)
         assert result.end_ms == 2000000
 
-    def test_black_only_fallback(self):
-        """Black frames without silence → medium confidence."""
-        black = [BlackFrame(start=1800.0, end=1801.0, duration=1.0)]
+    def test_cluster_black_and_silence(self):
+        """Multiple black frames + silence → highest confidence (0.9)."""
+        black = [
+            BlackFrame(start=1800.0, end=1801.0, duration=1.0),
+            BlackFrame(start=1810.0, end=1811.0, duration=1.0),
+        ]
+        silence = [SilenceRegion(start=1799.5, end=1802.0, duration=2.5)]
+
+        result = _combine_detections(
+            black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0
+        )
+        assert result is not None
+        assert result.method == "black+silence"
+        assert result.confidence == 0.9
+
+    def test_black_cluster_only_fallback(self):
+        """Multiple black frames without silence → medium confidence."""
+        black = [
+            BlackFrame(start=1800.0, end=1801.0, duration=1.0),
+            BlackFrame(start=1810.0, end=1811.0, duration=1.0),
+        ]
 
         result = _combine_detections(
             black, [], total_duration_sec=2000.0, min_credits_duration_sec=15.0
         )
         assert result is not None
-        assert result.method == "black_only"
+        assert result.method == "black_cluster"
         assert result.confidence == 0.6
+
+    def test_single_black_only_rejected(self):
+        """Single black frame without silence → no match (avoids scene transition false positive)."""
+        black = [BlackFrame(start=1800.0, end=1801.0, duration=1.0)]
+
+        result = _combine_detections(
+            black, [], total_duration_sec=2000.0, min_credits_duration_sec=15.0
+        )
+        assert result is None  # single black frame rejected — need cluster or silence
 
     def test_silence_only_fallback(self):
         """Silence without black frames → lower confidence."""

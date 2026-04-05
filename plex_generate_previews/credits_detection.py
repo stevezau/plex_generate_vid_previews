@@ -229,6 +229,40 @@ def _regions_overlap_or_adjacent(
     return a_start <= b_end + tolerance and b_start <= a_end + tolerance
 
 
+def _find_black_cluster(
+    black_frames: List[BlackFrame],
+    min_start_time: float,
+    min_frames: int = 2,
+    cluster_window: float = 60.0,
+) -> Optional[float]:
+    """Find the earliest cluster of multiple black frames.
+
+    A single black frame can be a scene transition; credits typically
+    produce several black frames within a short window.
+
+    Args:
+        black_frames: Detected black frame regions (sorted by start).
+        min_start_time: Ignore frames before this timestamp.
+        min_frames: Minimum black frames in a cluster.
+        cluster_window: Max seconds between first and last frame in cluster.
+
+    Returns:
+        Start time of the first frame in the cluster, or None.
+
+    """
+    eligible = [bf for bf in black_frames if bf.start >= min_start_time]
+    for i, anchor in enumerate(eligible):
+        cluster = [anchor]
+        for later in eligible[i + 1 :]:
+            if later.start - anchor.start <= cluster_window:
+                cluster.append(later)
+            else:
+                break
+        if len(cluster) >= min_frames:
+            return cluster[0].start
+    return None
+
+
 def _combine_detections(
     black_frames: List[BlackFrame],
     silence_regions: List[SilenceRegion],
@@ -238,12 +272,11 @@ def _combine_detections(
 ) -> Optional[CreditsSegment]:
     """Combine black frame and silence detections to identify credits.
 
-    Strategy:
-    1. Find combined black+silence regions near the end of the video.
-    2. The earliest qualifying region is the credits start.
-    3. Credits extend to the end of the video.
-    4. Require minimum duration to avoid false positives.
-    5. Fall back to black-only or silence-only if no combined match.
+    Strategy (ordered by confidence):
+    1. Black+silence overlap — a black frame cluster coincides with silence.
+    2. Black cluster only — multiple black frames within 60s (not a single
+       scene-transition frame, which caused false positives).
+    3. Silence only — long silence near the end (lowest confidence).
 
     Args:
         black_frames: Detected black frame regions.
@@ -258,9 +291,27 @@ def _combine_detections(
     """
     min_start_time = total_duration_sec * (max_credits_start_pct / 100.0)
     end_ms = int(total_duration_sec * 1000)
+    sorted_blacks = sorted(black_frames, key=lambda f: f.start)
 
-    # Strategy 1: Combined black + silence (highest confidence)
-    for bf in sorted(black_frames, key=lambda f: f.start):
+    # Strategy 1: Black frame cluster + silence overlap (highest confidence)
+    cluster_start = _find_black_cluster(sorted_blacks, min_start_time)
+    if cluster_start is not None:
+        for sr in silence_regions:
+            if _regions_overlap_or_adjacent(
+                cluster_start, cluster_start + 60.0, sr.start, sr.end
+            ):
+                credits_start = min(cluster_start, sr.start)
+                credits_duration = total_duration_sec - credits_start
+                if credits_duration >= min_credits_duration_sec:
+                    return CreditsSegment(
+                        start_ms=int(credits_start * 1000),
+                        end_ms=end_ms,
+                        confidence=0.9,
+                        method="black+silence",
+                    )
+
+    # Strategy 2: Single black + silence overlap (good confidence)
+    for bf in sorted_blacks:
         if bf.start < min_start_time:
             continue
         for sr in silence_regions:
@@ -271,24 +322,24 @@ def _combine_detections(
                     return CreditsSegment(
                         start_ms=int(credits_start * 1000),
                         end_ms=end_ms,
-                        confidence=0.9,
+                        confidence=0.8,
                         method="black+silence",
                     )
 
-    # Strategy 2: Black frames only (medium confidence)
-    for bf in sorted(black_frames, key=lambda f: f.start):
-        if bf.start < min_start_time:
-            continue
-        credits_duration = total_duration_sec - bf.start
+    # Strategy 3: Black cluster only — requires 2+ frames to avoid
+    # false positives from single scene-transition black frames.
+    if cluster_start is not None:
+        credits_duration = total_duration_sec - cluster_start
         if credits_duration >= min_credits_duration_sec:
             return CreditsSegment(
-                start_ms=int(bf.start * 1000),
+                start_ms=int(cluster_start * 1000),
                 end_ms=end_ms,
                 confidence=0.6,
-                method="black_only",
+                method="black_cluster",
             )
 
-    # Strategy 3: Silence only (lower confidence)
+    # Strategy 4: Silence only (low confidence — below the 0.5 write
+    # threshold, so only written if the user lowers the threshold)
     for sr in sorted(silence_regions, key=lambda r: r.start):
         if sr.start < min_start_time:
             continue

@@ -72,6 +72,13 @@ def bif_viewer():
     return render_template("bif_viewer.html")
 
 
+@main.route("/detection-debug")
+@login_required
+def detection_debug():
+    """Detection debug viewer for troubleshooting credits/intro detection."""
+    return render_template("detection_debug.html")
+
+
 @main.route("/setup")
 def setup_wizard():
     """Setup wizard page."""
