@@ -105,7 +105,7 @@ class ScheduleManager:
         """Load schedule metadata from persistent storage."""
         if os.path.exists(self.schedules_file):
             try:
-                with open(self.schedules_file, "r") as f:
+                with open(self.schedules_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self._schedules = data.get("schedules", {})
                 logger.info(f"Loaded {len(self._schedules)} schedule configurations")

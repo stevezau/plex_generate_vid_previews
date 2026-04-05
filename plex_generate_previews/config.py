@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .utils import is_docker_environment
+from pathlib import Path
 
 
 class ConfigValidationError(Exception):
@@ -40,7 +41,7 @@ if "ROCM_PATH" not in os.environ:
 
 def get_config_value(
     cli_args, field_name: str, env_key: str, default, value_type: type = str
-):
+) -> bool:
     """Get configuration value with proper precedence: CLI args > env vars > defaults.
 
     Args:
@@ -533,7 +534,7 @@ class Config:
         return f"Config({', '.join(fields)})"
 
 
-def show_docker_help():
+def show_docker_help() -> None:
     """Show help message pointing users to the web UI for configuration."""
     logger.info("🐳 Docker Environment Detected")
     logger.info("=" * 80)
@@ -1032,7 +1033,7 @@ _cached_config: Optional[Config] = None
 _cached_config_mtime: Optional[float] = None
 
 
-def get_cached_config():
+def get_cached_config() -> None:
     """Return config, using cache if settings.json has not changed since last load.
 
     Use this for read-only config access (e.g. API that returns current config).

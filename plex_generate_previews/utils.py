@@ -116,7 +116,7 @@ def is_macos() -> bool:
 
 
 def sanitize_path(path: str) -> str:
-    """Sanitize file path for cross-platform compatibility.
+    r"""Sanitize file path for cross-platform compatibility.
 
     On Windows:
     - Converts forward slashes to backslashes

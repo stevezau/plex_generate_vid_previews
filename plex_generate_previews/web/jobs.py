@@ -204,7 +204,7 @@ class JobManager:
         """Load jobs from persistent storage."""
         if os.path.exists(self.jobs_file):
             try:
-                with open(self.jobs_file, "r") as f:
+                with open(self.jobs_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     needs_save = False
                     for job_data in data.get("jobs", []):
@@ -770,7 +770,7 @@ class JobManager:
             self._job_logs[job_id].append(line)
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             try:
-                with open(log_path, "a") as f:
+                with open(log_path, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
             except OSError as e:
                 logger.debug(f"Could not append to job log {log_path}: {e}")
@@ -786,7 +786,7 @@ class JobManager:
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             if os.path.isfile(log_path):
                 try:
-                    with open(log_path, "r") as f:
+                    with open(log_path, "r", encoding="utf-8") as f:
                         logs = [line.rstrip("\n") for line in f if line]
                     if last_n:
                         return logs[-last_n:]
@@ -829,7 +829,7 @@ class JobManager:
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             if os.path.isfile(log_path):
                 try:
-                    with open(log_path, "r") as f:
+                    with open(log_path, "r", encoding="utf-8") as f:
                         all_lines = [line.rstrip("\n") for line in f if line]
                     total = len(all_lines)
                     end = offset + limit if limit is not None else total
@@ -892,7 +892,7 @@ class JobManager:
         }
         path = self._file_results_path(job_id)
         try:
-            with open(path, "a") as f:
+            with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")
         except OSError as e:
             logger.debug(f"Could not append file result to {path}: {e}")
@@ -919,7 +919,7 @@ class JobManager:
         results: List[dict] = []
         search_lower = search.lower() if search else ""
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:

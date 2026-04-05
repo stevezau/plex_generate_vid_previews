@@ -20,7 +20,7 @@ def get_schedules():
 
 @api.route("/schedules/<schedule_id>")
 @api_token_required
-def get_schedule(schedule_id):
+def get_schedule(schedule_id: int) -> tuple:
     """Get a specific schedule."""
     schedule_manager = get_schedule_manager()
     schedule = schedule_manager.get_schedule(schedule_id)
@@ -31,7 +31,7 @@ def get_schedule(schedule_id):
 
 @api.route("/schedules", methods=["POST"])
 @api_token_required
-def create_schedule():
+def create_schedule() -> tuple:
     """Create a new schedule."""
     data = request.get_json() or {}
 
@@ -66,7 +66,7 @@ def create_schedule():
 
 @api.route("/schedules/<schedule_id>", methods=["PUT"])
 @api_token_required
-def update_schedule(schedule_id):
+def update_schedule(schedule_id: int) -> tuple:
     """Update a schedule."""
     data = request.get_json() or {}
 
@@ -90,7 +90,7 @@ def update_schedule(schedule_id):
 
 @api.route("/schedules/<schedule_id>", methods=["DELETE"])
 @api_token_required
-def delete_schedule(schedule_id):
+def delete_schedule(schedule_id: int) -> tuple:
     """Delete a schedule."""
     schedule_manager = get_schedule_manager()
     if schedule_manager.delete_schedule(schedule_id):
@@ -100,7 +100,7 @@ def delete_schedule(schedule_id):
 
 @api.route("/schedules/<schedule_id>/enable", methods=["POST"])
 @api_token_required
-def enable_schedule(schedule_id):
+def enable_schedule(schedule_id: int) -> tuple:
     """Enable a schedule."""
     schedule_manager = get_schedule_manager()
     schedule = schedule_manager.enable_schedule(schedule_id)
@@ -111,7 +111,7 @@ def enable_schedule(schedule_id):
 
 @api.route("/schedules/<schedule_id>/disable", methods=["POST"])
 @api_token_required
-def disable_schedule(schedule_id):
+def disable_schedule(schedule_id: int) -> tuple:
     """Disable a schedule."""
     schedule_manager = get_schedule_manager()
     schedule = schedule_manager.disable_schedule(schedule_id)
@@ -122,7 +122,7 @@ def disable_schedule(schedule_id):
 
 @api.route("/schedules/<schedule_id>/run", methods=["POST"])
 @api_token_required
-def run_schedule_now(schedule_id):
+def run_schedule_now(schedule_id: int) -> tuple:
     """Run a schedule immediately."""
     schedule_manager = get_schedule_manager()
     if schedule_manager.run_now(schedule_id):

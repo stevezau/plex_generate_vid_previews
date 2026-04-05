@@ -12,6 +12,7 @@ from loguru import logger
 from ..auth import api_token_required
 from . import api
 from ._helpers import limiter
+from pathlib import Path
 
 _MAX_SEARCH_RESULTS = 15
 
@@ -260,7 +261,7 @@ def _item_to_result(
 @api.route("/bif/search")
 @api_token_required
 @limiter.limit("10 per minute")
-def bif_search():
+def bif_search() -> tuple:
     """Search Plex for media items and return BIF availability.
 
     Supports plain title queries (``Inception``) as well as season/episode
@@ -375,7 +376,7 @@ def bif_search():
 
 @api.route("/bif/info")
 @api_token_required
-def bif_info():
+def bif_info() -> tuple:
     """Return detailed BIF metadata for troubleshooting.
 
     Query params:
@@ -422,7 +423,7 @@ def bif_info():
 
 @api.route("/bif/frame")
 @api_token_required
-def bif_frame():
+def bif_frame() -> tuple:
     """Serve a single JPEG frame extracted from a BIF file.
 
     Query params:

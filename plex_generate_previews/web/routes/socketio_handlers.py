@@ -23,7 +23,7 @@ def _leave_all_level_rooms() -> None:
         leave_room(lvl)
 
 
-def register_socketio_handlers(socketio):
+def register_socketio_handlers(socketio) -> None:
     """Register SocketIO event handlers."""
 
     # ----- /jobs namespace -----

@@ -135,7 +135,7 @@ def setup_logging(
     console: Console = None,
     log_format: str = None,
     rotation: str = "10 MB",
-    retention=5,
+    retention: int=5,
 ) -> None:
     """Create (or replace) the managed loguru handlers.
 
@@ -257,7 +257,7 @@ class SocketIOLogBroadcaster:
     def __init__(self, socketio) -> None:
         self._socketio = socketio
 
-    def sink(self, message) -> None:
+    def sink(self, message: str) -> None:
         """Loguru sink callable — build payload and emit."""
         record = message.record
         level_name = record["level"].name

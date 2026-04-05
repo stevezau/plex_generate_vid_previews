@@ -89,7 +89,7 @@ class SettingsManager:
         """Load settings from file."""
         if self.settings_file.exists():
             try:
-                with open(self.settings_file, "r") as f:
+                with open(self.settings_file, "r", encoding="utf-8") as f:
                     self._settings = json.load(f)
                 logger.debug(f"Loaded settings from {self.settings_file}")
             except Exception as e:
@@ -119,7 +119,7 @@ class SettingsManager:
         """Load setup wizard state from file."""
         if self.setup_state_file.exists():
             try:
-                with open(self.setup_state_file, "r") as f:
+                with open(self.setup_state_file, "r", encoding="utf-8") as f:
                     self._setup_state = json.load(f)
                 logger.debug(f"Loaded setup state from {self.setup_state_file}")
             except Exception as e:

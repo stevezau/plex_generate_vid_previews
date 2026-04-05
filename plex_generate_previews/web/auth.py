@@ -35,7 +35,7 @@ def load_auth_config() -> dict:
     """Load authentication configuration from file."""
     if os.path.exists(AUTH_FILE):
         try:
-            with open(AUTH_FILE, "r") as f:
+            with open(AUTH_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError) as e:
             logger.warning(f"Failed to load auth config: {e}")

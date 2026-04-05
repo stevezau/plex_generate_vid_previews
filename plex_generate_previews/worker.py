@@ -27,19 +27,19 @@ _job_thread_ids: set = set()
 _job_thread_ids_lock = threading.Lock()
 
 
-def register_job_thread():
+def register_job_thread() -> None:
     """Register the current thread as belonging to the active job."""
     with _job_thread_ids_lock:
         _job_thread_ids.add(threading.current_thread().ident)
 
 
-def clear_job_threads():
+def clear_job_threads() -> None:
     """Clear all registered job thread IDs (call when job finishes)."""
     with _job_thread_ids_lock:
         _job_thread_ids.clear()
 
 
-def unregister_job_thread():
+def unregister_job_thread() -> None:
     """Remove only the current thread from job tracking.
 
     Unlike ``clear_job_threads`` which wipes the entire set, this removes
@@ -1024,7 +1024,7 @@ class WorkerPool:
         plex,
         worker_progress,
         main_progress,
-        main_task_id=None,
+        main_task_id: int=None,
         title_max_width: int = 20,
         library_name: str = "",
     ) -> dict:

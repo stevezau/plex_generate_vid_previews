@@ -23,7 +23,7 @@ from ._helpers import (
 
 @api.route("/system/rescan-gpus", methods=["POST"])
 @setup_or_auth_required
-def rescan_gpus():
+def rescan_gpus() -> tuple:
     """Force GPU re-detection and return updated list."""
     try:
         with _gpu_cache_lock:
@@ -39,7 +39,7 @@ def rescan_gpus():
 
 @api.route("/system/status")
 @setup_or_auth_required
-def get_system_status():
+def get_system_status() -> tuple:
     """Get system status including GPU info.
 
     GPU detection runs lazily on first access and is cached for the lifetime
@@ -68,7 +68,7 @@ def get_system_status():
 
 @api.route("/system/config")
 @api_token_required
-def get_config():
+def get_config() -> tuple:
     """Get current configuration."""
     try:
         from ...config import get_cached_config
@@ -534,7 +534,7 @@ def _fetch_libraries_via_http(
 
 @api.route("/libraries")
 @api_token_required
-def get_libraries():
+def get_libraries() -> tuple:
     """Get available Plex libraries.
 
     Accepts optional query params 'url' and 'token' to override saved

@@ -51,7 +51,7 @@ def _load_history_from_disk() -> None:
     if not path.exists():
         return
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             entries = json.load(f)
         if isinstance(entries, list):
             with _history_lock:
@@ -435,7 +435,7 @@ def _execute_webhook_job(debounce_key: str) -> None:
 
 @webhooks_bp.route("/radarr", methods=["POST"])
 @_authenticate_webhook
-def radarr_webhook():
+def radarr_webhook() -> tuple:
     """Receive Radarr webhook payloads."""
     data = request.get_json(force=True, silent=True)
     if not data:
@@ -601,7 +601,7 @@ def sportarr_webhook():
 
 @webhooks_bp.route("/custom", methods=["POST"])
 @_authenticate_webhook
-def custom_webhook():
+def custom_webhook() -> tuple:
     """Receive custom webhook payloads (e.g. from Tdarr, scripts, or other tools).
 
     Expected JSON body:

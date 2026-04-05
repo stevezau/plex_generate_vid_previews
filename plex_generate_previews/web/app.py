@@ -29,7 +29,7 @@ socketio = SocketIO()
 csrf = CSRFProtect()
 
 
-def run_scheduled_job(library_id=None, library_name="", config=None, priority=None):
+def run_scheduled_job(library_id: int=None, library_name: str="", config: dict=None, priority: int=None) -> None:
     """Callback for running scheduled jobs.
 
     Must be at module level (not inside create_app) so APScheduler
@@ -497,7 +497,7 @@ def create_app(config_dir: str = None) -> Flask:
     return app
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
+def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False) -> None:
     """Run the web server with SocketIO.
 
     In production (Docker), use gunicorn via ``wrapper.sh`` instead.

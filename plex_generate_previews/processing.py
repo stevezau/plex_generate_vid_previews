@@ -16,7 +16,7 @@ from .worker import WorkerPool
 
 
 def run_processing(
-    config,
+    config: dict,
     selected_gpus,
     progress_callback=None,
     worker_callback=None,
@@ -24,10 +24,10 @@ def run_processing(
     cancel_check=None,
     pause_check=None,
     worker_pool_callback=None,
-    job_id=None,
+    job_id: int=None,
     on_dispatch_start=None,
-    priority=None,
-):
+    priority: int=None,
+) -> None:
     """Run the main processing workflow.
 
     Args:
