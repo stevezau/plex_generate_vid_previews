@@ -4,8 +4,13 @@
 
 {% block head %}
 <style>
+    html {
+        scroll-behavior: smooth;
+    }
+
     .section-card {
         margin-bottom: 1.5rem;
+        scroll-margin-top: 5rem;
     }
 
     .auth-badge {
@@ -46,12 +51,61 @@
         bottom: 1rem;
         z-index: 100;
     }
+
+    /* Settings sidebar navigation */
+    .settings-sidebar {
+        top: 5rem;
+        max-height: calc(100vh - 6rem);
+        overflow-y: auto;
+        padding-top: 0.5rem;
+    }
+
+    .settings-sidebar .nav-link {
+        color: #adb5bd;
+        font-size: 0.875rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.375rem;
+        border-left: 3px solid transparent;
+        margin-bottom: 0.125rem;
+    }
+
+    .settings-sidebar .nav-link:hover {
+        color: #e0e0e0;
+        background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .settings-sidebar .nav-link.active {
+        color: var(--plex-orange);
+        background-color: rgba(229, 160, 13, 0.1);
+        border-left-color: var(--plex-orange);
+        font-weight: 500;
+    }
+
+    .settings-content {
+        padding-bottom: 40vh;
+    }
+
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="row">
-    <div class="col-lg-8 mx-auto">
+    <!-- Sidebar Navigation -->
+    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
+        <nav id="settings-sidebar" class="settings-sidebar sticky-top">
+            <div class="nav flex-column nav-pills">
+                <a class="nav-link" href="#section-plex-connection"><i class="bi bi-hdd-network me-2"></i>Plex Connection</a>
+                <a class="nav-link" href="#section-libraries"><i class="bi bi-collection me-2"></i>Libraries</a>
+                <a class="nav-link" href="#section-path-config"><i class="bi bi-folder me-2"></i>Path Configuration</a>
+                <a class="nav-link" href="#section-processing"><i class="bi bi-speedometer2 me-2"></i>Processing Options</a>
+                <a class="nav-link" href="#section-logging"><i class="bi bi-journal-text me-2"></i>Logging</a>
+                <a class="nav-link" href="#section-auth"><i class="bi bi-key me-2"></i>Authentication</a>
+                <a class="nav-link" href="#section-about"><i class="bi bi-info-circle me-2"></i>About</a>
+            </div>
+        </nav>
+    </div>
+    <!-- Main Content -->
+    <div class="col-lg-9 col-xl-8 settings-content">
         <!-- Header with Save Button -->
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h2><i class="bi bi-gear me-2"></i>Settings</h2>
@@ -68,7 +122,7 @@
         </div>
 
         <!-- Plex Connection -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-plex-connection">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-hdd-network me-2"></i>Plex Connection</span>
                 <span id="authBadge" class="auth-badge authenticated d-none">
@@ -113,7 +167,7 @@
         </div>
 
         <!-- Libraries -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-libraries">
             <div class="card-header">
                 <i class="bi bi-collection me-2"></i>Libraries
             </div>
@@ -134,7 +188,7 @@
         </div>
 
         <!-- Path Configuration -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-path-config">
             <div class="card-header">
                 <i class="bi bi-folder me-2"></i>Path Configuration
             </div>
@@ -185,7 +239,7 @@
         </div>
 
         <!-- Processing Options -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-processing">
             <div class="card-header">
                 <i class="bi bi-speedometer2 me-2"></i>Processing Options
             </div>
@@ -311,7 +365,7 @@
         </div>
 
         <!-- Logging -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-logging">
             <div class="card-header">
                 <i class="bi bi-journal-text me-2"></i>Logging
             </div>
@@ -378,7 +432,7 @@
         </div>
 
         <!-- Authentication Token -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-auth">
             <div class="card-header">
                 <i class="bi bi-key me-2"></i>Web Authentication
             </div>
@@ -398,7 +452,7 @@
         </div>
 
         <!-- About -->
-        <div class="card section-card">
+        <div class="card section-card" id="section-about">
             <div class="card-header">
                 <i class="bi bi-info-circle me-2"></i>About
             </div>
@@ -446,6 +500,13 @@
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Initialize scrollspy for sidebar navigation
+    new bootstrap.ScrollSpy(document.body, {
+        target: '#settings-sidebar',
+        rootMargin: '0px 0px -60%',
+        smoothScroll: true
+    });
+
     // Fire all API calls concurrently to avoid a sequential waterfall.
     // GPU rendering needs window._gpuConfig from settings, so we start
     // the GPU status fetch in parallel but render after both resolve.
@@ -454,7 +515,10 @@ document.addEventListener('DOMContentLoaded', function() {
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
         loadLibraries(),
         loadVersionInfo(),
-    ]);
+    ]).finally(() => {
+        // Refresh scrollspy after dynamic content changes page height
+        bootstrap.ScrollSpy.getInstance(document.body)?.refresh();
+    });
 
     // Track changes
     document.querySelectorAll('input, select').forEach(el => {
