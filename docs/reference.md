@@ -174,7 +174,7 @@ In **Settings** and **Setup**, you add mapping rows. Each row has:
 
 - **Path in Plex** — The folder path Plex uses for the media (e.g. `/data`).
 - **Path in this app** — The folder path this app uses for the same files (e.g. `/mnt/data`).
-- **Path from Sonarr/Radarr (if different)** — Only if Sonarr/Radarr report a different path than Plex (e.g. they use `/data` while Plex uses `/data_disk1`). You can leave this blank if they match.
+- **Webhook path (if different)** — Only needed when Sonarr, Radarr, Tdarr, etc. use a different path than Plex (e.g. they use `/data` while Plex uses `/data_disk1`). Leave blank if they match.
 
 Add as many rows as you need (e.g. one per disk when Plex uses multiple roots).
 
