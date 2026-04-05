@@ -137,7 +137,7 @@ def _normalize_prefix(p: str) -> str:
     """Return path with consistent trailing slash for prefix matching."""
     if not p:
         return p
-    return p.rstrip("/") or "/"
+    return p.replace("\\", "/").rstrip("/") or "/"
 
 
 def _legacy_settings_to_path_mappings(
@@ -199,7 +199,7 @@ def _path_matches_prefix(path: str, prefix: str) -> bool:
     norm = _normalize_prefix(prefix)
     if not norm:
         return False
-    path = (path or "").strip()
+    path = (path or "").strip().replace("\\", "/")
     return path == norm or path.startswith(norm + "/")
 
 
@@ -286,7 +286,7 @@ def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> s
     """
     if not path or not path_mappings:
         return path or ""
-    path = (path or "").strip()
+    path = (path or "").strip().replace("\\", "/")
     for m in path_mappings:
         plex_prefix = _normalize_prefix(m.get("plex_prefix") or "")
         local_prefix = _normalize_prefix(m.get("local_prefix") or "")
@@ -328,7 +328,7 @@ def expand_path_mapping_candidates(
     if not path:
         return []
 
-    cleaned_path = str(path).strip()
+    cleaned_path = str(path).strip().replace("\\", "/")
     if not cleaned_path:
         return []
     if not path_mappings:
@@ -394,7 +394,7 @@ def local_path_to_webhook_aliases(
     """
     if not path or not path_mappings:
         return []
-    path = (path or "").strip()
+    path = (path or "").strip().replace("\\", "/")
     out = []
     for m in path_mappings:
         local_prefix = _normalize_prefix(m.get("local_prefix") or "")

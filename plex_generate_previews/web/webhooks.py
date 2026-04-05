@@ -219,7 +219,7 @@ def _combine_path(base_path: str, relative_path: str) -> str:
     """Combine base and relative paths into a normalized absolute-ish path."""
     if not base_path or not relative_path:
         return ""
-    return os.path.normpath(os.path.join(base_path, relative_path))
+    return os.path.normpath(os.path.join(base_path, relative_path)).replace("\\", "/")
 
 
 def _extract_radarr_file_path(payload: dict) -> str:
@@ -305,7 +305,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     settings = get_settings_manager()
     delay = int(settings.get("webhook_delay", 60))
     debounce_key = _debounce_key(safe_source)
-    normalized_path = os.path.normpath(normalized_input_path)
+    normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
 
     with _pending_lock:
         existing = _pending_timers.get(debounce_key)
@@ -697,7 +697,7 @@ def _extract_custom_paths(data: dict) -> list[str]:
     seen: set[str] = set()
     unique: list[str] = []
     for p in raw_paths:
-        normalized = os.path.normpath(p)
+        normalized = os.path.normpath(p).replace("\\", "/")
         if normalized not in seen:
             seen.add(normalized)
             unique.append(normalized)

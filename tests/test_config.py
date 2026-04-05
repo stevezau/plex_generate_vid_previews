@@ -268,6 +268,21 @@ class TestExpandPathMappingCandidates:
         assert "/data_16tb1/tv/Show/S01E03.mkv" in candidates
         assert "/data_16tb2/tv/Show/S01E03.mkv" in candidates
 
+    def test_expand_candidates_windows_backslash_path(self):
+        """Windows backslash paths are normalized and matched correctly."""
+        path_mappings = [
+            {
+                "plex_prefix": "F:/Videos/TV Shows",
+                "local_prefix": "/data/tv",
+                "webhook_prefixes": [],
+            },
+        ]
+        candidates = expand_path_mapping_candidates(
+            "F:\\Videos\\TV Shows\\Show\\S01E01.mkv", path_mappings
+        )
+        assert "F:/Videos/TV Shows/Show/S01E01.mkv" in candidates
+        assert "/data/tv/Show/S01E01.mkv" in candidates
+
 
 class TestNormalizePathMappings:
     """Test path_mappings normalization from settings (new format and legacy)."""
@@ -600,6 +615,48 @@ class TestPathToCanonicalLocal:
             },
         ]
         assert path_to_canonical_local("/data/foo.mkv", mappings) == "/mnt/data/foo.mkv"
+
+    def test_windows_backslash_path_mapped_to_local(self):
+        """Windows path with backslashes maps correctly to local path."""
+        mappings = [
+            {
+                "plex_prefix": "F:/Videos/TV Shows",
+                "local_prefix": "/data/tv",
+                "webhook_prefixes": [],
+            }
+        ]
+        assert (
+            path_to_canonical_local("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", mappings)
+            == "/data/tv/Show/S01E01.mkv"
+        )
+
+    def test_windows_backslash_prefix_in_mapping(self):
+        """Backslashes in mapping prefix config are also normalized."""
+        mappings = [
+            {
+                "plex_prefix": "F:\\Videos\\TV Shows",
+                "local_prefix": "/data/tv",
+                "webhook_prefixes": [],
+            }
+        ]
+        assert (
+            path_to_canonical_local("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", mappings)
+            == "/data/tv/Show/S01E01.mkv"
+        )
+
+    def test_windows_webhook_prefix_maps_to_local(self):
+        """Windows webhook prefix with backslashes resolves to local."""
+        mappings = [
+            {
+                "plex_prefix": "F:/Videos/Movies",
+                "local_prefix": "/data/movies",
+                "webhook_prefixes": ["F:\\Videos\\Movies"],
+            }
+        ]
+        assert (
+            path_to_canonical_local("F:\\Videos\\Movies\\film.mkv", mappings)
+            == "/data/movies/film.mkv"
+        )
 
 
 class TestLocalPathToWebhookAliases:
