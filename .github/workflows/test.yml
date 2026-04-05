@@ -12,7 +12,7 @@ on:
       - 'unraid-templates/**'
       - 'docker-compose.example.yml'
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths-ignore:
       - 'docs/**'
       - '*.md'
