@@ -27,7 +27,7 @@ classifiers = [
 ]
 keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
 dependencies = [
-    "requests==2.32.4",
+    "requests==2.33.0",
     "urllib3>=1.26.0,<3.0.0",
     "python-dotenv==1.1.1",
     "plexapi==4.17.1",
