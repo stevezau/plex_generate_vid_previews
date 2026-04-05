@@ -49,6 +49,9 @@ Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with
 > [!NOTE]
 > No environment variables are required for first-time setup. Plex connection, libraries, GPU/CPU threads, and path mappings are all configured in the Setup Wizard and **Settings**. Environment variables are optional overrides (see [Reference](reference.md)).
 
+> [!TIP]
+> **Timezone:** The `/etc/localtime` mount ensures log timestamps and scheduled jobs use your local time. If your host doesn't have this file (e.g. some NAS devices), use `-e TZ=America/New_York` instead (replace with your [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
+
 ### Step 2: Get Your Access Token
 
 Find your token using the [Authentication Token](#authentication-token) section below.

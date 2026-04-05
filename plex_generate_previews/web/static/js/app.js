@@ -618,6 +618,28 @@ function updateSystemStatus(status) {
 
     document.getElementById('systemStatus').innerHTML = html;
 
+    // Timezone warning
+    var tzBanner = document.getElementById('timezoneWarningBanner');
+    if (status.timezone_warning && !sessionStorage.getItem('tz_warning_dismissed')) {
+        if (!tzBanner) {
+            var tzRow = document.createElement('div');
+            tzRow.id = 'timezoneWarningRow';
+            tzRow.className = 'row';
+            tzRow.innerHTML = '<div class="col-12 mb-3">' +
+                '<div class="alert alert-warning alert-dismissible mb-0" id="timezoneWarningBanner">' +
+                '<i class="bi bi-clock-history me-2"></i>' +
+                '<strong>Timezone not configured.</strong> ' + status.timezone_warning +
+                '<button type="button" class="btn-close" aria-label="Close" ' +
+                'onclick="sessionStorage.setItem(\'tz_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
+                '</div></div>';
+            var statusEl = document.getElementById('systemStatus');
+            if (statusEl) statusEl.closest('.row').before(tzRow);
+        }
+    } else if (tzBanner) {
+        var tzRowEl = document.getElementById('timezoneWarningRow');
+        if (tzRowEl) tzRowEl.remove();
+    }
+
     renderDashboardGpuConfig();
 }
 

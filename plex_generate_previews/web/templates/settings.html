@@ -121,6 +121,20 @@
             <a href="#" onclick="reAuthPlex()" class="alert-link">Re-authenticate with Plex</a>
         </div>
 
+        <!-- Timezone Warning -->
+        <div id="timezoneWarning" class="alert alert-warning alert-dismissible d-none mb-4">
+            <i class="bi bi-clock-history me-2"></i>
+            <strong>Timezone not configured.</strong>
+            Your container is using UTC, so scheduled jobs and timestamps may not match your local time.
+            <br class="mb-1">
+            <span class="text-muted small">
+                Add <code>-v /etc/localtime:/etc/localtime:ro</code> to your Docker run command (recommended).<br>
+                Alternatively, set <code>-e TZ=America/New_York</code> (replace with your timezone).<br>
+                See the <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md" target="_blank" rel="noopener" class="alert-link">getting started guide</a> for details.
+            </span>
+            <button type="button" class="btn-close" aria-label="Close" onclick="dismissTimezoneWarning()"></button>
+        </div>
+
         <!-- Plex Connection -->
         <div class="card section-card" id="section-plex-connection">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -511,6 +525,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // GPU rendering needs window._gpuConfig from settings, so we start
     // the GPU status fetch in parallel but render after both resolve.
     const gpuPromise = fetchGpuStatus();
+    checkTimezoneWarning();
     Promise.all([
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
         loadLibraries(),
@@ -1197,6 +1212,23 @@ async function applyLogLevel() {
     } catch (error) {
         showToast('Failed to update log level: ' + error.message, 'danger');
     }
+}
+
+function checkTimezoneWarning() {
+    if (sessionStorage.getItem('tz_warning_dismissed')) return;
+    fetch('/api/system/timezone')
+        .then(r => r.json())
+        .then(data => {
+            if (data.warning) {
+                document.getElementById('timezoneWarning').classList.remove('d-none');
+            }
+        })
+        .catch(() => {});
+}
+
+function dismissTimezoneWarning() {
+    sessionStorage.setItem('tz_warning_dismissed', '1');
+    document.getElementById('timezoneWarning').classList.add('d-none');
 }
 </script>
 {% endblock %}

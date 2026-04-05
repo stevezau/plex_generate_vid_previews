@@ -21,6 +21,41 @@ from ._helpers import (
 )
 
 
+def _get_timezone_info() -> dict:
+    """Detect container timezone configuration.
+
+    Returns a dict with the current timezone name and whether the TZ env var
+    is set.  Includes a ``warning`` key when the container appears to be using
+    the default UTC timezone without an explicit TZ variable — a common Docker
+    misconfiguration that causes schedules and timestamps to be wrong.
+    """
+    tz_env = os.environ.get("TZ", "")
+    system_tz = time.tzname[0]
+
+    # No explicit TZ *and* system reports UTC → likely misconfigured container
+    needs_warning = not tz_env and system_tz == "UTC"
+
+    result: dict = {"timezone": system_tz, "tz_env_set": bool(tz_env)}
+    if needs_warning:
+        result["warning"] = (
+            "Your container timezone is UTC (default). Scheduled jobs and log "
+            "timestamps may not match your local time. Add "
+            "-v /etc/localtime:/etc/localtime:ro to your Docker run command "
+            "(recommended). Alternatively, set -e TZ=America/New_York "
+            "(replace with your timezone)."
+        )
+    return result
+
+
+@api.route("/system/timezone")
+def get_timezone():
+    """Return container timezone info and warn if misconfigured.
+
+    No authentication required — timezone is not sensitive.
+    """
+    return jsonify(_get_timezone_info())
+
+
 @api.route("/system/rescan-gpus", methods=["POST"])
 @setup_or_auth_required
 def rescan_gpus():
@@ -53,14 +88,17 @@ def get_system_status():
         job_manager = get_job_manager()
         running_job = job_manager.get_running_job()
 
-        return jsonify(
-            {
-                "gpus": gpus,
-                "gpu_stats": [],
-                "running_job": running_job.to_dict() if running_job else None,
-                "pending_jobs": len(job_manager.get_pending_jobs()),
-            }
-        )
+        tz_info = _get_timezone_info()
+        resp = {
+            "gpus": gpus,
+            "gpu_stats": [],
+            "running_job": running_job.to_dict() if running_job else None,
+            "pending_jobs": len(job_manager.get_pending_jobs()),
+        }
+        if "warning" in tz_info:
+            resp["timezone_warning"] = tz_info["warning"]
+
+        return jsonify(resp)
     except Exception as e:
         logger.error(f"Failed to get system status: {e}")
         return jsonify({"error": "Failed to retrieve system status"}), 500
