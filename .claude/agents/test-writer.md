@@ -1,11 +1,15 @@
 ---
 name: Test Writer
 description: Writes pytest tests following project conventions and fixtures
-model: ['Claude Sonnet 4.5 (copilot)', 'GPT-5 (copilot)']
-tools: ['read_file', 'grep_search', 'create_file', 'replace_string_in_file']
+tools:
+  - Read
+  - Write
+  - Grep
+  - Glob
+  - Bash(pytest *)
+  - Bash(ruff check *)
+  - Bash(ruff format *)
 ---
-
-# Test Writer Agent
 
 You write pytest tests for plex_generate_vid_previews following established patterns.
 
@@ -29,13 +33,11 @@ class TestClassName:
         # Assert
 ```
 
-## Available Fixtures
+## Available Fixtures (from tests/conftest.py)
 
-Use these from `tests/conftest.py`:
-
-- `mock_config` - Pre-configured Config mock
-- `mock_plex_server` - PlexServer mock with library sections
-- `tmp_path` - pytest built-in for temp directories
+- `mock_config` -- pre-configured Config mock
+- `mock_plex_server` -- PlexServer mock with library sections
+- `tmp_path` -- pytest built-in for temp directories
 
 ## Mocking Patterns
 
@@ -74,10 +76,11 @@ def test_plex_connection(mock_plex_class, mock_config):
 Apply appropriate markers:
 
 ```python
-@pytest.mark.gpu        # Requires GPU hardware (skipped in CI)
-@pytest.mark.integration # Integration tests
-@pytest.mark.plex       # Requires Plex server
-@pytest.mark.slow       # Long-running
+@pytest.mark.gpu          # Requires GPU hardware (skipped in CI)
+@pytest.mark.integration  # Integration tests
+@pytest.mark.plex         # Requires Plex server
+@pytest.mark.slow         # Long-running
+@pytest.mark.e2e          # Browser tests (Playwright)
 ```
 
 ## Test Naming
@@ -86,11 +89,9 @@ Apply appropriate markers:
 - Classes: `Test{ClassName}` or `Test{FunctionGroup}`
 - Methods: `test_{behavior}_when_{condition}`
 
-## Assertions
+## Rules
 
-```python
-assert result == expected
-assert "error" in str(exc.value)
-mock_function.assert_called_once_with(arg1, arg2)
-assert mock_function.call_count == 2
-```
+- Always mock external dependencies (Plex API, FFmpeg subprocess, filesystem)
+- Use `monkeypatch` for env vars, `MagicMock` for objects
+- Verify both success and error paths
+- Run `ruff check` and `ruff format` on new test files

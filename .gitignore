@@ -43,8 +43,9 @@ test_env/
 # Local planning files
 plan.md
 
-# Copilot scratchpad (not for source control)
-Copilot-Processing.md
+# Claude Code local overrides (not for source control)
+CLAUDE.local.md
+.claude/settings.local.json
 
 # setuptools-scm auto-generated version file
 plex_generate_previews/_version.py
