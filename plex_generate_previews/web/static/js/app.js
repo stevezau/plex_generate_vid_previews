@@ -2062,7 +2062,8 @@ function describeSchedule(triggerType, triggerValue) {
 
     if (isSimple) {
         const timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
-        const dayNums = dow.split(',').map(Number);
+        // Convert APScheduler day (0=Mon) to Unix cron day (0=Sun) for DAY_NAMES lookup
+        const dayNums = dow.split(',').map(d => (Number(d) + 1) % 7);
         const allDays = dayNums.length === 7;
         const weekdays = dayNums.length === 5
             && [1,2,3,4,5].every(d => dayNums.includes(d));
@@ -2575,7 +2576,8 @@ function showEditScheduleModal(scheduleId) {
             document.getElementById('scheduleTypeTime').checked = true;
             document.getElementById('scheduleTime').value =
                 `${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}`;
-            const cronDays = parts[4].split(',').map(d => d.trim());
+            // Convert APScheduler day (0=Mon) back to Unix cron day (0=Sun)
+            const cronDays = parts[4].split(',').map(d => String((parseInt(d.trim()) + 1) % 7));
             document.querySelectorAll('.schedule-day').forEach(cb => {
                 cb.checked = cronDays.includes(cb.value);
             });
@@ -2628,7 +2630,9 @@ async function saveSchedule() {
             return;
         }
         const [hours, minutes] = timeValue.split(':');
-        payload.cron_expression = `${parseInt(minutes)} ${parseInt(hours)} * * ${selectedDays.join(',')}`;
+        // Convert Unix cron day (0=Sun) to APScheduler day (0=Mon)
+        const apsDays = selectedDays.map(d => (parseInt(d) + 6) % 7);
+        payload.cron_expression = `${parseInt(minutes)} ${parseInt(hours)} * * ${apsDays.join(',')}`;
     } else if (scheduleType === 'interval') {
         const intervalValue = parseInt(document.getElementById('scheduleIntervalValue').value, 10);
         if (!intervalValue || intervalValue < 1) {
