@@ -2218,8 +2218,8 @@ function describeSchedule(triggerType, triggerValue) {
     return triggerValue;
 }
 
-// Compact schedule summary for the Dashboard teaser card.  Shows enabled
-// count + next upcoming run, or a "no schedules yet" prompt when empty.
+// Compact schedule summary rendered inside the Job Statistics card on the
+// Dashboard.  Shows next upcoming run + a small configured/enabled count.
 // The Schedules page is the authoritative place for CRUD — this is just
 // an at-a-glance pointer.
 function updateScheduleTeaser() {
@@ -2245,27 +2245,24 @@ function updateScheduleTeaser() {
     const totalLabel = schedules.length === 1 ? '1 schedule' : schedules.length + ' schedules';
     const enabledLabel = enabled.length === schedules.length
         ? ''
-        : ' (' + enabled.length + ' enabled)';
+        : ' · ' + enabled.length + ' enabled';
 
-    let nextHtml = '<span class="text-muted">no upcoming runs</span>';
+    let nextLine;
     if (nextOne) {
         const dt = new Date(nextOne.next_run);
         const rel = _formatRelativeToNow(dt);
-        nextHtml = '<strong>' + escapeHtml(nextOne.name) + '</strong> ' +
-            '<span class="text-muted">' + escapeHtml(rel) + '</span>';
+        nextLine =
+            '<div class="text-truncate">' +
+            '<strong>' + escapeHtml(nextOne.name) + '</strong> ' +
+            '<span class="text-muted">' + escapeHtml(rel) + '</span>' +
+            '</div>';
+    } else {
+        nextLine = '<div class="text-muted">No upcoming runs</div>';
     }
 
     body.innerHTML =
-        '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2">' +
-        '<div>' +
-        '<div class="small text-muted text-uppercase" style="letter-spacing:0.05em;font-size:0.72rem;">Next run</div>' +
-        '<div>' + nextHtml + '</div>' +
-        '</div>' +
-        '<div class="text-end">' +
-        '<div class="small text-muted text-uppercase" style="letter-spacing:0.05em;font-size:0.72rem;">Configured</div>' +
-        '<div>' + totalLabel + enabledLabel + '</div>' +
-        '</div>' +
-        '</div>';
+        nextLine +
+        '<div class="small text-muted mt-1">' + totalLabel + enabledLabel + '</div>';
 }
 
 function _formatRelativeToNow(dt) {
