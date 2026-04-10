@@ -948,8 +948,6 @@ def generate_images(
         if init_vulkan:
             args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
 
-        args += ["-threads:v", "1"]
-
         # Hardware acceleration for decoding (before -i flag).
         # Disabled for DV Profile 5 (init_vulkan=True) because HW
         # decoders cannot process DV enhancement-layer-only content.
@@ -961,13 +959,17 @@ def generate_images(
             else gpu_device_path
         )
         use_gpu = effective_gpu is not None
+        hw_decode_active = False
         if use_gpu and not init_vulkan:
             if effective_gpu == "NVIDIA":
                 args += ["-hwaccel", "cuda"]
+                hw_decode_active = True
             elif effective_gpu == "WINDOWS_GPU":
                 args += ["-hwaccel", "d3d11va"]
+                hw_decode_active = True
             elif effective_gpu == "APPLE":
                 args += ["-hwaccel", "videotoolbox"]
+                hw_decode_active = True
             elif effective_gpu_device_path and effective_gpu_device_path.startswith(
                 "/dev/dri/"
             ):
@@ -977,11 +979,23 @@ def generate_images(
                     "-vaapi_device",
                     effective_gpu_device_path,
                 ]
+                hw_decode_active = True
         elif use_gpu and init_vulkan:
             logger.debug(
                 f"Skipping HW decode for DV Profile 5 ({video_file}); "
                 f"using software decode + Vulkan/libplacebo tone mapping"
             )
+
+        # Cap the video decoder to 1 thread ONLY when decode is offloaded
+        # to a hardware accelerator.  With hwaccel the CPU thread is just
+        # an orchestrator and the cap prevents thread oversubscription
+        # across parallel GPU workers.  For software decode — pure CPU
+        # workers, or the DV Profile 5 Vulkan/libplacebo path where
+        # init_vulkan disables hwaccel — let FFmpeg pick the default
+        # thread count so 4K HEVC can actually saturate available cores.
+        # Fixes issue #212 (DV P5 pinned to one core at ~0.8x).
+        if hw_decode_active:
+            args += ["-threads:v", "1"]
 
         # Add skip_frame option for faster decoding (if safe).
         # Disabled for DV Profile 5 (init_vulkan) — RPU side-data has

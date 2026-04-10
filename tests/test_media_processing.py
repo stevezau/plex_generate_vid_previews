@@ -1802,6 +1802,7 @@ class TestProactiveDVSkip:
             mock_mediainfo,
             temp_dir,
             mock_config,
+            gpu="INTEL",
         )
 
         # Profile 5 must use Vulkan/libplacebo
@@ -1810,6 +1811,16 @@ class TestProactiveDVSkip:
         assert "-filter_hw_device" in args
         assert "-hwaccel" not in args
         assert "-skip_frame:v" not in args
+
+        # Regression guard for issue #212: DV P5 uses software HEVC decode
+        # (HW decoders mishandle the enhancement layer), so the video decoder
+        # must NOT be capped to 1 thread — doing so pinned 4K HEVC to a
+        # single core and produced ~0.8x realtime on otherwise capable
+        # hardware.  Even when a GPU is configured, the libplacebo/Vulkan
+        # path skips hwaccel, so no thread-cap protection is needed.
+        assert "-threads:v" not in args, (
+            "DV Profile 5 uses software decode — the video-thread cap must be omitted"
+        )
 
         vf = args[args.index("-vf") + 1]
         assert "libplacebo" in vf
@@ -1964,6 +1975,11 @@ class TestProactiveDVSkip:
         assert "-hwaccel" in args
         assert args[args.index("-hwaccel") + 1] == "cuda"
         assert "-init_hw_device" not in args
+
+        # HW decode is active so the video-thread cap must still be present
+        # (prevents decoder thread oversubscription across GPU workers).
+        assert "-threads:v" in args
+        assert args[args.index("-threads:v") + 1] == "1"
 
         vf = args[args.index("-vf") + 1]
         assert "zscale" in vf
@@ -2676,6 +2692,11 @@ class TestFfmpegThreadFlags:
         assert "-filter_threads" in args
         ft_idx = args.index("-filter_threads")
         assert args[ft_idx + 1] == "2"
+        # HW decode is active (NVIDIA/cuda) so the video decoder thread cap
+        # should still be emitted to prevent oversubscription across GPU workers.
+        assert "-threads:v" in args
+        tv_idx = args.index("-threads:v")
+        assert args[tv_idx + 1] == "1"
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -2696,7 +2717,8 @@ class TestFfmpegThreadFlags:
         temp_dir,
         mock_config,
     ):
-        """CPU-only processing should NOT include global -threads flag."""
+        """CPU-only processing must omit both -threads and -threads:v so software
+        decode can use all available cores (regression guard for issue #212)."""
         mock_run.return_value = MagicMock(returncode=0)
         mock_info = MagicMock()
         mock_info.video_tracks = [MagicMock(hdr_format=None)]
@@ -2712,9 +2734,11 @@ class TestFfmpegThreadFlags:
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
         args = mock_popen.call_args[0][0]
-        # -threads:v should be present (video stream cap), but global -threads should not
-        assert "-threads:v" in args
-        # Check that the bare "-threads" flag (not "-threads:v") is absent
+        # No hardware decode on a pure CPU path, so neither the global -threads
+        # cap nor the per-stream -threads:v video-decoder cap should be set.
+        assert "-threads:v" not in args, (
+            "CPU path should not cap the video decoder — forces single-threaded SW decode"
+        )
         bare_threads = [i for i, a in enumerate(args) if a == "-threads"]
         assert len(bare_threads) == 0, "CPU path should not have global -threads cap"
 
