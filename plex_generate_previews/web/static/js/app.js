@@ -2236,46 +2236,120 @@ function updateScheduleTeaser() {
         return;
     }
 
+    const total = schedules.length;
     const enabled = schedules.filter(s => s.enabled !== false);
+    const enabledCount = enabled.length;
+    const disabledCount = total - enabledCount;
     const upcoming = enabled
         .filter(s => s.next_run)
         .sort((a, b) => new Date(a.next_run) - new Date(b.next_run));
     const nextOne = upcoming[0] || null;
 
-    const totalLabel = schedules.length === 1 ? '1 schedule' : schedules.length + ' schedules';
-    const enabledLabel = enabled.length === schedules.length
-        ? ''
-        : ' · ' + enabled.length + ' enabled';
+    const countWord = total === 1 ? 'schedule' : 'schedules';
+    let summary = total + ' ' + countWord;
+    if (total > 0 && enabledCount === total) {
+        summary += ' · all enabled';
+    } else if (enabledCount === 0) {
+        summary += ' · all disabled';
+    } else if (disabledCount === 1) {
+        summary += ' · 1 disabled';
+    } else {
+        summary += ' · ' + disabledCount + ' disabled';
+    }
 
-    let nextLine;
+    let topLine;
     if (nextOne) {
         const dt = new Date(nextOne.next_run);
         const rel = _formatRelativeToNow(dt);
-        nextLine =
+        const absolute = _formatAbsoluteShort(dt);
+        const tooltip = dt.toLocaleString();
+        topLine =
+            '<div class="d-flex align-items-baseline gap-2" title="' + escapeHtml(tooltip) + '">' +
+            '<i class="bi bi-clock-history text-muted"></i>' +
             '<div class="text-truncate">' +
-            '<strong>' + escapeHtml(nextOne.name) + '</strong> ' +
-            '<span class="text-muted">' + escapeHtml(rel) + '</span>' +
+            '<span class="text-muted">Next:</span> ' +
+            '<strong>' + escapeHtml(nextOne.name) + '</strong>' +
+            '<span class="text-muted"> — ' + escapeHtml(rel) + '</span>' +
+            '<span class="text-muted small ms-1">(' + escapeHtml(absolute) + ')</span>' +
+            '</div>' +
             '</div>';
     } else {
-        nextLine = '<div class="text-muted">No upcoming runs</div>';
+        topLine =
+            '<div class="d-flex align-items-center gap-2 text-muted">' +
+            '<i class="bi bi-clock-history"></i>' +
+            '<span>No upcoming runs</span>' +
+            '</div>';
     }
 
     body.innerHTML =
-        nextLine +
-        '<div class="small text-muted mt-1">' + totalLabel + enabledLabel + '</div>';
+        topLine +
+        '<div class="small text-muted mt-1">' + escapeHtml(summary) + '</div>';
 }
 
+// Natural-language "time until" for the schedule teaser.  Kept separate from
+// the generic formatDate helper so we can tune the copy for the dashboard
+// without affecting other screens.
 function _formatRelativeToNow(dt) {
     const diffMs = dt.getTime() - Date.now();
     const absMs = Math.abs(diffMs);
     const past = diffMs < 0;
-    if (absMs < 60000) return past ? 'just now' : 'in <1 min';
-    const mins = Math.floor(absMs / 60000);
-    if (mins < 60) return past ? mins + 'm ago' : 'in ' + mins + ' min';
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return past ? hours + 'h ago' : 'in ' + hours + 'h';
-    const days = Math.floor(hours / 24);
-    return past ? days + 'd ago' : 'in ' + days + 'd';
+
+    if (absMs < 45 * 1000) return past ? 'just now' : 'any moment now';
+
+    const mins = Math.round(absMs / 60000);
+    if (mins < 60) {
+        const unit = mins === 1 ? 'minute' : 'minutes';
+        return past ? mins + ' ' + unit + ' ago' : 'in ' + mins + ' ' + unit;
+    }
+
+    const hours = Math.round(mins / 60);
+    if (hours < 24) {
+        const unit = hours === 1 ? 'hour' : 'hours';
+        return past ? 'about ' + hours + ' ' + unit + ' ago' : 'in about ' + hours + ' ' + unit;
+    }
+
+    // 24h+ — prefer day-anchored wording ("tomorrow", "Saturday", "in 2 weeks")
+    if (past) {
+        const days = Math.round(hours / 24);
+        if (days === 1) return 'yesterday';
+        if (days < 7) return days + ' days ago';
+        if (days < 14) return '1 week ago';
+        if (days < 30) return Math.round(days / 7) + ' weeks ago';
+        return days + ' days ago';
+    }
+
+    const now = new Date();
+    const nowMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+    const dayDiff = Math.round((dtMid - nowMid) / 86400000);
+
+    if (dayDiff === 1) return 'tomorrow';
+    if (dayDiff >= 2 && dayDiff <= 6) {
+        const weekday = dt.toLocaleDateString(undefined, { weekday: 'long' });
+        return 'on ' + weekday;
+    }
+    if (dayDiff === 7) return 'in 1 week';
+    if (dayDiff < 14) return 'in ' + dayDiff + ' days';
+    if (dayDiff < 30) return 'in ' + Math.round(dayDiff / 7) + ' weeks';
+    return 'in ' + dayDiff + ' days';
+}
+
+// Short absolute timestamp for the schedule teaser hint line.  Shows just
+// the time for runs today, weekday+time within a week, and date+time for
+// anything farther out.  Locale-respecting.
+function _formatAbsoluteShort(dt) {
+    const now = new Date();
+    const nowMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+    const dayDiff = Math.round((dtMid - nowMid) / 86400000);
+
+    const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (dayDiff === 0) return timeStr;
+    if (dayDiff >= 1 && dayDiff <= 6) {
+        const weekday = dt.toLocaleDateString(undefined, { weekday: 'short' });
+        return weekday + ' ' + timeStr;
+    }
+    return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + timeStr;
 }
 
 function updateScheduleList() {
