@@ -274,23 +274,33 @@ function getCsrfToken() {
     return meta ? meta.getAttribute('content') : '';
 }
 
+// Extract a user-friendly error message from a non-OK fetch Response.
+// Prefers the backend's `{ error: "..." }` field when present, so callers
+// surface "Could not connect to Plex at ..." instead of "HTTP 502: BAD GATEWAY".
+async function _extractApiError(response) {
+    const text = await response.text().catch(() => '');
+    if (text) {
+        try {
+            const json = JSON.parse(text);
+            if (json && typeof json.error === 'string' && json.error.trim()) {
+                return json.error.trim();
+            }
+        } catch (_e) {
+            // Non-JSON body — fall through to the generic status line.
+        }
+    }
+    return `HTTP ${response.status}: ${response.statusText}`;
+}
+
 async function apiGet(url) {
     const response = await fetch(url);
     if (!response.ok) {
-        // Handle authentication errors
         if (response.status === 401) {
             console.error('Authentication failed, redirecting to login');
             window.location.href = '/login';
             throw new Error('Authentication required');
         }
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP') || e.message.includes('Authentication')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -305,14 +315,7 @@ async function apiPost(url, data = {}) {
         body: JSON.stringify(data)
     });
     if (!response.ok) {
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -323,14 +326,7 @@ async function apiDelete(url) {
         headers: { 'X-CSRFToken': getCsrfToken() }
     });
     if (!response.ok) {
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -345,14 +341,7 @@ async function apiPut(url, data = {}) {
         body: JSON.stringify(data)
     });
     if (!response.ok) {
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -375,32 +364,7 @@ async function refreshStatus() {
     }
 
     // --- Plex server status ---
-    try {
-        const plexStatus = document.getElementById('plexStatus');
-        const plexInfo = document.getElementById('plexServerInfo');
-        if (plexStatus && plexInfo && typeof SettingsManager !== 'undefined') {
-            const settings = await new SettingsManager().get();
-            if (settings.plex_name) {
-                plexInfo.textContent = settings.plex_name;
-                plexStatus.textContent = 'Connected';
-                plexStatus.className = 'badge bg-success';
-            } else if (settings.plex_url) {
-                plexInfo.textContent = settings.plex_url;
-                plexStatus.textContent = 'Configured';
-                plexStatus.className = 'badge bg-info';
-            } else {
-                plexStatus.textContent = 'Not configured';
-                plexStatus.className = 'badge bg-warning';
-            }
-        }
-    } catch (e) {
-        console.warn('Failed to refresh Plex status:', e);
-        const plexStatus = document.getElementById('plexStatus');
-        if (plexStatus) {
-            plexStatus.textContent = 'Unknown';
-            plexStatus.className = 'badge bg-secondary';
-        }
-    }
+    await updatePlexStatusBadge();
 
     // --- Worker thread counts ---
     // Keep config counts cached for idle-state badge rendering. Actual live
@@ -440,19 +404,78 @@ async function loadWorkerConfigCounts(forceRefresh = false) {
     return cachedWorkerConfigCounts;
 }
 
+// Tracks whether the last /api/libraries call failed so modal renderers
+// (which read the cached `libraries` array) can tell "no libraries" apart
+// from "couldn't load libraries" and show the right message.
+let librariesLoadError = null;
+
+// The Dashboard Plex Server badge reflects the live connection state.
+// Keeps "Connected", "Can't reach Plex", and "Not set up" in one place so
+// both refreshStatus() and loadLibraries() can call it.
+async function updatePlexStatusBadge() {
+    const plexStatus = document.getElementById('plexStatus');
+    const plexInfo = document.getElementById('plexServerInfo');
+    if (!plexStatus || !plexInfo || typeof SettingsManager === 'undefined') return;
+
+    let settings;
+    try {
+        settings = await new SettingsManager().get();
+    } catch (e) {
+        console.warn('Failed to read settings for Plex status:', e);
+        plexStatus.textContent = 'Unknown';
+        plexStatus.className = 'badge bg-secondary';
+        return;
+    }
+
+    plexInfo.textContent = settings.plex_name || settings.plex_url || '';
+
+    if (!settings.plex_url) {
+        plexStatus.textContent = 'Not set up';
+        plexStatus.className = 'badge bg-secondary';
+        plexStatus.title = '';
+    } else if (librariesLoadError) {
+        plexStatus.textContent = "Can't reach Plex";
+        plexStatus.className = 'badge bg-warning text-dark';
+        plexStatus.title = librariesLoadError;
+    } else {
+        plexStatus.textContent = 'Connected';
+        plexStatus.className = 'badge bg-success';
+        plexStatus.title = '';
+    }
+}
+
 async function loadLibraries() {
     try {
         const data = await apiGet('/api/libraries');
         libraries = data.libraries || [];
+        librariesLoadError = null;
         await updateLibraryList();
         updateLibrarySelects();
+        updatePlexStatusBadge();
     } catch (error) {
         console.error('Failed to load libraries:', error);
+        librariesLoadError = error.message || 'Unknown error';
+        updatePlexStatusBadge();
+
         const listEl = document.getElementById('libraryList');
-        if (listEl) {
-            const detail = error.message || 'Unknown error';
+        if (!listEl) return;
+
+        // Dashboard Quick Actions teaser stays short and actionable; the
+        // Settings page gets the full backend-supplied detail since it's a
+        // dedicated troubleshooting surface.
+        const parentCardHeader = listEl.closest('.card')?.querySelector('.card-header')?.textContent || '';
+        const isDashboardTeaser = parentCardHeader.includes('Quick Actions');
+
+        if (isDashboardTeaser) {
             listEl.innerHTML =
-                `<div class="text-danger small">Failed to load libraries: ${detail}</div>`;
+                '<div class="text-warning small d-flex align-items-start gap-2">' +
+                '<i class="bi bi-exclamation-triangle-fill mt-1"></i>' +
+                '<span>Can\'t load libraries right now. ' +
+                '<a href="/settings" class="text-decoration-none">Check your Plex connection</a>.</span>' +
+                '</div>';
+        } else {
+            listEl.innerHTML =
+                `<div class="text-danger small">Failed to load libraries. ${escapeHtml(librariesLoadError)}</div>`;
         }
     }
 }
@@ -822,11 +845,12 @@ function renderDashboardGpuConfig() {
         const safeDevice = escapeHtml(device);
         const isFailed = gpu.status === 'failed';
 
+        const fullNameTitle = escapeHtml(`${gpu.name || 'GPU'}${device ? ' · ' + device : ''}`);
         if (isFailed) {
             const errorTitle = escapeHtml(gpu.error || 'GPU unusable');
             const errorDetail = escapeHtml(gpu.error_detail || '');
             html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
-            html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${safeDevice}">`;
+            html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${fullNameTitle}">`;
             html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
             html += `${escapeHtml(gpu.name)} <span class="badge bg-danger">failed</span>`;
             html += `</span>`;
@@ -845,7 +869,7 @@ function renderDashboardGpuConfig() {
             : '<span class="badge bg-secondary">disabled</span>';
 
         html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
-        html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${safeDevice}">`;
+        html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${fullNameTitle}">`;
         html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
         html += `${escapeHtml(gpu.name)} ${statusBadge}`;
         html += `</span>`;
@@ -1096,14 +1120,25 @@ function updateJobQueue() {
     _jobQueueUpdatePending = false;
 
     if (jobs.length === 0) {
-        const msg = jobTotal === 0 ? 'No jobs in queue' : 'No jobs on this page';
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="7" class="text-center text-muted py-4">
-                    ${msg}
-                </td>
-            </tr>
-        `;
+        if (jobTotal === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-5">
+                        <i class="bi bi-inbox fs-2 d-block mb-2 opacity-50"></i>
+                        <div>Nothing queued.</div>
+                        <div class="small">New jobs will show up here once you start one.</div>
+                    </td>
+                </tr>
+            `;
+        } else {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-4">
+                        No jobs on this page
+                    </td>
+                </tr>
+            `;
+        }
         return;
     }
 
@@ -1342,9 +1377,11 @@ function updateActiveJobs(runningJobs) {
                     </button>
                     <div id="${filesId}" class="${isExpanded ? '' : 'd-none'} mt-1 ms-3">${filesList}${overflow}</div>
                 </div>`;
-        } else if (webhookFiles && webhookFiles.length === 1) {
-            webhookFilesHtml = `<br><strong>File:</strong> <span class="text-muted small">${escapeHtml(webhookFiles[0])}</span>`;
         }
+        // Single-file jobs intentionally omit the "File:" line here — the
+        // library_name already contains the filename (e.g.
+        // "Manual: Foo.mkv", "Sonarr: Show S01E01") so showing it twice
+        // is redundant noise. Multi-file jobs keep the expandable list.
 
         // Start time and elapsed
         const startedLine = job.started_at
@@ -2439,8 +2476,15 @@ function showNewJobModal() {
                 </label>
             </div>
         `).join('');
+    } else if (librariesLoadError) {
+        libraryList.innerHTML =
+            '<div class="text-warning small d-flex align-items-start gap-2">' +
+            '<i class="bi bi-exclamation-triangle-fill mt-1"></i>' +
+            '<span>Can\'t load libraries right now. ' +
+            '<a href="/settings" class="text-decoration-none">Check your Plex connection in Settings</a>.</span>' +
+            '</div>';
     } else {
-        libraryList.innerHTML = '<div class="text-muted small">No libraries found</div>';
+        libraryList.innerHTML = '<div class="text-muted small">No libraries found on this Plex server.</div>';
     }
 
     // Reset "All Libraries" checkbox to checked

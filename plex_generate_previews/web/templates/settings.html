@@ -228,7 +228,18 @@
                     <label for="plexConfigFolder" class="form-label">Plex Media Server data folder</label>
                     <input type="text" class="form-control" id="plexConfigFolder"
                            placeholder="/plex">
-                    <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
+                    <div class="form-text">
+                        The folder where Plex stores its data, as this container sees it. Usually <code>/plex</code>.
+                        <details class="mt-1">
+                            <summary class="text-muted" style="cursor: pointer;">What if my Plex path looks different?</summary>
+                            <div class="mt-1">
+                                Your real Plex server might use a path like
+                                <code>/config/plex/Library/Application Support/Plex Media Server</code>, but
+                                what matters here is the path <strong>inside this container</strong>. If you
+                                mounted that folder as <code>/plex</code>, enter <code>/plex</code>.
+                            </div>
+                        </details>
+                    </div>
                 </div>
 
                 <hr class="my-4">
@@ -300,7 +311,7 @@
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control" id="cpuThreads"
                                min="0" max="32" value="1">
-                        <div class="form-text">Parallel CPU jobs from main queue</div>
+                        <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label for="cpuFallbackThreads" class="form-label">
@@ -309,7 +320,7 @@
                         <input type="number" class="form-control" id="cpuFallbackThreads"
                                min="0" max="32" value="0">
                         <div class="form-text">
-                            Handles GPU-failed items when CPU Workers is 0
+                            Retries on the CPU if the GPU can&rsquo;t handle a file (e.g. unsupported codec). Only used when CPU Workers is 0.
                         </div>
                     </div>
                 </div>
@@ -1004,7 +1015,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                         <input type="number" class="form-control form-control-sm gpu-ffmpeg-threads"
                                data-device="${gpu.device}" min="0" max="32"
                                value="${ffmpegThreads}" onchange="markDirty()">
-                        <small class="text-muted">0 = no limit &middot; recommended: 2</small>
+                        <small class="text-muted">0 = use all CPU cores &middot; recommended: 2</small>
                     </div>
                 </div>
             </div>

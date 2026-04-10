@@ -46,6 +46,10 @@ plan.md
 # Claude Code local overrides (not for source control)
 CLAUDE.local.md
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Playwright MCP session artifacts (snapshots, console logs)
+.playwright-mcp/
 
 # setuptools-scm auto-generated version file
 plex_generate_previews/_version.py

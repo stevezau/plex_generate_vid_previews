@@ -18,11 +18,11 @@
 </div>
 
 <div class="row">
-    <!-- System Status Card -->
+    <!-- System & Workers Card -->
     <div class="col-lg-4 col-md-6 mb-4">
         <div class="card h-100">
             <div class="card-header">
-                <i class="bi bi-pc-display me-2"></i>System Status
+                <i class="bi bi-pc-display me-2"></i>System &amp; Workers
             </div>
             <div class="card-body">
                 <!-- Plex Connection Status -->
@@ -62,7 +62,7 @@
                         </span>
                     </div>
                 </div>
-                <div class="small text-muted">Worker changes are saved permanently to settings and take effect immediately if a job is running.</div>
+                <div class="small text-muted">Changes save automatically and apply to the running job.</div>
 
                 <hr>
 
@@ -333,14 +333,14 @@
                             <label class="form-check-label" for="jobMissingOnly">
                                 <i class="bi bi-funnel me-1"></i>Process only items missing previews
                             </label>
-                            <div class="form-text ms-4">Skips items that already have BIF files (default)</div>
+                            <div class="form-text ms-4">Only generates previews for items that don't have them yet (default).</div>
                         </div>
                         <div class="form-check">
                             <input class="form-check-input" type="radio" name="jobProcessingMode" id="jobRegenerateAll" value="regenerate">
                             <label class="form-check-label" for="jobRegenerateAll">
                                 <i class="bi bi-arrow-repeat me-1"></i>Regenerate all previews
                             </label>
-                            <div class="form-text ms-4">Re-creates BIF files even if they already exist</div>
+                            <div class="form-text ms-4">Regenerates previews even for items that already have them.</div>
                         </div>
                     </div>
                     <div class="mb-3">
@@ -391,7 +391,7 @@
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="manualForceRegenerate">
                         <label class="form-check-label" for="manualForceRegenerate">
-                            <i class="bi bi-arrow-repeat me-1"></i>Force regenerate (overwrite existing BIF)
+                            <i class="bi bi-arrow-repeat me-1"></i>Regenerate previews even if they already exist
                         </label>
                     </div>
                 </form>

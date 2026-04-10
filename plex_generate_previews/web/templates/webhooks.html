@@ -154,7 +154,10 @@
                 <h6 class="mb-2"><i class="bi bi-signpost me-1"></i>How do you add media to Plex?</h6>
                 <div class="decision-list mb-4">
                     <div class="decision-row">
-                        <div class="decision-scenario">Sonarr / Radarr / Sportarr grab your media</div>
+                        <div class="decision-scenario">
+                            Sonarr / Radarr / Sportarr grab your media
+                            <div class="text-muted small">Sportarr is the Sonarr fork for sports content.</div>
+                        </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation"><a href="#section-webhooks-sonarr-radarr"><i class="bi bi-arrow-right-circle me-1"></i>Use the *arr webhook</a></div>
                     </div>
@@ -576,11 +579,11 @@
 
                 <div class="mb-0" id="requeueMaxAgeGroup">
                     <label for="requeueMaxAge" class="form-label">
-                        Max requeue age: <strong><span id="requeueMaxAgeValue">720</span> min</strong>
+                        Max requeue age: <strong><span id="requeueMaxAgeValue">12h</span></strong>
                     </label>
                     <input type="range" class="form-range" id="requeueMaxAge" min="5" max="1440" step="5" value="720">
                     <div class="form-text">
-                        How old a job can be to qualify for automatic requeue after restart (5 min – 24 hours).
+                        How old a job can be to qualify for automatic requeue after restart (5 minutes – 24 hours).
                     </div>
                 </div>
             </div>
@@ -600,7 +603,8 @@
                     <span class="ms-2">Loading...</span>
                 </div>
                 <div id="historyEmpty" class="d-none text-center text-muted py-3">
-                    No webhook events received yet.
+                    <div>No webhook events received yet.</div>
+                    <div class="small">Set up a trigger source in the sections above to start receiving events.</div>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-sm history-table d-none" id="historyTable">
@@ -640,6 +644,23 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
+// Format a minute count as a short human-readable string for slider labels.
+// 45 → "45m", 90 → "1h 30m", 120 → "2h", 1440 → "1d". Used so the live value
+// on the Max requeue age slider reads as "12h" instead of "720 min".
+function _formatMinutesShort(mins) {
+    var n = Math.max(0, Math.round(Number(mins) || 0));
+    if (n < 60) return n + 'm';
+    if (n < 1440) {
+        var hours = Math.floor(n / 60);
+        var rem = n % 60;
+        return rem === 0 ? hours + 'h' : hours + 'h ' + rem + 'm';
+    }
+    var days = Math.floor(n / 1440);
+    var hoursPart = Math.round((n % 1440) / 60);
+    if (hoursPart === 24) { days += 1; hoursPart = 0; }
+    return hoursPart === 0 ? days + 'd' : days + 'd ' + hoursPart + 'h';
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Set webhook URLs from current origin
     document.getElementById('radarrUrl').value = window.location.origin + '/api/webhooks/radarr';
@@ -665,7 +686,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('retryDelayValue').textContent = this.value;
     });
     document.getElementById('requeueMaxAge').addEventListener('input', function() {
-        document.getElementById('requeueMaxAgeValue').textContent = this.value;
+        document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(this.value);
     });
     document.getElementById('autoRequeueOnRestart').addEventListener('change', function() {
         document.getElementById('requeueMaxAgeGroup').style.opacity = this.checked ? '1' : '0.5';
@@ -922,7 +943,7 @@ async function loadWebhookSettings() {
         document.getElementById('autoRequeueOnRestart').checked = autoRequeue;
         const maxAge = Math.min(1440, Math.max(5, parseInt(data.requeue_max_age_minutes, 10) || 720));
         document.getElementById('requeueMaxAge').value = maxAge;
-        document.getElementById('requeueMaxAgeValue').textContent = maxAge;
+        document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(maxAge);
         document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
         document.getElementById('requeueMaxAge').disabled = !autoRequeue;
 
@@ -1304,6 +1325,7 @@ function toggleHistoryFiles(index) {
 }
 
 async function clearHistory() {
+    if (!confirm('Clear the entire webhook activity log? This cannot be undone.')) return;
     try {
         await apiDelete('/api/webhooks/history');
         loadHistory();

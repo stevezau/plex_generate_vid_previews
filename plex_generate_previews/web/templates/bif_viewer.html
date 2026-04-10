@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}BIF Viewer - Plex Preview Generator{% endblock %}
+{% block title %}Preview Inspector - Plex Preview Generator{% endblock %}
 
 {% block head %}
 <style>
@@ -46,6 +46,21 @@
 {% endblock %}
 
 {% block content %}
+<h2 class="mb-3"><i class="bi bi-film me-2"></i>Preview Inspector</h2>
+
+<!-- Page intro -->
+<div class="row justify-content-center mb-3">
+    <div class="col-lg-8">
+        <div class="card border-0 bg-body-tertiary">
+            <div class="card-body py-3 small text-muted">
+                Browse the preview thumbnails this app generated for any Plex item.
+                Useful if previews look wrong in Plex or you want to check which frames were captured.
+                Search by title below, or paste a preview file path from the processing logs.
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Search bar -->
 <div class="row justify-content-center mb-4">
     <div class="col-lg-8">
@@ -59,7 +74,7 @@
                     </li>
                     <li class="nav-item">
                         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabPath" type="button">
-                            <i class="bi bi-clipboard me-1"></i>Paste BIF Path
+                            <i class="bi bi-clipboard me-1"></i>Paste File Path
                         </button>
                     </li>
                 </ul>
@@ -73,7 +88,7 @@
                         </div>
                     </div>
                     <div class="tab-pane fade" id="tabPath">
-                        <p class="text-muted small mb-2">Paste a BIF file path from the processing logs:</p>
+                        <p class="text-muted small mb-2">Paste a preview file path from the processing logs:</p>
                         <div class="input-group">
                             <input type="text" id="pathInput" class="form-control" placeholder="/plex/Media/localhost/.../index-sd.bif">
                             <button class="btn btn-primary" id="loadPathBtn" type="button">
@@ -194,7 +209,7 @@
     async function doSearch() {
         const query = $('searchInput').value.trim();
         if (query.length < 2) {
-            showToast('BIF Viewer', 'Enter at least 2 characters', 'warning');
+            showToast('Preview Inspector', 'Enter at least 2 characters', 'warning');
             return;
         }
 
@@ -233,8 +248,8 @@
             a.dataset.title = r.title;
 
             const statusBadge = r.bif_exists
-                ? '<span class="badge bg-success">BIF</span>'
-                : '<span class="badge bg-secondary">No BIF</span>';
+                ? '<span class="badge bg-success">Preview</span>'
+                : '<span class="badge bg-secondary">No preview</span>';
             const sizeText = r.file_size ? formatBytes(r.file_size) : '';
             const dateText = r.created_at ? formatDate(r.created_at) : '';
             const metaParts = [sizeText, dateText].filter(Boolean).join(' \u00b7 ');
@@ -251,7 +266,7 @@
             a.addEventListener('click', e => {
                 e.preventDefault();
                 if (a.dataset.bifExists !== 'true') {
-                    showToast('BIF Viewer', 'No BIF file exists for this item yet', 'warning');
+                    showToast('Preview Inspector', 'No preview file exists for this item yet', 'warning');
                     return;
                 }
                 list.querySelectorAll('.result-item').forEach(el => el.classList.remove('active'));
@@ -273,11 +288,11 @@
         try {
             const resp = await fetch(`/api/bif/info?path=${encodeURIComponent(path)}`);
             const data = await resp.json();
-            if (!resp.ok) throw new Error(data.error || 'Failed to load BIF');
+            if (!resp.ok) throw new Error(data.error || 'Failed to load preview');
             bifMeta = data;
             showViewer(title || path);
         } catch (e) {
-            showToast('BIF Viewer', e.message, 'danger');
+            showToast('Preview Inspector', e.message, 'danger');
         }
     }
 
@@ -361,7 +376,7 @@
 
     $('loadPathBtn').addEventListener('click', () => {
         const path = $('pathInput').value.trim();
-        if (!path) { showToast('BIF Viewer', 'Enter a BIF file path', 'warning'); return; }
+        if (!path) { showToast('Preview Inspector', 'Enter a preview file path', 'warning'); return; }
         loadBif(path, '');
     });
     $('pathInput').addEventListener('keydown', e => {

@@ -148,7 +148,9 @@ class TestLoginLogout:
     def test_login_post_invalid_token(self, client):
         resp = client.post("/login", data={"token": "wrong"})
         assert resp.status_code == 200
-        assert b"Invalid" in resp.data or b"invalid" in resp.data
+        assert (
+            b"didn" in resp.data or b"invalid" in resp.data or b"Invalid" in resp.data
+        )
 
     def test_already_authenticated_redirects_from_login(self, authed_client):
         resp = authed_client.get("/login", follow_redirects=False)

@@ -409,6 +409,19 @@ def create_app(config_dir: str = None) -> Flask:
     # Initialize rate limiter with app
     limiter.init_app(app)
 
+    # Custom 429 handler — for the login page render the template with a
+    # friendly rate-limit banner instead of Flask's default text response.
+    @app.errorhandler(429)
+    def _rate_limited(e):
+        from flask import render_template, request
+
+        if request.endpoint == "main.login":
+            return (
+                render_template("login.html", rate_limited=True),
+                429,
+            )
+        return e, 429
+
     # Register SocketIO handlers
     register_socketio_handlers(socketio)
 

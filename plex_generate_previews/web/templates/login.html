@@ -52,9 +52,23 @@
                 <p class="text-muted">Enter your authentication token to continue</p>
             </div>
 
-            {% if error %}
-            <div class="alert alert-danger" role="alert">
-                <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+            {% if rate_limited %}
+            <div class="alert alert-warning text-start" role="alert">
+                <div class="fw-semibold">
+                    <i class="bi bi-hourglass-split me-2"></i>Too many attempts.
+                </div>
+                <div class="small mt-1">
+                    Wait about a minute and try again. This limit protects your server from automated guesses.
+                </div>
+            </div>
+            {% elif error %}
+            <div class="alert alert-danger text-start" role="alert">
+                <div class="fw-semibold">
+                    <i class="bi bi-exclamation-triangle me-2"></i>That token didn&rsquo;t work.
+                </div>
+                <div class="small mt-1">
+                    Double-check for typos, or use one of the options below to find the right token.
+                </div>
             </div>
             {% endif %}
 
@@ -86,7 +100,7 @@
                         Or set <code>WEB_AUTH_TOKEN</code> in your environment/docker-compose
                     </div>
                 </div>
-                <details class="mt-2 small text-muted">
+                <details class="mt-2 small text-muted"{% if error or rate_limited %} open{% endif %}>
                     <summary class="cursor-pointer" style="cursor: pointer;">
                         <i class="bi bi-info-circle me-1"></i>First time? More details&hellip;
                     </summary>
