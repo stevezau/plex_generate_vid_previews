@@ -472,37 +472,68 @@ def _test_hwaccel_functionality(
 
 _VULKAN_DEVICE_CACHE: Optional[str] = None
 _VULKAN_DEVICE_PROBED: bool = False
+_VULKAN_ENV_OVERRIDES: dict = {}
+_VULKAN_DEBUG_BUFFER: str = ""
+
+# Candidate paths the Vulkan loader searches for the NVIDIA ICD JSON. The
+# nvidia-container-toolkit mounts it at /etc/vulkan/icd.d/, but older
+# loaders and some distributions only look under /usr/share/vulkan/icd.d/
+# (see nvidia-container-toolkit issue #1392). The retry strategy below
+# tries each path in order.
+_NVIDIA_ICD_JSON_PATHS = (
+    "/etc/vulkan/icd.d/nvidia_icd.json",
+    "/usr/share/vulkan/icd.d/nvidia_icd.json",
+)
+
+# Cap on the size of the VK_LOADER_DEBUG=all capture buffer. One run of
+# the diagnostic probe is typically 5–15 KB of loader trace; 20 KB is a
+# comfortable upper bound that still fits in a GitHub issue comment.
+_VULKAN_DEBUG_BUFFER_CAP = 20_000
 
 
-def _probe_vulkan_device() -> Optional[str]:
-    """Return the Vulkan device libplacebo will use, or None on failure.
+def _is_software_vulkan_device(device: Optional[str]) -> bool:
+    """Return True if ``device`` is a software rasterizer (llvmpipe/lavapipe)."""
+    if not device:
+        return False
+    d = device.lower()
+    return "llvmpipe" in d or "software" in d or "lavapipe" in d
+
+
+def _find_nvidia_icd_json() -> Optional[str]:
+    """Return the path to ``nvidia_icd.json`` if present at a standard location.
+
+    Checks both the nvidia-container-toolkit mount path
+    (``/etc/vulkan/icd.d/``) and the loader's legacy search path
+    (``/usr/share/vulkan/icd.d/``). Returns the first match or None.
+    """
+    for path in _NVIDIA_ICD_JSON_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _run_vulkan_probe(
+    env_overrides: Optional[dict] = None,
+) -> tuple[Optional[str], str]:
+    """Run a single Vulkan init probe and return ``(device, full_stderr)``.
 
     Runs a trivial FFmpeg command with ``-init_hw_device vulkan=vk`` at
     ``-loglevel debug`` and parses the ``Device N selected:`` line emitted
-    by FFmpeg's Vulkan hwcontext to recover the chosen device name.
+    by FFmpeg's Vulkan hwcontext. Returns the parsed device name (or None
+    on miss/failure) and the full stderr for optional downstream use
+    (e.g. a ``VK_LOADER_DEBUG=all`` diagnostic capture).
 
-    Used by :func:`get_vulkan_device_info` to diagnose the "DV Profile 5
-    green overlay" bug: when no real Vulkan ICD is usable (no ``/dev/dri``
-    forwarded, and the NVIDIA Vulkan ICD — although injected by
-    nvidia-container-runtime when the ``graphics`` capability is set — is
-    rejected by the linuxserver/ffmpeg image's bundled Vulkan loader as
-    ``VK_ERROR_INCOMPATIBLE_DRIVER`` due to a loader/driver version skew),
-    FFmpeg falls back to ``llvmpipe`` software Vulkan.  libplacebo on
-    llvmpipe has a buffer-initialisation bug on the DV5 tone-map path that
-    writes a solid green rectangle into part of every frame.
-
-    Returns:
-        The Vulkan device description (e.g. ``"Intel(R) Graphics (RPL-S)"``
-        or ``"llvmpipe (LLVM 18.1.3, 256 bits) (software)"``), or ``None``
-        if Vulkan is unavailable or the probe failed.
-
+    Args:
+        env_overrides: Optional env vars to merge into the subprocess
+            environment. Used by the Layer-3 retry strategy to force
+            ``VK_DRIVER_FILES`` and/or enable ``VK_LOADER_DEBUG=all``.
     """
     if not _is_hwaccel_available("vulkan"):
         logger.info(
             "Vulkan probe: FFmpeg was built without Vulkan hwaccel support; "
             "libplacebo DV Profile 5 tone mapping will run in software."
         )
-        return None
+        return None, ""
     cmd = [
         "ffmpeg",
         "-loglevel",
@@ -519,58 +550,160 @@ def _probe_vulkan_device() -> Optional[str]:
         "null",
         "-",
     ]
-    logger.debug(f"Vulkan probe: running {' '.join(cmd)}")
+    env = None
+    if env_overrides:
+        env = os.environ.copy()
+        env.update(env_overrides)
+    logger.debug(
+        f"Vulkan probe: running {' '.join(cmd)}"
+        + (f" with env overrides {env_overrides}" if env_overrides else "")
+    )
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=10,
+            env=env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         logger.warning(
             f"Vulkan probe failed (subprocess error: {exc}); "
             "falling back to 'no Vulkan device' for DV5 diagnosis."
         )
-        return None
+        return None, str(exc)
     except Exception as exc:
         logger.warning(
             f"Vulkan probe raised unexpected exception: {exc}; "
             "falling back to 'no Vulkan device' for DV5 diagnosis."
         )
-        return None
-    for line in result.stderr.splitlines():
+        return None, str(exc)
+    stderr = result.stderr or ""
+    for line in stderr.splitlines():
         # Matches e.g. "[Vulkan @ 0x...] Device 0 selected: Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
         # or         "[Vulkan @ 0x...] Device 0 selected: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
         if "Device" in line and "selected:" in line:
-            device = line.split("selected:", 1)[1].strip()
-            logger.info(f"Vulkan probe: FFmpeg selected device: {device}")
-            return device
+            return line.split("selected:", 1)[1].strip(), stderr
+    return None, stderr
+
+
+def _probe_vulkan_device() -> Optional[str]:
+    """Return the Vulkan device libplacebo will use, running up to three strategies.
+
+    **Strategy 1** — default probe with inherited environment. Lets the
+    Vulkan loader pick whichever ICD it wants. This is the happy path
+    for correctly-configured hosts.
+
+    **Strategy 2** — if Strategy 1 returned a software rasterizer
+    (``llvmpipe``/``lavapipe``) or nothing AND an NVIDIA ICD JSON is
+    present at one of the standard paths, retry the probe with
+    ``VK_DRIVER_FILES=<path>`` set in the subprocess environment. This
+    forces the loader to use *only* the NVIDIA driver, bypassing any
+    loader search-path quirks (e.g.
+    `nvidia-container-toolkit#1392 <https://github.com/NVIDIA/nvidia-container-toolkit/issues/1392>`_
+    where the ICD is mounted at ``/etc/vulkan/icd.d/`` but the loader
+    only scans ``/usr/share/vulkan/icd.d/``). If the forced probe
+    succeeds, the env override is stashed in
+    ``_VULKAN_ENV_OVERRIDES`` so :func:`get_vulkan_env_overrides` can
+    feed it into the real FFmpeg invocation on the libplacebo path.
+
+    **Strategy 3** — if both 1 and 2 failed, run one final probe with
+    ``VK_LOADER_DEBUG=all`` (and the NVIDIA ICD override if present) and
+    capture the full stderr into ``_VULKAN_DEBUG_BUFFER`` so users can
+    copy-paste it into a GitHub issue via
+    ``GET /api/system/vulkan/debug``. The strategy does NOT attempt to
+    return a device from the diagnostic probe — it just captures the
+    trace for human diagnosis.
+
+    Returns:
+        The Vulkan device description the libplacebo path will actually
+        use (Strategy 1 or Strategy 2 success), the software rasterizer
+        from Strategy 1 if nothing else worked, or ``None`` if Vulkan is
+        completely unavailable.
+    """
+    global _VULKAN_ENV_OVERRIDES, _VULKAN_DEBUG_BUFFER
+
+    # Strategy 1: default probe.
+    device, _ = _run_vulkan_probe()
+    if device and not _is_software_vulkan_device(device):
+        logger.info(
+            f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}"
+        )
+        return device
+
+    if device:
+        logger.info(
+            f"Vulkan probe (strategy 1): got software device {device!r}; "
+            "will attempt VK_DRIVER_FILES retry if NVIDIA ICD is present"
+        )
+    else:
+        logger.info(
+            "Vulkan probe (strategy 1): no 'Device N selected:' line; "
+            "will attempt VK_DRIVER_FILES retry if NVIDIA ICD is present"
+        )
+
+    # Strategy 2: force NVIDIA ICD if the JSON is present.
+    nvidia_icd = _find_nvidia_icd_json()
+    if nvidia_icd:
+        logger.info(f"Vulkan probe (strategy 2): forcing VK_DRIVER_FILES={nvidia_icd}")
+        retry_device, _ = _run_vulkan_probe({"VK_DRIVER_FILES": nvidia_icd})
+        if retry_device and not _is_software_vulkan_device(retry_device):
+            logger.info(
+                f"Vulkan probe (strategy 2): success with {retry_device!r}. "
+                f"Injecting VK_DRIVER_FILES={nvidia_icd} into subsequent "
+                "FFmpeg invocations on the libplacebo DV Profile 5 path."
+            )
+            _VULKAN_ENV_OVERRIDES = {"VK_DRIVER_FILES": nvidia_icd}
+            return retry_device
+        logger.warning(
+            f"Vulkan probe (strategy 2): forcing VK_DRIVER_FILES={nvidia_icd} "
+            f"still returned {retry_device!r}; running diagnostic capture."
+        )
+    else:
+        logger.info(
+            "Vulkan probe: no NVIDIA ICD JSON found at "
+            f"{_NVIDIA_ICD_JSON_PATHS}; skipping retry, running diagnostic capture."
+        )
+
+    # Strategy 3: VK_LOADER_DEBUG=all capture for issue reports.
+    diag_overrides: dict = {"VK_LOADER_DEBUG": "all"}
+    if nvidia_icd:
+        diag_overrides["VK_DRIVER_FILES"] = nvidia_icd
+    _, diag_stderr = _run_vulkan_probe(diag_overrides)
+    _VULKAN_DEBUG_BUFFER = (diag_stderr or "")[-_VULKAN_DEBUG_BUFFER_CAP:]
     logger.warning(
-        "Vulkan probe: FFmpeg did not emit a 'Device N selected:' line. "
-        "This usually means no Vulkan ICD could be loaded. Last 20 lines "
-        "of stderr (for issue reports):"
+        f"Vulkan probe: all strategies exhausted. Captured "
+        f"{len(_VULKAN_DEBUG_BUFFER)} bytes of VK_LOADER_DEBUG=all output "
+        "for issue reports (GET /api/system/vulkan/debug)."
     )
-    for line in result.stderr.splitlines()[-20:]:
-        logger.warning(f"  ffmpeg stderr: {line}")
-    return None
+    if _VULKAN_DEBUG_BUFFER:
+        # Surface the last few informative lines to the main log so a
+        # user reading `docker logs` still gets some signal without
+        # hitting the dashboard debug endpoint.
+        for line in _VULKAN_DEBUG_BUFFER.splitlines()[-15:]:
+            logger.warning(f"  ffmpeg/vulkan-loader stderr: {line}")
+
+    # Return whatever Strategy 1 found so `get_vulkan_device_info` can
+    # correctly classify it as software (or None) and render the banner.
+    return device
 
 
 def get_vulkan_device_info() -> dict:
     """Return cached Vulkan device info for libplacebo diagnostics.
 
-    The underlying probe is cached across calls at module level because it
-    runs a subprocess and its result does not change during the app's
-    lifetime — the container's Vulkan environment is fixed at startup.
+    The underlying probe (including Strategy-2 retry and Strategy-3
+    diagnostic capture) is cached across calls at module level because
+    it runs subprocesses and its result does not change during the
+    app's lifetime — the container's Vulkan environment is fixed at
+    startup.
 
     Returns:
         dict: Contains ``device`` (Vulkan device description string, or
             ``None`` if Vulkan is unavailable) and ``is_software`` (True
             when the selected device is a software rasteriser like
             ``llvmpipe``/``lavapipe``, which triggers the DV5 green
-            overlay bug in libplacebo).  Callers assemble the
+            overlay bug in libplacebo). Callers assemble the
             user-facing warning message themselves.
-
     """
     global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
     if not _VULKAN_DEVICE_PROBED:
@@ -587,12 +720,7 @@ def get_vulkan_device_info() -> dict:
         )
         return {"device": None, "is_software": False}
 
-    device_lower = device.lower()
-    is_software = (
-        "llvmpipe" in device_lower
-        or "software" in device_lower
-        or "lavapipe" in device_lower
-    )
+    is_software = _is_software_vulkan_device(device)
     if is_software:
         logger.warning(
             f"Vulkan device info: FFmpeg selected a software rasterizer "
@@ -608,15 +736,42 @@ def get_vulkan_device_info() -> dict:
     return {"device": device, "is_software": is_software}
 
 
+def get_vulkan_env_overrides() -> dict:
+    """Return env vars to inject into FFmpeg subprocess calls on the libplacebo path.
+
+    Populated by the Strategy-2 retry in :func:`_probe_vulkan_device`
+    when forcing ``VK_DRIVER_FILES`` made Vulkan work where the default
+    ICD search failed. Returns an empty dict when no overrides are
+    needed (happy path: the loader finds the right ICD on its own).
+    """
+    return dict(_VULKAN_ENV_OVERRIDES)
+
+
+def get_vulkan_debug_buffer() -> str:
+    """Return the captured ``VK_LOADER_DEBUG=all`` stderr from the last probe.
+
+    Populated by Strategy 3 in :func:`_probe_vulkan_device` when both
+    the default probe and the ``VK_DRIVER_FILES`` retry failed. Empty
+    string when no diagnostic capture was needed. Consumed by the
+    ``GET /api/system/vulkan/debug`` endpoint and the "Copy diagnostic
+    bundle" button on the dashboard/settings warning banner.
+    """
+    return _VULKAN_DEBUG_BUFFER
+
+
 def _reset_vulkan_device_cache() -> None:
-    """Testing hook: clear the cached Vulkan probe result.
+    """Testing hook: clear the cached Vulkan probe result and diagnostic state.
 
     Only intended for unit tests that need to rerun the probe with a
-    different mock.
+    different mock. Clears all four module-level globals so a new
+    probe strategy run starts fresh.
     """
     global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
+    global _VULKAN_ENV_OVERRIDES, _VULKAN_DEBUG_BUFFER
     _VULKAN_DEVICE_CACHE = None
     _VULKAN_DEVICE_PROBED = False
+    _VULKAN_ENV_OVERRIDES = {}
+    _VULKAN_DEBUG_BUFFER = ""
 
 
 def _is_wsl2() -> bool:
@@ -1379,9 +1534,10 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                 logger.info(f"  ✅ NVIDIA CUDA working: {gpu_name}")
             else:
                 logger.debug(
-                    "  CUDA functionality test failed — container may be missing the "
-                    "'video' driver capability (set NVIDIA_DRIVER_CAPABILITIES=compute,video,utility) "
-                    "or /dev/nvidia* devices"
+                    "  CUDA functionality test failed — container may be missing "
+                    "driver capabilities (set NVIDIA_DRIVER_CAPABILITIES=all; the "
+                    "'graphics' capability is also required for Dolby Vision "
+                    "Profile 5 thumbnails) or /dev/nvidia* devices"
                 )
 
         # Container fallback: /sys/class/drm unavailable but /dev/dri render

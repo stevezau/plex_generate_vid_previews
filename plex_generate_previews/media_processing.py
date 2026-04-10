@@ -1042,6 +1042,24 @@ def generate_images(
         logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
         logger.info(f"FFmpeg command: {' '.join(args)}")
 
+        # When the Layer-3 probe retry in gpu_detection succeeded only with
+        # VK_DRIVER_FILES set, propagate those env overrides to the real
+        # FFmpeg invocation on the libplacebo DV Profile 5 path. On every
+        # other path the override dict is empty and we pass env=None so
+        # the child process inherits the parent environment unchanged.
+        ffmpeg_env: dict | None = None
+        if init_vulkan:
+            from .gpu_detection import get_vulkan_env_overrides
+
+            vulkan_overrides = get_vulkan_env_overrides()
+            if vulkan_overrides:
+                ffmpeg_env = os.environ.copy()
+                ffmpeg_env.update(vulkan_overrides)
+                logger.debug(
+                    f"FFmpeg libplacebo path: injecting Vulkan env overrides "
+                    f"{vulkan_overrides} into subprocess"
+                )
+
         # Use file polling approach for non-blocking, high-frequency progress monitoring
         thread_id = threading.get_ident()
         output_file = os.path.join(
@@ -1050,7 +1068,12 @@ def generate_images(
         )
         stderr_fh = open(output_file, "w", encoding="utf-8")
         try:
-            proc = subprocess.Popen(args, stderr=stderr_fh, stdout=subprocess.DEVNULL)
+            proc = subprocess.Popen(
+                args,
+                stderr=stderr_fh,
+                stdout=subprocess.DEVNULL,
+                env=ffmpeg_env,
+            )
 
             # Signal that FFmpeg process has started
             if progress_callback:

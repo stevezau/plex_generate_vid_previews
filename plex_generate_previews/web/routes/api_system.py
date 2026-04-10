@@ -87,6 +87,109 @@ def _vendor_display_name(gpus: list, vendor: str) -> str:
     }.get(vendor, f"{vendor} GPU")
 
 
+# Standard locations the Vulkan loader searches for the NVIDIA ICD JSON.
+# nvidia-container-toolkit mounts at /etc/vulkan/icd.d/; some loaders and
+# distributions only scan /usr/share/vulkan/icd.d/. Both are checked so
+# the Case A dispatch can tell "file exists somewhere" from "file missing
+# everywhere" without needing to know which path a given loader prefers.
+_NVIDIA_ICD_JSON_SEARCH_PATHS = (
+    "/etc/vulkan/icd.d/nvidia_icd.json",
+    "/usr/share/vulkan/icd.d/nvidia_icd.json",
+)
+
+# Glob patterns for libnvidia-glvkspirv.so, the sibling library the NVIDIA
+# Vulkan ICD needs to `dlopen`. Checking multiple locations covers amd64
+# Debian, arm64, and non-standard layouts.
+_LIBNVIDIA_GLVKSPIRV_GLOBS = (
+    "/usr/lib/x86_64-linux-gnu/libnvidia-glvkspirv.so*",
+    "/usr/lib/aarch64-linux-gnu/libnvidia-glvkspirv.so*",
+    "/usr/lib/libnvidia-glvkspirv.so*",
+    "/usr/lib64/libnvidia-glvkspirv.so*",
+)
+
+
+def _diagnose_vulkan_environment() -> dict:
+    """Gather facts about the container's Vulkan configuration.
+
+    Used by :func:`_get_vulkan_info` to dispatch the pure-NVIDIA warning
+    branch into one of four sub-cases (A1 / A2 / A3 / A4) naming the
+    specific misconfiguration rather than a generic "upstream packaging
+    issue" — and by the ``GET /api/system/vulkan/debug`` endpoint to
+    produce a plain-text diagnostic bundle users can paste into GitHub
+    issues.
+
+    All facts are derived from ``os.environ`` and the filesystem, so
+    this is safe to call from any thread and does not perform any
+    expensive subprocess work.
+
+    Returns:
+        dict with the following keys:
+
+        - ``nvidia_capabilities`` (str or None) — the raw value of the
+          ``NVIDIA_DRIVER_CAPABILITIES`` env var, or None if unset.
+        - ``nvidia_capabilities_has_graphics`` (bool) — True if the
+          capability string contains ``graphics`` (or is ``all``).
+        - ``nvidia_icd_json_path`` (str or None) — the first path in
+          :data:`_NVIDIA_ICD_JSON_SEARCH_PATHS` where
+          ``nvidia_icd.json`` exists, or None.
+        - ``libnvidia_glvkspirv_found`` (bool) — True if a
+          ``libnvidia-glvkspirv.so*`` file is present in any of the
+          standard library paths.
+        - ``nvidia_drm_loaded`` (bool) — True if ``/proc/driver/nvidia``
+          exists, meaning the host's NVIDIA kernel module is loaded and
+          exposed to the container.
+        - ``nvidia_driver_version`` (str or None) — parsed from
+          ``/proc/driver/nvidia/version`` if available. Surfaced in the
+          debug bundle and in the Case A2 warning that blames a specific
+          driver version range.
+    """
+    caps = os.environ.get("NVIDIA_DRIVER_CAPABILITIES")
+    caps_lower = (caps or "").lower()
+    caps_has_graphics = "graphics" in caps_lower or caps_lower == "all"
+
+    nvidia_icd_json_path: str | None = None
+    for path in _NVIDIA_ICD_JSON_SEARCH_PATHS:
+        if os.path.exists(path):
+            nvidia_icd_json_path = path
+            break
+
+    libnvidia_glvkspirv_found = False
+    for pattern in _LIBNVIDIA_GLVKSPIRV_GLOBS:
+        if glob.glob(pattern):
+            libnvidia_glvkspirv_found = True
+            break
+
+    nvidia_drm_loaded = os.path.exists("/proc/driver/nvidia")
+    nvidia_driver_version: str | None = None
+    version_path = "/proc/driver/nvidia/version"
+    if os.path.exists(version_path):
+        try:
+            with open(version_path, encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+            # Typical line: "NVRM version: NVIDIA UNIX x86_64 Kernel Module  570.133.07  Thu Mar 20 14:50:40 UTC 2025"
+            for line in content.splitlines():
+                if "NVRM version" in line:
+                    parts = line.split()
+                    for part in parts:
+                        # Match e.g. "570.133.07" or "550.54.15"
+                        if "." in part and part.replace(".", "").isdigit():
+                            nvidia_driver_version = part
+                            break
+                    if nvidia_driver_version:
+                        break
+        except OSError as exc:
+            logger.debug(f"Could not read {version_path}: {exc}")
+
+    return {
+        "nvidia_capabilities": caps,
+        "nvidia_capabilities_has_graphics": caps_has_graphics,
+        "nvidia_icd_json_path": nvidia_icd_json_path,
+        "libnvidia_glvkspirv_found": libnvidia_glvkspirv_found,
+        "nvidia_drm_loaded": nvidia_drm_loaded,
+        "nvidia_driver_version": nvidia_driver_version,
+    }
+
+
 def _get_vulkan_info() -> dict:
     """Return Vulkan device info and warn if the DV5 green-overlay bug will hit.
 
@@ -186,45 +289,177 @@ def _get_vulkan_info() -> dict:
     )
 
     # Pure-NVIDIA takes precedence over dri_mapped: mounting /dev/dri on
-    # a host with no Mesa-capable GPU does nothing, because there is no
-    # Mesa ICD to fall back to. Route these users to the version-skew
-    # explanation regardless of whether they've mounted /dev/dri.
+    # a host with no Mesa-capable GPU does nothing on its own, so we
+    # never send these users down the /dev/dri path. Instead, dispatch
+    # into one of four sub-cases (A1/A2/A3/A4) based on what
+    # _diagnose_vulkan_environment() tells us is actually broken, so the
+    # warning names the specific fix and the user can act on it.
     if has_nvidia and not has_mesa_vendor:
-        logger.info(
-            f"Vulkan warning: selected Case A (pure NVIDIA version "
-            f"mismatch) for {nvidia_name!r}; dri_mapped={dri_mapped}"
-        )
-        body = (
-            f"<strong>Your GPU:</strong> {html_escape.escape(nvidia_name)}"
-            "<br><br>"
-            "Your NVIDIA card does have a GPU rendering driver, but "
-            "there's a <strong>version mismatch</strong> between your "
-            "NVIDIA driver and the version of the rendering toolkit "
-            "built into this container. The container refuses to load "
-            "your NVIDIA driver and falls back to software rendering. "
-            "This is a known upstream packaging issue &mdash; there is "
-            "no configuration fix you can apply from your side."
-            "<br><br>"
-            '<span class="small"><strong>Workarounds:</strong></span>'
-            '<ul class="small mb-0 mt-1">'
-            "<li><strong>Dual-GPU hosts:</strong> if your host also has "
-            "an Intel iGPU or AMD GPU (even an unused one), forward its "
-            "render node with "
-            "<code>--device /dev/dri:/dev/dri</code> (docker run) or "
-            "<code>devices: [&quot;/dev/dri:/dev/dri&quot;]</code> "
-            "(docker-compose). The container will use that GPU for "
-            "rendering instead. Your NVIDIA card keeps handling the "
-            "video decoding — the two paths are independent.</li>"
-            "<li><strong>Pure NVIDIA hosts:</strong> wait for a "
-            "container base image update, or skip Dolby Vision Profile "
-            "5 content until then.</li>"
-            "</ul>"
-            '<div class="small text-muted mt-2">Technical details: the '
-            "container's Vulkan loader (linuxserver/ffmpeg) rejects the "
-            "NVIDIA ICD with <code>VK_ERROR_INCOMPATIBLE_DRIVER</code> "
-            "because the loader API version is newer than the NVIDIA "
-            "driver's reported Vulkan API version.</div>"
-        )
+        diag = _diagnose_vulkan_environment()
+        nvidia_name_esc = html_escape.escape(nvidia_name)
+
+        if not diag["nvidia_capabilities_has_graphics"]:
+            # Case A1: NVIDIA_DRIVER_CAPABILITIES is missing 'graphics'.
+            # nvidia-container-toolkit didn't inject the Vulkan ICD at all.
+            # This is ~80% of real pure-NVIDIA reports.
+            current_caps = diag["nvidia_capabilities"] or "(unset)"
+            logger.info(
+                f"Vulkan warning: selected Case A1 (missing 'graphics' "
+                f"capability) for {nvidia_name!r}; "
+                f"NVIDIA_DRIVER_CAPABILITIES={current_caps!r}"
+            )
+            body = (
+                f"<strong>Your GPU:</strong> {nvidia_name_esc}"
+                "<br><br>"
+                "Your NVIDIA card is working for video decoding, but "
+                "the container was started <strong>without the "
+                "<code>graphics</code> NVIDIA driver capability</strong>. "
+                "The NVIDIA Container Toolkit only injects the NVIDIA "
+                "Vulkan driver into the container when <code>graphics</code> "
+                "(or <code>all</code>) is declared; the "
+                "<code>compute,video,utility</code> trio that people "
+                "usually start with only covers CUDA, NVDEC/NVENC, and "
+                "<code>nvidia-smi</code>."
+                "<br><br>"
+                f'<div class="small">Your container\'s current value: '
+                f"<code>NVIDIA_DRIVER_CAPABILITIES={html_escape.escape(current_caps)}</code>"
+                "</div>"
+                "<br>"
+                '<span class="small"><strong>Fix</strong> — change '
+                "<code>NVIDIA_DRIVER_CAPABILITIES</code> to "
+                "<code>all</code> and restart the container:</span>"
+                '<ul class="small mb-0 mt-1">'
+                "<li><strong>Docker run:</strong> add "
+                "<code>-e NVIDIA_DRIVER_CAPABILITIES=all</code></li>"
+                "<li><strong>Docker Compose:</strong> under "
+                "<code>environment:</code>, add "
+                "<code>- NVIDIA_DRIVER_CAPABILITIES=all</code></li>"
+                "<li><strong>Unraid:</strong> set "
+                "<em>NVIDIA Driver Capabilities</em> to <code>all</code> "
+                "in the template</li>"
+                "</ul>"
+                '<div class="small mt-2">This is the single most common '
+                "cause of this warning on pure-NVIDIA hosts and will "
+                "almost certainly fix it. After the restart the green "
+                "overlay will disappear.</div>"
+            )
+        elif diag["nvidia_icd_json_path"] is None:
+            # Case A2: graphics capability is set but the ICD JSON is
+            # missing. Usually the driver 570-579 regression that's
+            # fixed in 580 (nvidia-container-toolkit#1041), or a CDI
+            # manifest bug (#1559).
+            driver_version = diag["nvidia_driver_version"]
+            logger.info(
+                f"Vulkan warning: selected Case A2 (graphics cap set "
+                f"but nvidia_icd.json missing) for {nvidia_name!r}; "
+                f"driver_version={driver_version!r}"
+            )
+            driver_line = ""
+            if driver_version:
+                driver_line = (
+                    f'<div class="small mt-2">Detected host NVIDIA driver: '
+                    f"<code>{html_escape.escape(driver_version)}</code>. "
+                    "If that version is in the 570.x–579.x range, you're "
+                    "almost certainly hitting this specific regression.</div>"
+                )
+            body = (
+                f"<strong>Your GPU:</strong> {nvidia_name_esc}"
+                "<br><br>"
+                "<code>NVIDIA_DRIVER_CAPABILITIES</code> looks correct, "
+                "but the NVIDIA Vulkan ICD file "
+                "(<code>nvidia_icd.json</code>) is not present inside "
+                "the container. The NVIDIA Container Toolkit should "
+                "have injected it and didn't."
+                "<br><br>"
+                '<span class="small"><strong>Most likely cause:</strong> '
+                "a known regression on NVIDIA driver versions "
+                "<strong>570.x – 579.x</strong> where the ICD is not "
+                "injected into containers "
+                '(<a href="https://github.com/NVIDIA/nvidia-container-toolkit/issues/1041" '
+                'target="_blank" rel="noopener">'
+                "nvidia-container-toolkit#1041</a>). "
+                "<strong>Fix:</strong> upgrade your host NVIDIA driver "
+                "to <strong>580 or newer</strong>, or downgrade to "
+                "<strong>550</strong>.</span>"
+                '<br><br><span class="small"><strong>Less likely cause:</strong> '
+                "if your NVIDIA runtime is using the CDI mode, its CDI "
+                "manifest may be missing Vulkan libraries "
+                '(<a href="https://github.com/NVIDIA/nvidia-container-toolkit/issues/1559" '
+                'target="_blank" rel="noopener">'
+                "nvidia-container-toolkit#1559</a>). Switch to legacy "
+                'mode by setting <code>mode = "legacy"</code> in '
+                "<code>/etc/nvidia-container-runtime/config.toml</code> "
+                "on the host.</span>"
+                f"{driver_line}"
+            )
+        elif not diag["libnvidia_glvkspirv_found"]:
+            # Case A3: ICD JSON exists but the supporting library is
+            # missing. Almost always the CDI manifest bug (#1559).
+            logger.info(
+                f"Vulkan warning: selected Case A3 (nvidia_icd.json at "
+                f"{diag['nvidia_icd_json_path']} but libnvidia-glvkspirv "
+                f"not found) for {nvidia_name!r}"
+            )
+            body = (
+                f"<strong>Your GPU:</strong> {nvidia_name_esc}"
+                "<br><br>"
+                "Your NVIDIA Vulkan driver file is present (found at "
+                f"<code>{html_escape.escape(diag['nvidia_icd_json_path'])}</code>) "
+                "but a required supporting library — "
+                "<code>libnvidia-glvkspirv.so</code> — is not. The ICD "
+                "loads and then immediately fails to resolve its own "
+                "dependencies, so the loader discards it and falls back "
+                "to software rendering."
+                "<br><br>"
+                '<span class="small"><strong>Root cause:</strong> a '
+                "known NVIDIA Container Toolkit bug where the CDI "
+                "manifest only lists the ICD JSON, not the library it "
+                "depends on "
+                '(<a href="https://github.com/NVIDIA/nvidia-container-toolkit/issues/1559" '
+                'target="_blank" rel="noopener">'
+                "nvidia-container-toolkit#1559</a>).</span>"
+                "<br><br>"
+                '<span class="small"><strong>Fix:</strong></span>'
+                '<ul class="small mb-0 mt-1">'
+                "<li><strong>Quick fix:</strong> switch your NVIDIA "
+                "runtime to legacy mode by editing "
+                "<code>/etc/nvidia-container-runtime/config.toml</code> "
+                'on the host and setting <code>mode = "legacy"</code>, '
+                "then restart the container.</li>"
+                "<li><strong>Or:</strong> regenerate the CDI manifest "
+                "with <code>sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml</code> "
+                "after upgrading to a toolkit version that includes the "
+                "fix.</li>"
+                "</ul>"
+            )
+        else:
+            # Case A4: everything on the checklist is correct but the
+            # loader still rejected the ICD. This is the "please file
+            # an issue with diagnostics" path.
+            logger.warning(
+                f"Vulkan warning: selected Case A4 (all diagnostic "
+                f"checks pass but loader still fell back to software) "
+                f"for {nvidia_name!r}"
+            )
+            body = (
+                f"<strong>Your GPU:</strong> {nvidia_name_esc}"
+                "<br><br>"
+                "All the usual NVIDIA container requirements are "
+                "satisfied &mdash; the <code>graphics</code> capability "
+                "is set, the NVIDIA Vulkan ICD file is present at "
+                f"<code>{html_escape.escape(diag['nvidia_icd_json_path'] or '(unknown)')}</code>, "
+                "and <code>libnvidia-glvkspirv.so</code> is reachable. "
+                "Despite all that, the Vulkan loader still rejected the "
+                "NVIDIA driver. This is uncommon."
+                "<br><br>"
+                '<span class="small"><strong>Please file a GitHub '
+                "issue</strong> and include the diagnostic bundle from "
+                "<code>GET /api/system/vulkan/debug</code> (there's a "
+                "<em>Copy diagnostic bundle</em> button just below this "
+                "message). The bundle contains the full "
+                "<code>VK_LOADER_DEBUG=all</code> trace, which will "
+                "usually show exactly why each ICD was rejected.</span>"
+            )
     elif has_nvidia and has_mesa_vendor and not dri_mapped:
         # NVIDIA + Intel/AMD but /dev/dri not forwarded: mounting the
         # render node lets libplacebo use Mesa alongside NVIDIA decoding.
@@ -339,6 +574,103 @@ def get_vulkan():
     No authentication required — Vulkan device info is not sensitive.
     """
     return jsonify(_get_vulkan_info())
+
+
+@api.route("/system/vulkan/debug")
+def get_vulkan_debug():
+    """Return a plain-text Vulkan diagnostic bundle for GitHub issue reports.
+
+    Combines the environment diagnosis, the probe result, and the
+    captured ``VK_LOADER_DEBUG=all`` stderr (when the probe exhausted
+    all strategies) into a single pasteable block. The dashboard and
+    settings banners expose a "Copy diagnostic bundle" button that
+    fetches this endpoint and writes the response to
+    ``navigator.clipboard``.
+
+    No authentication required — the bundle contains environment facts
+    and loader traces but no secrets.
+    """
+    from ...gpu_detection import (
+        get_vulkan_debug_buffer,
+        get_vulkan_device_info,
+        get_vulkan_env_overrides,
+    )
+
+    device_info = get_vulkan_device_info()
+    diag = _diagnose_vulkan_environment()
+    env_overrides = get_vulkan_env_overrides()
+    debug_buffer = get_vulkan_debug_buffer()
+
+    with _gpu_cache_lock:
+        gpus = list(_gpu_cache["result"] or [])
+
+    gpu_lines = [
+        f"  - type={g.get('type', '?')} name={g.get('name', '?')} "
+        f"device={g.get('device', '?')}"
+        for g in gpus
+    ] or ["  (none detected)"]
+
+    bundle_lines = [
+        "=== plex_generate_vid_previews Vulkan diagnostic bundle ===",
+        "",
+        "Use this block when reporting a Dolby Vision Profile 5 green-overlay",
+        "issue. It captures the app's view of your container's Vulkan state,",
+        "plus the full VK_LOADER_DEBUG=all trace (if one was captured).",
+        "",
+        "--- Probe result ---",
+        f"device:      {device_info.get('device')}",
+        f"is_software: {device_info.get('is_software')}",
+        "",
+        "--- Detected GPUs (from gpu_detection cache) ---",
+        *gpu_lines,
+        "",
+        "--- Environment diagnosis ---",
+        f"NVIDIA_DRIVER_CAPABILITIES: {diag['nvidia_capabilities']!r}",
+        f"  has 'graphics':            {diag['nvidia_capabilities_has_graphics']}",
+        f"nvidia_icd_json_path:        {diag['nvidia_icd_json_path']!r}",
+        f"libnvidia_glvkspirv_found:   {diag['libnvidia_glvkspirv_found']}",
+        f"nvidia_drm_loaded:           {diag['nvidia_drm_loaded']}",
+        f"nvidia_driver_version:       {diag['nvidia_driver_version']!r}",
+        "",
+        "--- Render nodes ---",
+        f"/dev/dri/renderD*: {glob.glob('/dev/dri/renderD*') or '[]'}",
+        "",
+        "--- Active Vulkan env overrides ---",
+    ]
+    if env_overrides:
+        bundle_lines.append(
+            "  (populated by the Strategy-2 VK_DRIVER_FILES retry; these"
+            " env vars are injected into the FFmpeg libplacebo subprocess)"
+        )
+        for k, v in env_overrides.items():
+            bundle_lines.append(f"  {k}={v}")
+    else:
+        bundle_lines.append(
+            "  (none — the default probe found a working Vulkan device,"
+            " or the retry did not succeed)"
+        )
+    bundle_lines.append("")
+
+    bundle_lines.append("--- VK_LOADER_DEBUG=all capture ---")
+    if debug_buffer:
+        bundle_lines.append(
+            f"(last {len(debug_buffer)} bytes of ffmpeg stderr from the"
+            " Strategy-3 diagnostic probe)"
+        )
+        bundle_lines.append("")
+        bundle_lines.append(debug_buffer)
+    else:
+        bundle_lines.append(
+            "(empty — no diagnostic probe was run; Vulkan either worked"
+            " on the default or retry strategy, or Vulkan is unavailable"
+            " in this FFmpeg build)"
+        )
+
+    bundle_lines.append("")
+    bundle_lines.append("=== end bundle ===")
+
+    response_body = "\n".join(bundle_lines)
+    return response_body, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @api.route("/system/rescan-gpus", methods=["POST"])

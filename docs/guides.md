@@ -551,6 +551,14 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 
 **Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires `libplacebo` for tone mapping because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. libplacebo's `apply_dolbyvision` (enabled by default in FFmpeg 8+) handles this correctly. On NVIDIA hosts, the HEVC decode step runs on NVDEC before libplacebo picks up the frames — this is about 3× faster than software decode on 4K DV5 content with identical visual output. Other vendors (Intel VAAPI, QSV, AMD, Apple VideoToolbox, D3D11VA) stay on software decode for this path because NVDEC is the only HW decoder currently validated with libplacebo's DV5 tone map; Intel VAAPI specifically benchmarked slower than software decode. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
 
+> [!IMPORTANT]
+> **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
+> libplacebo needs a working Vulkan driver to tone-map DV Profile 5. The NVIDIA Container Toolkit only injects the NVIDIA Vulkan ICD into the container when the `graphics` driver capability is declared — `compute,video,utility` is not enough (that only covers CUDA/NVDEC/nvidia-smi). If the app detects that your container is running Vulkan on the software rasterizer (`llvmpipe`), your DV Profile 5 thumbnails will contain a green rectangle due to a libplacebo+llvmpipe rendering bug.
+>
+> **Fix:** set `NVIDIA_DRIVER_CAPABILITIES=all` in your `docker run` (`-e NVIDIA_DRIVER_CAPABILITIES=all`) or `docker-compose.yml` (`environment:` block) and restart the container. `all` is the simplest value and is what the upstream `nvidia/vulkan` image uses. If you prefer minimum-privilege, use `compute,video,utility,graphics`.
+>
+> If the warning banner persists after the restart, your setup may be hitting one of the less-common causes (driver 570–579 regression, CDI manifest missing `libnvidia-glvkspirv.so`, or ICD JSON at the wrong path). The in-app warning will name the specific cause it detected. You can also open `GET /api/system/vulkan/debug` to fetch a plain-text diagnostic bundle to attach to a GitHub issue.
+
 **Dolby Vision Profile 7/8** (with HDR10 fallback) uses the standard zscale/tonemap chain. FFmpeg reads the HDR10 base layer by default, so no libplacebo or special handling is needed.
 
 **Non-DV HDR** content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.

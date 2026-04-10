@@ -19,7 +19,7 @@ docker run -d \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
-For NVIDIA, replace `--device` with `--gpus all` and add `-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`.
+For NVIDIA, replace `--device` with `--gpus all` and add `-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`. Use `all` rather than `compute,video,utility`: the `graphics` capability (included in `all`) is what makes the NVIDIA Container Toolkit inject the NVIDIA Vulkan driver, which is required for Dolby Vision Profile 5 thumbnails (libplacebo Vulkan tone-mapping).
 
 Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-previews | grep "Token:"`, and complete the setup wizard.
 

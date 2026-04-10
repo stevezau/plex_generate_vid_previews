@@ -711,6 +711,12 @@ function updateSystemStatus(status) {
                 '<div>' +
                 '<strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong><br>' +
                 status.vulkan_warning +
+                '<div class="mt-2">' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary" ' +
+                'onclick="copyVulkanDiagnosticBundle(this)">' +
+                '<i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle' +
+                '</button>' +
+                '</div>' +
                 '</div>' +
                 '</div>' +
                 '<button type="button" class="btn-close" aria-label="Close" ' +
@@ -725,6 +731,46 @@ function updateSystemStatus(status) {
     }
 
     renderDashboardGpuConfig();
+}
+
+// Copy the plain-text Vulkan diagnostic bundle from /api/system/vulkan/debug
+// to the clipboard. Bound to the "Copy diagnostic bundle" button inside
+// the dashboard and settings-page vulkan warning banners.
+function copyVulkanDiagnosticBundle(btn) {
+    var originalHtml = btn ? btn.innerHTML : '';
+    function restore(html, ms) {
+        if (!btn) return;
+        setTimeout(function () { btn.innerHTML = originalHtml; }, ms || 2000);
+        btn.innerHTML = html;
+    }
+    fetch('/api/system/vulkan/debug')
+        .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+        })
+        .then(function (text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text).then(function () { return text; });
+            }
+            // Fallback for older browsers / non-secure contexts.
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'absolute';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            return text;
+        })
+        .then(function () {
+            restore('<i class="bi bi-check2 me-1"></i>Copied to clipboard');
+        })
+        .catch(function (err) {
+            console.error('copyVulkanDiagnosticBundle failed:', err);
+            restore('<i class="bi bi-x-circle me-1"></i>Copy failed — see console', 4000);
+        });
 }
 
 function renderNoWorkersWarning(message) {

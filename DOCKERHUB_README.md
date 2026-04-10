@@ -84,7 +84,9 @@ services:
     environment:
       # NVIDIA only (uncomment if using NVIDIA):
       # - NVIDIA_VISIBLE_DEVICES=all
-      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      # Use 'all' so the NVIDIA Vulkan driver is injected; 'graphics' is
+      # required for Dolby Vision Profile 5 libplacebo tone-mapping.
+      # - NVIDIA_DRIVER_CAPABILITIES=all
       - PUID=1000
       - PGID=1000
     volumes:
@@ -137,7 +139,7 @@ Prerequisites: NVIDIA drivers + [NVIDIA Container Toolkit](https://docs.nvidia.c
 docker run -d \
   --gpus all \
   -e NVIDIA_VISIBLE_DEVICES=all \
-  -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+  -e NVIDIA_DRIVER_CAPABILITIES=all \
   -e PUID=1000 \
   -e PGID=1000 \
   -p 8080:8080 \
