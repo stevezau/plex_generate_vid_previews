@@ -869,7 +869,11 @@ def generate_images(
                 #  - No filters before hwupload (preserve RPU side-data)
                 #  - No forced colorspace (apply_dolbyvision sets it)
                 #  - No -skip_frame (RPU has inter-frame dependencies)
-                #  - No HW decode (decoders mishandle DV enhancement layer)
+                #  - HW decode: NVDEC is validated (~3x speedup on 4K DV5
+                #    with visually identical output); VAAPI/QSV/D3D11VA/
+                #    VideoToolbox are untested on this path and stay on
+                #    software decode.  See the vendor gate in _run_ffmpeg
+                #    below.
                 logger.info(
                     f"Dolby Vision Profile 5 detected for {video_file}; "
                     f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
@@ -949,10 +953,25 @@ def generate_images(
             args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
 
         # Hardware acceleration for decoding (before -i flag).
-        # Disabled for DV Profile 5 (init_vulkan=True) because HW
-        # decoders cannot process DV enhancement-layer-only content.
-        # DV Profile 7/8 uses init_vulkan=False and benefits from
-        # HW decode since FFmpeg reads the HDR10 base layer.
+        #
+        # Non-libplacebo paths (HDR10, SDR, DV Profile 7/8 via zscale on
+        # the HDR10 base layer) have always benefited from HW decode
+        # across all supported vendors.
+        #
+        # The DV Profile 5 libplacebo path (``init_vulkan=True``) is
+        # more restrictive: it was blanket-disabled in ``a06ed98`` when
+        # green-tinted output was observed on DV Profile 7/8 + libplacebo
+        # (see issue #178).  That P7/8 code path was removed by
+        # ``85c5212`` (P7/8 now uses zscale on the HDR10 base layer) but
+        # the HW-decode block on P5 stayed off as a conservative
+        # carry-over.  A 2026-04 benchmark with FFmpeg 8.0.1 /
+        # libplacebo on a real DV Profile 5 4K file showed NVDEC + the
+        # libplacebo DV tone-map produces visually identical output to
+        # software decode and runs ~3x faster, so NVDEC is re-enabled
+        # here for DV5.  Intel VAAPI benchmarked *slower* than software
+        # decode on the same file/hardware (Intel UHD 770), and other
+        # vendors are untested, so they continue to fall through to
+        # software decode on the libplacebo path.
         effective_gpu_device_path = (
             gpu_device_path_override
             if gpu_device_path_override is not None
@@ -960,11 +979,11 @@ def generate_images(
         )
         use_gpu = effective_gpu is not None
         hw_decode_active = False
-        if use_gpu and not init_vulkan:
-            if effective_gpu == "NVIDIA":
-                args += ["-hwaccel", "cuda"]
-                hw_decode_active = True
-            elif effective_gpu == "WINDOWS_GPU":
+        if use_gpu and effective_gpu == "NVIDIA":
+            args += ["-hwaccel", "cuda"]
+            hw_decode_active = True
+        elif use_gpu and not init_vulkan:
+            if effective_gpu == "WINDOWS_GPU":
                 args += ["-hwaccel", "d3d11va"]
                 hw_decode_active = True
             elif effective_gpu == "APPLE":
@@ -982,18 +1001,19 @@ def generate_images(
                 hw_decode_active = True
         elif use_gpu and init_vulkan:
             logger.debug(
-                f"Skipping HW decode for DV Profile 5 ({video_file}); "
-                f"using software decode + Vulkan/libplacebo tone mapping"
+                f"Skipping HW decode for DV Profile 5 ({video_file}) on "
+                f"{effective_gpu}; using software decode + Vulkan/libplacebo "
+                f"tone mapping (HW decode validated only for NVIDIA on this path)"
             )
 
         # Cap the video decoder to 1 thread ONLY when decode is offloaded
         # to a hardware accelerator.  With hwaccel the CPU thread is just
         # an orchestrator and the cap prevents thread oversubscription
         # across parallel GPU workers.  For software decode — pure CPU
-        # workers, or the DV Profile 5 Vulkan/libplacebo path where
-        # init_vulkan disables hwaccel — let FFmpeg pick the default
-        # thread count so 4K HEVC can actually saturate available cores.
-        # Fixes issue #212 (DV P5 pinned to one core at ~0.8x).
+        # workers, or DV Profile 5 on non-NVIDIA GPUs where the vendor
+        # gate above skips hwaccel — let FFmpeg pick the default thread
+        # count so 4K HEVC can saturate available cores.  Fixes issue
+        # #212 (DV P5 pinned to one core at ~0.8x before this gate).
         if hw_decode_active:
             args += ["-threads:v", "1"]
 

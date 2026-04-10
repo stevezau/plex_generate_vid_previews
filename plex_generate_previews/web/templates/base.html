@@ -46,13 +46,18 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
-                            <i class="bi bi-terminal me-1"></i>Logs
+                        <a class="nav-link {% if request.endpoint == 'main.webhooks_page' %}active{% endif %}" href="{{ url_for('main.webhooks_page') }}">
+                            <i class="bi bi-broadcast me-1"></i>Webhooks
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.webhooks_page' %}active{% endif %}" href="{{ url_for('main.webhooks_page') }}">
-                            <i class="bi bi-broadcast me-1"></i>Webhooks
+                        <a class="nav-link {% if request.endpoint == 'main.schedules_page' %}active{% endif %}" href="{{ url_for('main.schedules_page') }}">
+                            <i class="bi bi-calendar-event me-1"></i>Schedules
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
+                            <i class="bi bi-terminal me-1"></i>Logs
                         </a>
                     </li>
                     <li class="nav-item dropdown">
@@ -128,6 +133,7 @@
     <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.2/dist/socket.io.min.js" integrity="sha256-g99KvH7slB8dKa4lToC6wLuC05j74ujuTqKn78jnBPE=" crossorigin="anonymous"></script>
     <!-- Custom JS -->
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/autosave.js') }}"></script>
 
     {% block scripts %}{% endblock %}
 </body>

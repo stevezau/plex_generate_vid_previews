@@ -170,12 +170,22 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         cfg["path_count"] = len(wp)
                     job_manager.update_job_config(job_id, cfg)
 
+            # Transition PENDING -> RUNNING as soon as the worker thread
+            # begins, not after path resolution.  Previously the status
+            # flipped only at dispatch time (via _on_dispatch_start),
+            # which meant jobs with a slow Plex resolution phase (e.g.
+            # Recently Added scanner runs with 100+ paths) looked stuck
+            # in Pending even though they were actively querying Plex.
+            # start_job() is idempotent, so the later _on_dispatch_start
+            # call is a safe no-op.
+            job_manager.start_job(job_id)
+
             job_manager.update_progress(
                 job_id,
                 percent=0,
                 processed_items=0,
                 total_items=0,
-                current_item="Initializing...",
+                current_item="Starting — loading configuration...",
             )
 
             try:

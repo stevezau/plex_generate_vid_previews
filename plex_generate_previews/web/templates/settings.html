@@ -106,12 +106,10 @@
     </div>
     <!-- Main Content -->
     <div class="col-lg-9 col-xl-8 settings-content">
-        <!-- Header with Save Button -->
+        <!-- Header with auto-save indicator -->
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h2><i class="bi bi-gear me-2"></i>Settings</h2>
-            <button class="btn btn-primary" id="saveAllBtn" disabled onclick="saveAllSettings()">
-                <i class="bi bi-check-lg me-1"></i>Save Changes
-            </button>
+            <span id="saveStatusIndicator" class="autosave-indicator"></span>
         </div>
 
         <!-- Token Expired Warning -->
@@ -133,6 +131,23 @@
                 See the <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md" target="_blank" rel="noopener" class="alert-link">getting started guide</a> for details.
             </span>
             <button type="button" class="btn-close" aria-label="Close" onclick="dismissTimezoneWarning()"></button>
+        </div>
+
+        <!-- Vulkan / libplacebo Warning (DV Profile 5 green overlay) -->
+        <div id="vulkanWarning" class="alert alert-warning alert-dismissible d-none mb-4">
+            <i class="bi bi-gpu-card me-2"></i>
+            <strong>Vulkan driver misconfigured.</strong>
+            Your container's Vulkan is running on the software rasterizer (<code>llvmpipe</code>).
+            Dolby Vision Profile 5 thumbnails will contain a <strong>green overlay</strong> due to a known libplacebo rendering bug on llvmpipe. Non-Dolby-Vision content is not affected.
+            <br class="mb-1">
+            <span class="text-muted small">
+                To fix, forward a render node to the container:<br>
+                Docker run: add <code>--device /dev/dri:/dev/dri</code>.<br>
+                Docker Compose: add <code>devices: ["/dev/dri:/dev/dri"]</code> under the service.<br>
+                This works even if you are using NVIDIA for decoding — Mesa's Intel/AMD Vulkan driver will be picked up from the render node and replace the llvmpipe fallback.<br>
+                See the <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md#troubleshooting" target="_blank" rel="noopener" class="alert-link">troubleshooting guide</a> for details.
+            </span>
+            <button type="button" class="btn-close" aria-label="Close" onclick="dismissVulkanWarning()"></button>
         </div>
 
         <!-- Plex Connection -->
@@ -526,6 +541,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // the GPU status fetch in parallel but render after both resolve.
     const gpuPromise = fetchGpuStatus();
     checkTimezoneWarning();
+    checkVulkanWarning();
     Promise.all([
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
         loadLibraries(),
@@ -535,11 +551,16 @@ document.addEventListener('DOMContentLoaded', function() {
         bootstrap.ScrollSpy.getInstance(document.body)?.refresh();
     });
 
-    // Track changes
-    document.querySelectorAll('input, select').forEach(el => {
-        el.addEventListener('change', markDirty);
-        el.addEventListener('input', markDirty);
-    });
+    // Auto-save: all stateful inputs/selects inside .settings-content
+    // kick the shared debounced save helper.
+    if (typeof window.bindAutoSave === 'function') {
+        window.bindAutoSave({
+            containerSelector: '.settings-content',
+            saveFn: saveAllSettings,
+            indicatorId: 'saveStatusIndicator',
+            skipSelectors: [],
+        });
+    }
 
     // Quality slider display
     document.getElementById('thumbnailQuality').addEventListener('input', function() {
@@ -561,8 +582,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-let isDirty = false;
-
 const tonemapDescriptions = {
     hable: 'Preserves dark and bright details with a filmic look. Good all-round choice.',
     reinhard: 'Produces the brightest thumbnails, closest to how SDR content looks. Great if your HDR thumbnails look too dark.',
@@ -577,9 +596,13 @@ function updateTonemapDescription() {
     document.getElementById('tonemapDescription').textContent = tonemapDescriptions[algo] || '';
 }
 
+// Programmatic edits (dynamic rows, GPU detection, etc.) call markDirty
+// to tell auto-save a change happened.  With the auto-save helper, we just
+// kick the shared per-container debounce chain.
 function markDirty() {
-    isDirty = true;
-    document.getElementById('saveAllBtn').disabled = false;
+    if (typeof window.autoSaveFlush === 'function') {
+        window.autoSaveFlush('.settings-content');
+    }
 }
 
 async function loadSettings() {
@@ -677,7 +700,6 @@ function createPathMappingRow(row) {
         if (rows.length > 1) div.remove();
         markDirty();
     });
-    div.querySelectorAll('input').forEach(inp => inp.addEventListener('input', markDirty));
     const localInput = div.querySelector('.path-mapping-local');
     localInput.addEventListener('input', debounceValidateLocalPath(localInput));
     if (row.local_prefix) validateLocalPath(localInput);
@@ -772,8 +794,6 @@ function createExcludePathRow(row) {
         div.remove();
         markDirty();
     });
-    div.querySelectorAll('input, select').forEach(el => el.addEventListener('input', markDirty));
-    div.querySelectorAll('input, select').forEach(el => el.addEventListener('change', markDirty));
     return div;
 }
 
@@ -1081,51 +1101,38 @@ async function loadVersionInfo() {
 }
 
 async function saveAllSettings() {
-    const btn = document.getElementById('saveAllBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+    // Collect selected libraries
+    const libraries = [];
+    document.querySelectorAll('#libraryList input:checked').forEach(cb => {
+        libraries.push(cb.value);
+    });
 
-    try {
-        // Collect selected libraries
-        const libraries = [];
-        document.querySelectorAll('#libraryList input:checked').forEach(cb => {
-            libraries.push(cb.value);
-        });
+    const settings = {
+        plex_url: document.getElementById('plexUrl').value,
+        plex_verify_ssl: document.getElementById('plexVerifySsl').checked,
+        plex_config_folder: document.getElementById('plexConfigFolder').value,
+        path_mappings: collectPathMappingRows(),
+        exclude_paths: collectExcludePathRows(),
+        gpu_config: collectGpuConfig(),
+        cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+        cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
+        thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
+        thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
+        tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
+        selected_libraries: libraries,
+        log_level: document.getElementById('logLevel').value,
+        log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
+        log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
+        job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
+    };
 
-        const settings = {
-            plex_url: document.getElementById('plexUrl').value,
-            plex_verify_ssl: document.getElementById('plexVerifySsl').checked,
-            plex_config_folder: document.getElementById('plexConfigFolder').value,
-            path_mappings: collectPathMappingRows(),
-            exclude_paths: collectExcludePathRows(),
-            gpu_config: collectGpuConfig(),
-            cpu_threads: parseInt(document.getElementById('cpuThreads').value),
-            cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
-            thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
-            thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
-            tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
-            selected_libraries: libraries,
-            log_level: document.getElementById('logLevel').value,
-            log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
-            log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
-            job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
-        };
+    const result = await new SettingsManager().save(settings);
 
-        const result = await new SettingsManager().save(settings);
-
-        isDirty = false;
-        if (result.warning) {
-            showToast(result.warning, 'warning');
-        } else {
-            showToast('Settings saved successfully', 'success');
-        }
-
-    } catch (error) {
-        showToast('Failed to save settings: ' + error.message, 'danger');
+    if (result && result.warning) {
+        // Surface non-fatal clamps/validation notes as a toast in addition
+        // to the Saved indicator.
+        showToast(result.warning, 'warning');
     }
-
-    btn.disabled = !isDirty;
-    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
 }
 
 async function testConnection() {
@@ -1229,6 +1236,23 @@ function checkTimezoneWarning() {
 function dismissTimezoneWarning() {
     sessionStorage.setItem('tz_warning_dismissed', '1');
     document.getElementById('timezoneWarning').classList.add('d-none');
+}
+
+function checkVulkanWarning() {
+    if (sessionStorage.getItem('vk_warning_dismissed')) return;
+    fetch('/api/system/vulkan')
+        .then(r => r.json())
+        .then(data => {
+            if (data.warning) {
+                document.getElementById('vulkanWarning').classList.remove('d-none');
+            }
+        })
+        .catch(() => {});
+}
+
+function dismissVulkanWarning() {
+    sessionStorage.setItem('vk_warning_dismissed', '1');
+    document.getElementById('vulkanWarning').classList.add('d-none');
 }
 </script>
 {% endblock %}

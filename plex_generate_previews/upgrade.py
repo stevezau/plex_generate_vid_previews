@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 2
+_CURRENT_SCHEMA_VERSION = 4
 
 # -------------------------------------------------------------------------
 # Env-var-to-settings migration map
@@ -171,6 +171,14 @@ def _migrate_schema(sm) -> None:
               key exists without ``gpu_config``, detect GPUs and build
               the per-GPU structure.  Removes stale ``gpu_threads`` and
               ``ffmpeg_threads`` flat keys.
+        v3 -- Seeds defaults for the Plex direct webhook (historical —
+              the Recently Added keys previously seeded here are now
+              cleaned up by v4 since the scanner is a first-class
+              schedule type).
+        v4 -- Converts the beta-era ``recently_added_*`` settings into
+              real schedule entries and deletes the legacy keys.  Also
+              removes the obsolete ``system_recently_added_scan``
+              APScheduler job if it exists.
     """
     current = sm.get("_schema_version", 1)
     if current >= _CURRENT_SCHEMA_VERSION:
@@ -180,6 +188,12 @@ def _migrate_schema(sm) -> None:
 
     if current < 2:
         all_notes += _migrate_to_v2(sm)
+
+    if current < 3:
+        all_notes += _migrate_to_v3(sm)
+
+    if current < 4:
+        all_notes += _migrate_to_v4(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -257,6 +271,127 @@ def _migrate_to_v2(sm) -> list:
     if updates or deletes:
         sm.apply_changes(updates=updates, deletes=deletes)
 
+    return notes
+
+
+def _migrate_to_v3(sm) -> list:
+    """Seed defaults for the Plex direct webhook (off by default).
+
+    The legacy Recently Added keys that used to be seeded here are now
+    cleaned up by ``_migrate_to_v4`` since the scanner is a first-class
+    schedule type.
+    """
+    notes: list[str] = []
+    updates: Dict[str, Any] = {}
+
+    plex_webhook_defaults = {
+        "plex_webhook_enabled": False,
+        "plex_webhook_public_url": "",
+    }
+    for key, default in plex_webhook_defaults.items():
+        if sm.get(key) is None:
+            updates[key] = default
+
+    if updates:
+        sm.apply_changes(updates=updates)
+        notes.append(f"seeded {len(updates)} auto-trigger default(s)")
+
+    return notes
+
+
+def _migrate_to_v4(sm) -> list:
+    """Convert legacy ``recently_added_*`` settings into schedule entries.
+
+    The Recently Added scanner used to be a hidden APScheduler "system
+    job" with its own settings keys.  It's now a standard schedule type
+    — see ``scheduler.execute_scheduled_job`` for the dispatch branch.
+
+    This migration:
+      1. Reads the legacy ``recently_added_*`` keys.
+      2. If the scanner was enabled, creates equivalent schedule(s)
+         through the existing ``ScheduleManager`` — one per entry in
+         ``recently_added_libraries``, or a single all-libraries
+         schedule when that list is empty.
+      3. Deletes all four legacy keys from settings.
+      4. Best-effort removes the obsolete ``system_recently_added_scan``
+         APScheduler job if it exists in the persistent jobstore.
+    """
+    notes: list[str] = []
+    legacy_keys = [
+        "recently_added_enabled",
+        "recently_added_interval_minutes",
+        "recently_added_lookback_hours",
+        "recently_added_libraries",
+    ]
+    # Nothing to do if none of the legacy keys exist (fresh install).
+    if not any(sm.get(k) is not None for k in legacy_keys):
+        return notes
+
+    enabled = bool(sm.get("recently_added_enabled", False))
+    interval = int(sm.get("recently_added_interval_minutes", 15) or 15)
+    interval = max(5, min(1440, interval))
+    lookback = int(sm.get("recently_added_lookback_hours", 24) or 24)
+    lookback = max(1, min(720, lookback))
+    raw_libs = sm.get("recently_added_libraries", None)
+    library_entries: list[str] = []
+    if isinstance(raw_libs, list):
+        library_entries = [str(v).strip() for v in raw_libs if str(v).strip()]
+
+    if enabled:
+        try:
+            from .web.scheduler import get_schedule_manager
+
+            # Pass the settings manager's config dir explicitly so tests
+            # (and any caller using a non-default CONFIG_DIR) end up with
+            # a ScheduleManager writing to the right jobstore location.
+            manager = get_schedule_manager(config_dir=str(sm.config_dir))
+            if not library_entries:
+                schedule = manager.create_schedule(
+                    name="Recently Added Scanner",
+                    interval_minutes=interval,
+                    library_id=None,
+                    library_name="",
+                    config={
+                        "job_type": "recently_added",
+                        "lookback_hours": lookback,
+                    },
+                    enabled=True,
+                )
+                notes.append(
+                    f"v4: created 1 recently-added schedule ({schedule['id']})"
+                )
+            else:
+                for entry in library_entries:
+                    schedule = manager.create_schedule(
+                        name=f"Recently Added Scanner — {entry}",
+                        interval_minutes=interval,
+                        library_id=entry if entry.isdigit() else None,
+                        library_name=entry if not entry.isdigit() else "",
+                        config={
+                            "job_type": "recently_added",
+                            "lookback_hours": lookback,
+                        },
+                        enabled=True,
+                    )
+                notes.append(
+                    f"v4: created {len(library_entries)} recently-added "
+                    f"schedule(s) from legacy library override"
+                )
+
+            # Best-effort: remove the stale system job if it's still in
+            # the persistent APScheduler jobstore.
+            try:
+                manager.scheduler.remove_job("system_recently_added_scan")
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning(
+                "v4 migration: failed to create recently-added schedule(s): {}",
+                exc,
+            )
+
+    sm.apply_changes(deletes=legacy_keys)
+    notes.append(f"v4: removed {len(legacy_keys)} legacy recently_added_* keys")
     return notes
 
 

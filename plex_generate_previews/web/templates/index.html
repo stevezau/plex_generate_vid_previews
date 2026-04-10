@@ -286,38 +286,19 @@
     </div>
 </div>
 
-<!-- Schedules Section -->
+<!-- Schedules Teaser (links to /schedules) -->
 <div class="row mt-4">
     <div class="col-12">
-        <div class="card">
+        <div class="card" id="scheduleTeaserCard">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-calendar-event me-2"></i>Schedules</span>
-                <button class="btn btn-sm btn-primary" onclick="showNewScheduleModal()">
-                    <i class="bi bi-plus me-1"></i>Add Schedule
-                </button>
+                <a href="{{ url_for('main.schedules_page') }}" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-sliders me-1"></i>Manage schedules
+                </a>
             </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Library</th>
-                                <th>Schedule</th>
-                                <th style="width:100px">Priority</th>
-                                <th>Next Run</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="scheduleList">
-                            <tr>
-                                <td colspan="7" class="text-center text-muted py-4">
-                                    Loading schedules...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+            <div class="card-body" id="scheduleTeaserBody">
+                <div class="text-muted small">
+                    <span class="spinner-border spinner-border-sm me-1"></span>Loading…
                 </div>
             </div>
         </div>
@@ -428,136 +409,6 @@
     </div>
 </div>
 
-<!-- Schedule Modal (Create / Edit) -->
-<div class="modal fade" id="newScheduleModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="scheduleModalTitle"><i class="bi bi-calendar-plus me-2"></i>Add Schedule</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="newScheduleForm">
-                    <div class="mb-3">
-                        <label for="scheduleName" class="form-label">Name</label>
-                        <input type="text" class="form-control" id="scheduleName" placeholder="e.g., Nightly Scan" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="scheduleLibrary" class="form-label">Library</label>
-                        <select class="form-select" id="scheduleLibrary">
-                            <option value="">All Libraries</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Schedule Type</label>
-                        <div class="d-flex gap-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="radio" name="scheduleType" id="scheduleTypeTime" value="specific-time" checked onchange="onScheduleTypeChange()">
-                                <label class="form-check-label" for="scheduleTypeTime">Specific Time</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input" type="radio" name="scheduleType" id="scheduleTypeInterval" value="interval" onchange="onScheduleTypeChange()">
-                                <label class="form-check-label" for="scheduleTypeInterval">Interval</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input" type="radio" name="scheduleType" id="scheduleTypeCron" value="cron" onchange="onScheduleTypeChange()">
-                                <label class="form-check-label" for="scheduleTypeCron">Cron Expression</label>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="scheduleFieldsTime">
-                        <div class="mb-3">
-                            <label for="scheduleTime" class="form-label">Time</label>
-                            <input type="time" class="form-control" id="scheduleTime" value="02:00">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Days</label>
-                            <div class="d-flex flex-wrap gap-2">
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="0" id="daySun">
-                                    <label class="form-check-label" for="daySun">Sun</label>
-                                </div>
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="1" id="dayMon" checked>
-                                    <label class="form-check-label" for="dayMon">Mon</label>
-                                </div>
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="2" id="dayTue" checked>
-                                    <label class="form-check-label" for="dayTue">Tue</label>
-                                </div>
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="3" id="dayWed" checked>
-                                    <label class="form-check-label" for="dayWed">Wed</label>
-                                </div>
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="4" id="dayThu" checked>
-                                    <label class="form-check-label" for="dayThu">Thu</label>
-                                </div>
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="5" id="dayFri" checked>
-                                    <label class="form-check-label" for="dayFri">Fri</label>
-                                </div>
-                                <div class="form-check">
-                                    <input class="form-check-input schedule-day" type="checkbox" value="6" id="daySat">
-                                    <label class="form-check-label" for="daySat">Sat</label>
-                                </div>
-                            </div>
-                            <div class="form-text">Select which days to run</div>
-                        </div>
-                    </div>
-                    <div id="scheduleFieldsInterval" class="d-none">
-                        <div class="mb-3">
-                            <label for="scheduleIntervalValue" class="form-label">Run every</label>
-                            <div class="input-group">
-                                <input type="number" class="form-control" id="scheduleIntervalValue" min="1" value="2" placeholder="2">
-                                <select class="form-select" id="scheduleIntervalUnit" style="max-width: 120px;">
-                                    <option value="minutes">Minutes</option>
-                                    <option value="hours" selected>Hours</option>
-                                </select>
-                            </div>
-                            <div class="form-text">How often the schedule should repeat</div>
-                        </div>
-                    </div>
-                    <div id="scheduleFieldsCron" class="d-none">
-                        <div class="mb-3">
-                            <label for="scheduleCronInput" class="form-label">Cron Expression</label>
-                            <input type="text" class="form-control font-monospace" id="scheduleCronInput" placeholder="0 */2 * * *">
-                            <div class="form-text">
-                                Format: <code>minute hour day-of-month month day-of-week</code><br>
-                                Examples: <code>0 */2 * * *</code> (every 2 hrs), <code>0,30 * * * *</code> (every 30 min), <code>0 3 * * 0</code> (Sun 3 AM)
-                            </div>
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="schedulePriority" class="form-label">Job Priority</label>
-                        <select class="form-select" id="schedulePriority">
-                            <option value="1">High</option>
-                            <option value="2" selected>Normal</option>
-                            <option value="3">Low</option>
-                        </select>
-                        <div class="form-text">Priority assigned to jobs created by this schedule</div>
-                    </div>
-                    <div class="mb-3">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="scheduleEnabled" checked>
-                            <label class="form-check-label" for="scheduleEnabled">
-                                Enable schedule
-                            </label>
-                        </div>
-                    </div>
-                    <input type="hidden" id="scheduleCron" value="">
-                    <input type="hidden" id="scheduleEditId" value="">
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="scheduleSubmitBtn" onclick="saveSchedule()">
-                    <i class="bi bi-check me-1"></i>Create Schedule
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
 
 <!-- Job Logs Modal -->
 <div class="modal fade" id="logsModal" tabindex="-1">

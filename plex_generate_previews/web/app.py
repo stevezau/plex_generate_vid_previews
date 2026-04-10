@@ -371,10 +371,12 @@ def create_app(config_dir: str = None) -> Flask:
         "api.rescan_gpus",
         # Libraries
         "api.get_libraries",
-        # Webhooks — external POST from Radarr/Sonarr/Custom
+        # Webhooks — external POST from Radarr/Sonarr/Custom/Plex
         "webhooks_bp.radarr_webhook",
         "webhooks_bp.sonarr_webhook",
+        "webhooks_bp.sportarr_webhook",
         "webhooks_bp.custom_webhook",
+        "webhooks_bp.plex_webhook",
         "webhooks_bp.get_webhook_history",
         "webhooks_bp.clear_webhook_history",
         "webhooks_bp.get_pending_webhooks",

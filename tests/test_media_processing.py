@@ -1786,7 +1786,13 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV Profile 5 (no backward compat) should use libplacebo."""
+        """DV Profile 5 on an Intel host uses libplacebo with software HEVC decode.
+
+        NVIDIA hosts take the NVDEC path (see
+        ``test_generate_images_dv_profile5_nvidia_uses_nvdec`` below).  All
+        other vendors fall through to software decode + libplacebo because
+        HW decode was only validated for NVDEC on this path.
+        """
         args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
             "/test/dv_profile5.mkv",
@@ -1809,17 +1815,18 @@ class TestProactiveDVSkip:
         assert "-init_hw_device" in args
         assert args[args.index("-init_hw_device") + 1] == "vulkan=vk"
         assert "-filter_hw_device" in args
+        # Intel on DV5 stays on software decode — VAAPI benchmarked
+        # slower than SW on Intel UHD 770 for this filter graph.
         assert "-hwaccel" not in args
         assert "-skip_frame:v" not in args
 
-        # Regression guard for issue #212: DV P5 uses software HEVC decode
-        # (HW decoders mishandle the enhancement layer), so the video decoder
-        # must NOT be capped to 1 thread — doing so pinned 4K HEVC to a
-        # single core and produced ~0.8x realtime on otherwise capable
-        # hardware.  Even when a GPU is configured, the libplacebo/Vulkan
-        # path skips hwaccel, so no thread-cap protection is needed.
+        # Regression guard for issue #212: on the software-decode DV5 path
+        # the video decoder must NOT be capped to 1 thread — doing so
+        # pinned 4K HEVC to a single core and produced ~0.8x realtime on
+        # otherwise capable hardware.  NVDEC (separate test) DOES re-apply
+        # the cap because its decoder work is offloaded to hardware.
         assert "-threads:v" not in args, (
-            "DV Profile 5 uses software decode — the video-thread cap must be omitted"
+            "DV Profile 5 software decode must not cap the video-thread pool"
         )
 
         vf = args[args.index("-vf") + 1]
@@ -1827,6 +1834,135 @@ class TestProactiveDVSkip:
         assert "hwupload" in vf
         assert "colorspace=bt709" not in vf
         assert "zscale" not in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_nvidia_uses_nvdec(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV Profile 5 on NVIDIA hosts decodes via NVDEC before libplacebo.
+
+        Benchmarked 2026-04 against ``linuxserver/ffmpeg:8.0.1-cli-ls56``:
+        5 minutes of 4K HEVC DV Profile 5 content runs at ~12x on NVDEC vs
+        ~4x on software decode — a ~3x end-to-end speedup — with
+        visually identical output after the libplacebo ``apply_dolbyvision``
+        tone map.  Any code change that silently drops ``-hwaccel cuda``
+        from this path would regress the speedup.
+        """
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5_nvidia.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu="NVIDIA",
+        )
+
+        # libplacebo path still used for tone mapping
+        assert "-init_hw_device" in args
+        assert args[args.index("-init_hw_device") + 1] == "vulkan=vk"
+        assert "-filter_hw_device" in args
+        assert args[args.index("-filter_hw_device") + 1] == "vk"
+
+        # NVDEC is attached BEFORE the input file
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "cuda"
+        assert args.index("-hwaccel") < args.index("-i")
+
+        # HW decode is active, so the video-thread cap reapplies to
+        # prevent decoder thread oversubscription across GPU workers.
+        assert "-threads:v" in args
+        assert args[args.index("-threads:v") + 1] == "1"
+
+        # RPU side-data still has inter-frame dependencies even under
+        # NVDEC — keyframe-only decode must stay off.
+        assert "-skip_frame:v" not in args
+
+        # Filter graph is unchanged: libplacebo does the DV tone map.
+        vf = args[args.index("-vf") + 1]
+        assert "libplacebo" in vf
+        assert "hwupload" in vf
+        assert "zscale" not in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_cpu_skips_hwaccel(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV Profile 5 with no GPU configured stays on software decode."""
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5_cpu.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu=None,
+        )
+
+        assert "-init_hw_device" in args
+        assert "-hwaccel" not in args
+        assert "-threads:v" not in args
+        assert "-skip_frame:v" not in args
+        vf = args[args.index("-vf") + 1]
+        assert "libplacebo" in vf
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")

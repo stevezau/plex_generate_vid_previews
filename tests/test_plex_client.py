@@ -845,6 +845,34 @@ class TestGetLibrarySectionsExtended:
 
         assert len(sections) == 1
 
+    def test_get_library_sections_progress_callback(self, mock_config):
+        """progress_callback receives a 'Listing' tick and one per in-scope section."""
+        mock_plex = MagicMock()
+        mock_config.plex_libraries = []
+        mock_config.plex_library_ids = []
+
+        section1 = MagicMock()
+        section1.title = "Movies"
+        section1.key = 1
+        section1.METADATA_TYPE = "movie"
+        section1.search.return_value = []
+
+        section2 = MagicMock()
+        section2.title = "TV"
+        section2.key = 2
+        section2.METADATA_TYPE = "episode"
+        section2.search.return_value = []
+
+        mock_plex.library.sections.return_value = [section1, section2]
+
+        progress = MagicMock()
+        list(get_library_sections(mock_plex, mock_config, progress_callback=progress))
+
+        messages = [call.args[2] for call in progress.call_args_list if call.args]
+        assert any("Listing Plex libraries" in m for m in messages)
+        assert any("Querying library 'Movies' (1/2)" in m for m in messages)
+        assert any("Querying library 'TV' (2/2)" in m for m in messages)
+
 
 class TestGetMediaItemsByPaths:
     """Test webhook path-to-Plex-item resolution."""

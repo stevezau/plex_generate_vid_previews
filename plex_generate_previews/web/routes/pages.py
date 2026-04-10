@@ -65,6 +65,13 @@ def webhooks_page():
     return render_template("webhooks.html")
 
 
+@main.route("/schedules")
+@login_required
+def schedules_page():
+    """Schedules management page."""
+    return render_template("schedules.html")
+
+
 @main.route("/bif-viewer")
 @login_required
 def bif_viewer():

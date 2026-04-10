@@ -470,6 +470,116 @@ def _test_hwaccel_functionality(
         return False
 
 
+_VULKAN_DEVICE_CACHE: Optional[str] = None
+_VULKAN_DEVICE_PROBED: bool = False
+
+
+def _probe_vulkan_device() -> Optional[str]:
+    """Return the Vulkan device libplacebo will use, or None on failure.
+
+    Runs a trivial FFmpeg command with ``-init_hw_device vulkan=vk`` at
+    ``-loglevel debug`` and parses the ``Device N selected:`` line emitted
+    by FFmpeg's Vulkan hwcontext to recover the chosen device name.
+
+    Used by :func:`get_vulkan_device_info` to diagnose the "DV Profile 5
+    green overlay" bug: when no real Vulkan ICD is usable (no ``/dev/dri``
+    forwarded, and the NVIDIA Vulkan ICD — although injected by
+    nvidia-container-runtime when the ``graphics`` capability is set — is
+    rejected by the linuxserver/ffmpeg image's bundled Vulkan loader as
+    ``VK_ERROR_INCOMPATIBLE_DRIVER`` due to a loader/driver version skew),
+    FFmpeg falls back to ``llvmpipe`` software Vulkan.  libplacebo on
+    llvmpipe has a buffer-initialisation bug on the DV5 tone-map path that
+    writes a solid green rectangle into part of every frame.
+
+    Returns:
+        The Vulkan device description (e.g. ``"Intel(R) Graphics (RPL-S)"``
+        or ``"llvmpipe (LLVM 18.1.3, 256 bits) (software)"``), or ``None``
+        if Vulkan is unavailable or the probe failed.
+
+    """
+    if not _is_hwaccel_available("vulkan"):
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "debug",
+                "-init_hw_device",
+                "vulkan=vk",
+                "-f",
+                "lavfi",
+                "-i",
+                "nullsrc",
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        logger.debug(f"Vulkan probe failed: {exc}")
+        return None
+    except Exception as exc:
+        logger.debug(f"Vulkan probe raised unexpected exception: {exc}")
+        return None
+    for line in result.stderr.splitlines():
+        # Matches e.g. "[Vulkan @ 0x...] Device 0 selected: Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        # or         "[Vulkan @ 0x...] Device 0 selected: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+        if "Device" in line and "selected:" in line:
+            return line.split("selected:", 1)[1].strip()
+    return None
+
+
+def get_vulkan_device_info() -> dict:
+    """Return cached Vulkan device info for libplacebo diagnostics.
+
+    The underlying probe is cached across calls at module level because it
+    runs a subprocess and its result does not change during the app's
+    lifetime — the container's Vulkan environment is fixed at startup.
+
+    Returns:
+        dict: Contains ``device`` (Vulkan device description string, or
+            ``None`` if Vulkan is unavailable) and ``is_software`` (True
+            when the selected device is a software rasteriser like
+            ``llvmpipe``/``lavapipe``, which triggers the DV5 green
+            overlay bug in libplacebo).  Callers assemble the
+            user-facing warning message themselves.
+
+    """
+    global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
+    if not _VULKAN_DEVICE_PROBED:
+        _VULKAN_DEVICE_CACHE = _probe_vulkan_device()
+        _VULKAN_DEVICE_PROBED = True
+
+    device = _VULKAN_DEVICE_CACHE
+    if device is None:
+        return {"device": None, "is_software": False}
+
+    device_lower = device.lower()
+    is_software = (
+        "llvmpipe" in device_lower
+        or "software" in device_lower
+        or "lavapipe" in device_lower
+    )
+    return {"device": device, "is_software": is_software}
+
+
+def _reset_vulkan_device_cache() -> None:
+    """Testing hook: clear the cached Vulkan probe result.
+
+    Only intended for unit tests that need to rerun the probe with a
+    different mock.
+    """
+    global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
+    _VULKAN_DEVICE_CACHE = None
+    _VULKAN_DEVICE_PROBED = False
+
+
 def _is_wsl2() -> bool:
     """Detect if running on Windows Subsystem for Linux 2 (WSL2).
 

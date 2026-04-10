@@ -37,12 +37,20 @@ def _get_timezone_info() -> dict:
 
     result: dict = {"timezone": system_tz, "tz_env_set": bool(tz_env)}
     if needs_warning:
+        # HTML — the dashboard injects this into an alert via innerHTML
+        # and the help lines need proper breaks to be readable.  The
+        # Settings page has its own static markup for the same message.
         result["warning"] = (
-            "Your container timezone is UTC (default). Scheduled jobs and log "
-            "timestamps may not match your local time. Add "
-            "-v /etc/localtime:/etc/localtime:ro to your Docker run command "
-            "(recommended). Alternatively, set -e TZ=America/New_York "
-            "(replace with your timezone)."
+            "Your container timezone is UTC (default). "
+            "Scheduled jobs and log timestamps may not match your local time."
+            "<br><br>"
+            '<span class="small">To fix, either:</span>'
+            '<ul class="small mb-0 mt-1">'
+            "<li>Add <code>-v /etc/localtime:/etc/localtime:ro</code> to your "
+            "Docker run command <em>(recommended)</em></li>"
+            "<li>Or set <code>-e TZ=America/New_York</code> "
+            "(replace with your timezone)</li>"
+            "</ul>"
         )
     return result
 
@@ -54,6 +62,60 @@ def get_timezone():
     No authentication required — timezone is not sensitive.
     """
     return jsonify(_get_timezone_info())
+
+
+def _get_vulkan_info() -> dict:
+    """Return Vulkan device info and warn if libplacebo will hit the DV5 green bug.
+
+    Calls ``gpu_detection.get_vulkan_device_info()`` which is cached at
+    module level — no subprocess work on subsequent calls.  Builds an
+    HTML ``warning`` key when the container's Vulkan is running on the
+    software rasteriser (``llvmpipe``), which has a buffer-initialisation
+    bug on libplacebo's Dolby Vision tone-map path that writes a green
+    rectangle into roughly the top-left quadrant of every frame.
+
+    The usual fix is to forward a ``/dev/dri`` render node so Mesa's
+    Intel/AMD Vulkan driver is picked up instead of llvmpipe.
+    """
+    from ...gpu_detection import get_vulkan_device_info
+
+    info = get_vulkan_device_info()
+    device = info.get("device")
+    is_software = info.get("is_software", False)
+
+    result: dict = {"device": device}
+    if is_software:
+        # HTML — the dashboard injects this into an alert via innerHTML.
+        # The Settings page has its own static markup for the same
+        # message (see templates/settings.html).
+        result["warning"] = (
+            "Your container's Vulkan is running on the software rasterizer "
+            "(<code>llvmpipe</code>). "
+            "Dolby Vision Profile 5 thumbnails will contain a <strong>green "
+            "overlay</strong> because of a known libplacebo rendering bug on "
+            "llvmpipe. Non-Dolby-Vision content is not affected."
+            "<br><br>"
+            '<span class="small">To fix, forward a render node to the '
+            "container:</span>"
+            '<ul class="small mb-0 mt-1">'
+            "<li>Docker run: add <code>--device /dev/dri:/dev/dri</code></li>"
+            "<li>Docker Compose: add <code>devices: [&quot;/dev/dri:/dev/dri&quot;]</code> "
+            "under the service</li>"
+            "</ul>"
+            '<span class="small">This works even if you are using NVIDIA '
+            "for decoding. Mesa's Intel/AMD Vulkan driver will be picked up "
+            "from the render node and replace the llvmpipe fallback.</span>"
+        )
+    return result
+
+
+@api.route("/system/vulkan")
+def get_vulkan():
+    """Return container Vulkan device info and warn if misconfigured for DV5.
+
+    No authentication required — Vulkan device info is not sensitive.
+    """
+    return jsonify(_get_vulkan_info())
 
 
 @api.route("/system/rescan-gpus", methods=["POST"])
@@ -89,6 +151,7 @@ def get_system_status():
         running_job = job_manager.get_running_job()
 
         tz_info = _get_timezone_info()
+        vk_info = _get_vulkan_info()
         resp = {
             "gpus": gpus,
             "gpu_stats": [],
@@ -97,6 +160,8 @@ def get_system_status():
         }
         if "warning" in tz_info:
             resp["timezone_warning"] = tz_info["warning"]
+        if "warning" in vk_info:
+            resp["vulkan_warning"] = vk_info["warning"]
 
         return jsonify(resp)
     except Exception as e:

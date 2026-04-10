@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Builder — compile native extensions and build wheels
 # =============================================================================
-FROM linuxserver/ffmpeg:8.0.1-cli-ls56 AS builder
+FROM linuxserver/ffmpeg:8.0.1-cli-ls64 AS builder
 
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 

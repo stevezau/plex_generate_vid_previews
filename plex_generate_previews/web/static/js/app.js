@@ -133,7 +133,7 @@ function initDashboard() {
     loadJobs().then(() => loadWorkerStatuses());
     refreshStatus();
     loadLibraries();
-    loadSchedules();
+    loadSchedules().then(() => maybeAutoOpenScheduleEdit());
     loadJobStats();
     loadWorkerConfigCounts();
     loadProcessingState();
@@ -448,9 +448,12 @@ async function loadLibraries() {
         updateLibrarySelects();
     } catch (error) {
         console.error('Failed to load libraries:', error);
-        const detail = error.message || 'Unknown error';
-        document.getElementById('libraryList').innerHTML =
-            `<div class="text-danger small">Failed to load libraries: ${detail}</div>`;
+        const listEl = document.getElementById('libraryList');
+        if (listEl) {
+            const detail = error.message || 'Unknown error';
+            listEl.innerHTML =
+                `<div class="text-danger small">Failed to load libraries: ${detail}</div>`;
+        }
     }
 }
 
@@ -501,6 +504,55 @@ async function loadSchedules() {
         console.error('Failed to load schedules:', error);
     }
 }
+
+// Check for ?editSchedule=<id> in the URL on page load — when a user
+// clicked "Edit" on a scanner from the Webhooks page we want to scroll
+// to the schedules table and open the edit modal for that specific
+// schedule.  Only does work when the full schedule table is on the
+// page (the Schedules page); on the Dashboard it redirects to /schedules
+// so stale links still land in the right place.
+function maybeAutoOpenScheduleEdit() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const editId = params.get('editSchedule');
+        if (!editId) return;
+
+        const scheduleTable = document.getElementById('scheduleList');
+        if (!scheduleTable) {
+            // Dashboard or any page without the full table — redirect to
+            // the Schedules page and let it handle the edit.
+            window.location.replace('/schedules?editSchedule=' + encodeURIComponent(editId));
+            return;
+        }
+
+        // Scroll the schedules card into view with a bit of breathing
+        // room below the sticky navbar.
+        const row = scheduleTable.closest('.card');
+        const navbar = document.querySelector('.navbar.sticky-top');
+        const navHeight = navbar ? navbar.offsetHeight : 56;
+        const target = (row || scheduleTable).getBoundingClientRect().top + window.scrollY - navHeight - 16;
+        window.scrollTo({ top: target < 0 ? 0 : target, behavior: 'smooth' });
+
+        if (schedules.some(s => s.id === editId)) {
+            // Tiny delay so the scroll animation starts before the modal
+            // opens — feels smoother than a dead-snap.
+            setTimeout(() => showEditScheduleModal(editId), 200);
+        } else {
+            console.warn('editSchedule=' + editId + ' not found in schedules list');
+            showToast('Not found', 'Schedule not found — it may have been deleted.', 'warning');
+        }
+
+        // Clean the query param from the URL so a refresh doesn't re-trigger.
+        if (window.history && window.history.replaceState) {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('editSchedule');
+            window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+        }
+    } catch (e) {
+        console.error('maybeAutoOpenScheduleEdit failed:', e);
+    }
+}
+
 
 async function loadJobStats() {
     try {
@@ -627,8 +679,13 @@ function updateSystemStatus(status) {
             tzRow.className = 'row';
             tzRow.innerHTML = '<div class="col-12 mb-3">' +
                 '<div class="alert alert-warning alert-dismissible mb-0" id="timezoneWarningBanner">' +
-                '<i class="bi bi-clock-history me-2"></i>' +
-                '<strong>Timezone not configured.</strong> ' + status.timezone_warning +
+                '<div class="d-flex align-items-start">' +
+                '<i class="bi bi-clock-history me-2 mt-1"></i>' +
+                '<div>' +
+                '<strong>Timezone not configured.</strong><br>' +
+                status.timezone_warning +
+                '</div>' +
+                '</div>' +
                 '<button type="button" class="btn-close" aria-label="Close" ' +
                 'onclick="sessionStorage.setItem(\'tz_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
                 '</div></div>';
@@ -638,6 +695,33 @@ function updateSystemStatus(status) {
     } else if (tzBanner) {
         var tzRowEl = document.getElementById('timezoneWarningRow');
         if (tzRowEl) tzRowEl.remove();
+    }
+
+    // Vulkan / libplacebo warning (DV Profile 5 green overlay bug)
+    var vkBanner = document.getElementById('vulkanWarningBanner');
+    if (status.vulkan_warning && !sessionStorage.getItem('vk_warning_dismissed')) {
+        if (!vkBanner) {
+            var vkRow = document.createElement('div');
+            vkRow.id = 'vulkanWarningRow';
+            vkRow.className = 'row';
+            vkRow.innerHTML = '<div class="col-12 mb-3">' +
+                '<div class="alert alert-warning alert-dismissible mb-0" id="vulkanWarningBanner">' +
+                '<div class="d-flex align-items-start">' +
+                '<i class="bi bi-gpu-card me-2 mt-1"></i>' +
+                '<div>' +
+                '<strong>Vulkan driver misconfigured.</strong><br>' +
+                status.vulkan_warning +
+                '</div>' +
+                '</div>' +
+                '<button type="button" class="btn-close" aria-label="Close" ' +
+                'onclick="sessionStorage.setItem(\'vk_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
+                '</div></div>';
+            var statusEl2 = document.getElementById('systemStatus');
+            if (statusEl2) statusEl2.closest('.row').before(vkRow);
+        }
+    } else if (vkBanner) {
+        var vkRowEl = document.getElementById('vulkanWarningRow');
+        if (vkRowEl) vkRowEl.remove();
     }
 
     renderDashboardGpuConfig();
@@ -791,11 +875,17 @@ async function scaleGpuWorkers(device, direction) {
 }
 
 async function updateLibraryList() {
+    const listEl = document.getElementById('libraryList');
+    // Only rendered on the Settings page.  Other pages that call
+    // loadLibraries() (e.g. Schedules) still need updateLibrarySelects
+    // to run, so bail out silently instead of throwing.
+    if (!listEl) return;
+
     let html = '';
 
     if (libraries.length === 0) {
         html = '<div class="text-muted small">No libraries found</div>';
-        document.getElementById('libraryList').innerHTML = html;
+        listEl.innerHTML = html;
         return;
     }
 
@@ -836,7 +926,7 @@ async function updateLibraryList() {
         `;
     }
 
-    document.getElementById('libraryList').innerHTML = html;
+    listEl.innerHTML = html;
 }
 
 function updateLibrarySelects() {
@@ -2082,8 +2172,77 @@ function describeSchedule(triggerType, triggerValue) {
     return triggerValue;
 }
 
+// Compact schedule summary for the Dashboard teaser card.  Shows enabled
+// count + next upcoming run, or a "no schedules yet" prompt when empty.
+// The Schedules page is the authoritative place for CRUD — this is just
+// an at-a-glance pointer.
+function updateScheduleTeaser() {
+    const body = document.getElementById('scheduleTeaserBody');
+    if (!body) return;
+
+    if (!schedules || schedules.length === 0) {
+        body.innerHTML =
+            '<div class="d-flex align-items-center gap-2 text-muted small">' +
+            '<i class="bi bi-calendar-x"></i>' +
+            '<span>No schedules configured.</span>' +
+            '<a href="/schedules" class="ms-auto">Create one →</a>' +
+            '</div>';
+        return;
+    }
+
+    const enabled = schedules.filter(s => s.enabled !== false);
+    const upcoming = enabled
+        .filter(s => s.next_run)
+        .sort((a, b) => new Date(a.next_run) - new Date(b.next_run));
+    const nextOne = upcoming[0] || null;
+
+    const totalLabel = schedules.length === 1 ? '1 schedule' : schedules.length + ' schedules';
+    const enabledLabel = enabled.length === schedules.length
+        ? ''
+        : ' (' + enabled.length + ' enabled)';
+
+    let nextHtml = '<span class="text-muted">no upcoming runs</span>';
+    if (nextOne) {
+        const dt = new Date(nextOne.next_run);
+        const rel = _formatRelativeToNow(dt);
+        nextHtml = '<strong>' + escapeHtml(nextOne.name) + '</strong> ' +
+            '<span class="text-muted">' + escapeHtml(rel) + '</span>';
+    }
+
+    body.innerHTML =
+        '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2">' +
+        '<div>' +
+        '<div class="small text-muted text-uppercase" style="letter-spacing:0.05em;font-size:0.72rem;">Next run</div>' +
+        '<div>' + nextHtml + '</div>' +
+        '</div>' +
+        '<div class="text-end">' +
+        '<div class="small text-muted text-uppercase" style="letter-spacing:0.05em;font-size:0.72rem;">Configured</div>' +
+        '<div>' + totalLabel + enabledLabel + '</div>' +
+        '</div>' +
+        '</div>';
+}
+
+function _formatRelativeToNow(dt) {
+    const diffMs = dt.getTime() - Date.now();
+    const absMs = Math.abs(diffMs);
+    const past = diffMs < 0;
+    if (absMs < 60000) return past ? 'just now' : 'in <1 min';
+    const mins = Math.floor(absMs / 60000);
+    if (mins < 60) return past ? mins + 'm ago' : 'in ' + mins + ' min';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return past ? hours + 'h ago' : 'in ' + hours + 'h';
+    const days = Math.floor(hours / 24);
+    return past ? days + 'd ago' : 'in ' + days + 'd';
+}
+
 function updateScheduleList() {
+    // Always update the teaser card if it exists (Dashboard).
+    updateScheduleTeaser();
+
+    // Full schedule table only lives on the Schedules page.  When the
+    // tbody isn't in the DOM, there's nothing else to render.
     const tbody = document.getElementById('scheduleList');
+    if (!tbody) return;
 
     if (schedules.length === 0) {
         tbody.innerHTML = `
@@ -2111,9 +2270,17 @@ function updateScheduleList() {
         const schedPriLabel = PRIORITY_LABELS[schedPri] || 'Normal';
         const schedPriBadge = PRIORITY_BADGE_CLASS[schedPri] || 'bg-primary';
 
+        // Recently-added schedules get a subtle primary badge next to
+        // the name so users can tell them apart from full-library scans.
+        const cfg = schedule.config || {};
+        const isRecentlyAdded = cfg.job_type === 'recently_added';
+        const typeBadge = isRecentlyAdded
+            ? ' <span class="badge bg-primary bg-opacity-25 text-primary" title="Scans items added in the last ' + (cfg.lookback_hours || 1) + 'h"><i class="bi bi-arrow-repeat me-1"></i>Recently Added</span>'
+            : '';
+
         html += `
             <tr>
-                <td>${escapeHtml(schedule.name)}</td>
+                <td>${escapeHtml(schedule.name)}${typeBadge}</td>
                 <td>${escapeHtml(schedule.library_name) || 'All Libraries'}</td>
                 <td><code>${escapeHtml(cronDisplay)}</code></td>
                 <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
@@ -2494,6 +2661,27 @@ function onScheduleTypeChange() {
     document.getElementById('scheduleFieldsCron').classList.toggle('d-none', selected !== 'cron');
 }
 
+function onScanModeChange() {
+    const selected = document.querySelector('input[name="scanMode"]:checked').value;
+    const lookbackGroup = document.getElementById('scheduleLookbackGroup');
+    if (lookbackGroup) {
+        lookbackGroup.style.display = selected === 'recently_added' ? '' : 'none';
+    }
+    // When flipping to recently-added in "Add" mode with untouched defaults,
+    // nudge the trigger type to Interval and pre-fill 15 minutes — that's
+    // the canonical shape of a Recently Added scanner.
+    if (selected === 'recently_added') {
+        const editId = document.getElementById('scheduleEditId').value;
+        const intervalInput = document.getElementById('scheduleIntervalValue');
+        if (!editId && intervalInput && intervalInput.value === '2') {
+            document.getElementById('scheduleTypeInterval').checked = true;
+            intervalInput.value = '15';
+            document.getElementById('scheduleIntervalUnit').value = 'minutes';
+            onScheduleTypeChange();
+        }
+    }
+}
+
 function _getSelectedScheduleType() {
     return document.querySelector('input[name="scheduleType"]:checked').value;
 }
@@ -2505,6 +2693,11 @@ function _resetScheduleForm() {
     document.getElementById('scheduleEditId').value = '';
     document.getElementById('scheduleEnabled').checked = true;
     document.getElementById('schedulePriority').value = '2';
+
+    // Reset scan mode to Full library and hide lookback group
+    document.getElementById('scanModeFull').checked = true;
+    document.getElementById('scheduleLookback').value = '1';
+    onScanModeChange();
 
     // Reset schedule type to Specific Time
     document.getElementById('scheduleTypeTime').checked = true;
@@ -2550,6 +2743,20 @@ function showEditScheduleModal(scheduleId) {
     document.getElementById('scheduleLibrary').value = schedule.library_id || '';
     document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
     document.getElementById('schedulePriority').value = String(schedule.priority || 2);
+
+    // Pre-fill scan mode + lookback from the schedule's config
+    const cfg = schedule.config || {};
+    if (cfg.job_type === 'recently_added') {
+        document.getElementById('scanModeRecent').checked = true;
+        const lookbackSelect = document.getElementById('scheduleLookback');
+        const lookbackVal = String(cfg.lookback_hours || 1);
+        if (Array.from(lookbackSelect.options).some(o => o.value === lookbackVal)) {
+            lookbackSelect.value = lookbackVal;
+        }
+    } else {
+        document.getElementById('scanModeFull').checked = true;
+    }
+    onScanModeChange();
 
     if (schedule.trigger_type === 'interval' && schedule.trigger_value) {
         // Interval schedule: populate interval fields
@@ -2609,13 +2816,23 @@ async function saveSchedule() {
     const scheduleType = _getSelectedScheduleType();
     const libraryId = document.getElementById('scheduleLibrary').value;
     const library = libraries.find(l => l.id === libraryId);
+    const scanMode = document.querySelector('input[name="scanMode"]:checked').value;
+
+    // Build the config blob — recently-added schedules carry their
+    // lookback_hours value through the same config dict that user
+    // schedules already use.
+    const scheduleConfig = { job_type: scanMode };
+    if (scanMode === 'recently_added') {
+        scheduleConfig.lookback_hours = parseFloat(document.getElementById('scheduleLookback').value) || 1;
+    }
 
     const payload = {
         name: name,
         library_id: libraryId || null,
         library_name: library ? library.name : 'All Libraries',
         enabled: document.getElementById('scheduleEnabled').checked,
-        priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2
+        priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2,
+        config: scheduleConfig,
     };
 
     if (scheduleType === 'specific-time') {
