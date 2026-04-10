@@ -523,6 +523,34 @@
         </div>
     </div>
 </div>
+
+<!-- Plex Server Picker Modal (shown after re-auth when multiple servers
+     or connection URLs are available). -->
+<div class="modal fade" id="plexServerPickerModal" tabindex="-1" aria-labelledby="plexServerPickerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="plexServerPickerLabel">
+                    <i class="bi bi-hdd-network me-2"></i>Pick a Plex server
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">
+                    Your Plex account has more than one server or connection URL. Pick the one this app
+                    should use. If you're running in Docker, prefer the <strong>Local</strong> URL — the
+                    container typically can't reach your Plex server over its public URL.
+                </p>
+                <div id="plexServerPickerList" class="d-flex flex-column gap-3">
+                    <!-- Populated by _renderPlexServerPicker -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -1159,13 +1187,213 @@ async function testConnection() {
     }
 }
 
+// Pick the best Plex server from the list returned by /api/plex/servers.
+// Preference order: owned+local > owned > first.  Returns null if the
+// list is empty.
+function _pickBestPlexServer(servers) {
+    if (!Array.isArray(servers) || servers.length === 0) return null;
+    return (
+        servers.find(s => s && s.owned && s.local) ||
+        servers.find(s => s && s.owned) ||
+        servers[0]
+    );
+}
+
+// Build a connection URL from a server record the same way the setup
+// wizard does: prefer the remote ``uri`` for non-local servers, fall
+// back to ``protocol://host:port`` otherwise.
+function _plexServerToUrl(server) {
+    if (!server) return '';
+    const protocol = server.ssl ? 'https' : 'http';
+    if (server.local) {
+        return `${protocol}://${server.host}:${server.port}`;
+    }
+    return server.uri || `${protocol}://${server.host}:${server.port}`;
+}
+
+// Convert a connection record (from /api/plex/servers .connections[]) to
+// a usable URL.  Mirrors setup.html's "prefer uri, else build it" logic.
+function _plexConnectionToUrl(connection) {
+    if (!connection) return '';
+    if (connection.uri) return connection.uri;
+    const protocol = connection.protocol || (connection.ssl ? 'https' : 'http');
+    return `${protocol}://${connection.address}:${connection.port || 32400}`;
+}
+
+// How many connection rows a server contributes (defaults to 1 when
+// the backend didn't return an explicit .connections array — older
+// deployments).
+function _serverConnectionCount(server) {
+    if (server && Array.isArray(server.connections) && server.connections.length > 0) {
+        return server.connections.length;
+    }
+    return 1;
+}
+
+// Should the picker modal appear instead of auto-selecting?  Answer is
+// yes whenever there's a real choice to make: more than one server OR
+// any single server publishes more than one connection URL.
+function _needsPlexServerPicker(servers) {
+    if (!Array.isArray(servers)) return false;
+    if (servers.length > 1) return true;
+    if (servers.length === 1) return _serverConnectionCount(servers[0]) > 1;
+    return false;
+}
+
+// Commit a chosen (server, connection) pair: persist URL + name + SSL
+// flag via the settings API, update the visible form, close the modal,
+// and refresh the library list.
+async function _useSelectedPlexConnection(server, connection) {
+    const url = _plexConnectionToUrl(connection);
+    if (!url) {
+        showToast('That Plex connection has no usable URL', 'danger');
+        return;
+    }
+    try {
+        const verifySsl = document.getElementById('plexVerifySsl').checked;
+        await new SettingsManager().save({
+            plex_url: url,
+            plex_name: (server && server.name) || '',
+            plex_verify_ssl: verifySsl,
+        });
+        document.getElementById('plexUrl').value = url;
+        document.getElementById('plexServerName').textContent =
+            `Connected to: ${(server && server.name) || url}`;
+
+        const modalEl = document.getElementById('plexServerPickerModal');
+        const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
+        if (modal) modal.hide();
+
+        showToast(`Using ${(server && server.name) || 'Plex server'} · ${url}`, 'success');
+        loadLibraries();
+    } catch (err) {
+        console.error('Failed to save selected Plex connection:', err);
+        showToast('Could not save selection: ' + (err.message || 'unknown error'), 'danger');
+    }
+}
+
+function _renderPlexServerPicker(servers) {
+    const list = document.getElementById('plexServerPickerList');
+    if (!list) return;
+    list.innerHTML = '';
+    servers.forEach((server, serverIdx) => {
+        const card = document.createElement('div');
+        card.className = 'card bg-body-tertiary';
+        const header = document.createElement('div');
+        header.className = 'card-header d-flex align-items-center gap-2';
+        header.innerHTML =
+            '<i class="bi bi-hdd-network me-1"></i>' +
+            `<strong>${escapeHtml(server.name || 'Unnamed server')}</strong>` +
+            (server.owned ? '<span class="badge bg-success">Owned</span>' : '<span class="badge bg-secondary">Shared</span>');
+        card.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'list-group list-group-flush';
+        const connections = (Array.isArray(server.connections) && server.connections.length > 0)
+            ? server.connections
+            : [{
+                uri: server.uri || '',
+                address: server.host || '',
+                port: server.port || 32400,
+                protocol: server.ssl ? 'https' : 'http',
+                ssl: !!server.ssl,
+                local: !!server.local,
+                relay: false,
+            }];
+        connections.forEach((connection, connIdx) => {
+            const url = _plexConnectionToUrl(connection);
+            const kindBadges = [];
+            if (connection.local) kindBadges.push('<span class="badge bg-primary">Local</span>');
+            if (connection.relay) kindBadges.push('<span class="badge bg-warning text-dark">Relay</span>');
+            if (!connection.local && !connection.relay) kindBadges.push('<span class="badge bg-info text-dark">Remote</span>');
+            if (connection.ssl) kindBadges.push('<span class="badge bg-secondary">HTTPS</span>');
+
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'list-group-item list-group-item-action bg-transparent d-flex justify-content-between align-items-center gap-2';
+            row.innerHTML =
+                '<div class="text-start flex-grow-1">' +
+                `<div class="font-monospace small">${escapeHtml(url)}</div>` +
+                `<div class="mt-1 d-flex gap-1 flex-wrap">${kindBadges.join('')}</div>` +
+                '</div>' +
+                '<i class="bi bi-arrow-right-circle text-muted"></i>';
+            row.addEventListener('click', () => _useSelectedPlexConnection(server, connection));
+            body.appendChild(row);
+        });
+        card.appendChild(body);
+        list.appendChild(card);
+    });
+}
+
+function _showPlexServerPicker(servers) {
+    _renderPlexServerPicker(servers);
+    const modalEl = document.getElementById('plexServerPickerModal');
+    if (!modalEl) return;
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+}
+
 async function reAuthPlex() {
     const plexAuth = new PlexAuth({
-        onSuccess: async (token) => {
-            showToast('Successfully authenticated with Plex!', 'success');
+        onSuccess: async () => {
+            // Auth token is already persisted server-side by
+            // /api/plex/auth/pin/<id>.  From here we still need to make
+            // sure a Plex Server URL is saved — if the field is empty,
+            // loadLibraries has nothing to talk to.  We respect a URL
+            // the user has already typed (e.g. a docker-internal host)
+            // and only auto-select from plex.tv when the field is blank.
             document.getElementById('authBadge').classList.remove('d-none');
             document.getElementById('tokenWarning').classList.add('d-none');
-            loadLibraries();
+
+            const existingUrl = document.getElementById('plexUrl').value.trim();
+            if (existingUrl) {
+                showToast('Signed in with Plex — reusing the URL you already set.', 'success');
+                loadLibraries();
+                return;
+            }
+
+            try {
+                const serverManager = new PlexServerManager();
+                const servers = await serverManager.getServers();
+                if (!Array.isArray(servers) || servers.length === 0) {
+                    showToast(
+                        'No Plex servers found on this account. Type the Plex Server URL above manually.',
+                        'danger',
+                    );
+                    return;
+                }
+
+                // Whenever there's a real choice to make (more than one
+                // server, or a single server with multiple URLs), let the
+                // user pick — auto-picking in Docker especially tends to
+                // grab the public plex.direct URI when the container
+                // really needs the LAN IP.
+                if (_needsPlexServerPicker(servers)) {
+                    _showPlexServerPicker(servers);
+                    return;
+                }
+
+                // Single server with a single connection — safe to auto-select.
+                const best = _pickBestPlexServer(servers);
+                const only = (best.connections && best.connections[0]) || {
+                    uri: best.uri || '',
+                    address: best.host || '',
+                    port: best.port || 32400,
+                    ssl: !!best.ssl,
+                    local: !!best.local,
+                    relay: false,
+                    protocol: best.ssl ? 'https' : 'http',
+                };
+                await _useSelectedPlexConnection(best, only);
+            } catch (err) {
+                console.error('Post-auth server selection failed:', err);
+                showToast(
+                    'Signed in, but could not fetch the server list: ' +
+                    (err.message || 'unknown error') +
+                    '. You can type the Plex Server URL manually.',
+                    'danger',
+                );
+            }
         },
         onError: (error) => {
             showToast('Authentication failed: ' + error.message, 'danger');

@@ -1704,3 +1704,183 @@ class TestDetectWindowsGPUs:
         types = [g[0] for g in gpus]
         assert "WINDOWS_GPU" not in types
         assert len(gpus) == 1
+
+
+class TestProbeVulkanDevice:
+    """Unit tests for the libplacebo Vulkan device probe (DV5 green-bug detector)."""
+
+    def setup_method(self):
+        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+
+        _reset_vulkan_device_cache()
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_parses_intel_hardware_device(self, mock_run, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr=(
+                "[Vulkan @ 0x7f00] Supported layers:\n"
+                "[Vulkan @ 0x7f00] GPU listing:\n"
+                "[Vulkan @ 0x7f00]     0: Intel(R) Graphics (RPL-S) (integrated) (0xa780)\n"
+                "[Vulkan @ 0x7f00]     1: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+                "[Vulkan @ 0x7f00] Device 0 selected: Intel(R) Graphics (RPL-S) (integrated) (0xa780)\n"
+            ),
+        )
+        assert (
+            _probe_vulkan_device() == "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        )
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_parses_llvmpipe_software_device(self, mock_run, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr=(
+                "[Vulkan @ 0x7f00] GPU listing:\n"
+                "[Vulkan @ 0x7f00]     0: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+                "[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+            ),
+        )
+        assert (
+            _probe_vulkan_device()
+            == "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+        )
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=False
+    )
+    def test_no_vulkan_support_returns_none(self, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        # Must not invoke subprocess when Vulkan hwaccel is absent.
+        with patch("plex_generate_previews.gpu_detection.subprocess.run") as mock_run:
+            assert _probe_vulkan_device() is None
+            mock_run.assert_not_called()
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_subprocess_timeout_returns_none(self, mock_run, _mock_vk):
+        import subprocess as _sp
+
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.side_effect = _sp.TimeoutExpired(cmd=["ffmpeg"], timeout=10)
+        assert _probe_vulkan_device() is None
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_stderr_without_device_line_returns_none(self, mock_run, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr="ffmpeg error: no Vulkan driver available\n",
+        )
+        assert _probe_vulkan_device() is None
+
+
+class TestGetVulkanDeviceInfo:
+    """Unit tests for get_vulkan_device_info() — the cached info builder."""
+
+    def setup_method(self):
+        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+
+        _reset_vulkan_device_cache()
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_intel_hardware_is_not_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        info = get_vulkan_device_info()
+        assert info["device"].startswith("Intel(R) Graphics")
+        assert info["is_software"] is False
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_llvmpipe_is_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+        info = get_vulkan_device_info()
+        assert "llvmpipe" in info["device"]
+        assert info["is_software"] is True
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_lavapipe_is_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "lavapipe (whatever) (software)"
+        info = get_vulkan_device_info()
+        assert info["is_software"] is True
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_none_device_not_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = None
+        info = get_vulkan_device_info()
+        assert info["device"] is None
+        assert info["is_software"] is False
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_probe_is_called_once_and_cached(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "Intel(R) Graphics"
+        get_vulkan_device_info()
+        get_vulkan_device_info()
+        get_vulkan_device_info()
+        assert mock_probe.call_count == 1
+
+
+class TestGetVulkanInfoAPI:
+    """Unit tests for _get_vulkan_info() in api_system (the HTML warning builder)."""
+
+    def setup_method(self):
+        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+
+        _reset_vulkan_device_cache()
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_hardware_device_returns_no_warning(self, mock_probe):
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "Intel(R) Graphics (RPL-S)"
+        info = _get_vulkan_info()
+        assert info["device"].startswith("Intel(R) Graphics")
+        assert "warning" not in info
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_llvmpipe_returns_warning_with_fix_instructions(self, mock_probe):
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        info = _get_vulkan_info()
+        assert "warning" in info
+        warning = info["warning"]
+        assert "llvmpipe" in warning
+        assert "Dolby Vision" in warning
+        assert "green overlay" in warning
+        assert "/dev/dri" in warning
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_no_vulkan_returns_no_warning(self, mock_probe):
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = None
+        info = _get_vulkan_info()
+        assert info["device"] is None
+        assert "warning" not in info
