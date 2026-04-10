@@ -879,10 +879,19 @@ def generate_images(
                     f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                 )
                 use_libplacebo = True
+                # brightness=0.10 compensates for libplacebo's conservative
+                # PQ→SDR tone-mapping which lands mid-tones ~25 luma values
+                # below the zscale/tonemap chain used for HDR10/DV P7+8.
+                # Measured on Men in Black (1997) DV P5: default reinhard
+                # hit Y≈29/51/61 on dark/mid/bright scenes; b=0.10 lifts
+                # those to Y≈54/76/86 with no highlight clipping (Ymax
+                # stays under ~220). Without this, DV5 thumbnails look
+                # markedly dimmer than their DV7/8 siblings on the same
+                # library.
                 vf_parameters = (
                     f"hwupload,"
                     f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                    f":format=yuv420p:fps={fps_value},"
+                    f":format=yuv420p:fps={fps_value}:brightness=0.10,"
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
             elif _is_dolby_vision(hdr_fmt):
