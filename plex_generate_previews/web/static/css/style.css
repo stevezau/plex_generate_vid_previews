@@ -10,10 +10,15 @@ body {
     min-height: 100vh;
 }
 
-/* The navbar stays dark in both themes — it hosts the Plex-orange brand
-   mark and reads best on a dark background regardless of page theme. */
-.navbar {
+/* The navbar flips with the page theme. Dark mode keeps the deep Plex
+   background; light mode uses Bootstrap's tertiary body surface for a
+   clean header bar. Brand mark stays Plex-orange in both themes. */
+html[data-bs-theme="dark"] .navbar {
     background-color: var(--plex-dark) !important;
+}
+
+html[data-bs-theme="light"] .navbar {
+    background-color: var(--bs-tertiary-bg);
 }
 
 .navbar-brand {
