@@ -5,6 +5,8 @@ logic including HDR detection, skip frame heuristics, and GPU acceleration.
 """
 
 import array
+import contextlib
+import contextvars
 import glob
 import os
 import re
@@ -16,7 +18,7 @@ import tempfile
 import threading
 import time
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
@@ -57,15 +59,53 @@ FFMPEG_STALL_TIMEOUT_SEC = 300
 # ---------------------------------------------------------------------------
 # Failure tracker — collects per-file failure info for end-of-run summary
 # ---------------------------------------------------------------------------
+#
+# Failure records are stored in a dict keyed by job id so that concurrent
+# jobs do not contaminate each other's summaries.  Every thread that wants
+# to record, read, or clear failures must first enter ``failure_scope(job_id)``
+# — that sets a ContextVar which all record/get/clear helpers read to know
+# *which* job's records to touch.  The job runner enters the scope on its
+# dispatcher thread; each worker thread enters the scope on its own thread
+# using ``worker.current_job_id`` so calls made deep inside process_item /
+# generate_images / _run_ffmpeg land in the right bucket.
 
 _failure_lock = threading.Lock()
-_failures: List[dict] = []
+_failures_by_job: Dict[str, List[dict]] = {}
+_failure_job_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "failure_job_id", default=None
+)
+
+
+@contextlib.contextmanager
+def failure_scope(job_id: Optional[str]) -> Iterator[None]:
+    """Bind the current thread's failure-tracking scope to ``job_id``.
+
+    Any ``record_failure``/``get_failures``/``clear_failures``/
+    ``log_failure_summary`` calls that run on this thread while the
+    context manager is active will operate on the failure list for
+    ``job_id`` instead of a shared global, preventing cross-job
+    contamination when concurrent jobs run in the same process.
+
+    The same scope can be safely entered from multiple threads (the
+    job runner's dispatcher thread plus N worker threads) because
+    the underlying storage is a dict keyed by ``job_id``.
+    """
+    token = _failure_job_id_var.set(job_id)
+    try:
+        yield
+    finally:
+        _failure_job_id_var.reset(token)
 
 
 def record_failure(
     file_path: str, exit_code: int, reason: str, worker_type: str = ""
 ) -> None:
     """Record an FFmpeg / processing failure for the end-of-run summary.
+
+    The failure is attributed to the job whose ``failure_scope`` is
+    active on the current thread.  Calls made outside any scope are
+    logged and dropped — that's a programming error, not a recoverable
+    condition.
 
     Args:
         file_path: Media file that failed.
@@ -74,8 +114,15 @@ def record_failure(
         worker_type: 'GPU', 'CPU', or '' if unknown.
 
     """
+    job_id = _failure_job_id_var.get()
+    if job_id is None:
+        logger.warning(
+            f"record_failure called outside failure_scope; dropping "
+            f"failure for {file_path!r} (exit={exit_code}, reason={reason!r})"
+        )
+        return
     with _failure_lock:
-        _failures.append(
+        _failures_by_job.setdefault(job_id, []).append(
             {
                 "file": file_path,
                 "exit_code": exit_code,
@@ -86,15 +133,26 @@ def record_failure(
 
 
 def get_failures() -> List[dict]:
-    """Return a copy of the failure list (thread-safe)."""
+    """Return a copy of the current scope's failure list (thread-safe)."""
+    job_id = _failure_job_id_var.get()
+    if job_id is None:
+        return []
     with _failure_lock:
-        return list(_failures)
+        return list(_failures_by_job.get(job_id, []))
 
 
 def clear_failures() -> None:
-    """Reset the failure list (call between runs)."""
+    """Drop the current scope's failure list.
+
+    Call at the start of a job to reset stale state and at the end
+    once the summary has been consumed to release memory.  Calls made
+    outside any scope are a no-op.
+    """
+    job_id = _failure_job_id_var.get()
+    if job_id is None:
+        return
     with _failure_lock:
-        _failures.clear()
+        _failures_by_job.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------

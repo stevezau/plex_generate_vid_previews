@@ -24,11 +24,15 @@ from plex_generate_previews.media_processing import (
     _is_dv_no_backward_compat,
     _save_ffmpeg_failure_log,
     _verify_tmp_folder_health,
+    clear_failures,
+    failure_scope,
     generate_bif,
     generate_images,
+    get_failures,
     heuristic_allows_skip,
     parse_ffmpeg_progress_line,
     process_item,
+    record_failure,
 )
 
 
@@ -3143,3 +3147,107 @@ class TestCancellation:
             )
 
         assert mock_popen.call_count == 2
+
+
+class TestFailureScope:
+    """Per-job failure scoping — verifies concurrent jobs can't cross-contaminate
+    each other's failure summaries.  Regression guard for the bug where the
+    global ``_failures`` list caused one job's summary to include another
+    job's errors.
+    """
+
+    def test_record_outside_scope_is_dropped(self):
+        """Records written with no active scope are logged and discarded."""
+        record_failure("/tmp/stray.mkv", 1, "noise", worker_type="GPU")
+        assert get_failures() == []
+
+    def test_scope_isolates_records_per_job(self):
+        """Records written inside scope A must not appear inside scope B."""
+        with failure_scope("job-A"):
+            record_failure("/tmp/a.mkv", 1, "A failure", worker_type="GPU")
+            assert [f["file"] for f in get_failures()] == ["/tmp/a.mkv"]
+            clear_failures()
+
+        with failure_scope("job-B"):
+            assert get_failures() == []
+            record_failure("/tmp/b.mkv", 2, "B failure", worker_type="CPU")
+            assert [f["file"] for f in get_failures()] == ["/tmp/b.mkv"]
+            clear_failures()
+
+    def test_concurrent_scopes_in_different_threads(self):
+        """Two threads inside two scopes never see each other's records.
+
+        Simulates the real bug: job A's worker thread records failures
+        concurrently with job B's job-runner thread calling ``get_failures``.
+        """
+        import threading
+
+        ready_a = threading.Event()
+        ready_b = threading.Event()
+        proceed = threading.Event()
+        results: dict = {}
+
+        def thread_a():
+            with failure_scope("job-A"):
+                record_failure("/tmp/a.mkv", 1, "A failure")
+                ready_a.set()
+                proceed.wait()
+                results["A"] = get_failures()
+                clear_failures()
+
+        def thread_b():
+            with failure_scope("job-B"):
+                record_failure("/tmp/b.mkv", 2, "B failure")
+                ready_b.set()
+                proceed.wait()
+                results["B"] = get_failures()
+                clear_failures()
+
+        ta = threading.Thread(target=thread_a)
+        tb = threading.Thread(target=thread_b)
+        ta.start()
+        tb.start()
+        ready_a.wait()
+        ready_b.wait()
+        proceed.set()
+        ta.join()
+        tb.join()
+
+        assert [f["file"] for f in results["A"]] == ["/tmp/a.mkv"]
+        assert [f["file"] for f in results["B"]] == ["/tmp/b.mkv"]
+
+    def test_scope_nested_same_job_shares_bucket(self):
+        """Re-entering the same job_id on a different call site (e.g. a
+        worker thread vs the dispatcher thread) must operate on the same
+        shared bucket so the dispatcher's ``get_failures`` sees what the
+        worker recorded.
+        """
+        import threading
+
+        def worker():
+            with failure_scope("job-X"):
+                record_failure("/tmp/x.mkv", 99, "worker-side", worker_type="GPU")
+
+        with failure_scope("job-X"):
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            failures = get_failures()
+            assert [f["file"] for f in failures] == ["/tmp/x.mkv"]
+            clear_failures()
+
+    def test_clear_failures_only_drops_current_scope(self):
+        """clear_failures must only drop the current scope's bucket,
+        leaving records for other concurrently-tracked jobs intact.
+        """
+        with failure_scope("job-keep"):
+            record_failure("/tmp/keep.mkv", 1, "keep me")
+
+        with failure_scope("job-drop"):
+            record_failure("/tmp/drop.mkv", 1, "drop me")
+            clear_failures()
+            assert get_failures() == []
+
+        with failure_scope("job-keep"):
+            assert [f["file"] for f in get_failures()] == ["/tmp/keep.mkv"]
+            clear_failures()

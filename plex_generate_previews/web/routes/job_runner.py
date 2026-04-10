@@ -6,6 +6,7 @@ the web layer and the CLI processing pipeline.
 """
 
 import threading
+from contextlib import ExitStack
 
 from loguru import logger
 
@@ -102,8 +103,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             from ...media_processing import (
                 _verify_tmp_folder_health,
                 clear_failures,
+                failure_scope,
                 get_failures,
-                log_failure_summary,
                 set_file_result_callback,
             )
             from ...utils import setup_working_directory as create_working_directory
@@ -359,6 +360,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         current_item=f"Retry starting in {remaining}s...",
                     )
 
+            # Per-job failure scope — isolates this job's failure records
+            # from any concurrent job in the same process.  Workers running
+            # on behalf of this job re-enter the same scope on their own
+            # threads (see worker._process_item) so record_failure() calls
+            # deep inside the FFmpeg path land in this job's bucket.
+            _job_scope = ExitStack()
+            _job_scope.enter_context(failure_scope(job_id))
             try:
                 if _retry_cancelled:
                     job_manager.add_log(
@@ -429,7 +437,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         priority=job.priority,
                     )
                     set_file_result_callback(None)
-                    log_failure_summary()
 
                     result = result or {}
                     failures = get_failures()
@@ -749,6 +756,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 )
                             job_manager.complete_job(job_id)
             finally:
+                # Release the per-job failure bucket before the scope exits
+                # so the dict entry doesn't linger after the job ends.
+                clear_failures()
+                _job_scope.close()
                 job_manager.clear_pause_flag(job_id)
                 job_manager.clear_cancellation_flag(job_id)
                 job_manager.clear_active_worker_pool(job_id)
