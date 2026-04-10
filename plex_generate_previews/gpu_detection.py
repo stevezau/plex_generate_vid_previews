@@ -567,7 +567,11 @@ def _run_vulkan_probe(
             ``VK_DRIVER_FILES`` and/or enable ``VK_LOADER_DEBUG=all``.
     """
     if not _is_hwaccel_available("vulkan"):
-        logger.info(
+        # DEBUG only: get_vulkan_device_info() will log a single
+        # user-facing INFO line summarising the final outcome. Logging
+        # here would fire once per retry strategy (up to 4 times) and
+        # clutter the startup log on FFmpeg builds without Vulkan.
+        logger.debug(
             "Vulkan probe: FFmpeg was built without Vulkan hwaccel support; "
             "libplacebo DV Profile 5 tone mapping will run in software."
         )
@@ -676,18 +680,18 @@ def _probe_vulkan_device() -> Optional[str]:
     # Strategy 1: default probe.
     device, _ = _run_vulkan_probe()
     if device and not _is_software_vulkan_device(device):
-        logger.info(
+        logger.debug(
             f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}"
         )
         return device
 
     if device:
-        logger.info(
+        logger.debug(
             f"Vulkan probe (strategy 1): got software device {device!r}; "
             "will attempt NVIDIA-specific retries"
         )
     else:
-        logger.info(
+        logger.debug(
             "Vulkan probe (strategy 1): no 'Device N selected:' line; "
             "will attempt NVIDIA-specific retries"
         )
@@ -700,28 +704,26 @@ def _probe_vulkan_device() -> Optional[str]:
     # linuxserver/ffmpeg + NVIDIA case — see the doc comment on
     # _NVIDIA_EGL_VENDOR_JSON_PATHS above.
     if nvidia_egl_vendor:
-        logger.info(
+        logger.debug(
             f"Vulkan probe (strategy 2): forcing "
             f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
         )
         retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": nvidia_egl_vendor}
         retry_device, _ = _run_vulkan_probe(retry_env)
         if retry_device and not _is_software_vulkan_device(retry_device):
-            logger.info(
-                f"Vulkan probe (strategy 2): success with {retry_device!r}. "
-                f"Injecting __EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor} "
-                "into subsequent FFmpeg invocations on the libplacebo DV "
-                "Profile 5 path."
+            logger.debug(
+                f"Vulkan probe (strategy 2): success with {retry_device!r} "
+                f"via __EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
             )
             _VULKAN_ENV_OVERRIDES = dict(retry_env)
             return retry_device
-        logger.warning(
+        logger.debug(
             f"Vulkan probe (strategy 2): forcing "
             f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor} "
             f"still returned {retry_device!r}; trying Strategy 2b."
         )
     else:
-        logger.info(
+        logger.debug(
             "Vulkan probe: no NVIDIA GLVND EGL vendor JSON found at "
             f"{_NVIDIA_EGL_VENDOR_JSON_PATHS}; skipping Strategy 2."
         )
@@ -731,7 +733,9 @@ def _probe_vulkan_device() -> Optional[str]:
     # vendor config is not (nvidia-container-toolkit#1559 / partial CDI
     # manifests), and for general belt-and-suspenders coverage.
     if nvidia_icd:
-        logger.info(f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd}")
+        logger.debug(
+            f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd}"
+        )
         # If Strategy 2 ran and found an EGL vendor, carry it through
         # the 2b retry as well so the two fixes stack.
         retry_env = {"VK_DRIVER_FILES": nvidia_icd}
@@ -739,18 +743,18 @@ def _probe_vulkan_device() -> Optional[str]:
             retry_env["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
         retry_device, _ = _run_vulkan_probe(retry_env)
         if retry_device and not _is_software_vulkan_device(retry_device):
-            logger.info(
-                f"Vulkan probe (strategy 2b): success with {retry_device!r}. "
-                f"Injecting {retry_env} into subsequent FFmpeg invocations."
+            logger.debug(
+                f"Vulkan probe (strategy 2b): success with {retry_device!r} "
+                f"via {retry_env}"
             )
             _VULKAN_ENV_OVERRIDES = dict(retry_env)
             return retry_device
-        logger.warning(
+        logger.debug(
             f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd} "
             f"still returned {retry_device!r}; running diagnostic capture."
         )
     else:
-        logger.info(
+        logger.debug(
             "Vulkan probe: no NVIDIA ICD JSON found at "
             f"{_NVIDIA_ICD_JSON_PATHS}; skipping Strategy 2b."
         )
@@ -763,17 +767,23 @@ def _probe_vulkan_device() -> Optional[str]:
         diag_overrides["VK_DRIVER_FILES"] = nvidia_icd
     _, diag_stderr = _run_vulkan_probe(diag_overrides)
     _VULKAN_DEBUG_BUFFER = (diag_stderr or "")[-_VULKAN_DEBUG_BUFFER_CAP:]
+    # One-line WARNING at Strategy-3 exit is fine because it only runs
+    # once per probe (first call to get_vulkan_device_info), and only
+    # when everything else has already failed — i.e. the user DOES have
+    # a real problem worth seeing in the main log.
     logger.warning(
         f"Vulkan probe: all strategies exhausted. Captured "
         f"{len(_VULKAN_DEBUG_BUFFER)} bytes of VK_LOADER_DEBUG=all output "
         "for issue reports (GET /api/system/vulkan/debug)."
     )
     if _VULKAN_DEBUG_BUFFER:
-        # Surface the last few informative lines to the main log so a
-        # user reading `docker logs` still gets some signal without
-        # hitting the dashboard debug endpoint.
+        # Surface the last few informative lines to the main log at
+        # DEBUG level so a user reading `docker logs --tail` in the
+        # normal INFO flow isn't overwhelmed, but issue reporters with
+        # LOG_LEVEL=DEBUG get the immediate hint without hitting the
+        # dashboard debug endpoint.
         for line in _VULKAN_DEBUG_BUFFER.splitlines()[-15:]:
-            logger.warning(f"  ffmpeg/vulkan-loader stderr: {line}")
+            logger.debug(f"  ffmpeg/vulkan-loader stderr: {line}")
 
     # Return whatever Strategy 1 found so `get_vulkan_device_info` can
     # correctly classify it as software (or None) and render the banner.
@@ -803,39 +813,69 @@ def get_vulkan_device_info() -> dict:
         _VULKAN_DEVICE_CACHE = _probe_vulkan_device()
         _VULKAN_DEVICE_PROBED = True
 
+        # First-time probe finished — log the outcome exactly once.
+        # Every subsequent call returns the cached dict silently. The
+        # three branches below are intentionally mutually exclusive:
+        #   - INFO on success (single line, user-friendly)
+        #   - WARNING on software fallback (action needed)
+        #   - INFO on no-Vulkan (informational, harmless)
+        probe_device = _VULKAN_DEVICE_CACHE
+        if probe_device is None:
+            logger.info(
+                "Vulkan not available in this container; Dolby Vision "
+                "Profile 5 thumbnails will render in software. Non-DV5 "
+                "content is unaffected."
+            )
+        elif _is_software_vulkan_device(probe_device):
+            logger.warning(
+                f"Vulkan probe selected a software rasterizer "
+                f"({probe_device}); Dolby Vision Profile 5 thumbnails "
+                "will show a green overlay. Open the dashboard or "
+                "GET /api/system/vulkan/debug for GPU-specific "
+                "remediation steps and a full diagnostic bundle."
+            )
+        else:
+            via = ""
+            if _VULKAN_ENV_OVERRIDES:
+                # Let power users see which env var(s) unblocked the
+                # retry in a single glance, without dumping the full
+                # Strategy-2 trace at INFO level.
+                override_keys = ", ".join(sorted(_VULKAN_ENV_OVERRIDES))
+                via = f" (via {override_keys} override)"
+            logger.info(
+                f"Vulkan ready for Dolby Vision Profile 5 tone-mapping: "
+                f"{probe_device}{via}"
+            )
+
     device = _VULKAN_DEVICE_CACHE
     if device is None:
-        logger.info(
-            "Vulkan device info: no usable Vulkan device found. "
-            "Dolby Vision Profile 5 thumbnails will render in software "
-            "and may show a green overlay (known libplacebo bug)."
-        )
         return {"device": None, "is_software": False}
-
-    is_software = _is_software_vulkan_device(device)
-    if is_software:
-        logger.warning(
-            f"Vulkan device info: FFmpeg selected a software rasterizer "
-            f"({device}). Dolby Vision Profile 5 thumbnails will show a "
-            "green overlay (known libplacebo + llvmpipe bug). See the "
-            "web UI dashboard for remediation steps specific to your GPU."
-        )
-    else:
-        logger.info(
-            f"Vulkan device info: FFmpeg will use hardware Vulkan "
-            f"device '{device}' for libplacebo DV Profile 5 tone mapping."
-        )
-    return {"device": device, "is_software": is_software}
+    return {
+        "device": device,
+        "is_software": _is_software_vulkan_device(device),
+    }
 
 
 def get_vulkan_env_overrides() -> dict:
     """Return env vars to inject into FFmpeg subprocess calls on the libplacebo path.
 
-    Populated by the Strategy-2 retry in :func:`_probe_vulkan_device`
-    when forcing ``VK_DRIVER_FILES`` made Vulkan work where the default
-    ICD search failed. Returns an empty dict when no overrides are
-    needed (happy path: the loader finds the right ICD on its own).
+    Populated by the Strategy-2 (or Strategy-2b) retry in
+    :func:`_probe_vulkan_device` when the default Vulkan ICD search
+    did not yield a hardware device. Returns an empty dict when no
+    overrides are needed (happy path: the loader finds the right ICD
+    on its own).
+
+    **Side effect by design:** if the probe has not yet run (e.g. the
+    worker thread calling from :func:`media_processing._run_ffmpeg`
+    on the libplacebo DV Profile 5 path beats the first
+    ``/api/system/vulkan`` poll), this function triggers the probe
+    synchronously via :func:`get_vulkan_device_info` before returning.
+    Without this auto-trigger, any job that starts before an HTTP
+    endpoint is hit would get an empty override dict and would fall
+    back to software Vulkan even when the retry would have fixed it.
     """
+    if not _VULKAN_DEVICE_PROBED:
+        get_vulkan_device_info()
     return dict(_VULKAN_ENV_OVERRIDES)
 
 
@@ -847,7 +887,14 @@ def get_vulkan_debug_buffer() -> str:
     string when no diagnostic capture was needed. Consumed by the
     ``GET /api/system/vulkan/debug`` endpoint and the "Copy diagnostic
     bundle" button on the dashboard/settings warning banner.
+
+    Same auto-trigger behaviour as :func:`get_vulkan_env_overrides`:
+    if the probe has not yet run, it runs synchronously first so the
+    caller never sees an empty buffer just because no HTTP endpoint
+    has been hit yet.
     """
+    if not _VULKAN_DEVICE_PROBED:
+        get_vulkan_device_info()
     return _VULKAN_DEBUG_BUFFER
 
 

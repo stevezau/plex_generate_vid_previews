@@ -157,12 +157,23 @@ def get_or_create_flask_secret(config_dir: str) -> str:
 
 
 def _prewarm_caches() -> None:
-    """Pre-warm GPU detection and version caches in background threads.
+    """Pre-warm GPU detection, Vulkan probe, and version caches at startup.
 
-    GPU detection runs FFmpeg subprocess tests and can take several seconds.
-    Version checks hit the GitHub API with network timeouts.  Running both
-    eagerly at startup means the first page load returns instantly instead
-    of blocking on these slow operations.
+    GPU detection and the Vulkan probe both run FFmpeg subprocess tests
+    and can take a second or two each.  Version checks hit the GitHub
+    API with network timeouts.  Pre-warming them means the first page
+    load returns instantly instead of blocking on these slow operations.
+
+    The Vulkan probe is pre-warmed **synchronously in this thread** (not
+    as a daemon thread like the others) because its cached env-override
+    dict is read from :func:`media_processing._run_ffmpeg` on the
+    libplacebo DV Profile 5 path. If a worker thread picks up a pending
+    job before the probe has run, it would see an empty override dict
+    and FFmpeg would fall back to software Vulkan — even when
+    Strategy 2 would have succeeded. Blocking startup by ~300 ms here
+    guarantees any worker thread started after create_app() returns
+    reads a populated cache. The probe result is module-level and
+    idempotent, so subsequent calls from HTTP endpoints are no-ops.
     """
     import threading
 
@@ -183,6 +194,15 @@ def _prewarm_caches() -> None:
             logger.debug("Version cache pre-warmed")
         except Exception as exc:
             logger.debug(f"Version cache pre-warm failed (non-fatal): {exc}")
+
+    # Synchronous: must complete before worker threads start processing
+    # jobs on the libplacebo path (see docstring).
+    try:
+        from ..gpu_detection import get_vulkan_device_info
+
+        get_vulkan_device_info()
+    except Exception as exc:
+        logger.debug(f"Vulkan probe pre-warm failed (non-fatal): {exc}")
 
     threading.Thread(target=_warm_gpu, name="prewarm-gpu", daemon=True).start()
     threading.Thread(target=_warm_version, name="prewarm-version", daemon=True).start()

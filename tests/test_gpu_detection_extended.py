@@ -1959,9 +1959,12 @@ class TestProbeVulkanDevice:
         VK_LOADER_DEBUG=all stderr into the module-level debug buffer
         that ``/api/system/vulkan/debug`` exposes.
         """
+        # Use the public entry point `get_vulkan_device_info` so the
+        # cache flag is set correctly and the auto-trigger in
+        # `get_vulkan_debug_buffer` does not re-probe.
         from plex_generate_previews.gpu_detection import (
-            _probe_vulkan_device,
             get_vulkan_debug_buffer,
+            get_vulkan_device_info,
         )
 
         mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
@@ -1993,7 +1996,7 @@ class TestProbeVulkanDevice:
             MagicMock(returncode=0, stderr=diagnostic_stderr),
         ]
 
-        _probe_vulkan_device()
+        get_vulkan_device_info()
         assert mock_run.call_count == 4
         strategy_3_call = mock_run.call_args_list[3]
         env_arg = strategy_3_call.kwargs.get("env") or {}
@@ -2006,6 +2009,61 @@ class TestProbeVulkanDevice:
         buf = get_vulkan_debug_buffer()
         assert "libnvidia-glvkspirv.so: cannot open" in buf
         assert "VK_LOADER_DEBUG=all" in buf
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_get_vulkan_env_overrides_auto_triggers_probe(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Calling get_vulkan_env_overrides() before the probe has run
+        must trigger the probe synchronously so that workers on the
+        libplacebo DV5 path don't see an empty override dict just
+        because no HTTP endpoint has warmed the cache yet.
+
+        This is the regression guard for the startup-timing bug where
+        the Plex scheduler revived a pending job before the first
+        /api/system/vulkan poll fired.
+        """
+        from plex_generate_previews.gpu_detection import (
+            _VULKAN_DEVICE_PROBED,
+            get_vulkan_env_overrides,
+        )
+
+        # Sanity: the setup_method reset made _VULKAN_DEVICE_PROBED False.
+        assert _VULKAN_DEVICE_PROBED is False
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_run.side_effect = [
+            # Strategy 1: llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2: NVIDIA via EGL override
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA TITAN RTX (discrete)"),
+            ),
+        ]
+
+        # First call: no probe has run. The accessor must trigger one.
+        overrides = get_vulkan_env_overrides()
+        assert overrides == {
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            )
+        }
+        assert mock_run.call_count == 2  # Strategy 1 + Strategy 2
+
+        # Second call: cached. Must NOT re-probe.
+        overrides_again = get_vulkan_env_overrides()
+        assert overrides_again == overrides
+        assert mock_run.call_count == 2  # unchanged
 
     @patch(
         "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
