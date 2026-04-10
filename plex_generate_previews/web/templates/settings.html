@@ -133,20 +133,17 @@
             <button type="button" class="btn-close" aria-label="Close" onclick="dismissTimezoneWarning()"></button>
         </div>
 
-        <!-- Vulkan / libplacebo Warning (DV Profile 5 green overlay) -->
+        <!-- Vulkan / libplacebo Warning (DV Profile 5 green overlay).
+             Body is injected from /api/system/vulkan so the text stays
+             in lock-step with the dashboard banner (see app.js). -->
         <div id="vulkanWarning" class="alert alert-warning alert-dismissible d-none mb-4">
-            <i class="bi bi-gpu-card me-2"></i>
-            <strong>Vulkan driver misconfigured.</strong>
-            Your container's Vulkan is running on the software rasterizer (<code>llvmpipe</code>).
-            Dolby Vision Profile 5 thumbnails will contain a <strong>green overlay</strong> due to a known libplacebo rendering bug on llvmpipe. Non-Dolby-Vision content is not affected.
-            <br class="mb-1">
-            <span class="text-muted small">
-                To fix, forward a render node to the container:<br>
-                Docker run: add <code>--device /dev/dri:/dev/dri</code>.<br>
-                Docker Compose: add <code>devices: ["/dev/dri:/dev/dri"]</code> under the service.<br>
-                This works even if you are using NVIDIA for decoding — Mesa's Intel/AMD Vulkan driver will be picked up from the render node and replace the llvmpipe fallback.<br>
-                See the <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md#troubleshooting" target="_blank" rel="noopener" class="alert-link">troubleshooting guide</a> for details.
-            </span>
+            <div class="d-flex align-items-start">
+                <i class="bi bi-gpu-card me-2 mt-1"></i>
+                <div>
+                    <strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong>
+                    <div id="vulkanWarningBody"></div>
+                </div>
+            </div>
             <button type="button" class="btn-close" aria-label="Close" onclick="dismissVulkanWarning()"></button>
         </div>
 
@@ -1471,9 +1468,10 @@ function checkVulkanWarning() {
     fetch('/api/system/vulkan')
         .then(r => r.json())
         .then(data => {
-            if (data.warning) {
-                document.getElementById('vulkanWarning').classList.remove('d-none');
-            }
+            if (!data.warning) return;
+            var body = document.getElementById('vulkanWarningBody');
+            if (body) body.innerHTML = data.warning;
+            document.getElementById('vulkanWarning').classList.remove('d-none');
         })
         .catch(() => {});
 }

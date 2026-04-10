@@ -1851,8 +1851,27 @@ class TestGetVulkanInfoAPI:
 
     def setup_method(self):
         from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+        from plex_generate_previews.web.routes._helpers import _gpu_cache
 
         _reset_vulkan_device_cache()
+        # Force-populate the shared GPU cache with an empty list so
+        # _ensure_gpu_cache() inside _get_vulkan_info() skips real
+        # hardware detection.  Individual tests override this via
+        # _set_gpus() to exercise specific branches.
+        _gpu_cache["result"] = []
+
+    def teardown_method(self):
+        from plex_generate_previews.web.routes._helpers import _gpu_cache
+
+        # Leave the cache in the default "not yet detected" state so
+        # unrelated tests that follow behave like a fresh process.
+        _gpu_cache["result"] = None
+
+    @staticmethod
+    def _set_gpus(gpus):
+        from plex_generate_previews.web.routes._helpers import _gpu_cache
+
+        _gpu_cache["result"] = gpus
 
     @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
     def test_hardware_device_returns_no_warning(self, mock_probe):
@@ -1868,12 +1887,15 @@ class TestGetVulkanInfoAPI:
         from plex_generate_previews.web.routes.api_system import _get_vulkan_info
 
         mock_probe.return_value = "llvmpipe (software)"
+        # setup_method sets an empty GPU cache → Case E (no GPU detected);
+        # that branch still contains the shared-header plain-English
+        # summary and the generic /dev/dri forwarding hint.
         info = _get_vulkan_info()
         assert "warning" in info
         warning = info["warning"]
-        assert "llvmpipe" in warning
-        assert "Dolby Vision" in warning
-        assert "green overlay" in warning
+        assert "Dolby Vision Profile 5" in warning
+        assert "green" in warning  # "green rectangle" / "green overlay"
+        assert "software rendering" in warning
         assert "/dev/dri" in warning
 
     @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
@@ -1884,3 +1906,181 @@ class TestGetVulkanInfoAPI:
         info = _get_vulkan_info()
         assert info["device"] is None
         assert "warning" not in info
+
+    # --- GPU-aware branches -------------------------------------------------
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_nvidia_only_no_dri_names_gpu_and_cites_version_mismatch(
+        self, mock_probe, mock_glob
+    ):
+        """Case A: NVIDIA-only host with no /dev/dri → names the GPU,
+        cites the upstream version-mismatch root cause, and qualifies
+        the dual-GPU workaround rather than promising a mount fix.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA GeForce RTX 3080",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA GeForce RTX 3080" in warning
+        assert "version mismatch" in warning
+        assert "VK_ERROR_INCOMPATIBLE_DRIVER" in warning
+        assert "Dual-GPU hosts" in warning
+        assert "Pure NVIDIA hosts" in warning
+        # Must not show Case D's "already forwarded" diagnosis.
+        assert "already forwarded" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_nvidia_only_with_dri_mapped_still_hits_case_a(self, mock_probe, mock_glob):
+        """Pure-NVIDIA hosts hit Case A regardless of /dev/dri mapping.
+
+        Mounting /dev/dri on a host with no Mesa-capable GPU does not
+        help — there is no Mesa ICD to fall back to. Users who followed
+        stale advice and mounted /dev/dri on a pure-NVIDIA host should
+        see the same version-mismatch explanation, not the host
+        drivers / permissions diagnosis from Case D.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = ["/dev/dri/renderD128"]  # IS mapped
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA TITAN RTX",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA TITAN RTX" in warning
+        assert "version mismatch" in warning
+        assert "VK_ERROR_INCOMPATIBLE_DRIVER" in warning
+        # Must NOT get the Case D wording that suggests drivers/perms
+        # are the problem — that's wrong for pure-NVIDIA hosts.
+        assert "already forwarded" not in warning
+        assert "vainfo" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_nvidia_plus_intel_no_dri_recommends_mount(self, mock_probe, mock_glob):
+        """Case B: NVIDIA + Intel with no /dev/dri → names both GPUs,
+        gives the mount fix, notes NVIDIA decoding is independent.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA GeForce RTX 4090",
+                },
+                {
+                    "type": "INTEL",
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel UHD Graphics 770",
+                },
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA GeForce RTX 4090" in warning
+        assert "Intel UHD Graphics 770" in warning
+        assert "Your GPUs:" in warning
+        assert "Docker Compose:" in warning
+        assert "two paths are independent" in warning
+        # Case B must not imply the NVIDIA-only workaround list.
+        assert "Pure NVIDIA hosts" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_intel_only_no_dri_recommends_mount(self, mock_probe, mock_glob):
+        """Case C: Intel-only host with no /dev/dri → names the Intel
+        GPU and gives the mount fix, without dragging in NVIDIA-specific
+        language that would only confuse the user.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus(
+            [
+                {
+                    "type": "INTEL",
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel UHD Graphics 770",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "Intel UHD Graphics 770" in warning
+        assert "Docker Compose:" in warning
+        assert "NVIDIA" not in warning
+        assert "VK_ERROR_INCOMPATIBLE_DRIVER" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_intel_with_dri_mapped_points_at_drivers_or_perms(
+        self, mock_probe, mock_glob
+    ):
+        """Case D: Intel host with /dev/dri already forwarded but
+        rendering still fell back → diagnose host drivers or render-node
+        permissions rather than repeating the mount instructions.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = ["/dev/dri/renderD128"]
+        self._set_gpus(
+            [
+                {
+                    "type": "INTEL",
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel UHD Graphics 630",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "Intel UHD Graphics 630" in warning
+        assert "already forwarded" in warning
+        assert "vainfo" in warning
+        assert "permissions" in warning
+        # Already mounted — must not re-recommend mounting.
+        assert "Docker Compose:" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_no_gpu_detected_explains_missing_hardware(self, mock_probe, mock_glob):
+        """Case E: Vulkan is llvmpipe and no GPU is detected at all →
+        explain that no hardware is visible to the container and give
+        per-vendor forwarding hints.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus([])
+
+        warning = _get_vulkan_info()["warning"]
+        assert "No GPU detected" in warning
+        assert "--runtime=nvidia" in warning
+        assert "/dev/dri" in warning

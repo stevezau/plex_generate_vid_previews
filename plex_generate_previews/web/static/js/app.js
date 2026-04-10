@@ -709,7 +709,7 @@ function updateSystemStatus(status) {
                 '<div class="d-flex align-items-start">' +
                 '<i class="bi bi-gpu-card me-2 mt-1"></i>' +
                 '<div>' +
-                '<strong>Vulkan driver misconfigured.</strong><br>' +
+                '<strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong><br>' +
                 status.vulkan_warning +
                 '</div>' +
                 '</div>' +

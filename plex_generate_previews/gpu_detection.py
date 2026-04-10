@@ -498,40 +498,61 @@ def _probe_vulkan_device() -> Optional[str]:
 
     """
     if not _is_hwaccel_available("vulkan"):
+        logger.info(
+            "Vulkan probe: FFmpeg was built without Vulkan hwaccel support; "
+            "libplacebo DV Profile 5 tone mapping will run in software."
+        )
         return None
+    cmd = [
+        "ffmpeg",
+        "-loglevel",
+        "debug",
+        "-init_hw_device",
+        "vulkan=vk",
+        "-f",
+        "lavfi",
+        "-i",
+        "nullsrc",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]
+    logger.debug(f"Vulkan probe: running {' '.join(cmd)}")
     try:
         result = subprocess.run(
-            [
-                "ffmpeg",
-                "-loglevel",
-                "debug",
-                "-init_hw_device",
-                "vulkan=vk",
-                "-f",
-                "lavfi",
-                "-i",
-                "nullsrc",
-                "-frames:v",
-                "1",
-                "-f",
-                "null",
-                "-",
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.debug(f"Vulkan probe failed: {exc}")
+        logger.warning(
+            f"Vulkan probe failed (subprocess error: {exc}); "
+            "falling back to 'no Vulkan device' for DV5 diagnosis."
+        )
         return None
     except Exception as exc:
-        logger.debug(f"Vulkan probe raised unexpected exception: {exc}")
+        logger.warning(
+            f"Vulkan probe raised unexpected exception: {exc}; "
+            "falling back to 'no Vulkan device' for DV5 diagnosis."
+        )
         return None
     for line in result.stderr.splitlines():
         # Matches e.g. "[Vulkan @ 0x...] Device 0 selected: Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
         # or         "[Vulkan @ 0x...] Device 0 selected: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
         if "Device" in line and "selected:" in line:
-            return line.split("selected:", 1)[1].strip()
+            device = line.split("selected:", 1)[1].strip()
+            logger.info(f"Vulkan probe: FFmpeg selected device: {device}")
+            return device
+    logger.warning(
+        "Vulkan probe: FFmpeg did not emit a 'Device N selected:' line. "
+        "This usually means no Vulkan ICD could be loaded. Last 20 lines "
+        "of stderr (for issue reports):"
+    )
+    for line in result.stderr.splitlines()[-20:]:
+        logger.warning(f"  ffmpeg stderr: {line}")
     return None
 
 
@@ -553,11 +574,17 @@ def get_vulkan_device_info() -> dict:
     """
     global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
     if not _VULKAN_DEVICE_PROBED:
+        logger.debug("Vulkan device info: running first-time probe")
         _VULKAN_DEVICE_CACHE = _probe_vulkan_device()
         _VULKAN_DEVICE_PROBED = True
 
     device = _VULKAN_DEVICE_CACHE
     if device is None:
+        logger.info(
+            "Vulkan device info: no usable Vulkan device found. "
+            "Dolby Vision Profile 5 thumbnails will render in software "
+            "and may show a green overlay (known libplacebo bug)."
+        )
         return {"device": None, "is_software": False}
 
     device_lower = device.lower()
@@ -566,6 +593,18 @@ def get_vulkan_device_info() -> dict:
         or "software" in device_lower
         or "lavapipe" in device_lower
     )
+    if is_software:
+        logger.warning(
+            f"Vulkan device info: FFmpeg selected a software rasterizer "
+            f"({device}). Dolby Vision Profile 5 thumbnails will show a "
+            "green overlay (known libplacebo + llvmpipe bug). See the "
+            "web UI dashboard for remediation steps specific to your GPU."
+        )
+    else:
+        logger.info(
+            f"Vulkan device info: FFmpeg will use hardware Vulkan "
+            f"device '{device}' for libplacebo DV Profile 5 tone mapping."
+        )
     return {"device": device, "is_software": is_software}
 
 

@@ -1,5 +1,7 @@
 """System, health, config, library, and log-history API routes."""
 
+import glob
+import html as html_escape
 import json as _json
 import os
 import threading
@@ -64,18 +66,54 @@ def get_timezone():
     return jsonify(_get_timezone_info())
 
 
+def _vendor_display_name(gpus: list, vendor: str) -> str:
+    """Return a display string for the first GPU matching ``vendor``.
+
+    Falls back to a generic ``"<Vendor> GPU"`` label if no readable name
+    is present in the cache, so the warning text stays grammatical even
+    when the detection layer only returned the vendor code.
+    """
+    for g in gpus:
+        if g.get("type") != vendor:
+            continue
+        name = (g.get("name") or "").strip()
+        if name and name != vendor:
+            return name
+        break
+    return {
+        "NVIDIA": "NVIDIA GPU",
+        "INTEL": "Intel GPU",
+        "AMD": "AMD GPU",
+    }.get(vendor, f"{vendor} GPU")
+
+
 def _get_vulkan_info() -> dict:
-    """Return Vulkan device info and warn if libplacebo will hit the DV5 green bug.
+    """Return Vulkan device info and warn if the DV5 green-overlay bug will hit.
 
-    Calls ``gpu_detection.get_vulkan_device_info()`` which is cached at
-    module level — no subprocess work on subsequent calls.  Builds an
-    HTML ``warning`` key when the container's Vulkan is running on the
-    software rasteriser (``llvmpipe``), which has a buffer-initialisation
-    bug on libplacebo's Dolby Vision tone-map path that writes a green
-    rectangle into roughly the top-left quadrant of every frame.
+    When the cached Vulkan device from ``get_vulkan_device_info()`` is a
+    software rasteriser (``llvmpipe`` / ``lavapipe``), builds a
+    GPU-aware HTML warning that leads with the user-visible symptom
+    (green overlay on some Dolby Vision thumbnails), then branches on
+    what the user can actually do about it:
 
-    The usual fix is to forward a ``/dev/dri`` render node so Mesa's
-    Intel/AMD Vulkan driver is picked up instead of llvmpipe.
+    - **Pure NVIDIA** (regardless of ``/dev/dri``): upstream version
+      skew between linuxserver/ffmpeg's Vulkan loader and the NVIDIA
+      driver. Mounting ``/dev/dri`` on a pure-NVIDIA host *does not
+      help*, because there is no Mesa ICD to fall back to — so this
+      branch fires whether or not the render node is mapped.
+    - **NVIDIA + Intel/AMD, no render node mapped:** mount
+      ``/dev/dri`` so the container can reach the Mesa driver.
+    - **Intel/AMD only, no render node mapped:** mount ``/dev/dri``.
+    - **Intel/AMD (with or without NVIDIA), render node mapped but
+      still llvmpipe:** host drivers or render-node permissions issue.
+    - **No GPU detected at all:** no hardware visible to the container.
+
+    The shared header avoids jargon like "Vulkan driver misconfigured"
+    or "software rasterizer" and explains the mechanism in plain
+    English. Per-case bodies name the user's actual GPU. Technical
+    details (``VK_ERROR_INCOMPATIBLE_DRIVER``, loader versions, etc.)
+    live in a muted footer so curious users can google them without
+    cluttering the main message.
     """
     from ...gpu_detection import get_vulkan_device_info
 
@@ -84,28 +122,213 @@ def _get_vulkan_info() -> dict:
     is_software = info.get("is_software", False)
 
     result: dict = {"device": device}
-    if is_software:
-        # HTML — the dashboard injects this into an alert via innerHTML.
-        # The Settings page has its own static markup for the same
-        # message (see templates/settings.html).
-        result["warning"] = (
-            "Your container's Vulkan is running on the software rasterizer "
-            "(<code>llvmpipe</code>). "
-            "Dolby Vision Profile 5 thumbnails will contain a <strong>green "
-            "overlay</strong> because of a known libplacebo rendering bug on "
-            "llvmpipe. Non-Dolby-Vision content is not affected."
+    if not is_software:
+        logger.debug(
+            f"Vulkan warning: device={device!r} is_software=False; "
+            "no DV5 warning will be shown."
+        )
+        return result
+
+    try:
+        _ensure_gpu_cache()
+        with _gpu_cache_lock:
+            gpus = list(_gpu_cache["result"] or [])
+    except Exception as exc:
+        logger.warning(
+            f"Vulkan warning: GPU cache lookup raised {exc!r}; "
+            "proceeding with an empty GPU list for the warning body."
+        )
+        gpus = []
+
+    vendors = {g.get("type") for g in gpus if g.get("type")}
+    has_nvidia = "NVIDIA" in vendors
+    has_intel = "INTEL" in vendors
+    has_amd = "AMD" in vendors
+    has_mesa_vendor = has_intel or has_amd
+    dri_render_nodes = glob.glob("/dev/dri/renderD*")
+    dri_mapped = bool(dri_render_nodes)
+
+    logger.info(
+        f"Vulkan warning inputs: device={device!r} vendors={sorted(vendors)} "
+        f"has_nvidia={has_nvidia} has_mesa={has_mesa_vendor} "
+        f"dri_render_nodes={dri_render_nodes or '[]'}"
+    )
+
+    nvidia_name = _vendor_display_name(gpus, "NVIDIA") if has_nvidia else ""
+    # Prefer AMD for the Mesa label when both AMD and Intel are present
+    # (AMD is more likely to be the user's primary display GPU); either
+    # works for the /dev/dri remediation text.
+    mesa_vendor_code = "AMD" if has_amd else ("INTEL" if has_intel else "")
+    mesa_name = _vendor_display_name(gpus, mesa_vendor_code) if mesa_vendor_code else ""
+    mesa_vendor_label = {"INTEL": "Intel", "AMD": "AMD"}.get(mesa_vendor_code, "Mesa")
+    all_names_escaped = ", ".join(
+        html_escape.escape(g.get("name") or g.get("type") or "GPU")
+        for g in gpus
+        if g.get("name") or g.get("type")
+    )
+
+    header = (
+        "When this app creates thumbnails for <strong>Dolby Vision "
+        "Profile 5</strong> content, it relies on GPU-accelerated color "
+        "conversion. Your container does not have a working GPU rendering "
+        "driver for this step, so the app is falling back to software "
+        "rendering — which has a known bug that paints a green rectangle "
+        "onto a portion of each affected thumbnail."
+        "<br><br>"
+        "All other content (standard video, HDR10, Dolby Vision Profile "
+        "7 and 8) is not affected."
+        "<br><br>"
+    )
+    footer = (
+        '<div class="small text-muted mt-2">You can safely dismiss this '
+        "warning if you have no Dolby Vision Profile 5 content, or if a "
+        "green overlay on a few thumbnails doesn't bother you.</div>"
+    )
+
+    # Pure-NVIDIA takes precedence over dri_mapped: mounting /dev/dri on
+    # a host with no Mesa-capable GPU does nothing, because there is no
+    # Mesa ICD to fall back to. Route these users to the version-skew
+    # explanation regardless of whether they've mounted /dev/dri.
+    if has_nvidia and not has_mesa_vendor:
+        logger.info(
+            f"Vulkan warning: selected Case A (pure NVIDIA version "
+            f"mismatch) for {nvidia_name!r}; dri_mapped={dri_mapped}"
+        )
+        body = (
+            f"<strong>Your GPU:</strong> {html_escape.escape(nvidia_name)}"
             "<br><br>"
-            '<span class="small">To fix, forward a render node to the '
-            "container:</span>"
+            "Your NVIDIA card does have a GPU rendering driver, but "
+            "there's a <strong>version mismatch</strong> between your "
+            "NVIDIA driver and the version of the rendering toolkit "
+            "built into this container. The container refuses to load "
+            "your NVIDIA driver and falls back to software rendering. "
+            "This is a known upstream packaging issue &mdash; there is "
+            "no configuration fix you can apply from your side."
+            "<br><br>"
+            '<span class="small"><strong>Workarounds:</strong></span>'
             '<ul class="small mb-0 mt-1">'
-            "<li>Docker run: add <code>--device /dev/dri:/dev/dri</code></li>"
-            "<li>Docker Compose: add <code>devices: [&quot;/dev/dri:/dev/dri&quot;]</code> "
+            "<li><strong>Dual-GPU hosts:</strong> if your host also has "
+            "an Intel iGPU or AMD GPU (even an unused one), forward its "
+            "render node with "
+            "<code>--device /dev/dri:/dev/dri</code> (docker run) or "
+            "<code>devices: [&quot;/dev/dri:/dev/dri&quot;]</code> "
+            "(docker-compose). The container will use that GPU for "
+            "rendering instead. Your NVIDIA card keeps handling the "
+            "video decoding — the two paths are independent.</li>"
+            "<li><strong>Pure NVIDIA hosts:</strong> wait for a "
+            "container base image update, or skip Dolby Vision Profile "
+            "5 content until then.</li>"
+            "</ul>"
+            '<div class="small text-muted mt-2">Technical details: the '
+            "container's Vulkan loader (linuxserver/ffmpeg) rejects the "
+            "NVIDIA ICD with <code>VK_ERROR_INCOMPATIBLE_DRIVER</code> "
+            "because the loader API version is newer than the NVIDIA "
+            "driver's reported Vulkan API version.</div>"
+        )
+    elif has_nvidia and has_mesa_vendor and not dri_mapped:
+        # NVIDIA + Intel/AMD but /dev/dri not forwarded: mounting the
+        # render node lets libplacebo use Mesa alongside NVIDIA decoding.
+        logger.info(
+            f"Vulkan warning: selected Case B (NVIDIA + Mesa, /dev/dri "
+            f"not mapped) for NVIDIA={nvidia_name!r} Mesa={mesa_name!r}"
+        )
+        body = (
+            f"<strong>Your GPUs:</strong> "
+            f"{html_escape.escape(nvidia_name)} and "
+            f"{html_escape.escape(mesa_name)}"
+            "<br><br>"
+            f"Your {mesa_vendor_label} GPU can handle the GPU rendering "
+            "step, but the container can't reach it because the "
+            "<code>/dev/dri</code> render node isn't forwarded. NVIDIA's "
+            "own rendering driver can't be used due to a separate "
+            "version-mismatch issue, so the app falls back to software "
+            "rendering."
+            "<br><br>"
+            '<span class="small"><strong>Fix</strong> — add this to '
+            "your Docker configuration and restart the container:</span>"
+            '<ul class="small mb-0 mt-1">'
+            "<li><strong>Docker run:</strong> add "
+            "<code>--device /dev/dri:/dev/dri</code></li>"
+            "<li><strong>Docker Compose:</strong> add "
+            "<code>devices: [&quot;/dev/dri:/dev/dri&quot;]</code> "
             "under the service</li>"
             "</ul>"
-            '<span class="small">This works even if you are using NVIDIA '
-            "for decoding. Mesa's Intel/AMD Vulkan driver will be picked up "
-            "from the render node and replace the llvmpipe fallback.</span>"
+            '<div class="small mt-2">After the restart, the green '
+            f"overlay will disappear. Your NVIDIA card keeps handling "
+            "video decoding &mdash; the two paths are independent.</div>"
         )
+    elif has_mesa_vendor and not has_nvidia and not dri_mapped:
+        # Intel/AMD only, no render node: straight mount fix.
+        logger.info(
+            f"Vulkan warning: selected Case C (Mesa only, /dev/dri "
+            f"not mapped) for {mesa_name!r}"
+        )
+        body = (
+            f"<strong>Your GPU:</strong> {html_escape.escape(mesa_name)}"
+            "<br><br>"
+            "Your GPU can handle the rendering step, but the container "
+            "can't reach it because the <code>/dev/dri</code> render "
+            "node isn't forwarded."
+            "<br><br>"
+            '<span class="small"><strong>Fix</strong> — add this to '
+            "your Docker configuration and restart the container:</span>"
+            '<ul class="small mb-0 mt-1">'
+            "<li><strong>Docker run:</strong> add "
+            "<code>--device /dev/dri:/dev/dri</code></li>"
+            "<li><strong>Docker Compose:</strong> add "
+            "<code>devices: [&quot;/dev/dri:/dev/dri&quot;]</code> "
+            "under the service</li>"
+            "</ul>"
+            '<div class="small mt-2">After the restart, the green '
+            "overlay will disappear.</div>"
+        )
+    elif has_mesa_vendor and dri_mapped:
+        # Intel/AMD (with or without NVIDIA) already has /dev/dri but
+        # rendering still fell back to software. Usually host-side.
+        logger.info(
+            f"Vulkan warning: selected Case D (Mesa with /dev/dri "
+            f"mapped but rendering still fell back) for "
+            f"{mesa_name!r}; dri_nodes={dri_render_nodes}"
+        )
+        detected = all_names_escaped or "a GPU"
+        body = (
+            f"<strong>Your GPUs:</strong> {detected}"
+            "<br><br>"
+            "The <code>/dev/dri</code> render node is already forwarded "
+            "to the container, but the GPU rendering check still "
+            "failed. Usually this means one of two things:"
+            '<ul class="small mb-0 mt-1">'
+            "<li><strong>Your host's GPU drivers are missing or "
+            "broken.</strong> Run <code>vainfo</code> on the host "
+            "(outside the container) &mdash; if it does not list your "
+            "GPU, install or fix the host's Mesa drivers.</li>"
+            "<li><strong>Render node permissions don't match the "
+            "container user.</strong> Run "
+            "<code>ls -la /dev/dri/renderD*</code> on the host. The "
+            "container runs as <code>PUID:PGID</code>, and the render "
+            "node's group (usually <code>render</code> or "
+            "<code>video</code>) needs to be readable by that user.</li>"
+            "</ul>"
+        )
+    else:
+        # No GPU detected at all.
+        logger.info("Vulkan warning: selected Case E (no GPU detected)")
+        body = (
+            "<strong>No GPU detected in this container.</strong>"
+            "<br><br>"
+            "The container has no GPU visible to it, so GPU rendering "
+            "isn't possible at all. Make sure your host has a GPU with "
+            "drivers installed, and that the GPU is forwarded to the "
+            "container:"
+            '<ul class="small mb-0 mt-1">'
+            "<li><strong>Intel or AMD:</strong> "
+            "<code>--device /dev/dri:/dev/dri</code></li>"
+            "<li><strong>NVIDIA:</strong> "
+            "<code>--runtime=nvidia --gpus all</code></li>"
+            "</ul>"
+        )
+
+    result["warning"] = header + body + footer
     return result
 
 
