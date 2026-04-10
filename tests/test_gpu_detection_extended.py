@@ -1793,148 +1793,216 @@ class TestProbeVulkanDevice:
 
     # --- Layer 3 multi-strategy probe tests ---------------------------------
 
+    @staticmethod
+    def _stderr_with_device(device_name: str) -> str:
+        return f"[Vulkan @ 0x7f00] Device 0 selected: {device_name}\n"
+
     @patch(
         "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
     )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
     @patch("plex_generate_previews.gpu_detection.subprocess.run")
-    def test_strategy_2_retry_with_vk_driver_files_succeeds(
-        self, mock_run, mock_find_icd, _mock_vk
+    def test_strategy_2_egl_vendor_override_succeeds(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
     ):
-        """Strategy 1 returns llvmpipe → Strategy 2 forces VK_DRIVER_FILES →
-        subprocess picks up the NVIDIA device → env override is cached and
-        the NVIDIA device is returned.
+        """Strategy 1 returns llvmpipe, Strategy 2 forces
+        __EGL_VENDOR_LIBRARY_FILENAMES → subprocess picks up NVIDIA →
+        env override is cached and the NVIDIA device is returned. The
+        VK_DRIVER_FILES fallback (Strategy 2b) does NOT fire.
         """
         from plex_generate_previews.gpu_detection import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
 
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
         mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
         mock_run.side_effect = [
-            # Strategy 1: default probe → llvmpipe
             MagicMock(
                 returncode=0,
-                stderr=(
-                    "[Vulkan @ 0x7f00] Device 0 selected: "
-                    "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+                stderr=self._stderr_with_device(
+                    "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
                 ),
             ),
-            # Strategy 2: VK_DRIVER_FILES-forced probe → NVIDIA TITAN RTX
             MagicMock(
                 returncode=0,
-                stderr=(
-                    "[Vulkan @ 0x7f00] Device 0 selected: "
-                    "NVIDIA TITAN RTX (discrete) (0x1e02)\n"
-                ),
+                stderr=self._stderr_with_device("NVIDIA TITAN RTX (discrete) (0x1e02)"),
             ),
         ]
 
         device = _probe_vulkan_device()
         assert device == "NVIDIA TITAN RTX (discrete) (0x1e02)"
-        # Two probes fired: Strategy 1 + Strategy 2. Strategy 3 did NOT
-        # fire because Strategy 2 succeeded.
+        # Two probes fired: Strategy 1 + Strategy 2. Strategy 2b and 3
+        # did NOT fire because Strategy 2 succeeded.
         assert mock_run.call_count == 2
-        # Strategy 2 call MUST have an env= kwarg that includes
-        # VK_DRIVER_FILES pointing at the ICD we mocked.
         strategy_2_call = mock_run.call_args_list[1]
         env_arg = strategy_2_call.kwargs.get("env") or {}
-        assert env_arg.get("VK_DRIVER_FILES") == "/etc/vulkan/icd.d/nvidia_icd.json"
-        # The successful override is cached for subsequent FFmpeg calls.
+        assert (
+            env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+        # Strategy 2 does NOT set VK_DRIVER_FILES — it's a gentler fix
+        # that still lets the loader enumerate other ICDs for Mesa
+        # fallback on dual-GPU hosts.
+        assert "VK_DRIVER_FILES" not in env_arg
         assert get_vulkan_env_overrides() == {
-            "VK_DRIVER_FILES": "/etc/vulkan/icd.d/nvidia_icd.json"
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            )
         }
 
     @patch(
         "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
     )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
     @patch("plex_generate_previews.gpu_detection.subprocess.run")
-    def test_strategy_2_skipped_when_no_nvidia_icd_json(
-        self, mock_run, mock_find_icd, _mock_vk
+    def test_strategy_2b_vk_driver_files_fallback_when_egl_retry_fails(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
     ):
-        """Strategy 1 returns llvmpipe → Strategy 2 is skipped because
-        _find_nvidia_icd_json() returns None → Strategy 3 runs a
-        VK_LOADER_DEBUG=all capture → only two subprocess calls total
-        (Strategy 1 + Strategy 3; no Strategy 2 retry).
+        """Strategy 1 fails, Strategy 2 (EGL vendor override) also
+        fails, Strategy 2b (VK_DRIVER_FILES + EGL) succeeds → cached
+        env override carries BOTH keys."""
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_run.side_effect = [
+            # Strategy 1: llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2: still llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2b: success
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA GeForce RTX 4090 (discrete)"),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "NVIDIA GeForce RTX 4090 (discrete)"
+        assert mock_run.call_count == 3
+        strategy_2b_call = mock_run.call_args_list[2]
+        env_arg = strategy_2b_call.kwargs.get("env") or {}
+        assert env_arg.get("VK_DRIVER_FILES") == "/etc/vulkan/icd.d/nvidia_icd.json"
+        assert (
+            env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+        assert get_vulkan_env_overrides() == {
+            "VK_DRIVER_FILES": "/etc/vulkan/icd.d/nvidia_icd.json",
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            ),
+        }
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_all_retries_skipped_when_nothing_to_retry(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """No NVIDIA ICD JSON, no EGL vendor JSON → Strategy 2 and 2b
+        are both skipped → Strategy 3 runs a VK_LOADER_DEBUG=all
+        capture → only two subprocess calls (Strategy 1 + Strategy 3).
         """
         from plex_generate_previews.gpu_detection import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
 
-        mock_find_icd.return_value = None  # No NVIDIA ICD present
+        mock_find_egl.return_value = None
+        mock_find_icd.return_value = None
         mock_run.side_effect = [
-            # Strategy 1: default probe → llvmpipe
             MagicMock(
                 returncode=0,
-                stderr="[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (software) (0x0)\n",
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
             ),
-            # Strategy 3: diagnostic probe → still llvmpipe, with loader trace
             MagicMock(
                 returncode=0,
                 stderr=(
                     "[Vulkan Loader] Searching ICDs in /etc/vulkan/icd.d/\n"
                     "[Vulkan Loader] No ICDs found\n"
-                    "[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (software) (0x0)\n"
+                    + self._stderr_with_device("llvmpipe (software) (0x0)")
                 ),
             ),
         ]
 
         device = _probe_vulkan_device()
         assert device == "llvmpipe (software) (0x0)"
-        assert mock_run.call_count == 2  # Strategy 1 + Strategy 3, NOT 2
-        # No env override was cached because no retry succeeded.
+        assert mock_run.call_count == 2
         assert get_vulkan_env_overrides() == {}
 
     @patch(
         "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
     )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
     @patch("plex_generate_previews.gpu_detection.subprocess.run")
     def test_strategy_3_diagnostic_capture_populates_debug_buffer(
-        self, mock_run, mock_find_icd, _mock_vk
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
     ):
-        """Strategy 1 returns llvmpipe, Strategy 2 also returns llvmpipe,
-        Strategy 3 captures the VK_LOADER_DEBUG=all stderr into the
-        module-level debug buffer that /api/system/vulkan/debug exposes.
+        """Strategy 1, 2, and 2b all fail → Strategy 3 captures the
+        VK_LOADER_DEBUG=all stderr into the module-level debug buffer
+        that ``/api/system/vulkan/debug`` exposes.
         """
         from plex_generate_previews.gpu_detection import (
             _probe_vulkan_device,
             get_vulkan_debug_buffer,
         )
 
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
         mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
         diagnostic_stderr = (
             "[Vulkan Loader] VK_LOADER_DEBUG=all\n"
             "[Vulkan Loader] Scanning /etc/vulkan/icd.d/nvidia_icd.json\n"
             "[Vulkan Loader] ERROR: libnvidia-glvkspirv.so: cannot open shared object file\n"
             "[Vulkan Loader] Skipping ICD\n"
-            "[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (software) (0x0)\n"
+            + self._stderr_with_device("llvmpipe (software) (0x0)")
         )
         mock_run.side_effect = [
+            # Strategy 1: software
             MagicMock(
                 returncode=0,
-                stderr="[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (software) (0x0)\n",
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
             ),
+            # Strategy 2: still software
             MagicMock(
                 returncode=0,
-                stderr="[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (software) (0x0)\n",
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
             ),
+            # Strategy 2b: still software
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 3: diagnostic capture
             MagicMock(returncode=0, stderr=diagnostic_stderr),
         ]
 
         _probe_vulkan_device()
-        assert mock_run.call_count == 3
-        # Strategy 3 call MUST pass VK_LOADER_DEBUG=all.
-        strategy_3_call = mock_run.call_args_list[2]
+        assert mock_run.call_count == 4
+        strategy_3_call = mock_run.call_args_list[3]
         env_arg = strategy_3_call.kwargs.get("env") or {}
         assert env_arg.get("VK_LOADER_DEBUG") == "all"
-        # And because nvidia_icd_json is present, Strategy 3 also passes
-        # VK_DRIVER_FILES so we capture loader trace specifically about
-        # that ICD.
         assert env_arg.get("VK_DRIVER_FILES") == "/etc/vulkan/icd.d/nvidia_icd.json"
-        # The diagnostic buffer is populated with the trace.
+        assert (
+            env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
         buf = get_vulkan_debug_buffer()
         assert "libnvidia-glvkspirv.so: cannot open" in buf
         assert "VK_LOADER_DEBUG=all" in buf
@@ -1942,14 +2010,14 @@ class TestProbeVulkanDevice:
     @patch(
         "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
     )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
     @patch("plex_generate_previews.gpu_detection.subprocess.run")
     def test_strategy_1_success_does_not_touch_debug_buffer_or_overrides(
-        self, mock_run, mock_find_icd, _mock_vk
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
     ):
         """Happy path: Strategy 1 returns a real hardware device → no
-        Strategy 2, no Strategy 3, no env override, no debug buffer.
-        """
+        retries, no diagnostic capture, no env override."""
         from plex_generate_previews.gpu_detection import (
             _probe_vulkan_device,
             get_vulkan_debug_buffer,
@@ -1958,17 +2026,16 @@ class TestProbeVulkanDevice:
 
         mock_run.return_value = MagicMock(
             returncode=0,
-            stderr=(
-                "[Vulkan @ 0x7f00] Device 0 selected: "
-                "NVIDIA GeForce RTX 4090 (discrete) (0x2684)\n"
+            stderr=self._stderr_with_device(
+                "NVIDIA GeForce RTX 4090 (discrete) (0x2684)"
             ),
         )
 
         device = _probe_vulkan_device()
         assert device == "NVIDIA GeForce RTX 4090 (discrete) (0x2684)"
         assert mock_run.call_count == 1
-        # _find_nvidia_icd_json must NOT be called on the happy path —
-        # we already have a working hardware device.
+        # File-discovery helpers must NOT be called on the happy path.
+        mock_find_egl.assert_not_called()
         mock_find_icd.assert_not_called()
         assert get_vulkan_env_overrides() == {}
         assert get_vulkan_debug_buffer() == ""

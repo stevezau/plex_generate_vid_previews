@@ -485,6 +485,31 @@ _NVIDIA_ICD_JSON_PATHS = (
     "/usr/share/vulkan/icd.d/nvidia_icd.json",
 )
 
+# Candidate paths for the GLVND NVIDIA EGL vendor config. nvidia-container-
+# toolkit injects this at ``/usr/share/glvnd/egl_vendor.d/10_nvidia.json``
+# when the ``graphics`` driver capability is declared; it tells the GLVND
+# libEGL dispatcher which vendor library (``libEGL_nvidia.so.0``) to use.
+#
+# WHY THIS MATTERS for the DV5 Vulkan path:
+# NVIDIA's libGLX_nvidia.so.0 is both a GLX backend AND the Vulkan ICD.
+# During Vulkan ICD initialisation, its constructor dlopens ``libEGL.so.1``
+# for an internal EGL capability probe. On the linuxserver/ffmpeg base
+# image, libEGL.so.1 is GLVND's dispatcher (not NVIDIA's own EGL), so the
+# probe goes through GLVND's vendor selection. If GLVND has no vendor hint,
+# it picks whichever vendor file is first on disk — which on this image is
+# Mesa's, not NVIDIA's. The EGL probe then returns a degraded context,
+# NVIDIA's ICD silently marks itself unusable, and
+# ``vk_icdGetInstanceProcAddr(NULL, "vkCreateInstance")`` returns NULL.
+# Result: ``VK_ERROR_INCOMPATIBLE_DRIVER`` and a llvmpipe fallback.
+#
+# Setting ``__EGL_VENDOR_LIBRARY_FILENAMES=<path-to-10_nvidia.json>`` tells
+# GLVND to use the NVIDIA vendor directly, the EGL probe succeeds, and
+# libGLX_nvidia's Vulkan ICD wakes up. This is the Strategy-2 fix.
+_NVIDIA_EGL_VENDOR_JSON_PATHS = (
+    "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+    "/etc/glvnd/egl_vendor.d/10_nvidia.json",
+)
+
 # Cap on the size of the VK_LOADER_DEBUG=all capture buffer. One run of
 # the diagnostic probe is typically 5–15 KB of loader trace; 20 KB is a
 # comfortable upper bound that still fits in a GitHub issue comment.
@@ -507,6 +532,19 @@ def _find_nvidia_icd_json() -> Optional[str]:
     (``/usr/share/vulkan/icd.d/``). Returns the first match or None.
     """
     for path in _NVIDIA_ICD_JSON_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _find_nvidia_egl_vendor_json() -> Optional[str]:
+    """Return the path to the GLVND NVIDIA EGL vendor JSON if present.
+
+    Checks both the nvidia-container-toolkit mount path
+    (``/usr/share/glvnd/egl_vendor.d/``) and the per-host override
+    (``/etc/glvnd/egl_vendor.d/``). Returns the first match or None.
+    """
+    for path in _NVIDIA_EGL_VENDOR_JSON_PATHS:
         if os.path.exists(path):
             return path
     return None
@@ -595,25 +633,37 @@ def _probe_vulkan_device() -> Optional[str]:
     for correctly-configured hosts.
 
     **Strategy 2** — if Strategy 1 returned a software rasterizer
-    (``llvmpipe``/``lavapipe``) or nothing AND an NVIDIA ICD JSON is
-    present at one of the standard paths, retry the probe with
-    ``VK_DRIVER_FILES=<path>`` set in the subprocess environment. This
-    forces the loader to use *only* the NVIDIA driver, bypassing any
-    loader search-path quirks (e.g.
-    `nvidia-container-toolkit#1392 <https://github.com/NVIDIA/nvidia-container-toolkit/issues/1392>`_
-    where the ICD is mounted at ``/etc/vulkan/icd.d/`` but the loader
-    only scans ``/usr/share/vulkan/icd.d/``). If the forced probe
-    succeeds, the env override is stashed in
+    (``llvmpipe``/``lavapipe``) or nothing AND the GLVND NVIDIA EGL
+    vendor JSON is present, retry the probe with
+    ``__EGL_VENDOR_LIBRARY_FILENAMES`` pointing at it. See the comment
+    on :data:`_NVIDIA_EGL_VENDOR_JSON_PATHS` above for the full
+    mechanism; the short version is that NVIDIA's
+    ``libGLX_nvidia.so.0`` runs a ``dlopen("libEGL.so.1")`` probe
+    during Vulkan ICD init, GLVND picks the Mesa vendor by default on
+    the linuxserver/ffmpeg base image, and that causes NVIDIA's
+    ``vk_icdGetInstanceProcAddr`` to return NULL for
+    ``vkCreateInstance``. The env var forces GLVND to pick the NVIDIA
+    vendor, and the ICD wakes up. Verified empirically on an NVIDIA
+    TITAN RTX + driver 590.48.01 + linuxserver/ffmpeg 8.0.1-cli-ls56.
+
+    **Strategy 2b** — if the EGL vendor JSON is not present but the
+    NVIDIA ICD JSON is (or if Strategy 2 ran but did not fix things),
+    fall back to forcing ``VK_DRIVER_FILES`` at the NVIDIA ICD. This
+    is the older heuristic; kept as a secondary because some
+    nvidia-container-toolkit releases inject the ICD JSON but not the
+    GLVND vendor config (see
+    `nvidia-container-toolkit#1559 <https://github.com/NVIDIA/nvidia-container-toolkit/issues/1559>`_).
+    If the forced probe succeeds, the env override is stashed in
     ``_VULKAN_ENV_OVERRIDES`` so :func:`get_vulkan_env_overrides` can
     feed it into the real FFmpeg invocation on the libplacebo path.
 
-    **Strategy 3** — if both 1 and 2 failed, run one final probe with
-    ``VK_LOADER_DEBUG=all`` (and the NVIDIA ICD override if present) and
-    capture the full stderr into ``_VULKAN_DEBUG_BUFFER`` so users can
-    copy-paste it into a GitHub issue via
-    ``GET /api/system/vulkan/debug``. The strategy does NOT attempt to
-    return a device from the diagnostic probe — it just captures the
-    trace for human diagnosis.
+    **Strategy 3** — if 1 and both 2 branches failed, run one final
+    probe with ``VK_LOADER_DEBUG=all`` (plus whichever env vars are
+    available) and capture the full stderr into
+    ``_VULKAN_DEBUG_BUFFER`` so users can copy-paste it into a GitHub
+    issue via ``GET /api/system/vulkan/debug``. The strategy does NOT
+    attempt to return a device from the diagnostic probe — it just
+    captures the trace for human diagnosis.
 
     Returns:
         The Vulkan device description the libplacebo path will actually
@@ -634,39 +684,81 @@ def _probe_vulkan_device() -> Optional[str]:
     if device:
         logger.info(
             f"Vulkan probe (strategy 1): got software device {device!r}; "
-            "will attempt VK_DRIVER_FILES retry if NVIDIA ICD is present"
+            "will attempt NVIDIA-specific retries"
         )
     else:
         logger.info(
             "Vulkan probe (strategy 1): no 'Device N selected:' line; "
-            "will attempt VK_DRIVER_FILES retry if NVIDIA ICD is present"
+            "will attempt NVIDIA-specific retries"
         )
 
-    # Strategy 2: force NVIDIA ICD if the JSON is present.
+    nvidia_egl_vendor = _find_nvidia_egl_vendor_json()
     nvidia_icd = _find_nvidia_icd_json()
-    if nvidia_icd:
-        logger.info(f"Vulkan probe (strategy 2): forcing VK_DRIVER_FILES={nvidia_icd}")
-        retry_device, _ = _run_vulkan_probe({"VK_DRIVER_FILES": nvidia_icd})
+
+    # Strategy 2: point GLVND at NVIDIA's EGL vendor via
+    # __EGL_VENDOR_LIBRARY_FILENAMES. This is the verified fix for the
+    # linuxserver/ffmpeg + NVIDIA case — see the doc comment on
+    # _NVIDIA_EGL_VENDOR_JSON_PATHS above.
+    if nvidia_egl_vendor:
+        logger.info(
+            f"Vulkan probe (strategy 2): forcing "
+            f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
+        )
+        retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": nvidia_egl_vendor}
+        retry_device, _ = _run_vulkan_probe(retry_env)
         if retry_device and not _is_software_vulkan_device(retry_device):
             logger.info(
                 f"Vulkan probe (strategy 2): success with {retry_device!r}. "
-                f"Injecting VK_DRIVER_FILES={nvidia_icd} into subsequent "
-                "FFmpeg invocations on the libplacebo DV Profile 5 path."
+                f"Injecting __EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor} "
+                "into subsequent FFmpeg invocations on the libplacebo DV "
+                "Profile 5 path."
             )
-            _VULKAN_ENV_OVERRIDES = {"VK_DRIVER_FILES": nvidia_icd}
+            _VULKAN_ENV_OVERRIDES = dict(retry_env)
             return retry_device
         logger.warning(
-            f"Vulkan probe (strategy 2): forcing VK_DRIVER_FILES={nvidia_icd} "
+            f"Vulkan probe (strategy 2): forcing "
+            f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor} "
+            f"still returned {retry_device!r}; trying Strategy 2b."
+        )
+    else:
+        logger.info(
+            "Vulkan probe: no NVIDIA GLVND EGL vendor JSON found at "
+            f"{_NVIDIA_EGL_VENDOR_JSON_PATHS}; skipping Strategy 2."
+        )
+
+    # Strategy 2b: older heuristic — force VK_DRIVER_FILES at the NVIDIA
+    # ICD. Kept for the case where the ICD JSON is injected but the EGL
+    # vendor config is not (nvidia-container-toolkit#1559 / partial CDI
+    # manifests), and for general belt-and-suspenders coverage.
+    if nvidia_icd:
+        logger.info(f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd}")
+        # If Strategy 2 ran and found an EGL vendor, carry it through
+        # the 2b retry as well so the two fixes stack.
+        retry_env = {"VK_DRIVER_FILES": nvidia_icd}
+        if nvidia_egl_vendor:
+            retry_env["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
+        retry_device, _ = _run_vulkan_probe(retry_env)
+        if retry_device and not _is_software_vulkan_device(retry_device):
+            logger.info(
+                f"Vulkan probe (strategy 2b): success with {retry_device!r}. "
+                f"Injecting {retry_env} into subsequent FFmpeg invocations."
+            )
+            _VULKAN_ENV_OVERRIDES = dict(retry_env)
+            return retry_device
+        logger.warning(
+            f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd} "
             f"still returned {retry_device!r}; running diagnostic capture."
         )
     else:
         logger.info(
             "Vulkan probe: no NVIDIA ICD JSON found at "
-            f"{_NVIDIA_ICD_JSON_PATHS}; skipping retry, running diagnostic capture."
+            f"{_NVIDIA_ICD_JSON_PATHS}; skipping Strategy 2b."
         )
 
     # Strategy 3: VK_LOADER_DEBUG=all capture for issue reports.
     diag_overrides: dict = {"VK_LOADER_DEBUG": "all"}
+    if nvidia_egl_vendor:
+        diag_overrides["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
     if nvidia_icd:
         diag_overrides["VK_DRIVER_FILES"] = nvidia_icd
     _, diag_stderr = _run_vulkan_probe(diag_overrides)
