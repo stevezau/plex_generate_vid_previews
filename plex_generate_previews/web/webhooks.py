@@ -29,6 +29,13 @@ _pending_timers: dict[str, threading.Timer] = {}
 _pending_batches: dict[str, dict[str, object]] = {}
 _pending_lock = threading.Lock()
 
+# Recently dispatched (source, normalized_path) entries, used to drop
+# duplicate webhook deliveries that arrive after the debounce batch has
+# already fired — Plex in particular re-sends library.new events after
+# metadata refreshes and analyzer reruns.
+_recent_dispatches: dict[tuple[str, str], float] = {}
+_RECENT_DISPATCH_TTL_SECONDS = 600
+
 # In-memory log of received webhook events, persisted to disk on each write.
 _HISTORY_MAX = 100
 _webhook_history: deque = deque(maxlen=_HISTORY_MAX)
@@ -301,6 +308,70 @@ def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:
     return f"{series_title.strip()} {', '.join(parts)}"
 
 
+def _format_plex_title_from_metadata(metadata: dict) -> str | None:
+    """Build a descriptive job title from a Plex webhook Metadata dict.
+
+    Episodes return ``"Show - SxxExx - Episode Title"`` (or just
+    ``"Show - SxxExx"`` when the episode title is blank or the generic
+    ``"Episode N"`` placeholder Plex uses for shows without canonical titles).
+    Movies return ``"Title (Year)"`` (or bare title if year is missing).
+    Returns ``None`` when required fields are absent so the caller can fall
+    back to a ratingKey lookup or the raw ``metadata.title``.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    item_type = str(metadata.get("type", "")).strip().lower()
+
+    if item_type == "episode":
+        show = str(metadata.get("grandparentTitle", "")).strip()
+        if not show:
+            return None
+        try:
+            season_num = int(metadata.get("parentIndex"))
+            episode_num = int(metadata.get("index"))
+        except (TypeError, ValueError):
+            return None
+        season_episode = f"S{season_num:02d}E{episode_num:02d}"
+        ep_title = str(metadata.get("title", "")).strip()
+        tautology = f"episode {episode_num}"
+        if not ep_title or ep_title.lower() == tautology:
+            return f"{show} - {season_episode}"
+        return f"{show} - {season_episode} - {ep_title}"
+
+    if item_type == "movie":
+        title = str(metadata.get("title", "")).strip()
+        if not title:
+            return None
+        year = metadata.get("year")
+        try:
+            year_int = int(year) if year is not None else None
+        except (TypeError, ValueError):
+            year_int = None
+        if year_int:
+            return f"{title} ({year_int})"
+        return title
+
+    return None
+
+
+def _format_plex_title_from_item(item) -> str | None:
+    """Same format as :func:`_format_plex_title_from_metadata` but for a
+    ``plexapi`` item object. Used when the webhook payload lacks structured
+    fields and we have to fall back to a ratingKey lookup.
+    """
+    if item is None:
+        return None
+    synthetic: dict = {
+        "type": getattr(item, "type", ""),
+        "grandparentTitle": getattr(item, "grandparentTitle", ""),
+        "parentIndex": getattr(item, "parentIndex", None),
+        "index": getattr(item, "index", None),
+        "title": getattr(item, "title", ""),
+        "year": getattr(item, "year", None),
+    }
+    return _format_plex_title_from_metadata(synthetic)
+
+
 def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     """Schedule a debounced single-file webhook job and batch paths per source."""
     safe_source = str(source or "unknown")
@@ -316,31 +387,59 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     delay = int(settings.get("webhook_delay", 60))
     debounce_key = _debounce_key(safe_source)
     normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
+    dedup_key = (safe_source, normalized_path)
 
     with _pending_lock:
-        existing = _pending_timers.get(debounce_key)
-        if existing:
-            existing.cancel()
+        now_ts = datetime.now(timezone.utc).timestamp()
 
-        batch = _pending_batches.get(debounce_key)
-        if not batch:
-            batch = {
-                "source": source,
-                "file_paths": set(),
-                "titles": [],
-            }
-            _pending_batches[debounce_key] = batch
-        batch["file_paths"].add(normalized_path)
-        batch["titles"].append(safe_title)
+        # Opportunistically prune expired dedup entries — keeps the dict bounded.
+        expired = [
+            key
+            for key, ts in _recent_dispatches.items()
+            if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS
+        ]
+        for key in expired:
+            _recent_dispatches.pop(key, None)
 
-        fire_at = datetime.now(timezone.utc).timestamp() + delay
-        batch["fire_at"] = fire_at
+        recent_ts = _recent_dispatches.get(dedup_key)
+        if recent_ts is not None:
+            age = int(now_ts - recent_ts)
+            logger.info(
+                f"Webhook: {safe_source} duplicate of '{safe_title}' ignored "
+                f"(already dispatched {age}s ago)"
+            )
+            dedup_skip = True
+        else:
+            dedup_skip = False
 
-        timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
-        timer.daemon = True
-        _pending_timers[debounce_key] = timer
-        timer.start()
-        path_count = len(batch["file_paths"])
+        if not dedup_skip:
+            existing = _pending_timers.get(debounce_key)
+            if existing:
+                existing.cancel()
+
+            batch = _pending_batches.get(debounce_key)
+            if not batch:
+                batch = {
+                    "source": source,
+                    "file_paths": set(),
+                    "titles": [],
+                }
+                _pending_batches[debounce_key] = batch
+            batch["file_paths"].add(normalized_path)
+            batch["titles"].append(safe_title)
+
+            fire_at = now_ts + delay
+            batch["fire_at"] = fire_at
+
+            timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
+            timer.daemon = True
+            _pending_timers[debounce_key] = timer
+            timer.start()
+            path_count = len(batch["file_paths"])
+
+    if dedup_skip:
+        _add_history_entry(safe_source, "Download", safe_title, "deduped")
+        return False
 
     logger.info(
         f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with "
@@ -408,6 +507,11 @@ def _execute_webhook_job(debounce_key: str) -> None:
         ]
         retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
         retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
+
+        with _pending_lock:
+            dispatch_ts = datetime.now(timezone.utc).timestamp()
+            for p in webhook_paths:
+                _recent_dispatches[(source, p)] = dispatch_ts
 
         _start_job_async(
             job.id,
@@ -651,15 +755,20 @@ def _extract_plex_payload(req) -> tuple[dict | None, str | None]:
     return data, None
 
 
-def _resolve_plex_paths_from_rating_key(rating_key: int | str) -> list[str]:
-    """Look up a Plex item by ratingKey and return all of its file paths.
+def _resolve_plex_paths_from_rating_key(
+    rating_key: int | str,
+) -> tuple[list[str], str | None]:
+    """Look up a Plex item by ratingKey and return its file paths and a
+    formatted display title.
 
     Plex's ``library.new`` payload identifies items by ratingKey but
     does not consistently include file paths in the Metadata block.
-    This helper instantiates a PlexServer using the configured token
-    and walks ``item.media[*].parts[*].file`` to recover them.
+    This helper instantiates a PlexServer using the configured token,
+    walks ``item.media[*].parts[*].file`` to recover the paths, and
+    derives a descriptive title from the same fetched item so callers
+    don't need a second Plex round trip.
 
-    Returns an empty list on any failure (item not found, Plex
+    Returns ``([], None)`` on any failure (item not found, Plex
     unreachable, no media parts).
     """
     try:
@@ -667,19 +776,19 @@ def _resolve_plex_paths_from_rating_key(rating_key: int | str) -> list[str]:
         from ..plex_client import plex_server, retry_plex_call
     except ImportError as exc:
         logger.debug("Webhook: cannot import plex client modules: {}", exc)
-        return []
+        return [], None
 
     try:
         config = load_config()
     except Exception as exc:
         logger.warning("Webhook: failed to load config for Plex lookup: {}", exc)
-        return []
+        return [], None
 
     try:
         plex = plex_server(config)
     except Exception as exc:
         logger.warning("Webhook: failed to connect to Plex for lookup: {}", exc)
-        return []
+        return [], None
 
     try:
         item = retry_plex_call(plex.fetchItem, int(rating_key))
@@ -689,7 +798,7 @@ def _resolve_plex_paths_from_rating_key(rating_key: int | str) -> list[str]:
             rating_key,
             exc,
         )
-        return []
+        return [], None
 
     paths: list[str] = []
     media_list = getattr(item, "media", None) or []
@@ -698,7 +807,9 @@ def _resolve_plex_paths_from_rating_key(rating_key: int | str) -> list[str]:
             file_path = getattr(part, "file", None)
             if file_path:
                 paths.append(str(file_path))
-    return paths
+
+    display_title = _format_plex_title_from_item(item)
+    return paths, display_title
 
 
 @webhooks_bp.route("/plex", methods=["POST"])
@@ -752,14 +863,17 @@ def plex_webhook():
 
     metadata = _as_dict(data.get("Metadata"))
     rating_key = metadata.get("ratingKey")
-    title = str(metadata.get("title", "")).strip() or "Plex item"
+    raw_title = str(metadata.get("title", "")).strip() or "Plex item"
+    display_title = _format_plex_title_from_metadata(metadata)
 
     if not rating_key:
         logger.warning(
             "Webhook: Plex library.new payload missing ratingKey. Structure: {}",
             _summarize_payload(data),
         )
-        _add_history_entry("plex", "library.new", title, "ignored_no_path")
+        _add_history_entry(
+            "plex", "library.new", display_title or raw_title, "ignored_no_path"
+        )
         return jsonify({"success": False, "error": "Missing Metadata.ratingKey"}), 400
 
     # Try the cheap path first: file paths embedded in the payload's
@@ -777,22 +891,32 @@ def plex_webhook():
                     if isinstance(file_path, str) and file_path.strip():
                         paths.append(file_path.strip())
 
-    if not paths:
-        paths = _resolve_plex_paths_from_rating_key(rating_key)
+    # Fall back to the ratingKey lookup if we're missing either paths or
+    # a descriptive title — the lookup gives us both in a single round trip.
+    if not paths or display_title is None:
+        resolved_paths, resolved_title = _resolve_plex_paths_from_rating_key(rating_key)
+        if not paths:
+            paths = resolved_paths
+        if display_title is None:
+            display_title = resolved_title
+
+    if display_title is None:
+        display_title = raw_title
 
     if not paths:
         logger.warning(
             "Webhook: Plex library.new for '{}' (ratingKey={}) had no file paths",
-            title,
+            display_title,
             rating_key,
         )
-        _add_history_entry("plex", "library.new", title, "ignored_no_path")
+        _add_history_entry("plex", "library.new", display_title, "ignored_no_path")
         return (
             jsonify(
                 {
                     "success": True,
                     "message": (
-                        f"No file paths found for '{title}' (ratingKey={rating_key})"
+                        f"No file paths found for '{display_title}' "
+                        f"(ratingKey={rating_key})"
                     ),
                 }
             ),
@@ -801,21 +925,26 @@ def plex_webhook():
 
     queued_any = False
     for path in paths:
-        if _schedule_webhook_job("plex", title, path):
+        if _schedule_webhook_job("plex", display_title, path):
             queued_any = True
 
     if not queued_any:
-        _add_history_entry("plex", "library.new", title, "ignored_no_path")
+        _add_history_entry("plex", "library.new", display_title, "ignored_no_path")
         return (
             jsonify(
-                {"success": True, "message": f"No valid paths queued for '{title}'"}
+                {
+                    "success": True,
+                    "message": f"No valid paths queued for '{display_title}'",
+                }
             ),
             200,
         )
 
-    _add_history_entry("plex", "library.new", title, "queued")
+    _add_history_entry("plex", "library.new", display_title, "queued")
     return (
-        jsonify({"success": True, "message": f"Processing queued for '{title}'"}),
+        jsonify(
+            {"success": True, "message": f"Processing queued for '{display_title}'"}
+        ),
         202,
     )
 

@@ -39,6 +39,7 @@ def _reset_singletons():
             t.cancel()
         wh._pending_timers.clear()
         wh._pending_batches.clear()
+        wh._recent_dispatches.clear()
     yield
     reset_settings_manager()
     with jobs_mod._job_lock:
@@ -52,6 +53,7 @@ def _reset_singletons():
             t.cancel()
         wh._pending_timers.clear()
         wh._pending_batches.clear()
+        wh._recent_dispatches.clear()
 
 
 @pytest.fixture()
@@ -137,7 +139,7 @@ def test_plex_webhook_falls_back_to_plex_api_lookup(
 ):
     """When Media.Part.file is missing, the endpoint should look the item up by ratingKey."""
     mock_schedule.return_value = True
-    mock_resolve.return_value = ["/data/tv/Show/S01E01.mkv"]
+    mock_resolve.return_value = (["/data/tv/Show/S01E01.mkv"], None)
     payload = {
         "event": "library.new",
         "Metadata": {
@@ -265,7 +267,7 @@ def test_plex_webhook_invalid_json_returns_400(client):
 @patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
 def test_plex_webhook_no_paths_resolved_returns_200_ignored(mock_resolve, client):
     """When neither inline paths nor Plex lookup yield anything, respond 200 (don't make Plex retry)."""
-    mock_resolve.return_value = []
+    mock_resolve.return_value = ([], None)
     payload = {
         "event": "library.new",
         "Metadata": {"ratingKey": "555", "title": "No paths"},
@@ -277,24 +279,30 @@ def test_plex_webhook_no_paths_resolved_returns_200_ignored(mock_resolve, client
 
 
 def test_resolve_plex_paths_from_rating_key_handles_failure():
-    """Plex client failures should return an empty list, not raise."""
+    """Plex client failures should return ([], None), not raise."""
     from plex_generate_previews.web.webhooks import _resolve_plex_paths_from_rating_key
 
     with patch(
         "plex_generate_previews.config.load_config",
         side_effect=Exception("config blew up"),
     ):
-        assert _resolve_plex_paths_from_rating_key("1") == []
+        assert _resolve_plex_paths_from_rating_key("1") == ([], None)
 
 
 def test_resolve_plex_paths_from_rating_key_walks_media_parts():
-    """When the Plex client returns an item, all part files should be collected."""
+    """When the Plex client returns an item, all part files and a formatted
+    display title should be collected from the same fetched item."""
     from plex_generate_previews.web.webhooks import _resolve_plex_paths_from_rating_key
 
     fake_part_a = MagicMock(file="/data/movies/A/A.mkv")
     fake_part_b = MagicMock(file="/data/movies/A/A-extras.mkv")
     fake_media = MagicMock(parts=[fake_part_a, fake_part_b])
-    fake_item = MagicMock(media=[fake_media])
+    fake_item = MagicMock(
+        media=[fake_media],
+        type="movie",
+        title="Movie A",
+        year=2023,
+    )
 
     fake_plex = MagicMock()
     fake_plex.fetchItem.return_value = fake_item
@@ -307,9 +315,258 @@ def test_resolve_plex_paths_from_rating_key_walks_media_parts():
             side_effect=lambda fn, *a, **kw: fn(*a, **kw),
         ),
     ):
-        paths = _resolve_plex_paths_from_rating_key("777")
+        paths, display_title = _resolve_plex_paths_from_rating_key("777")
 
     assert paths == [
         "/data/movies/A/A.mkv",
         "/data/movies/A/A-extras.mkv",
     ]
+    assert display_title == "Movie A (2023)"
+
+
+# ---------------------------------------------------------------------------
+# Title formatter unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_format_plex_title_from_metadata_episode_full():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+
+    metadata = {
+        "type": "episode",
+        "grandparentTitle": "Beyond Paradise",
+        "parentIndex": 4,
+        "index": 3,
+        "title": "The Whispers",
+    }
+    assert (
+        _format_plex_title_from_metadata(metadata)
+        == "Beyond Paradise - S04E03 - The Whispers"
+    )
+
+
+def test_format_plex_title_from_metadata_episode_drops_tautological_title():
+    """When Plex uses the placeholder 'Episode N' as the episode title,
+    the formatter should drop the redundant trailing segment."""
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+
+    metadata = {
+        "type": "episode",
+        "grandparentTitle": "Beyond Paradise",
+        "parentIndex": 4,
+        "index": 3,
+        "title": "Episode 3",
+    }
+    assert _format_plex_title_from_metadata(metadata) == "Beyond Paradise - S04E03"
+
+
+def test_format_plex_title_from_metadata_episode_blank_title_drops_suffix():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+
+    metadata = {
+        "type": "episode",
+        "grandparentTitle": "Show",
+        "parentIndex": 1,
+        "index": 1,
+        "title": "",
+    }
+    assert _format_plex_title_from_metadata(metadata) == "Show - S01E01"
+
+
+def test_format_plex_title_from_metadata_movie_with_year():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+
+    metadata = {"type": "movie", "title": "Dune: Part Two", "year": 2024}
+    assert _format_plex_title_from_metadata(metadata) == "Dune: Part Two (2024)"
+
+
+def test_format_plex_title_from_metadata_movie_without_year():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+
+    metadata = {"type": "movie", "title": "Unknown Movie"}
+    assert _format_plex_title_from_metadata(metadata) == "Unknown Movie"
+
+
+def test_format_plex_title_from_metadata_missing_fields_returns_none():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+
+    # Episode with no grandparentTitle
+    assert (
+        _format_plex_title_from_metadata(
+            {"type": "episode", "parentIndex": 1, "index": 1, "title": "t"}
+        )
+        is None
+    )
+    # Episode with non-integer season/episode indices
+    assert (
+        _format_plex_title_from_metadata(
+            {
+                "type": "episode",
+                "grandparentTitle": "S",
+                "parentIndex": "abc",
+                "index": 1,
+            }
+        )
+        is None
+    )
+    # Movie with empty title
+    assert _format_plex_title_from_metadata({"type": "movie", "title": ""}) is None
+    # Unknown type
+    assert _format_plex_title_from_metadata({"type": "show", "title": "Foo"}) is None
+    # Non-dict input
+    assert _format_plex_title_from_metadata(None) is None
+
+
+def test_format_plex_title_from_item_uses_plexapi_attrs():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_item
+
+    item = MagicMock(
+        type="episode",
+        grandparentTitle="Beyond Paradise",
+        parentIndex=4,
+        index=3,
+        title="The Whispers",
+        year=None,
+    )
+    assert (
+        _format_plex_title_from_item(item) == "Beyond Paradise - S04E03 - The Whispers"
+    )
+
+
+def test_format_plex_title_from_item_returns_none_when_item_is_none():
+    from plex_generate_previews.web.webhooks import _format_plex_title_from_item
+
+    assert _format_plex_title_from_item(None) is None
+
+
+# ---------------------------------------------------------------------------
+# plex_webhook integration: title flows into _schedule_webhook_job
+# ---------------------------------------------------------------------------
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_plex_webhook_uses_formatted_episode_title(mock_schedule, client):
+    """Rich Metadata should produce a descriptive 'Show - SxxExx - Title' label,
+    not the raw Metadata.title."""
+    mock_schedule.return_value = True
+    payload = {
+        "event": "library.new",
+        "Metadata": {
+            "ratingKey": "12345",
+            "type": "episode",
+            "grandparentTitle": "Beyond Paradise",
+            "parentIndex": 4,
+            "index": 3,
+            "title": "The Whispers",
+            "Media": [
+                {
+                    "Part": [
+                        {
+                            "file": (
+                                "/data/tv/Beyond Paradise/Season 04/"
+                                "Beyond Paradise S04E03.mkv"
+                            )
+                        }
+                    ]
+                }
+            ],
+        },
+    }
+
+    resp = _multipart_post(client, payload)
+    assert resp.status_code == 202
+    assert mock_schedule.called
+    args = mock_schedule.call_args[0]
+    assert args[0] == "plex"
+    assert args[1] == "Beyond Paradise - S04E03 - The Whispers"
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_plex_webhook_drops_tautological_episode_suffix(mock_schedule, client):
+    """When Plex sends title='Episode 3' (the placeholder it uses for shows
+    with no canonical titles), the final label should collapse to 'Show - S04E03'."""
+    mock_schedule.return_value = True
+    payload = {
+        "event": "library.new",
+        "Metadata": {
+            "ratingKey": "12345",
+            "type": "episode",
+            "grandparentTitle": "Beyond Paradise",
+            "parentIndex": 4,
+            "index": 3,
+            "title": "Episode 3",
+            "Media": [{"Part": [{"file": "/data/tv/BP/S04E03.mkv"}]}],
+        },
+    }
+
+    resp = _multipart_post(client, payload)
+    assert resp.status_code == 202
+    assert mock_schedule.call_args[0][1] == "Beyond Paradise - S04E03"
+
+
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_plex_webhook_uses_formatted_movie_title(mock_schedule, client):
+    """Movie metadata should produce 'Title (Year)'."""
+    mock_schedule.return_value = True
+    payload = {
+        "event": "library.new",
+        "Metadata": {
+            "ratingKey": "98765",
+            "type": "movie",
+            "title": "Dune: Part Two",
+            "year": 2024,
+            "Media": [{"Part": [{"file": "/data/movies/Dune Part Two.mkv"}]}],
+        },
+    }
+
+    resp = _multipart_post(client, payload)
+    assert resp.status_code == 202
+    assert mock_schedule.call_args[0][1] == "Dune: Part Two (2024)"
+
+
+@patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_plex_webhook_uses_ratingkey_title_when_metadata_is_sparse(
+    mock_schedule, mock_resolve, client
+):
+    """When Metadata lacks the fields needed to format a title but the ratingKey
+    lookup returns one, the resolver-derived title should be used."""
+    mock_schedule.return_value = True
+    mock_resolve.return_value = (
+        ["/data/tv/Show/S01E01.mkv"],
+        "Show - S01E01 - Pilot",
+    )
+    payload = {
+        "event": "library.new",
+        "Metadata": {
+            "ratingKey": "98765",
+            "title": "Some Raw Title",
+            "type": "episode",
+        },
+    }
+
+    resp = _multipart_post(client, payload)
+    assert resp.status_code == 202
+    assert mock_schedule.call_args[0][1] == "Show - S01E01 - Pilot"
+
+
+@patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
+@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+def test_plex_webhook_falls_back_to_raw_title_when_nothing_else_works(
+    mock_schedule, mock_resolve, client
+):
+    """If neither the metadata nor the ratingKey lookup produce a formatted
+    title, the raw Metadata.title is used (prior behavior)."""
+    mock_schedule.return_value = True
+    mock_resolve.return_value = (["/data/tv/Show/unknown.mkv"], None)
+    payload = {
+        "event": "library.new",
+        "Metadata": {
+            "ratingKey": "98765",
+            "title": "Some Raw Title",
+        },
+    }
+
+    resp = _multipart_post(client, payload)
+    assert resp.status_code == 202
+    assert mock_schedule.call_args[0][1] == "Some Raw Title"
