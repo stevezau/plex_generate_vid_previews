@@ -24,7 +24,7 @@
         padding-top: 0.5rem;
     }
     .webhooks-sidebar .nav-link {
-        color: #adb5bd;
+        color: var(--bs-secondary-color);
         font-size: 0.875rem;
         padding: 0.5rem 0.75rem;
         border-radius: 0.375rem;
@@ -32,8 +32,8 @@
         margin-bottom: 0.125rem;
     }
     .webhooks-sidebar .nav-link:hover {
-        color: #e0e0e0;
-        background-color: rgba(255, 255, 255, 0.05);
+        color: var(--bs-body-color);
+        background-color: var(--bs-tertiary-bg);
     }
     .webhooks-sidebar .nav-link.active {
         color: var(--plex-orange);
@@ -46,7 +46,7 @@
     /* Webhook URL input */
     .webhook-url {
         font-family: monospace;
-        background: var(--bs-dark);
+        background: var(--bs-tertiary-bg);
         padding: 0.5rem 1rem;
         border-radius: 0.375rem;
         border: 1px solid var(--bs-border-color);
@@ -77,7 +77,7 @@
         padding: 0.65rem 0.85rem;
         border: 1px solid var(--bs-border-color);
         border-radius: 0.375rem;
-        background: rgba(255,255,255,0.015);
+        background: var(--bs-tertiary-bg);
     }
     .decision-list .decision-scenario { flex: 1 1 50%; min-width: 0; }
     .decision-list .decision-arrow { color: var(--bs-secondary); font-weight: 700; }
@@ -95,11 +95,11 @@
         padding: 0.85rem 1rem;
         border: 1px solid var(--bs-border-color);
         border-radius: 0.5rem;
-        background: rgba(255,255,255,0.02);
+        background: var(--bs-tertiary-bg);
         cursor: pointer;
         transition: background 0.15s;
     }
-    .overview-status-card:hover { background: rgba(255,255,255,0.05); }
+    .overview-status-card:hover { background: var(--bs-secondary-bg); }
     .overview-status-card .status-label { font-size: 0.75rem; color: var(--bs-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
     .overview-status-card .status-value { margin-top: 0.35rem; font-weight: 500; }
 
@@ -460,12 +460,12 @@
                 </div>
 
                 <h6 class="small text-muted">Payload — single file</h6>
-                <pre class="bg-dark p-2 rounded small mb-2"><code>{% raw %}{
+                <pre class="bg-body-tertiary p-2 rounded small mb-2"><code>{% raw %}{
   "file_path": "/media/movies/Movie (2024)/Movie.mkv"
 }{% endraw %}</code></pre>
 
                 <h6 class="small text-muted">Payload — multiple files</h6>
-                <pre class="bg-dark p-2 rounded small mb-2"><code>{% raw %}{
+                <pre class="bg-body-tertiary p-2 rounded small mb-2"><code>{% raw %}{
   "file_paths": ["/media/tv/Show/S01E01.mkv", "/media/tv/Show/S01E02.mkv"],
   "title": "Optional display label"
 }{% endraw %}</code></pre>
@@ -482,13 +482,13 @@
                             <li>Set <strong>Method</strong>: <code>POST</code></li>
                             <li>Set <strong>Request URL</strong>: copy the Custom Webhook URL above</li>
                             <li>Set <strong>Request Headers</strong>:
-                                <pre class="bg-dark p-2 rounded small mt-1 mb-1"><code>{% raw %}{
+                                <pre class="bg-body-tertiary p-2 rounded small mt-1 mb-1"><code>{% raw %}{
   "Content-Type": "application/json",
   "X-Auth-Token": "YOUR_TOKEN"
 }{% endraw %}</code></pre>
                             </li>
                             <li>Set <strong>Request Body</strong>:
-                                <pre class="bg-dark p-2 rounded small mt-1 mb-1"><code>{% raw %}{"file_path": "{{{args.inputFileObj._id}}}"}{% endraw %}</code></pre>
+                                <pre class="bg-body-tertiary p-2 rounded small mt-1 mb-1"><code>{% raw %}{"file_path": "{{{args.inputFileObj._id}}}"}{% endraw %}</code></pre>
                             </li>
                             <li>Save the flow</li>
                         </ol>
@@ -498,7 +498,7 @@
 
                 <details>
                     <summary class="small fw-semibold" style="cursor:pointer;">curl example</summary>
-                    <pre class="bg-dark p-2 rounded small mt-2 mb-0"><code>{% raw %}curl -X POST "http://your-server:8080/api/webhooks/custom" \
+                    <pre class="bg-body-tertiary p-2 rounded small mt-2 mb-0"><code>{% raw %}curl -X POST "http://your-server:8080/api/webhooks/custom" \
   -H "Content-Type: application/json" \
   -H "X-Auth-Token: YOUR_TOKEN" \
   -d '{"file_path": "/media/movies/Movie.mkv"}'{% endraw %}</code></pre>
@@ -1233,7 +1233,7 @@ function renderHistoryPage() {
             detailTr.id = 'history-detail-' + idx;
             detailTr.className = 'd-none history-files-detail';
             detailTr.setAttribute('aria-hidden', 'true');
-            detailTr.innerHTML = '<td colspan="4" class="bg-dark bg-opacity-10 small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
+            detailTr.innerHTML = '<td colspan="4" class="bg-body-tertiary small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
             tbody.appendChild(detailTr);
         }
     });

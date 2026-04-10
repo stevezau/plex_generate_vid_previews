@@ -116,10 +116,15 @@ html[data-bs-theme="dark"] .table-hover tbody tr:hover {
     text-align: left;
 }
 
-/* GPU cards */
-.gpu-card {
+/* GPU cards — blue-tinted accent that fits both themes */
+html[data-bs-theme="dark"] .gpu-card {
     background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 110, 253, 0.05));
     border: 1px solid rgba(13, 110, 253, 0.3);
+}
+
+html[data-bs-theme="light"] .gpu-card {
+    background: linear-gradient(135deg, rgba(13, 110, 253, 0.08), rgba(13, 110, 253, 0.03));
+    border: 1px solid rgba(13, 110, 253, 0.2);
 }
 
 /* Library list */

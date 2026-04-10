@@ -1232,7 +1232,7 @@ function updateJobQueue() {
                 : '';
             html += `
             <tr id="job-detail-${escapeHtml(job.id)}" class="${isFilesExpanded ? '' : 'd-none'} job-files-detail" aria-hidden="${isFilesExpanded ? 'false' : 'true'}">
-                <td colspan="7" class="bg-dark bg-opacity-10 small py-2 ps-4">
+                <td colspan="7" class="bg-body-tertiary small py-2 ps-4">
                     <strong>Files:</strong>
                     <div class="mt-1">${filesList}${overflow}</div>
                 </td>
@@ -1519,7 +1519,7 @@ function updateWorkerStatuses(workers, options = {}) {
 
         html += `
             <div class="col-md-6">
-                <div class="card bg-dark">
+                <div class="card bg-body-tertiary">
                     <div class="card-body py-2">
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}</span>
