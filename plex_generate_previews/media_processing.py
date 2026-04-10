@@ -879,19 +879,25 @@ def generate_images(
                     f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                 )
                 use_libplacebo = True
-                # brightness=0.10 compensates for libplacebo's conservative
-                # PQ→SDR tone-mapping which lands mid-tones ~25 luma values
-                # below the zscale/tonemap chain used for HDR10/DV P7+8.
-                # Measured on Men in Black (1997) DV P5: default reinhard
-                # hit Y≈29/51/61 on dark/mid/bright scenes; b=0.10 lifts
-                # those to Y≈54/76/86 with no highlight clipping (Ymax
-                # stays under ~220). Without this, DV5 thumbnails look
-                # markedly dimmer than their DV7/8 siblings on the same
-                # library.
+                # contrast=1.3, saturation=1.3 restore the punch that
+                # libplacebo's default PQ→SDR curve leaves on the table.
+                # Default reinhard compresses mids into a narrow band
+                # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
+                # which reads as dim and washed-out next to the zscale
+                # chain used for HDR10/DV P7+8.
+                #
+                # A plain brightness offset was rejected: it lifts black
+                # levels as much as mids, so blacks turn gray and colors
+                # stay muted.  Scaling contrast and saturation instead
+                # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
+                # preserving deep blacks.  Verified across three MIB
+                # scenes (dark/mid/bright) — no highlight clipping,
+                # punchy output comparable to the DV P7+8 reference.
                 vf_parameters = (
                     f"hwupload,"
                     f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                    f":format=yuv420p:fps={fps_value}:brightness=0.10,"
+                    f":format=yuv420p:fps={fps_value}"
+                    f":contrast=1.3:saturation=1.3,"
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
             elif _is_dolby_vision(hdr_fmt):
