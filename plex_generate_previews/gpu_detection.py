@@ -1201,6 +1201,40 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
             else:
                 logger.debug("  WSL2 nvidia-smi did not detect NVIDIA GPU")
 
+        # Linux container fallback: nvidia-container-runtime exposes NVIDIA
+        # GPUs via /dev/nvidia* but does NOT mount /dev/dri/renderD* nodes,
+        # so DRM enumeration finds nothing even though CUDA is usable. If
+        # nvidia-smi confirms an NVIDIA GPU and CUDA hwaccel is compiled
+        # into FFmpeg, probe CUDA directly — it doesn't need a DRM node.
+        if (
+            not detected_gpus
+            and not _is_wsl2()
+            and _is_hwaccel_available("cuda")
+            and _detect_nvidia_via_nvidia_smi() == "NVIDIA"
+        ):
+            logger.info(
+                "  NVIDIA GPU detected via nvidia-smi with no DRM render nodes — testing CUDA directly"
+            )
+            if _test_hwaccel_functionality("cuda"):
+                gpu_name = get_gpu_name("NVIDIA", "cuda")
+                gpu_info = {
+                    "name": gpu_name,
+                    "acceleration": "CUDA",
+                    "device_path": "cuda",
+                    "render_device": None,
+                    "card": "nvidia-container",
+                    "driver": "nvidia",
+                    "status": "ok",
+                }
+                detected_gpus.append(("NVIDIA", "cuda", gpu_info))
+                logger.info(f"  ✅ NVIDIA CUDA working: {gpu_name}")
+            else:
+                logger.debug(
+                    "  CUDA functionality test failed — container may be missing the "
+                    "'video' driver capability (set NVIDIA_DRIVER_CAPABILITIES=compute,video,utility) "
+                    "or /dev/nvidia* devices"
+                )
+
         # Container fallback: /sys/class/drm unavailable but /dev/dri render
         # devices may be mounted directly (e.g. TrueNAS Scale, Kubernetes).
         if not detected_gpus:
