@@ -96,12 +96,9 @@
                     <button class="btn btn-outline-primary" onclick="showManualTriggerModal()">
                         <i class="bi bi-file-earmark-play me-2"></i>Manual Trigger
                     </button>
-                    <a href="/settings" class="btn btn-outline-light">
+                    <a href="/settings" class="btn btn-outline-secondary">
                         <i class="bi bi-gear me-2"></i>Settings
                     </a>
-                    <button class="btn btn-outline-light" onclick="refreshStatus()">
-                        <i class="bi bi-arrow-clockwise me-2"></i>Refresh Status
-                    </button>
                 </div>
 
                 <hr>
@@ -459,10 +456,10 @@
                             </div>
                             <div id="logsContent" class="bg-body-tertiary text-body p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
                             <div class="position-absolute d-flex flex-column gap-1" style="right: 1.2rem; bottom: 0.7rem; z-index: 2;">
-                                <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('top')" title="Scroll to top">
+                                <button class="btn btn-sm btn-outline-secondary opacity-75 log-nav-btn" onclick="scrollLogsTo('top')" title="Scroll to top">
                                     <i class="bi bi-chevron-double-up"></i>
                                 </button>
-                                <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('bottom')" title="Scroll to bottom">
+                                <button class="btn btn-sm btn-outline-secondary opacity-75 log-nav-btn" onclick="scrollLogsTo('bottom')" title="Scroll to bottom">
                                     <i class="bi bi-chevron-double-down"></i>
                                 </button>
                             </div>
@@ -518,13 +515,13 @@
             </div>
             <div class="modal-footer">
                 <small class="text-muted me-auto" id="logsLineCount"></small>
-                <button type="button" class="btn btn-outline-light" onclick="copyLogs()" title="Copy to clipboard">
+                <button type="button" class="btn btn-outline-secondary" onclick="copyLogs()" title="Copy to clipboard">
                     <i class="bi bi-clipboard me-1"></i>Copy
                 </button>
-                <button type="button" class="btn btn-outline-light" onclick="downloadLogs()" title="Download as text file">
+                <button type="button" class="btn btn-outline-secondary" onclick="downloadLogs()" title="Download as text file">
                     <i class="bi bi-download me-1"></i>Download
                 </button>
-                <button type="button" class="btn btn-outline-light" onclick="refreshLogs()">
+                <button type="button" class="btn btn-outline-secondary" onclick="refreshLogs()">
                     <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                 </button>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
