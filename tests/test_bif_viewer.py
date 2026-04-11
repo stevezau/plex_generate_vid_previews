@@ -146,6 +146,16 @@ def _reset_singletons():
     clear_gpu_cache()
     yield
     reset_settings_manager()
+    with jobs_mod._job_lock:
+        jobs_mod._job_manager = None
+    with sched_mod._schedule_lock:
+        if sched_mod._schedule_manager is not None:
+            try:
+                sched_mod._schedule_manager.stop()
+            except Exception:
+                pass
+            sched_mod._schedule_manager = None
+    clear_gpu_cache()
 
 
 @pytest.fixture()

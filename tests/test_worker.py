@@ -70,7 +70,8 @@ class TestWorker:
         assert worker.media_type == "movie"
 
         # Wait for thread to complete
-        time.sleep(0.1)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
     def test_worker_assign_task_when_busy(self):
         """Test that assigning task to busy worker raises error."""
@@ -100,7 +101,8 @@ class TestWorker:
         assert worker.is_busy is True
 
         # Wait for task to complete
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         # Check completion
         completed = worker.check_completion()
@@ -266,7 +268,8 @@ class TestWorker:
         )
 
         # Wait for thread to complete
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         # Worker should NOT be marked as completed (task handed off to CPU, CPU will mark it)
         assert worker.completed == 0
@@ -307,7 +310,8 @@ class TestWorker:
         )
 
         # Wait for thread to complete
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         # Worker should be marked as failed (no CPU threads to hand off to)
         assert worker.completed == 0
@@ -340,7 +344,8 @@ class TestWorker:
             cpu_fallback_queue=fallback_queue,
         )
 
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         assert worker.completed == 0
         assert worker.failed == 0
@@ -365,7 +370,8 @@ class TestWorker:
         )
 
         # Wait for thread to complete
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         # CPU worker should treat this as failure (unexpected on CPU)
         assert worker.failed == 1
@@ -1179,7 +1185,8 @@ class TestWorkerProgressCount:
             media_type="movie",
             cpu_fallback_queue=fallback_queue,
         )
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
         worker.check_completion()
         assert worker.requeued_to_cpu is True
 
@@ -1194,7 +1201,8 @@ class TestWorkerProgressCount:
             media_type="movie",
         )
         assert worker.requeued_to_cpu is False  # Reset on assign
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
         worker.check_completion()
         assert worker.completed == 1
 
@@ -1223,7 +1231,8 @@ class TestWorkerCancellation:
             cancel_check=lambda: True,
         )
 
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         assert worker.failed == 1
         assert worker.completed == 0
@@ -1251,7 +1260,8 @@ class TestWorkerCancellation:
             cancel_check=cancel_fn,
         )
 
-        time.sleep(0.2)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
 
         assert mock_process.called
         call_kwargs = mock_process.call_args[1]

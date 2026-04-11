@@ -176,10 +176,7 @@ class TestJSONLogging:
             with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
                 setup_logging(log_format="json")
                 logger.info("hello structured world")
-                # Allow enqueued message to flush
-                import time
-
-                time.sleep(0.2)
+                logger.complete()
 
         logger.remove()
         output = captured.getvalue().strip()
@@ -217,9 +214,7 @@ class TestJSONLogging:
                     raise ValueError("boom")
                 except ValueError:
                     logger.exception("caught error")
-                import time
-
-                time.sleep(0.2)
+                logger.complete()
 
         logger.remove()
         output = captured.getvalue().strip()
@@ -444,9 +439,7 @@ class TestJsonlRecordPatcher:
             logger.remove()
             setup_logging(log_level="DEBUG")
             logger.info("integration test message")
-            import time
-
-            time.sleep(0.3)
+            logger.complete()
 
         logger.remove()
         app_log = tmp_path / "logs" / "app.log"

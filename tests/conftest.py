@@ -12,6 +12,32 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# Session-wide: swap APScheduler's SQLAlchemyJobStore for MemoryJobStore.
+#
+# ScheduleManager.__init__ instantiates SQLAlchemyJobStore(url=...) which
+# creates a sqlite DB per test (hot path in the Flask-app suites that
+# re-create the app per test). MemoryJobStore is a drop-in for our tests
+# because no test exercises cross-restart jobstore persistence — schedule
+# metadata is persisted via schedules.json, not the APScheduler jobstore.
+#
+# We replace the class reference at import time (before any test runs) so
+# the swap is in effect for every subsequent import of web.scheduler.
+# A small wrapper absorbs the ``url=...`` kwarg that MemoryJobStore
+# doesn't accept.
+# ---------------------------------------------------------------------------
+try:
+    import plex_generate_previews.web.scheduler as _sched_mod
+    from apscheduler.jobstores.memory import MemoryJobStore as _MemoryJobStore
+
+    class _TestMemoryJobStore(_MemoryJobStore):
+        def __init__(self, *args, **kwargs):  # noqa: D401
+            super().__init__()
+
+    _sched_mod.SQLAlchemyJobStore = _TestMemoryJobStore
+except ImportError:  # pragma: no cover
+    pass
+
 
 @pytest.fixture
 def fixtures_dir():
@@ -263,6 +289,47 @@ def mock_mediainfo_dv_with_hdr10():
             "HDR10 compatible / SMPTE ST 2086"
         )
     )
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_prewarm_caches(request, monkeypatch):
+    """Replace ``_prewarm_caches`` with a no-op for every test by default.
+
+    The real function spawns two daemon threads on every ``create_app()``
+    call — benign in production, but a major slowdown in the Flask test
+    suites that re-create the app per test. Opt back into the real
+    implementation by marking a test ``@pytest.mark.real_prewarm``.
+    """
+    if request.node.get_closest_marker("real_prewarm"):
+        return
+    try:
+        import plex_generate_previews.web.app as app_mod
+    except ImportError:
+        return
+    monkeypatch.setattr(app_mod, "_prewarm_caches", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_setup_logging(request, monkeypatch):
+    """Replace ``setup_logging`` with a no-op for every test by default.
+
+    Every ``create_app()`` call runs ``setup_logging()`` which adds three
+    loguru handlers (each with ``enqueue=True``, each spawning a background
+    writer thread). In a Flask suite that re-creates the app per test
+    this accumulates ~800 handler add/removes and flushes at teardown
+    racing with pytest's stdout capture. Tests that specifically verify
+    logging behaviour can opt back in with ``@pytest.mark.real_logging``.
+    """
+    if request.node.get_closest_marker("real_logging"):
+        return
+    try:
+        import plex_generate_previews.logging_config as lc_mod
+        import plex_generate_previews.web.app as app_mod
+    except ImportError:
+        return
+    noop = lambda *a, **kw: None  # noqa: E731
+    monkeypatch.setattr(lc_mod, "setup_logging", noop)
+    monkeypatch.setattr(app_mod, "setup_logging", noop, raising=False)
 
 
 # Export helper functions so tests can use them

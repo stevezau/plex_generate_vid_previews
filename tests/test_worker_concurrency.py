@@ -42,6 +42,9 @@ def _fake_process_item(
     return ProcessingResult.GENERATED
 
 
+_SLOW_PROCESS_RELEASE = threading.Event()
+
+
 def _slow_process_item(
     item_key,
     gpu,
@@ -53,8 +56,13 @@ def _slow_process_item(
     cancel_check=None,
     worker_name=None,
 ):
-    """Simulate slow processing for shutdown/cancellation tests."""
-    time.sleep(0.5)
+    """Block until ``_SLOW_PROCESS_RELEASE`` is set or a short timeout elapses.
+
+    Used by tests that need the worker to stay busy while they make
+    assertions. Tests that don't explicitly release the event still
+    finish in ~0.1 s thanks to the timeout.
+    """
+    _SLOW_PROCESS_RELEASE.wait(timeout=0.1)
     return ProcessingResult.GENERATED
 
 
@@ -69,7 +77,13 @@ def _very_slow_process_item(
     cancel_check=None,
     worker_name=None,
 ):
-    """Simulate long processing so headless polling emits worker updates."""
+    """Simulate long processing so headless polling emits worker updates.
+
+    The polling loop in ``process_items_headless`` only emits a worker
+    callback every 1.0 s (see ``worker.py`` ``on_poll``). Sleep just past
+    that threshold so the callback fires at least once without burning
+    the whole budget on a single test.
+    """
     if progress_callback:
         progress_callback(
             progress_percent=50.0,
@@ -78,7 +92,7 @@ def _very_slow_process_item(
             total_duration=60.0,
             remaining_time=30.0,
         )
-    time.sleep(2.3)
+    time.sleep(1.05)
     return ProcessingResult.GENERATED
 
 

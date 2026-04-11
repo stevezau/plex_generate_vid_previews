@@ -70,7 +70,7 @@ class TestWindowsPathSanitization:
         assert result == "C:\\Users\\Test\\Videos\\movie.mkv"
 
     @patch("os.name", "nt")
-    @patch("os.path.normpath")
+    @patch("plex_generate_previews.utils.os.path.normpath")
     def test_sanitize_path_normpath(self, mock_normpath):
         """Test path normalization on Windows."""
         # Mock normpath to behave like Windows (resolve .. and .)
@@ -80,10 +80,10 @@ class TestWindowsPathSanitization:
         result = sanitize_path(path)
         assert result == "C:\\Users\\Videos\\movie.mkv"
 
-        # Verify normpath was called with the backslash-converted path
-        mock_normpath.assert_called_once_with(
-            "C:\\Users\\Test\\..\\Videos\\.\\movie.mkv"
-        )
+        # Verify normpath was called with the backslash-converted path.
+        # Use assert_any_call (not assert_called_once_with) because under
+        # pytest-xdist + coverage, other framework code also hits normpath.
+        mock_normpath.assert_any_call("C:\\Users\\Test\\..\\Videos\\.\\movie.mkv")
 
     @patch("os.name", "posix")
     @patch(

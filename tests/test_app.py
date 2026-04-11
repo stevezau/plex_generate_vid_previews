@@ -280,6 +280,7 @@ class TestPrewarmCaches:
 
         shutil.rmtree(config_dir, ignore_errors=True)
 
+    @pytest.mark.real_prewarm
     @patch(
         "plex_generate_previews.web.routes.api_system._get_version_info",
         return_value={"current_version": "1.0.0"},

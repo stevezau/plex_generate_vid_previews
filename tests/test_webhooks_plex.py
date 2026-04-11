@@ -45,7 +45,12 @@ def _reset_singletons():
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
     with sched_mod._schedule_lock:
-        sched_mod._schedule_manager = None
+        if sched_mod._schedule_manager is not None:
+            try:
+                sched_mod._schedule_manager.stop()
+            except Exception:
+                pass
+            sched_mod._schedule_manager = None
     clear_gpu_cache()
     wh._webhook_history.clear()
     with wh._pending_lock:

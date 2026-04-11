@@ -11,10 +11,11 @@ pip install -e ".[dev]"
 # Run (web UI)
 gunicorn plex_generate_previews.web.wsgi:app --bind 0.0.0.0:8080 --worker-class gthread --workers 1
 
-# Test (GPU tests skipped by default via pyproject.toml)
-pytest
-pytest --no-cov tests/test_config.py      # Single file, skip coverage
-pytest -m "not gpu and not e2e" --no-cov   # Fast subset
+# Test — default runs parallel (xdist), excludes gpu + e2e, keeps coverage
+pytest                                          # ~5s, 1321 tests, ~79% cov
+pytest --no-cov tests/test_config.py            # Single file, skip coverage
+pytest -m e2e -n 0 --no-cov                     # Run Playwright e2e serially
+pytest -n 0                                     # Serial mode (for debugging)
 
 # Lint and format
 ruff check . --fix
