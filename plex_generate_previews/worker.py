@@ -19,6 +19,7 @@ from .media_processing import (
     CancellationError,
     CodecNotSupportedError,
     ProcessingResult,
+    failure_scope,
     process_item,
 )
 from .utils import format_display_title
@@ -316,116 +317,123 @@ class Worker:
         """
         register_job_thread()
 
-        # Use file path if available, otherwise fall back to title or item_key
-        display_name = (
-            self.media_file
-            if self.media_file
-            else (self.media_title if self.media_title else item_key)
-        )
-
-        # Bind structured context so every log line in this thread carries
-        # worker metadata (useful for JSON/ELK aggregation pipelines)
-        ctx_logger = logger.bind(
-            worker_id=self.worker_id,
-            worker_type=self.worker_type,
-            gpu_index=self.gpu_index,
-            media_title=self.media_title,
-            item_key=item_key,
-        )
-        ctx_logger.info(f"{self.display_name} started: {display_name}")
-
-        try:
-            result = process_item(
-                item_key,
-                self.gpu,
-                self.gpu_device,
-                config,
-                plex,
-                progress_callback,
-                ffmpeg_threads_override=self.ffmpeg_threads,
-                cancel_check=self.cancel_check,
-                worker_name=self.display_name,
+        # Scope failure tracking to the job that owns this task so any
+        # record_failure() calls deep inside process_item → generate_images →
+        # _run_ffmpeg land in this job's bucket instead of bleeding across
+        # concurrent jobs that share the worker pool.
+        with failure_scope(self.current_job_id):
+            # Use file path if available, otherwise fall back to title or item_key
+            display_name = (
+                self.media_file
+                if self.media_file
+                else (self.media_title if self.media_title else item_key)
             )
-            self.outcome_counts[result.value] += 1
-            if result == ProcessingResult.FAILED:
-                self.failed += 1
-            else:
-                self.completed += 1
-        except CancellationError:
-            ctx_logger.info(
-                f"{self.display_name} cancelled while processing {display_name}"
+
+            # Bind structured context so every log line in this thread carries
+            # worker metadata (useful for JSON/ELK aggregation pipelines)
+            ctx_logger = logger.bind(
+                worker_id=self.worker_id,
+                worker_type=self.worker_type,
+                gpu_index=self.gpu_index,
+                media_title=self.media_title,
+                item_key=item_key,
             )
-            self.outcome_counts["failed"] += 1
-            self.failed += 1
-        except CodecNotSupportedError as e:
-            # Codec not supported by GPU - re-queue for CPU worker
-            if self.worker_type == "GPU":
-                ctx_logger.warning(
-                    f"{self.display_name} detected unsupported codec for {display_name}; handing off to CPU worker"
+            ctx_logger.info(f"{self.display_name} started: {display_name}")
+
+            try:
+                result = process_item(
+                    item_key,
+                    self.gpu,
+                    self.gpu_device,
+                    config,
+                    plex,
+                    progress_callback,
+                    ffmpeg_threads_override=self.ffmpeg_threads,
+                    cancel_check=self.cancel_check,
+                    worker_name=self.display_name,
                 )
-                # Add to fallback queue for CPU worker processing (multiple CPU workers can compete for items)
-                fallback_threads = getattr(config, "fallback_cpu_threads", 0)
-                if isinstance(fallback_threads, bool):
-                    fallback_threads = int(fallback_threads)
-                elif isinstance(fallback_threads, str):
-                    try:
-                        fallback_threads = int(fallback_threads)
-                    except ValueError:
-                        fallback_threads = 0
-                elif not isinstance(fallback_threads, int):
-                    fallback_threads = 0
-                can_use_cpu_fallback = config.cpu_threads > 0 or fallback_threads > 0
-                if cpu_fallback_queue is not None and can_use_cpu_fallback:
-                    # Preserve media info and job_id (set during assign_task)
-                    try:
-                        cpu_fallback_queue.put(
-                            (
-                                self.current_job_id,
-                                item_key,
-                                self.media_title,
-                                self.media_type,
-                                self.library_name,
-                            )
-                        )
-                        self.requeued_to_cpu = True
-                        ctx_logger.info(
-                            f"Added {display_name} to CPU fallback queue (unsupported codec on GPU)"
-                        )
-                    except Exception as queue_error:
-                        ctx_logger.error(
-                            f"Failed to add {item_key} to fallback queue: {queue_error}"
-                        )
-                        self.outcome_counts["failed"] += 1
-                        self.failed += 1
-                else:
-                    if config.cpu_threads == 0 and fallback_threads == 0:
-                        ctx_logger.warning(
-                            "Codec not supported by GPU, but CPU fallback is disabled "
-                            "(CPU_THREADS=0 and FALLBACK_CPU_THREADS=0); "
-                            f"skipping {display_name}"
-                        )
-                    self.outcome_counts["failed"] += 1
+                self.outcome_counts[result.value] += 1
+                if result == ProcessingResult.FAILED:
                     self.failed += 1
-                # Do NOT mark as completed here - CPU worker will mark it when actually processed
-            else:
-                # CPU worker received codec error - this is unexpected, treat as failure
-                ctx_logger.error(
-                    f"{self.display_name} encountered codec error for {display_name}: {e}"
-                )
-                ctx_logger.error(
-                    "Codec errors should not occur on CPU workers - file may be corrupted"
+                else:
+                    self.completed += 1
+            except CancellationError:
+                ctx_logger.info(
+                    f"{self.display_name} cancelled while processing {display_name}"
                 )
                 self.outcome_counts["failed"] += 1
                 self.failed += 1
-        except Exception as e:
-            ctx_logger.error(
-                f"{self.display_name} failed to process {display_name}: {e}"
-            )
-            self.outcome_counts["failed"] += 1
-            self.failed += 1
-        finally:
-            if self._done_event is not None:
-                self._done_event.set()
+            except CodecNotSupportedError as e:
+                # Codec not supported by GPU - re-queue for CPU worker
+                if self.worker_type == "GPU":
+                    ctx_logger.warning(
+                        f"{self.display_name} detected unsupported codec for {display_name}; handing off to CPU worker"
+                    )
+                    # Add to fallback queue for CPU worker processing (multiple CPU workers can compete for items)
+                    fallback_threads = getattr(config, "fallback_cpu_threads", 0)
+                    if isinstance(fallback_threads, bool):
+                        fallback_threads = int(fallback_threads)
+                    elif isinstance(fallback_threads, str):
+                        try:
+                            fallback_threads = int(fallback_threads)
+                        except ValueError:
+                            fallback_threads = 0
+                    elif not isinstance(fallback_threads, int):
+                        fallback_threads = 0
+                    can_use_cpu_fallback = (
+                        config.cpu_threads > 0 or fallback_threads > 0
+                    )
+                    if cpu_fallback_queue is not None and can_use_cpu_fallback:
+                        # Preserve media info and job_id (set during assign_task)
+                        try:
+                            cpu_fallback_queue.put(
+                                (
+                                    self.current_job_id,
+                                    item_key,
+                                    self.media_title,
+                                    self.media_type,
+                                    self.library_name,
+                                )
+                            )
+                            self.requeued_to_cpu = True
+                            ctx_logger.info(
+                                f"Added {display_name} to CPU fallback queue (unsupported codec on GPU)"
+                            )
+                        except Exception as queue_error:
+                            ctx_logger.error(
+                                f"Failed to add {item_key} to fallback queue: {queue_error}"
+                            )
+                            self.outcome_counts["failed"] += 1
+                            self.failed += 1
+                    else:
+                        if config.cpu_threads == 0 and fallback_threads == 0:
+                            ctx_logger.warning(
+                                "Codec not supported by GPU, but CPU fallback is disabled "
+                                "(CPU_THREADS=0 and FALLBACK_CPU_THREADS=0); "
+                                f"skipping {display_name}"
+                            )
+                        self.outcome_counts["failed"] += 1
+                        self.failed += 1
+                    # Do NOT mark as completed here - CPU worker will mark it when actually processed
+                else:
+                    # CPU worker received codec error - this is unexpected, treat as failure
+                    ctx_logger.error(
+                        f"{self.display_name} encountered codec error for {display_name}: {e}"
+                    )
+                    ctx_logger.error(
+                        "Codec errors should not occur on CPU workers - file may be corrupted"
+                    )
+                    self.outcome_counts["failed"] += 1
+                    self.failed += 1
+            except Exception as e:
+                ctx_logger.error(
+                    f"{self.display_name} failed to process {display_name}: {e}"
+                )
+                self.outcome_counts["failed"] += 1
+                self.failed += 1
+            finally:
+                if self._done_event is not None:
+                    self._done_event.set()
 
     def check_completion(self) -> bool:
         """Check if this worker has completed its current task.

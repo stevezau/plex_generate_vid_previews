@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+from plex_generate_previews.upgrade import _CURRENT_SCHEMA_VERSION
+
 
 @pytest.fixture
 def settings_manager(tmp_path, monkeypatch):
@@ -35,7 +37,7 @@ class TestRunMigrations:
         run_migrations(settings_manager)
 
         assert settings_manager.get("_env_migrated") is True
-        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
         assert settings_manager.get("plex_url") == "http://plex:32400"
 
 
@@ -259,7 +261,7 @@ class TestMigrateSchema:
 
         assert settings_manager.get("gpu_threads") is None
         assert settings_manager.get("ffmpeg_threads") is None
-        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
 
     def test_removes_stale_keys_without_gpu_config(self, settings_manager):
         """Stale flat keys are removed even when no GPUs are detected."""
@@ -277,7 +279,7 @@ class TestMigrateSchema:
         assert settings_manager.get("gpu_threads") is None
         assert settings_manager.get("ffmpeg_threads") is None
         assert settings_manager.gpu_config == []
-        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
 
     def test_preserves_existing_gpu_config(self, settings_manager):
         """Existing gpu_config is not overwritten by migration."""
@@ -310,7 +312,7 @@ class TestMigrateSchema:
         _migrate_schema(settings_manager)
 
         assert settings_manager.gpu_config == []
-        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
 
     def test_idempotent(self, settings_manager):
         """Running migration twice does not change the result."""
@@ -342,7 +344,7 @@ class TestMigrateSchemaEdgeCases:
         settings_manager.set("ffmpeg_threads", 2)
         _migrate_schema(settings_manager)
         assert settings_manager.get("gpu_threads") is None
-        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
 
     def test_invalid_ffmpeg_threads_value_handled(self, settings_manager):
         """Non-numeric ffmpeg_threads in settings doesn't crash migration."""
@@ -352,7 +354,7 @@ class TestMigrateSchemaEdgeCases:
         settings_manager.set("ffmpeg_threads", "not_a_number")
         _migrate_schema(settings_manager)
         assert settings_manager.get("ffmpeg_threads") is None
-        assert settings_manager.get("_schema_version") == 2
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
 
     def test_gpu_config_empty_list_not_overwritten(self, settings_manager):
         """gpu_config=[] is not overwritten (it means user cleared config)."""
@@ -623,3 +625,139 @@ class TestMigrateToV2Extended:
             _migrate_to_v2(settings_manager)
         config = settings_manager.gpu_config
         assert config[0]["name"] == "vaapi GPU"
+
+
+# ============================================================================
+# v4: Recently Added scanner → schedule-type migration
+# ============================================================================
+
+
+@pytest.fixture
+def _fresh_schedule_manager(settings_manager):
+    """Reset the schedule-manager singleton and scope it to ``settings_manager.config_dir``.
+
+    The v4 migration calls ``get_schedule_manager(config_dir=str(sm.config_dir))``
+    to create schedules.  Tests must null the singleton between runs so each
+    test gets a fresh ScheduleManager pointed at its own pytest ``tmp_path``
+    — otherwise the singleton from a previous test leaks schedules into the
+    next one.
+    """
+    import plex_generate_previews.web.scheduler as sched_mod
+
+    def _reset():
+        with sched_mod._schedule_lock:
+            if sched_mod._schedule_manager is not None:
+                try:
+                    sched_mod._schedule_manager.stop()
+                except Exception:
+                    pass
+            sched_mod._schedule_manager = None
+
+    _reset()
+    yield str(settings_manager.config_dir)
+    _reset()
+
+
+class TestMigrateToV4:
+    """Tests for the v4 legacy-settings → schedule-entry migration."""
+
+    def test_no_op_when_legacy_keys_absent(
+        self, settings_manager, _fresh_schedule_manager
+    ):
+        """Fresh installs with no legacy keys should not create any schedules."""
+        from plex_generate_previews.upgrade import _migrate_to_v4
+        from plex_generate_previews.web.scheduler import get_schedule_manager
+
+        notes = _migrate_to_v4(settings_manager)
+        assert notes == []
+        manager = get_schedule_manager(config_dir=_fresh_schedule_manager)
+        assert manager.get_all_schedules() == []
+
+    def test_converts_enabled_scanner_to_schedule(
+        self, settings_manager, _fresh_schedule_manager
+    ):
+        """Legacy recently_added_enabled=True creates an equivalent schedule."""
+        from plex_generate_previews.upgrade import _migrate_to_v4
+        from plex_generate_previews.web.scheduler import get_schedule_manager
+
+        settings_manager.apply_changes(
+            updates={
+                "recently_added_enabled": True,
+                "recently_added_interval_minutes": 5,
+                "recently_added_lookback_hours": 12,
+                "recently_added_libraries": [],
+            }
+        )
+
+        notes = _migrate_to_v4(settings_manager)
+
+        manager = get_schedule_manager(config_dir=_fresh_schedule_manager)
+        schedules = manager.get_all_schedules()
+        assert len(schedules) == 1
+        sched = schedules[0]
+        assert sched["name"] == "Recently Added Scanner"
+        assert sched["trigger_type"] == "interval"
+        assert sched["trigger_value"] == "5"
+        assert sched["library_id"] is None
+        assert sched["config"]["job_type"] == "recently_added"
+        assert sched["config"]["lookback_hours"] == 12
+        # Legacy keys removed
+        for key in [
+            "recently_added_enabled",
+            "recently_added_interval_minutes",
+            "recently_added_lookback_hours",
+            "recently_added_libraries",
+        ]:
+            assert settings_manager.get(key) is None
+        assert any("v4: created" in n for n in notes)
+
+    def test_no_schedule_when_scanner_was_disabled(
+        self, settings_manager, _fresh_schedule_manager
+    ):
+        """Legacy keys present but disabled → legacy keys still cleaned up, no schedule."""
+        from plex_generate_previews.upgrade import _migrate_to_v4
+        from plex_generate_previews.web.scheduler import get_schedule_manager
+
+        settings_manager.apply_changes(
+            updates={
+                "recently_added_enabled": False,
+                "recently_added_interval_minutes": 15,
+                "recently_added_lookback_hours": 24,
+                "recently_added_libraries": [],
+            }
+        )
+
+        _migrate_to_v4(settings_manager)
+
+        manager = get_schedule_manager(config_dir=_fresh_schedule_manager)
+        assert manager.get_all_schedules() == []
+        assert settings_manager.get("recently_added_enabled") is None
+        assert settings_manager.get("recently_added_interval_minutes") is None
+
+    def test_creates_one_schedule_per_library_override(
+        self, settings_manager, _fresh_schedule_manager
+    ):
+        """A non-empty recently_added_libraries list creates one schedule per entry."""
+        from plex_generate_previews.upgrade import _migrate_to_v4
+        from plex_generate_previews.web.scheduler import get_schedule_manager
+
+        settings_manager.apply_changes(
+            updates={
+                "recently_added_enabled": True,
+                "recently_added_interval_minutes": 30,
+                "recently_added_lookback_hours": 6,
+                "recently_added_libraries": ["1", "2"],
+            }
+        )
+
+        _migrate_to_v4(settings_manager)
+
+        manager = get_schedule_manager(config_dir=_fresh_schedule_manager)
+        schedules = manager.get_all_schedules()
+        assert len(schedules) == 2
+        for sched in schedules:
+            assert sched["config"]["job_type"] == "recently_added"
+            assert sched["config"]["lookback_hours"] == 6
+            assert sched["trigger_value"] == "30"
+        library_ids = {s["library_id"] for s in schedules}
+        assert library_ids == {"1", "2"}

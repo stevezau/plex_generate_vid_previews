@@ -128,7 +128,7 @@ class TestLibraryScanFlow:
         assert "outcome" in result
 
     def test_progress_callback_invoked(self, tmp_path):
-        """progress_callback is called before dispatch with item count."""
+        """progress_callback reports pre-dispatch stages + the dispatch tick."""
         config = _make_config(tmp_path)
         section = _make_section("Movies")
         items = [("k1", "M1", "movie"), ("k2", "M2", "movie")]
@@ -146,11 +146,17 @@ class TestLibraryScanFlow:
             )
             run_processing(config, selected_gpus=[], progress_callback=progress)
 
-        progress.assert_called_once()
-        args = progress.call_args[0]
-        assert args[0] == 0
-        assert args[1] == 2
-        assert isinstance(args[2], str)
+        messages = [call.args[2] for call in progress.call_args_list if call.args]
+        assert any("Connecting to Plex" in m for m in messages)
+        # Dispatch tick carries the total item count.
+        dispatch_calls = [
+            call
+            for call in progress.call_args_list
+            if call.args and call.args[1] == 2 and "Starting" in call.args[2]
+        ]
+        assert dispatch_calls, (
+            "expected a 'Starting <library>' progress call with total=2"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +220,7 @@ class TestWebhookFlow:
         assert result["webhook_resolution"]["resolved_count"] == 0
 
     def test_webhook_progress_callback(self, tmp_path):
-        """Progress callback fires before webhook dispatch."""
+        """Progress callback reports pre-resolution stages + dispatch tick."""
         config = _make_config(tmp_path, webhook_paths=["/data/movie.mkv"])
         items = [("k1", "Movie", "movie")]
         progress = MagicMock()
@@ -231,8 +237,15 @@ class TestWebhookFlow:
             )
             run_processing(config, selected_gpus=[], progress_callback=progress)
 
-        progress.assert_called_once()
-        assert progress.call_args[0][1] == 1
+        messages = [call.args[2] for call in progress.call_args_list if call.args]
+        assert any("Connecting to Plex" in m for m in messages)
+        assert any("Looking up 1 file path" in m for m in messages)
+        dispatch_calls = [
+            call
+            for call in progress.call_args_list
+            if call.args and call.args[1] == 1 and "Starting" in call.args[2]
+        ]
+        assert dispatch_calls, "expected a 'Starting Webhook Targets' dispatch tick"
 
 
 # ---------------------------------------------------------------------------

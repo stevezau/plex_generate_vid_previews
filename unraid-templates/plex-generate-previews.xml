@@ -36,6 +36,7 @@ For NVIDIA GPU support, you must:
 1. Install NVIDIA driver and nvidia-container-toolkit on Unraid
 2. Add --runtime=nvidia to Extra Parameters
 3. Or use the Nvidia-Driver and nvidia-container-toolkit plugins from Community Applications
+4. Add NVIDIA_DRIVER_CAPABILITIES=all to the environment variables below (the 'graphics' capability is required for Dolby Vision Profile 5 thumbnails; 'compute,video,utility' alone only covers NVDEC and nvidia-smi).
     </Overview>
     <Category>MediaApp:Video MediaServer:Video</Category>
     <WebUI>http://[IP]:[PORT:8080]/</WebUI>
@@ -85,6 +86,10 @@ For NVIDIA GPU support, you must:
 
     <!-- GPU Support (Intel) -->
     <Config Name="Intel GPU Device" Target="/dev/dri" Default="/dev/dri" Mode="" Description="Pass through Intel GPU for QuickSync acceleration" Type="Device" Display="advanced" Required="false" Mask="false">/dev/dri</Config>
+
+    <!-- GPU Support (NVIDIA) -->
+    <Config Name="NVIDIA Driver Capabilities" Target="NVIDIA_DRIVER_CAPABILITIES" Default="all" Mode="" Description="NVIDIA driver capabilities to inject into the container. Use 'all' (recommended) so the 'graphics' capability is included — this is required for Dolby Vision Profile 5 thumbnails (libplacebo Vulkan tone-mapping). 'compute,video,utility' alone only covers CUDA/NVDEC and will NOT give you DV5 support. Only applied if you also set --runtime=nvidia in Extra Parameters." Type="Variable" Display="advanced" Required="false" Mask="false">all</Config>
+    <Config Name="NVIDIA Visible Devices" Target="NVIDIA_VISIBLE_DEVICES" Default="" Mode="" Description="Which NVIDIA GPUs to expose (e.g. 'all', or a specific UUID). Only applied if you also set --runtime=nvidia in Extra Parameters." Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
     <!-- Advanced -->
     <Config Name="Log Level" Target="LOG_LEVEL" Default="INFO" Mode="" Description="Logging level: DEBUG, INFO, WARNING, ERROR" Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>

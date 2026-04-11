@@ -59,6 +59,8 @@ def run_processing(
     return_data = None
     worker_pool = None
     try:
+        if progress_callback:
+            progress_callback(0, 0, "Connecting to Plex...")
         plex = plex_server(config)
         clear_failures()
 
@@ -171,6 +173,14 @@ def run_processing(
                 )
 
         if getattr(config, "webhook_paths", None):
+            if progress_callback:
+                path_count = len(config.webhook_paths)
+                progress_callback(
+                    0,
+                    0,
+                    f"Looking up {path_count} file path(s) in Plex — "
+                    "this can take a while...",
+                )
             webhook_resolution = get_media_items_by_paths(
                 plex, config, config.webhook_paths
             )
@@ -198,7 +208,10 @@ def run_processing(
             all_media_items = []
             library_item_counts = []
             for section, media_items in get_library_sections(
-                plex, config, cancel_check=cancel_check
+                plex,
+                config,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
             ):
                 if cancel_check and cancel_check():
                     logger.info(

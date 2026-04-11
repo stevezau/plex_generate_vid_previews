@@ -118,6 +118,9 @@ def get_settings():
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
+            "plex_webhook_enabled": bool(settings.get("plex_webhook_enabled", False)),
+            "plex_webhook_public_url": settings.get("plex_webhook_public_url", "")
+            or "",
         }
     )
 
@@ -162,9 +165,18 @@ def save_settings():
         "webhook_secret",
         "auto_requeue_on_restart",
         "requeue_max_age_minutes",
+        "plex_webhook_enabled",
+        "plex_webhook_public_url",
     ]
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+    if "plex_webhook_public_url" in updates:
+        updates["plex_webhook_public_url"] = str(
+            updates.get("plex_webhook_public_url") or ""
+        ).strip()
+    if "plex_webhook_enabled" in updates:
+        updates["plex_webhook_enabled"] = bool(updates["plex_webhook_enabled"])
 
     # Sanitize gpu_config: must be a list of dicts with a device key.
     # Normalize: workers <= 0 forces enabled=false (contradictory state).
@@ -204,6 +216,30 @@ def save_settings():
             from .api_system import clear_library_cache
 
             clear_library_cache()
+
+        # Rotating the webhook secret invalidates the token embedded in
+        # the registered Plex webhook URL — re-register so Plex picks up
+        # the new value.  Best-effort; failures are logged but don't
+        # block the settings save.
+        if "webhook_secret" in updates and settings.get("plex_webhook_enabled"):
+            try:
+                from .. import plex_webhook_registration as pwh
+
+                plex_token = settings.plex_token or ""
+                public_url = (
+                    settings.get("plex_webhook_public_url") or ""
+                ).strip() or _default_plex_webhook_url()
+                new_auth = _plex_webhook_auth_token()
+                if plex_token and new_auth:
+                    pwh.register(plex_token, public_url, auth_token=new_auth)
+                    logger.info(
+                        "Plex webhook re-registered with new auth token after secret rotation"
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to re-register Plex webhook after secret change",
+                    exc_info=True,
+                )
 
         log_fields = {"log_level", "log_rotation_size", "log_retention_count"}
         if log_fields & updates.keys():
@@ -298,6 +334,296 @@ def validate_local_path():
             }
         )
     return jsonify({"exists": True, "readable": True, "error": None})
+
+
+# ============================================================================
+# Auto-trigger sources (Plex direct webhook + Recently Added scanner)
+# ============================================================================
+
+
+def _default_plex_webhook_url() -> str:
+    """Build the default webhook URL Plex should POST to.
+
+    Uses the request's effective host/scheme so the same browser
+    session that's looking at the Settings page can register a URL
+    Plex Media Server is likely to be able to reach (typical
+    same-host or same-LAN setups).  Users on reverse proxies / split
+    networks override this manually.
+    """
+    base = request.host_url.rstrip("/")
+    return f"{base}/api/webhooks/plex"
+
+
+@api.route("/settings/plex_webhook/status")
+@setup_or_auth_required
+def plex_webhook_status():
+    """Return the live registration state of the Plex direct webhook.
+
+    Probes plex.tv on every call so the UI reflects reality (e.g. the
+    user revoked the webhook in Plex Web Settings).  Returns Plex Pass
+    detection so the UI can disable the toggle when unsupported.
+    """
+    from .. import plex_webhook_registration as pwh
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    token = settings.plex_token or ""
+    public_url = (settings.get("plex_webhook_public_url") or "").strip()
+    if not public_url:
+        public_url = _default_plex_webhook_url()
+
+    enabled_in_settings = bool(settings.get("plex_webhook_enabled", False))
+
+    has_pass: bool | None
+    registered = False
+    error: str | None = None
+    error_reason: str | None = None
+
+    if not token:
+        has_pass = None
+        error = "Plex token not configured"
+        error_reason = "missing_token"
+    else:
+        try:
+            registered = pwh.is_registered(token, public_url)
+            has_pass = True
+        except pwh.PlexWebhookError as exc:
+            registered = False
+            has_pass = False if exc.reason == "plex_pass_required" else None
+            error = str(exc)
+            error_reason = exc.reason
+        except Exception:
+            try:
+                has_pass = pwh.has_plex_pass(token)
+            except Exception:
+                has_pass = None
+            registered = False
+
+    return jsonify(
+        {
+            "enabled_in_settings": enabled_in_settings,
+            "registered_in_plex": registered,
+            "public_url": public_url,
+            "default_url": _default_plex_webhook_url(),
+            "has_plex_pass": has_pass,
+            "error": error,
+            "error_reason": error_reason,
+        }
+    )
+
+
+def _plex_webhook_auth_token() -> str:
+    """Return the secret to embed in the registered Plex webhook URL.
+
+    Plex's webhook UI offers no way to set headers or HTTP Basic
+    credentials, so the only way for Plex Media Server to authenticate
+    against this app's ``/api/webhooks/plex`` endpoint is via a
+    ``?token=`` query parameter.  We pick the dedicated webhook secret
+    when configured, otherwise fall back to the main API auth token —
+    matching the order ``_authenticate_webhook`` checks them in.
+    """
+    from ..auth import get_auth_token
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    secret = (settings.get("webhook_secret") or "").strip()
+    if secret:
+        return secret
+    return get_auth_token() or ""
+
+
+@api.route("/settings/plex_webhook/register", methods=["POST"])
+@setup_or_auth_required
+def plex_webhook_register():
+    """Register the Plex direct webhook with the user's plex.tv account.
+
+    The auth secret is embedded in the URL Plex stores (as a ``?token=``
+    query parameter) because Plex's webhook UI doesn't allow custom
+    headers or credentials — that's the only way for Plex Media Server
+    to authenticate against the receiving endpoint.
+    """
+    from .. import plex_webhook_registration as pwh
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    token = settings.plex_token or ""
+    if not token:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Plex token not configured. Re-run the Setup Wizard.",
+                    "reason": "missing_token",
+                }
+            ),
+            400,
+        )
+
+    auth_token = _plex_webhook_auth_token()
+    if not auth_token:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "No webhook secret or API token available to embed in the "
+                        "Plex webhook URL.  Generate a webhook secret on this page "
+                        "or set an API token, then try again."
+                    ),
+                    "reason": "missing_auth_token",
+                }
+            ),
+            400,
+        )
+
+    data = request.get_json() or {}
+    raw_url = (data.get("public_url") or "").strip()
+    public_url = raw_url or _default_plex_webhook_url()
+
+    try:
+        pwh.register(token, public_url, auth_token=auth_token)
+    except pwh.PlexWebhookError as exc:
+        status_code = 400 if exc.reason in ("missing_url", "missing_token") else 502
+        if exc.reason == "plex_pass_required":
+            status_code = 403
+        return (
+            jsonify({"success": False, "error": str(exc), "reason": exc.reason}),
+            status_code,
+        )
+
+    settings.update(
+        {
+            "plex_webhook_enabled": True,
+            "plex_webhook_public_url": public_url,
+        }
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "registered_in_plex": True,
+            "public_url": public_url,
+        }
+    )
+
+
+@api.route("/settings/plex_webhook/unregister", methods=["POST"])
+@setup_or_auth_required
+def plex_webhook_unregister():
+    """Remove the Plex direct webhook from the user's plex.tv account."""
+    from .. import plex_webhook_registration as pwh
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    token = settings.plex_token or ""
+    public_url = (settings.get("plex_webhook_public_url") or "").strip()
+    if not public_url:
+        public_url = _default_plex_webhook_url()
+
+    if token:
+        try:
+            pwh.unregister(token, public_url)
+        except pwh.PlexWebhookError as exc:
+            # Surface the error but still flip the local toggle off so
+            # the UI doesn't get stuck in a confusing in-between state.
+            logger.warning("Plex webhook unregister failed: {}", exc)
+            settings.update({"plex_webhook_enabled": False})
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "reason": exc.reason,
+                        "enabled_in_settings": False,
+                    }
+                ),
+                502,
+            )
+
+    settings.update({"plex_webhook_enabled": False})
+    return jsonify(
+        {
+            "success": True,
+            "registered_in_plex": False,
+            "enabled_in_settings": False,
+        }
+    )
+
+
+@api.route("/settings/plex_webhook/test", methods=["POST"])
+@setup_or_auth_required
+def plex_webhook_test_reachability():
+    """Self-POST a synthetic ping to the configured public URL.
+
+    Mirrors what real Plex POSTs look like as closely as possible —
+    multipart/form-data, ``payload`` part with JSON, and the auth token
+    in a ``?token=`` query parameter rather than a header.  Success
+    means the URL is routable from this app's process *and* the
+    auth token works, which is a strong proxy for whether Plex Media
+    Server will actually be able to deliver events.
+    """
+    import json as _json
+
+    import requests
+
+    from .. import plex_webhook_registration as pwh
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    data = request.get_json() or {}
+    raw_url = (data.get("public_url") or "").strip()
+    public_url = raw_url or (
+        (settings.get("plex_webhook_public_url") or "").strip()
+        or _default_plex_webhook_url()
+    )
+
+    auth_token = _plex_webhook_auth_token()
+    if not auth_token:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "No webhook secret or API token available to authenticate "
+                        "the test request."
+                    ),
+                }
+            ),
+            400,
+        )
+
+    test_url = pwh._build_authenticated_url(public_url, auth_token)
+    payload = {"event": "test.ping", "source": "plex-previews-self-test"}
+    multipart = {"payload": (None, _json.dumps(payload), "application/json")}
+
+    try:
+        response = requests.post(
+            test_url,
+            files=multipart,
+            timeout=10,
+            verify=False,
+        )
+    except requests.exceptions.RequestException as exc:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"Could not reach {public_url}: {exc}",
+                    "public_url": public_url,
+                }
+            ),
+            200,
+        )
+
+    ok = 200 <= response.status_code < 300
+    return jsonify(
+        {
+            "success": ok,
+            "status_code": response.status_code,
+            "public_url": public_url,
+            "response_excerpt": (response.text or "")[:200],
+        }
+    )
 
 
 # ============================================================================

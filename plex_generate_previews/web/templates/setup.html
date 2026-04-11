@@ -191,6 +191,42 @@
                 </div>
 
                 <div id="authError" class="alert alert-danger mt-3 d-none"></div>
+
+                <hr class="my-4">
+
+                <details id="manualConnectDetails" class="text-start">
+                    <summary class="text-muted" style="cursor: pointer;">
+                        <i class="bi bi-sliders me-1"></i>Can&rsquo;t reach <code>plex.tv</code>? Enter server details manually
+                    </summary>
+                    <p class="text-muted small mt-2 mb-3">
+                        Use this if your network blocks <code>plex.tv</code>, or if you&rsquo;d rather
+                        paste a URL and token directly. You&rsquo;ll still see your libraries on the next step.
+                    </p>
+                    <div class="mb-2">
+                        <label for="manualPlexUrl" class="form-label small mb-1">Plex Server URL</label>
+                        <input type="text" class="form-control form-control-sm" id="manualPlexUrl"
+                               placeholder="http://192.168.1.100:32400">
+                    </div>
+                    <div class="mb-2">
+                        <label for="manualPlexToken" class="form-label small mb-1">Plex Token</label>
+                        <input type="password" class="form-control form-control-sm" id="manualPlexToken"
+                               placeholder="X-Plex-Token value">
+                        <div class="form-text">
+                            Find it in your Plex web app URL after loading any item
+                            (see <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener">this Plex support article</a>).
+                        </div>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="manualPlexVerifySsl" checked>
+                        <label class="form-check-label small" for="manualPlexVerifySsl">
+                            Verify Plex HTTPS certificate
+                        </label>
+                    </div>
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="manualPlexTestBtn">
+                        <i class="bi bi-plug me-1"></i>Verify connection
+                    </button>
+                    <div id="manualPlexResult" class="small mt-2"></div>
+                </details>
             </div>
         </div>
 
@@ -560,7 +596,28 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Step-specific actions
         if (step === 2 && isAuthenticated) {
-            loadServers();
+            if (manualPlexMode && selectedServer) {
+                // Manual URL + token path: skip server discovery, pre-fill
+                // the server card, and jump straight to loading libraries.
+                document.getElementById('serverLoading').classList.add('d-none');
+                const select = document.getElementById('serverSelect');
+                select.innerHTML = '';
+                const option = document.createElement('option');
+                option.value = JSON.stringify(selectedServer);
+                option.textContent = `${selectedServer.name} (${selectedServer.uri})`;
+                option.selected = true;
+                select.appendChild(option);
+                select.classList.remove('d-none');
+
+                const overrideEl = document.getElementById('serverUrlOverride');
+                document.getElementById('serverUrlInput').value = selectedServer.uri;
+                overrideEl.classList.remove('d-none');
+
+                document.getElementById('librariesCard').style.display = 'block';
+                loadLibraries();
+            } else {
+                loadServers();
+            }
         } else if (step === 3) {
             settingsManager.get().then(settings => {
                 setupRenderPathMappingRows(settings.path_mappings || setupLegacyToPathMappings(settings));
@@ -613,6 +670,89 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     document.getElementById('step1Next').addEventListener('click', () => goToStep(2));
+
+    // Manual URL + token fallback for environments where plex.tv is
+    // unreachable or OAuth discovery isn't working.  The button verifies
+    // the credentials against /api/plex/libraries, then treats auth as
+    // successful and synthesises a `selectedServer` so Step 2 can skip
+    // the OAuth-driven server discovery.
+    let manualPlexMode = false;
+
+    document.getElementById('manualPlexTestBtn').addEventListener('click', async function() {
+        const urlInput = document.getElementById('manualPlexUrl');
+        const tokenInput = document.getElementById('manualPlexToken');
+        const verifySslInput = document.getElementById('manualPlexVerifySsl');
+        const resultEl = document.getElementById('manualPlexResult');
+
+        const url = urlInput.value.trim().replace(/\/$/, '');
+        const token = tokenInput.value.trim();
+        const verifySsl = verifySslInput.checked;
+
+        resultEl.className = 'small mt-2 text-muted';
+        resultEl.textContent = '';
+
+        if (!url || !token) {
+            resultEl.className = 'small mt-2 text-warning';
+            resultEl.textContent = 'Enter both a server URL and a token.';
+            return;
+        }
+
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Checking...';
+
+        try {
+            const qs = new URLSearchParams({ url, token, verify_ssl: verifySsl ? '1' : '0' });
+            const resp = await fetch('/api/plex/libraries?' + qs.toString());
+            const data = await resp.json().catch(() => ({}));
+
+            if (!resp.ok) {
+                const msg = data && data.error ? data.error : 'Couldn\'t reach Plex at that URL.';
+                resultEl.className = 'small mt-2 text-danger';
+                resultEl.textContent = msg;
+                return;
+            }
+
+            await settingsManager.save({
+                plex_url: url,
+                plex_name: 'Plex Server',
+                plex_token: token,
+                plex_verify_ssl: verifySsl
+            });
+
+            // Synthesise a "selected server" object so Step 2 can treat us
+            // the same as a user who came in via OAuth discovery.
+            selectedServer = {
+                name: 'Plex Server',
+                host: url.replace(/^https?:\/\//, '').split(':')[0] || '',
+                port: (url.match(/:(\d+)/) || [])[1] || '32400',
+                access_token: token,
+                ssl: url.startsWith('https://'),
+                local: true,
+                uri: url,
+                owned: true
+            };
+            manualPlexMode = true;
+
+            isAuthenticated = true;
+            document.getElementById('authStatus').classList.remove('d-none');
+            document.getElementById('authStatus').classList.add('authenticated');
+            document.getElementById('authError').classList.add('d-none');
+            document.getElementById('step1Next').disabled = false;
+
+            const libraryCount = Array.isArray(data.libraries) ? data.libraries.length : 0;
+            resultEl.className = 'small mt-2 text-success';
+            resultEl.innerHTML =
+                '<i class="bi bi-check-circle-fill me-1"></i>' +
+                'Connected&nbsp;&mdash;&nbsp;found ' + libraryCount + ' librar' +
+                (libraryCount === 1 ? 'y' : 'ies') + '. Click <strong>Next</strong> to continue.';
+        } catch (err) {
+            resultEl.className = 'small mt-2 text-danger';
+            resultEl.textContent = 'Connection failed: ' + (err && err.message ? err.message : 'unknown error');
+        } finally {
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-plug me-1"></i>Verify connection';
+        }
+    });
 
     // =========================================================================
     // Step 2: Server & Libraries

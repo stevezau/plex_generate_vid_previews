@@ -470,6 +470,449 @@ def _test_hwaccel_functionality(
         return False
 
 
+_VULKAN_DEVICE_CACHE: Optional[str] = None
+_VULKAN_DEVICE_PROBED: bool = False
+_VULKAN_ENV_OVERRIDES: dict = {}
+_VULKAN_DEBUG_BUFFER: str = ""
+
+# Candidate paths the Vulkan loader searches for the NVIDIA ICD JSON. The
+# nvidia-container-toolkit mounts it at /etc/vulkan/icd.d/, but older
+# loaders and some distributions only look under /usr/share/vulkan/icd.d/
+# (see nvidia-container-toolkit issue #1392). The retry strategy below
+# tries each path in order.
+_NVIDIA_ICD_JSON_PATHS = (
+    "/etc/vulkan/icd.d/nvidia_icd.json",
+    "/usr/share/vulkan/icd.d/nvidia_icd.json",
+)
+
+# Candidate paths for the GLVND NVIDIA EGL vendor config. nvidia-container-
+# toolkit injects this at ``/usr/share/glvnd/egl_vendor.d/10_nvidia.json``
+# when the ``graphics`` driver capability is declared; it tells the GLVND
+# libEGL dispatcher which vendor library (``libEGL_nvidia.so.0``) to use.
+#
+# WHY THIS MATTERS for the DV5 Vulkan path:
+# NVIDIA's libGLX_nvidia.so.0 is both a GLX backend AND the Vulkan ICD.
+# During Vulkan ICD initialisation, its constructor dlopens ``libEGL.so.1``
+# for an internal EGL capability probe. On the linuxserver/ffmpeg base
+# image, libEGL.so.1 is GLVND's dispatcher (not NVIDIA's own EGL), so the
+# probe goes through GLVND's vendor selection. If GLVND has no vendor hint,
+# it picks whichever vendor file is first on disk — which on this image is
+# Mesa's, not NVIDIA's. The EGL probe then returns a degraded context,
+# NVIDIA's ICD silently marks itself unusable, and
+# ``vk_icdGetInstanceProcAddr(NULL, "vkCreateInstance")`` returns NULL.
+# Result: ``VK_ERROR_INCOMPATIBLE_DRIVER`` and a llvmpipe fallback.
+#
+# Setting ``__EGL_VENDOR_LIBRARY_FILENAMES=<path-to-10_nvidia.json>`` tells
+# GLVND to use the NVIDIA vendor directly, the EGL probe succeeds, and
+# libGLX_nvidia's Vulkan ICD wakes up. This is the Strategy-2 fix.
+_NVIDIA_EGL_VENDOR_JSON_PATHS = (
+    "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+    "/etc/glvnd/egl_vendor.d/10_nvidia.json",
+)
+
+# Cap on the size of the VK_LOADER_DEBUG=all capture buffer. One run of
+# the diagnostic probe is typically 5–15 KB of loader trace; 20 KB is a
+# comfortable upper bound that still fits in a GitHub issue comment.
+_VULKAN_DEBUG_BUFFER_CAP = 20_000
+
+
+def _is_software_vulkan_device(device: Optional[str]) -> bool:
+    """Return True if ``device`` is a software rasterizer (llvmpipe/lavapipe)."""
+    if not device:
+        return False
+    d = device.lower()
+    return "llvmpipe" in d or "software" in d or "lavapipe" in d
+
+
+def _find_nvidia_icd_json() -> Optional[str]:
+    """Return the path to ``nvidia_icd.json`` if present at a standard location.
+
+    Checks both the nvidia-container-toolkit mount path
+    (``/etc/vulkan/icd.d/``) and the loader's legacy search path
+    (``/usr/share/vulkan/icd.d/``). Returns the first match or None.
+    """
+    for path in _NVIDIA_ICD_JSON_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _find_nvidia_egl_vendor_json() -> Optional[str]:
+    """Return the path to the GLVND NVIDIA EGL vendor JSON if present.
+
+    Checks both the nvidia-container-toolkit mount path
+    (``/usr/share/glvnd/egl_vendor.d/``) and the per-host override
+    (``/etc/glvnd/egl_vendor.d/``). Returns the first match or None.
+    """
+    for path in _NVIDIA_EGL_VENDOR_JSON_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _run_vulkan_probe(
+    env_overrides: Optional[dict] = None,
+) -> tuple[Optional[str], str]:
+    """Run a single Vulkan init probe and return ``(device, full_stderr)``.
+
+    Runs a trivial FFmpeg command with ``-init_hw_device vulkan=vk`` at
+    ``-loglevel debug`` and parses the ``Device N selected:`` line emitted
+    by FFmpeg's Vulkan hwcontext. Returns the parsed device name (or None
+    on miss/failure) and the full stderr for optional downstream use
+    (e.g. a ``VK_LOADER_DEBUG=all`` diagnostic capture).
+
+    Args:
+        env_overrides: Optional env vars to merge into the subprocess
+            environment. Used by the Layer-3 retry strategy to force
+            ``VK_DRIVER_FILES`` and/or enable ``VK_LOADER_DEBUG=all``.
+    """
+    if not _is_hwaccel_available("vulkan"):
+        # DEBUG only: get_vulkan_device_info() will log a single
+        # user-facing INFO line summarising the final outcome. Logging
+        # here would fire once per retry strategy (up to 4 times) and
+        # clutter the startup log on FFmpeg builds without Vulkan.
+        logger.debug(
+            "Vulkan probe: FFmpeg was built without Vulkan hwaccel support; "
+            "libplacebo DV Profile 5 tone mapping will run in software."
+        )
+        return None, ""
+    cmd = [
+        "ffmpeg",
+        "-loglevel",
+        "debug",
+        "-init_hw_device",
+        "vulkan=vk",
+        "-f",
+        "lavfi",
+        "-i",
+        "nullsrc",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]
+    env = None
+    if env_overrides:
+        env = os.environ.copy()
+        env.update(env_overrides)
+    logger.debug(
+        f"Vulkan probe: running {' '.join(cmd)}"
+        + (f" with env overrides {env_overrides}" if env_overrides else "")
+    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        logger.warning(
+            f"Vulkan probe failed (subprocess error: {exc}); "
+            "falling back to 'no Vulkan device' for DV5 diagnosis."
+        )
+        return None, str(exc)
+    except Exception as exc:
+        logger.warning(
+            f"Vulkan probe raised unexpected exception: {exc}; "
+            "falling back to 'no Vulkan device' for DV5 diagnosis."
+        )
+        return None, str(exc)
+    stderr = result.stderr or ""
+    for line in stderr.splitlines():
+        # Matches e.g. "[Vulkan @ 0x...] Device 0 selected: Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        # or         "[Vulkan @ 0x...] Device 0 selected: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+        if "Device" in line and "selected:" in line:
+            return line.split("selected:", 1)[1].strip(), stderr
+    return None, stderr
+
+
+def _probe_vulkan_device() -> Optional[str]:
+    """Return the Vulkan device libplacebo will use, running up to three strategies.
+
+    **Strategy 1** — default probe with inherited environment. Lets the
+    Vulkan loader pick whichever ICD it wants. This is the happy path
+    for correctly-configured hosts.
+
+    **Strategy 2** — if Strategy 1 returned a software rasterizer
+    (``llvmpipe``/``lavapipe``) or nothing AND the GLVND NVIDIA EGL
+    vendor JSON is present, retry the probe with
+    ``__EGL_VENDOR_LIBRARY_FILENAMES`` pointing at it. See the comment
+    on :data:`_NVIDIA_EGL_VENDOR_JSON_PATHS` above for the full
+    mechanism; the short version is that NVIDIA's
+    ``libGLX_nvidia.so.0`` runs a ``dlopen("libEGL.so.1")`` probe
+    during Vulkan ICD init, GLVND picks the Mesa vendor by default on
+    the linuxserver/ffmpeg base image, and that causes NVIDIA's
+    ``vk_icdGetInstanceProcAddr`` to return NULL for
+    ``vkCreateInstance``. The env var forces GLVND to pick the NVIDIA
+    vendor, and the ICD wakes up. Verified empirically on an NVIDIA
+    TITAN RTX + driver 590.48.01 + linuxserver/ffmpeg 8.0.1-cli-ls56.
+
+    **Strategy 2b** — if the EGL vendor JSON is not present but the
+    NVIDIA ICD JSON is (or if Strategy 2 ran but did not fix things),
+    fall back to forcing ``VK_DRIVER_FILES`` at the NVIDIA ICD. This
+    is the older heuristic; kept as a secondary because some
+    nvidia-container-toolkit releases inject the ICD JSON but not the
+    GLVND vendor config (see
+    `nvidia-container-toolkit#1559 <https://github.com/NVIDIA/nvidia-container-toolkit/issues/1559>`_).
+    If the forced probe succeeds, the env override is stashed in
+    ``_VULKAN_ENV_OVERRIDES`` so :func:`get_vulkan_env_overrides` can
+    feed it into the real FFmpeg invocation on the libplacebo path.
+
+    **Strategy 3** — if 1 and both 2 branches failed, run one final
+    probe with ``VK_LOADER_DEBUG=all`` (plus whichever env vars are
+    available) and capture the full stderr into
+    ``_VULKAN_DEBUG_BUFFER`` so users can copy-paste it into a GitHub
+    issue via ``GET /api/system/vulkan/debug``. The strategy does NOT
+    attempt to return a device from the diagnostic probe — it just
+    captures the trace for human diagnosis.
+
+    Returns:
+        The Vulkan device description the libplacebo path will actually
+        use (Strategy 1 or Strategy 2 success), the software rasterizer
+        from Strategy 1 if nothing else worked, or ``None`` if Vulkan is
+        completely unavailable.
+    """
+    global _VULKAN_ENV_OVERRIDES, _VULKAN_DEBUG_BUFFER
+
+    # Strategy 1: default probe.
+    device, _ = _run_vulkan_probe()
+    if device and not _is_software_vulkan_device(device):
+        logger.debug(
+            f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}"
+        )
+        return device
+
+    if device:
+        logger.debug(
+            f"Vulkan probe (strategy 1): got software device {device!r}; "
+            "will attempt NVIDIA-specific retries"
+        )
+    else:
+        logger.debug(
+            "Vulkan probe (strategy 1): no 'Device N selected:' line; "
+            "will attempt NVIDIA-specific retries"
+        )
+
+    nvidia_egl_vendor = _find_nvidia_egl_vendor_json()
+    nvidia_icd = _find_nvidia_icd_json()
+
+    # Strategy 2: point GLVND at NVIDIA's EGL vendor via
+    # __EGL_VENDOR_LIBRARY_FILENAMES. This is the verified fix for the
+    # linuxserver/ffmpeg + NVIDIA case — see the doc comment on
+    # _NVIDIA_EGL_VENDOR_JSON_PATHS above.
+    if nvidia_egl_vendor:
+        logger.debug(
+            f"Vulkan probe (strategy 2): forcing "
+            f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
+        )
+        retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": nvidia_egl_vendor}
+        retry_device, _ = _run_vulkan_probe(retry_env)
+        if retry_device and not _is_software_vulkan_device(retry_device):
+            logger.debug(
+                f"Vulkan probe (strategy 2): success with {retry_device!r} "
+                f"via __EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
+            )
+            _VULKAN_ENV_OVERRIDES = dict(retry_env)
+            return retry_device
+        logger.debug(
+            f"Vulkan probe (strategy 2): forcing "
+            f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor} "
+            f"still returned {retry_device!r}; trying Strategy 2b."
+        )
+    else:
+        logger.debug(
+            "Vulkan probe: no NVIDIA GLVND EGL vendor JSON found at "
+            f"{_NVIDIA_EGL_VENDOR_JSON_PATHS}; skipping Strategy 2."
+        )
+
+    # Strategy 2b: older heuristic — force VK_DRIVER_FILES at the NVIDIA
+    # ICD. Kept for the case where the ICD JSON is injected but the EGL
+    # vendor config is not (nvidia-container-toolkit#1559 / partial CDI
+    # manifests), and for general belt-and-suspenders coverage.
+    if nvidia_icd:
+        logger.debug(
+            f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd}"
+        )
+        # If Strategy 2 ran and found an EGL vendor, carry it through
+        # the 2b retry as well so the two fixes stack.
+        retry_env = {"VK_DRIVER_FILES": nvidia_icd}
+        if nvidia_egl_vendor:
+            retry_env["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
+        retry_device, _ = _run_vulkan_probe(retry_env)
+        if retry_device and not _is_software_vulkan_device(retry_device):
+            logger.debug(
+                f"Vulkan probe (strategy 2b): success with {retry_device!r} "
+                f"via {retry_env}"
+            )
+            _VULKAN_ENV_OVERRIDES = dict(retry_env)
+            return retry_device
+        logger.debug(
+            f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd} "
+            f"still returned {retry_device!r}; running diagnostic capture."
+        )
+    else:
+        logger.debug(
+            "Vulkan probe: no NVIDIA ICD JSON found at "
+            f"{_NVIDIA_ICD_JSON_PATHS}; skipping Strategy 2b."
+        )
+
+    # Strategy 3: VK_LOADER_DEBUG=all capture for issue reports.
+    diag_overrides: dict = {"VK_LOADER_DEBUG": "all"}
+    if nvidia_egl_vendor:
+        diag_overrides["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
+    if nvidia_icd:
+        diag_overrides["VK_DRIVER_FILES"] = nvidia_icd
+    _, diag_stderr = _run_vulkan_probe(diag_overrides)
+    _VULKAN_DEBUG_BUFFER = (diag_stderr or "")[-_VULKAN_DEBUG_BUFFER_CAP:]
+    # One-line WARNING at Strategy-3 exit is fine because it only runs
+    # once per probe (first call to get_vulkan_device_info), and only
+    # when everything else has already failed — i.e. the user DOES have
+    # a real problem worth seeing in the main log.
+    logger.warning(
+        f"Vulkan probe: all strategies exhausted. Captured "
+        f"{len(_VULKAN_DEBUG_BUFFER)} bytes of VK_LOADER_DEBUG=all output "
+        "for issue reports (GET /api/system/vulkan/debug)."
+    )
+    if _VULKAN_DEBUG_BUFFER:
+        # Surface the last few informative lines to the main log at
+        # DEBUG level so a user reading `docker logs --tail` in the
+        # normal INFO flow isn't overwhelmed, but issue reporters with
+        # LOG_LEVEL=DEBUG get the immediate hint without hitting the
+        # dashboard debug endpoint.
+        for line in _VULKAN_DEBUG_BUFFER.splitlines()[-15:]:
+            logger.debug(f"  ffmpeg/vulkan-loader stderr: {line}")
+
+    # Return whatever Strategy 1 found so `get_vulkan_device_info` can
+    # correctly classify it as software (or None) and render the banner.
+    return device
+
+
+def get_vulkan_device_info() -> dict:
+    """Return cached Vulkan device info for libplacebo diagnostics.
+
+    The underlying probe (including Strategy-2 retry and Strategy-3
+    diagnostic capture) is cached across calls at module level because
+    it runs subprocesses and its result does not change during the
+    app's lifetime — the container's Vulkan environment is fixed at
+    startup.
+
+    Returns:
+        dict: Contains ``device`` (Vulkan device description string, or
+            ``None`` if Vulkan is unavailable) and ``is_software`` (True
+            when the selected device is a software rasteriser like
+            ``llvmpipe``/``lavapipe``, which triggers the DV5 green
+            overlay bug in libplacebo). Callers assemble the
+            user-facing warning message themselves.
+    """
+    global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
+    if not _VULKAN_DEVICE_PROBED:
+        logger.debug("Vulkan device info: running first-time probe")
+        _VULKAN_DEVICE_CACHE = _probe_vulkan_device()
+        _VULKAN_DEVICE_PROBED = True
+
+        # First-time probe finished — log the outcome exactly once.
+        # Every subsequent call returns the cached dict silently. The
+        # three branches below are intentionally mutually exclusive:
+        #   - INFO on success (single line, user-friendly)
+        #   - WARNING on software fallback (action needed)
+        #   - INFO on no-Vulkan (informational, harmless)
+        probe_device = _VULKAN_DEVICE_CACHE
+        if probe_device is None:
+            logger.info(
+                "Vulkan not available in this container; Dolby Vision "
+                "Profile 5 thumbnails will render in software. Non-DV5 "
+                "content is unaffected."
+            )
+        elif _is_software_vulkan_device(probe_device):
+            logger.warning(
+                f"Vulkan probe selected a software rasterizer "
+                f"({probe_device}); Dolby Vision Profile 5 thumbnails "
+                "will show a green overlay. Open the dashboard or "
+                "GET /api/system/vulkan/debug for GPU-specific "
+                "remediation steps and a full diagnostic bundle."
+            )
+        else:
+            via = ""
+            if _VULKAN_ENV_OVERRIDES:
+                # Let power users see which env var(s) unblocked the
+                # retry in a single glance, without dumping the full
+                # Strategy-2 trace at INFO level.
+                override_keys = ", ".join(sorted(_VULKAN_ENV_OVERRIDES))
+                via = f" (via {override_keys} override)"
+            logger.info(
+                f"Vulkan ready for Dolby Vision Profile 5 tone-mapping: "
+                f"{probe_device}{via}"
+            )
+
+    device = _VULKAN_DEVICE_CACHE
+    if device is None:
+        return {"device": None, "is_software": False}
+    return {
+        "device": device,
+        "is_software": _is_software_vulkan_device(device),
+    }
+
+
+def get_vulkan_env_overrides() -> dict:
+    """Return env vars to inject into FFmpeg subprocess calls on the libplacebo path.
+
+    Populated by the Strategy-2 (or Strategy-2b) retry in
+    :func:`_probe_vulkan_device` when the default Vulkan ICD search
+    did not yield a hardware device. Returns an empty dict when no
+    overrides are needed (happy path: the loader finds the right ICD
+    on its own).
+
+    **Side effect by design:** if the probe has not yet run (e.g. the
+    worker thread calling from :func:`media_processing._run_ffmpeg`
+    on the libplacebo DV Profile 5 path beats the first
+    ``/api/system/vulkan`` poll), this function triggers the probe
+    synchronously via :func:`get_vulkan_device_info` before returning.
+    Without this auto-trigger, any job that starts before an HTTP
+    endpoint is hit would get an empty override dict and would fall
+    back to software Vulkan even when the retry would have fixed it.
+    """
+    if not _VULKAN_DEVICE_PROBED:
+        get_vulkan_device_info()
+    return dict(_VULKAN_ENV_OVERRIDES)
+
+
+def get_vulkan_debug_buffer() -> str:
+    """Return the captured ``VK_LOADER_DEBUG=all`` stderr from the last probe.
+
+    Populated by Strategy 3 in :func:`_probe_vulkan_device` when both
+    the default probe and the ``VK_DRIVER_FILES`` retry failed. Empty
+    string when no diagnostic capture was needed. Consumed by the
+    ``GET /api/system/vulkan/debug`` endpoint and the "Copy diagnostic
+    bundle" button on the dashboard/settings warning banner.
+
+    Same auto-trigger behaviour as :func:`get_vulkan_env_overrides`:
+    if the probe has not yet run, it runs synchronously first so the
+    caller never sees an empty buffer just because no HTTP endpoint
+    has been hit yet.
+    """
+    if not _VULKAN_DEVICE_PROBED:
+        get_vulkan_device_info()
+    return _VULKAN_DEBUG_BUFFER
+
+
+def _reset_vulkan_device_cache() -> None:
+    """Testing hook: clear the cached Vulkan probe result and diagnostic state.
+
+    Only intended for unit tests that need to rerun the probe with a
+    different mock. Clears all four module-level globals so a new
+    probe strategy run starts fresh.
+    """
+    global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
+    global _VULKAN_ENV_OVERRIDES, _VULKAN_DEBUG_BUFFER
+    _VULKAN_DEVICE_CACHE = None
+    _VULKAN_DEVICE_PROBED = False
+    _VULKAN_ENV_OVERRIDES = {}
+    _VULKAN_DEBUG_BUFFER = ""
+
+
 def _is_wsl2() -> bool:
     """Detect if running on Windows Subsystem for Linux 2 (WSL2).
 
@@ -1200,6 +1643,41 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
                     logger.debug("  WSL2 CUDA functionality test failed")
             else:
                 logger.debug("  WSL2 nvidia-smi did not detect NVIDIA GPU")
+
+        # Linux container fallback: nvidia-container-runtime exposes NVIDIA
+        # GPUs via /dev/nvidia* but does NOT mount /dev/dri/renderD* nodes,
+        # so DRM enumeration finds nothing even though CUDA is usable. If
+        # nvidia-smi confirms an NVIDIA GPU and CUDA hwaccel is compiled
+        # into FFmpeg, probe CUDA directly — it doesn't need a DRM node.
+        if (
+            not detected_gpus
+            and not _is_wsl2()
+            and _is_hwaccel_available("cuda")
+            and _detect_nvidia_via_nvidia_smi() == "NVIDIA"
+        ):
+            logger.info(
+                "  NVIDIA GPU detected via nvidia-smi with no DRM render nodes — testing CUDA directly"
+            )
+            if _test_hwaccel_functionality("cuda"):
+                gpu_name = get_gpu_name("NVIDIA", "cuda")
+                gpu_info = {
+                    "name": gpu_name,
+                    "acceleration": "CUDA",
+                    "device_path": "cuda",
+                    "render_device": None,
+                    "card": "nvidia-container",
+                    "driver": "nvidia",
+                    "status": "ok",
+                }
+                detected_gpus.append(("NVIDIA", "cuda", gpu_info))
+                logger.info(f"  ✅ NVIDIA CUDA working: {gpu_name}")
+            else:
+                logger.debug(
+                    "  CUDA functionality test failed — container may be missing "
+                    "driver capabilities (set NVIDIA_DRIVER_CAPABILITIES=all; the "
+                    "'graphics' capability is also required for Dolby Vision "
+                    "Profile 5 thumbnails) or /dev/nvidia* devices"
+                )
 
         # Container fallback: /sys/class/drm unavailable but /dev/dri render
         # devices may be mounted directly (e.g. TrueNAS Scale, Kubernetes).

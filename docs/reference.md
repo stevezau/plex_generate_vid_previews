@@ -146,8 +146,15 @@ Settings for automatic preview generation when media is imported via Radarr or S
 | `webhook_enabled` | `true` | Yes | Master enable/disable for webhook processing |
 | `webhook_delay` | `60` | Yes | Delay before processing (10–300 s). Incoming webhooks are queued per source; a batch runs only after this many seconds with no new imports, so every file gets at least this long for Plex to add it before we process. |
 | `webhook_secret` | *(empty)* | Yes | Dedicated secret for webhook auth (falls back to API token) |
+| `plex_webhook_enabled` | `false` | Yes | Enable the Plex direct webhook (`/api/webhooks/plex`). Requires Plex Pass on the server-owner account. |
+| `plex_webhook_public_url` | *(empty)* | Yes | URL Plex Media Server should POST to. Defaults to the URL you registered through. Override for reverse-proxy / split-network setups. |
 
 Webhook processing respects `selected_libraries`; paths outside unchecked libraries are ignored.
+
+The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules](#post-apischedules) below). Create one through the Webhooks page's "Create default scanner" shortcut, or through the Schedules modal with **Scan mode → Recently added only**.
+
+> [!IMPORTANT]
+> The Plex direct webhook and Recently Added schedules trigger only on **new** library items (new `ratingKey`s). They do **not** detect in-place file upgrades — Plex keeps the same item when Sonarr/Radarr replaces a file. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
 
 > [!TIP]
 > Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.
@@ -510,27 +517,45 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 
 ### POST /api/schedules
 
-**Cron request:**
+**Cron request — full library scan (default):**
 
 ```json
 {
   "name": "Nightly Movies",
   "library_id": "1",
-  "schedule_type": "cron",
   "cron_expression": "0 2 * * *"
 }
 ```
 
-**Interval request:**
+**Interval request — full library scan:**
 
 ```json
 {
   "name": "Every 4 Hours",
   "library_id": "1",
-  "schedule_type": "interval",
   "interval_minutes": 240
 }
 ```
+
+**Recently Added scanner schedule:**
+
+```json
+{
+  "name": "Recently Added Scanner",
+  "library_id": null,
+  "interval_minutes": 15,
+  "enabled": true,
+  "config": {
+    "job_type": "recently_added",
+    "lookback_hours": 1
+  }
+}
+```
+
+`config.job_type` accepts:
+
+- `"full_library"` *(default — optional, omit to get the same behaviour)* — schedule runs a full library scan via the standard job pipeline, processing every item in `library_id` that's missing previews.
+- `"recently_added"` — schedule runs a Recently Added scan instead. Requires `config.lookback_hours` (float, clamped to 0.25–720). Scans only items whose Plex `addedAt` falls within the lookback window, queuing each through the webhook job pipeline. When `library_id` is `null`, the scan falls back to the globally selected libraries in Settings (or every supported library when no global filter is set); when set, only that section is scanned.
 
 ## System Endpoints
 
@@ -615,6 +640,79 @@ Receive a custom webhook payload from any external tool (Tdarr, scripts, etc.). 
 **Test event:** `{"eventType": "Test"}` → **Response (200):** `{"success": true, "message": "Custom webhook configured successfully"}`
 
 **Error (400):** `{"success": false, "error": "Payload must include 'file_path' (string) or 'file_paths' (array of strings)"}`
+
+### POST /api/webhooks/plex
+
+Receive a native Plex webhook (Plex Pass feature). Plex POSTs `multipart/form-data` with a `payload` part containing the JSON event body. Only `library.new` events trigger work; other events (`media.play`, `media.rate`, `library.on.deck`, etc.) are acknowledged with 200 and ignored.
+
+The endpoint also accepts a synthetic `test.ping` event used by the **Test reachability** button on the Webhooks page.
+
+**`library.new` payload (excerpt):**
+
+```json
+{
+  "event": "library.new",
+  "owner": true,
+  "Metadata": {
+    "ratingKey": "153037",
+    "type": "movie",
+    "title": "Some Movie",
+    "Media": [{ "Part": [{ "file": "/data/movies/Some Movie/Some Movie.mkv" }] }]
+  }
+}
+```
+
+When `Media[].Part[].file` is missing from the payload (Plex doesn't always include it), the app fetches the item by `ratingKey` via the Plex API to recover the file paths.
+
+**Authentication:** same as the other webhook endpoints — `X-Auth-Token` header, `Authorization: Bearer`, or HTTP Basic password.
+
+> [!IMPORTANT]
+> Plex's `library.new` webhook is wired through the same code path as mobile push notifications. If push notifications are disabled on your Plex server, library events are silently dropped — enable them under Plex Web → Settings → Server → Notifications. See the [Auto-trigger from Plex guide](guides.md#auto-trigger-from-plex-no-sonarrradarr) for full details.
+
+### POST /api/settings/plex_webhook/register
+
+Register the Plex direct webhook (`/api/webhooks/plex`) with the user's plex.tv account, using the configured Plex token.
+
+**Request body:**
+
+```json
+{ "public_url": "http://your-host:8080/api/webhooks/plex" }
+```
+
+`public_url` is optional — when omitted the server uses `<request scheme>://<host>/api/webhooks/plex`.
+
+**Response (200):** `{"success": true, "registered_in_plex": true, "public_url": "..."}`
+
+**Errors:**
+- `400` — token missing
+- `403` — Plex Pass required (`reason: "plex_pass_required"`)
+- `502` — registration call to plex.tv failed
+
+### POST /api/settings/plex_webhook/unregister
+
+Remove the Plex direct webhook from the user's plex.tv account and turn off the local toggle. Returns `{"success": true, "registered_in_plex": false}`.
+
+### GET /api/settings/plex_webhook/status
+
+Probe live state. Returns the configured public URL, whether it is currently registered with Plex, and Plex Pass detection.
+
+```json
+{
+  "enabled_in_settings": true,
+  "registered_in_plex": true,
+  "public_url": "http://your-host:8080/api/webhooks/plex",
+  "default_url": "http://your-host:8080/api/webhooks/plex",
+  "has_plex_pass": true,
+  "error": null,
+  "error_reason": null
+}
+```
+
+### POST /api/settings/plex_webhook/test
+
+Self-POST a synthetic `test.ping` payload to the configured public URL to verify reachability. The receiving endpoint records a "test" history entry. Returns `{"success": true, "status_code": 200, ...}` on success.
+
+To run a Recently Added scan immediately, call `POST /api/schedules/<id>/run` on the scanner schedule — it's a standard user schedule now, not a dedicated settings endpoint.
 
 ### GET /api/webhooks/history
 

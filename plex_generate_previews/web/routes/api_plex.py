@@ -130,25 +130,53 @@ def get_plex_servers():
 
         servers = []
         for resource in resources:
-            if resource.get("provides") == "server":
-                connections = resource.get("connections", [])
-                local_conn = next((c for c in connections if c.get("local")), None)
-                any_conn = connections[0] if connections else None
-                best_conn = local_conn or any_conn
+            if resource.get("provides") != "server":
+                continue
+            connections = resource.get("connections", []) or []
+            local_conn = next((c for c in connections if c.get("local")), None)
+            any_conn = connections[0] if connections else None
+            best_conn = local_conn or any_conn
+            if not best_conn:
+                continue
 
-                if best_conn:
-                    servers.append(
-                        {
-                            "name": resource.get("name"),
-                            "machine_id": resource.get("clientIdentifier"),
-                            "host": best_conn.get("address"),
-                            "port": best_conn.get("port", 32400),
-                            "ssl": best_conn.get("protocol") == "https",
-                            "uri": best_conn.get("uri"),
-                            "owned": resource.get("owned", False),
-                            "local": best_conn.get("local", False),
-                        }
-                    )
+            # Full list of usable connections so the Settings page can
+            # render a picker when a server publishes more than one
+            # connection (local IP + public URI + relay, etc.).
+            connection_list = []
+            for c in connections:
+                uri = c.get("uri") or ""
+                host = c.get("address") or ""
+                port = c.get("port", 32400)
+                protocol = c.get("protocol") or (
+                    "https" if str(uri).startswith("https") else "http"
+                )
+                if not uri and host:
+                    uri = f"{protocol}://{host}:{port}"
+                connection_list.append(
+                    {
+                        "uri": uri,
+                        "address": host,
+                        "port": port,
+                        "protocol": protocol,
+                        "ssl": protocol == "https",
+                        "local": bool(c.get("local")),
+                        "relay": bool(c.get("relay")),
+                    }
+                )
+
+            servers.append(
+                {
+                    "name": resource.get("name"),
+                    "machine_id": resource.get("clientIdentifier"),
+                    "host": best_conn.get("address"),
+                    "port": best_conn.get("port", 32400),
+                    "ssl": best_conn.get("protocol") == "https",
+                    "uri": best_conn.get("uri"),
+                    "owned": bool(resource.get("owned", False)),
+                    "local": bool(best_conn.get("local")),
+                    "connections": connection_list,
+                }
+            )
 
         return jsonify({"servers": servers})
     except requests.RequestException as e:

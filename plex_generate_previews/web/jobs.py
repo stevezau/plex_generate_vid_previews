@@ -540,11 +540,17 @@ class JobManager:
         return job
 
     def start_job(self, job_id: str) -> Optional[Job]:
-        """Mark a job as started."""
+        """Mark a job as started.
+
+        Idempotent: if the job is already running, this is a no-op.  The
+        existing ``started_at`` timestamp is preserved so wall-clock
+        duration reflects when the worker thread began, not when items
+        were first dispatched.
+        """
         started = False
         with self._lock:
             job = self._jobs.get(job_id)
-            if job:
+            if job and job.status != JobStatus.RUNNING:
                 job.status = JobStatus.RUNNING
                 job.paused = False
                 job.started_at = datetime.now(timezone.utc).isoformat()

@@ -27,22 +27,57 @@ def execute_scheduled_job(
     config: Optional[dict] = None,
     priority: Optional[int] = None,
 ) -> None:
-    """Execute a scheduled job - module-level function for APScheduler pickling.
+    """Execute a scheduled job — module-level function for APScheduler pickling.
 
     This function must be at module level (not a class method) because
     APScheduler's SQLAlchemy jobstore needs to pickle it.
 
+    Dispatches on ``config["job_type"]``:
+
+    * ``"recently_added"`` — runs the Recently Added scanner against the
+      schedule's library (or all libraries when ``library_id`` is None).
+      Uses ``config["lookback_hours"]`` (default 1).
+    * anything else (including missing) — legacy **full library** scan via
+      ``manager.run_job_callback``, which creates a job processing every
+      item in the targeted library.
+
     Args:
         schedule_id: The ID of the schedule triggering this job
-        library_id: Plex library section ID
+        library_id: Plex library section ID (``None`` = all libraries)
         library_name: Human-readable library name
-        config: Job configuration dict
+        config: Job configuration dict — may include ``job_type`` and
+            ``lookback_hours``
         priority: Dispatch priority (1=high, 2=normal, 3=low)
 
     """
-    logger.info(f"Executing scheduled job: {schedule_id} for library: {library_name}")
-
+    cfg = config or {}
+    job_type = str(cfg.get("job_type", "full_library"))
     manager = get_schedule_manager()
+
+    if job_type == "recently_added":
+        try:
+            lookback = float(cfg.get("lookback_hours", 1) or 1)
+        except (TypeError, ValueError):
+            lookback = 1.0
+        lookback = max(0.25, min(720.0, lookback))
+        logger.info(
+            "Executing scheduled recently-added scan: {} "
+            "(library={}, lookback={:.2g}h)",
+            schedule_id,
+            library_name or "all libraries",
+            lookback,
+        )
+        try:
+            from .recent_added_scanner import scan_recently_added
+
+            library_ids = [str(library_id)] if library_id else None
+            scan_recently_added(lookback, library_ids=library_ids)
+            manager._update_last_run(schedule_id)
+        except Exception as e:
+            logger.error("Failed to execute recently-added scan {}: {}", schedule_id, e)
+        return
+
+    logger.info(f"Executing scheduled job: {schedule_id} for library: {library_name}")
 
     if manager.run_job_callback:
         try:

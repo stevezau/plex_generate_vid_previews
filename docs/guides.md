@@ -65,9 +65,12 @@ After setup completes, you'll be taken to the dashboard.
 
 **Scheduling:**
 
+The Dashboard shows a compact "Schedules" teaser with the next upcoming run and a total count. Full schedule management lives on the dedicated **Schedules** page (`/schedules`, also linked from the top nav):
+
 - **Cron schedules** — set up recurring processing
 - **Interval-based** — run every X minutes
 - **Per-library** — schedule specific libraries
+- **Scan mode** — each schedule is either a *Full library scan* (default) or a *Recently added only* scan (see [Auto-trigger from Plex](#auto-trigger-from-plex-no-sonarrradarr))
 
 ### Settings Page
 
@@ -77,6 +80,8 @@ Access settings at `/settings` to manage:
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
 - **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, CPU fallback workers, thumbnail interval and quality
+
+Settings and Webhooks pages **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
 
 ### CPU Fallback Workers (GPU Safety Net)
 
@@ -382,6 +387,72 @@ When multiple files are imported in quick succession (e.g., a season pack), the 
 
 ---
 
+## Auto-trigger from Plex (no Sonarr/Radarr)
+
+For media you add to Plex **manually** — copying files into a watched folder, importing through Plex itself, or using any tool other than Sonarr/Radarr/Tdarr — there are two built-in ways to auto-trigger preview generation. Both live on the **Webhooks** page as dedicated sections (**Plex Direct** and **Recently Added Scanner** in the sidebar), and both feed into the same job pipeline as the existing webhooks.
+
+> [!IMPORTANT]
+> **Both options trigger only on _new_ library items.** When Sonarr or Radarr **upgrades** an existing file in place, Plex keeps the same library item, so neither option will see it. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
+
+### Option A — Plex direct webhook (instant)
+
+This uses Plex's built-in webhook feature. The app calls Plex's account API to register its own `/api/webhooks/plex` endpoint, so you don't have to copy/paste anything into Plex Web → Settings → Webhooks (though you still can if you'd rather).
+
+**Requirements:**
+- An active **Plex Pass** subscription on the server-owner account. Plex's webhook feature is Plex-Pass-only.
+- **Mobile Push Notifications enabled** on your Plex server. This is the catch: Plex's `library.new` event is delivered through the same code path as mobile push notifications, and if push notifications are off, library events are silently dropped. Enable them under Plex Web → Settings → Server → Notifications. You don't have to actually use mobile push — they just need to be turned on.
+
+**Setup:**
+1. Open the web UI → **Webhooks** and scroll to (or click) the **Plex Direct** sidebar link.
+2. The URL field is pre-filled with the URL you're currently accessing the app at (typically correct for same-host setups). If your Plex Media Server is on a different host or behind a different network/proxy, override it with a URL Plex can reach.
+3. Click **Test reachability** to verify the URL is routable. The app self-POSTs a synthetic ping; success means Plex should also be able to deliver.
+4. Click **Register with Plex**. If you're missing Plex Pass, the UI will tell you and disable the button.
+5. (Optional) Confirm by checking Plex Web → Settings → Webhooks — your URL should appear there.
+
+**How it works at runtime:** Plex POSTs a `library.new` event to `/api/webhooks/plex` whenever a new item is added. The app filters out everything else (`media.play`, `media.rate`, etc.), pulls the file paths from `Metadata.Media[].Part[].file` if present, otherwise looks the item up by `ratingKey`, and feeds the paths into the same debounce → batch → process pipeline as Radarr/Sonarr.
+
+**How auth works:** Plex's webhook UI doesn't allow custom headers or HTTP Basic credentials, so there's no way to put an `X-Auth-Token` header on the requests Plex sends. Instead, the **Register with Plex** button appends your webhook secret (or API token) to the URL Plex stores as a `?token=…` query parameter. When Plex POSTs to that URL, the endpoint validates the query token the same way it validates header tokens from Radarr/Sonarr. **If you rotate the webhook secret**, click **Re-register with Plex** (or just save settings — the app auto-re-registers on secret change) so Plex picks up the new value.
+
+### Option B — Recently Added scanner (universal)
+
+A scheduled poll for items where Plex's `addedAt` falls within a configured lookback window. Works without Plex Pass and without push notifications, at the cost of a polling interval of latency.
+
+**The scanner is a first-class schedule type.**  You create, edit, enable, disable, and delete Recently Added scanners through the same Schedules UI as any other scheduled job — and you can create **multiple scanners** with different libraries, intervals, or lookback windows.  For example: scan Movies every 15 minutes with a 1-hour lookback, and your 4K library every 6 hours with a 24-hour lookback.
+
+**Quick start (one click):**
+1. Open the web UI → **Webhooks** → **Recently Added Scanner** (sidebar link).
+2. Click **Create default scanner**.  A schedule is created with sensible defaults: runs every **15 minutes**, lookback window **1 hour**, all libraries.
+3. That's it.  You can stop here, or continue to customize it.
+
+**Customize or add more scanners:**
+1. Click **Manage on Schedules page** on the Webhooks card, or open the **Schedules** page directly from the top nav.
+2. Click **Add Schedule** (or **Edit** on an existing scanner).
+3. In the modal, choose **Scan mode → Recently added only**.  The Schedule Type field defaults to Interval; pick your frequency.
+4. Choose a **Lookback window** — 15 min / 30 min / 1 hour (default) / 2 hours / 6 hours / 24 hours / 3 days / 7 days.
+5. Pick a **Library** (or leave as "All Libraries") and click **Create** / **Save**.
+
+**Choosing a lookback window:** items that already have BIF previews are skipped automatically by the job runner, so a larger lookback is cheap — it just re-queries Plex for a wider window. Pick something a few times larger than your scan interval so transient outages (e.g. a 30-minute Plex hiccup) don't cause missed items. The default **1 hour** gives a 4× safety buffer over a 15-min interval, which is plenty for the happy path while staying light on Plex.
+
+**Scheduled scanners are marked with a blue "Recently Added" badge** next to the schedule name in the Schedules table, so you can tell them apart from full-library scans at a glance.
+
+**Why stateless?** The scanner doesn't track a "last seen" timestamp. Every tick it asks Plex for items added within the lookback window and submits them to the job pipeline; the job runner's existing BIF-existence check skips anything that's already done. This avoids cursor migrations, restart races, and clock-skew bugs.
+
+### Which option to pick
+
+| | Plex direct webhook | Recently Added scanner |
+|---|---|---|
+| **Latency** | Instant (event-driven) | Up to your scan interval |
+| **Plex Pass required?** | Yes | No |
+| **Other Plex requirements?** | Mobile Push Notifications must be enabled | None |
+| **Detects new items?** | Yes | Yes |
+| **Detects in-place file upgrades?** | No | No |
+| **Setup complexity** | One click after entering URL | Toggle + pick interval |
+| **Network requirements** | Plex must be able to reach this app | This app must be able to reach Plex |
+
+You can enable **both** if you want belt-and-suspenders behavior — the recently-added scan acts as a safety net for any `library.new` event Plex's push-notification code path might drop.
+
+---
+
 ## Load Testing
 
 A Locust load test is available for stress testing the web API.
@@ -475,10 +546,18 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 | HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | libplacebo via Vulkan ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| Dolby Vision Profile 5 (no backward-compat layer) | libplacebo via Vulkan; NVDEC on NVIDIA, software decode elsewhere ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
 
-**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires `libplacebo` for tone mapping because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. libplacebo's `apply_dolbyvision` (enabled by default in FFmpeg 8+) handles this correctly. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires `libplacebo` for tone mapping because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. libplacebo's `apply_dolbyvision` (enabled by default in FFmpeg 8+) handles this correctly. On NVIDIA hosts, the HEVC decode step runs on NVDEC before libplacebo picks up the frames — this is about 3× faster than software decode on 4K DV5 content with identical visual output. Other vendors (Intel VAAPI, QSV, AMD, Apple VideoToolbox, D3D11VA) stay on software decode for this path because NVDEC is the only HW decoder currently validated with libplacebo's DV5 tone map; Intel VAAPI specifically benchmarked slower than software decode. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+
+> [!IMPORTANT]
+> **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
+> libplacebo needs a working Vulkan driver to tone-map DV Profile 5. The NVIDIA Container Toolkit only injects the NVIDIA Vulkan ICD into the container when the `graphics` driver capability is declared — `compute,video,utility` is not enough (that only covers CUDA/NVDEC/nvidia-smi). If the app detects that your container is running Vulkan on the software rasterizer (`llvmpipe`), your DV Profile 5 thumbnails will contain a green rectangle due to a libplacebo+llvmpipe rendering bug.
+>
+> **Fix:** set `NVIDIA_DRIVER_CAPABILITIES=all` in your `docker run` (`-e NVIDIA_DRIVER_CAPABILITIES=all`) or `docker-compose.yml` (`environment:` block) and restart the container. `all` is the simplest value and is what the upstream `nvidia/vulkan` image uses. If you prefer minimum-privilege, use `compute,video,utility,graphics`.
+>
+> If the warning banner persists after the restart, your setup may be hitting one of the less-common causes (driver 570–579 regression, CDI manifest missing `libnvidia-glvkspirv.so`, or ICD JSON at the wrong path). The in-app warning will name the specific cause it detected. You can also open `GET /api/system/vulkan/debug` to fetch a plain-text diagnostic bundle to attach to a GitHub issue.
 
 **Dolby Vision Profile 7/8** (with HDR10 fallback) uses the standard zscale/tonemap chain. FFmpeg reads the HDR10 base layer by default, so no libplacebo or special handling is needed.
 
@@ -508,7 +587,10 @@ GPU workers use both GPU and CPU — this is normal. The GPU handles video decod
 
 For **standard (SDR) content**, GPU does nearly all the work and CPU usage is minimal — you'll see speeds of 500x or higher.
 
-For **Dolby Vision content**, CPU usage is noticeably higher because FFmpeg must process Dolby Vision reshaping metadata on the CPU, and frames are transferred between CPU and GPU memory for tone mapping. Expect speeds around 8–10x for 4K DV content — much faster than pure CPU processing, but with visible CPU load.
+For **Dolby Vision content**, CPU usage is noticeably higher because frames must be moved between CPU and GPU memory for the libplacebo tone map. Expected speeds on 4K DV content:
+
+- **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60x+ across all GPU vendors. Uses HW decode + zscale on the HDR10 base layer.
+- **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker) — about 12x on NVIDIA (NVDEC decode + libplacebo), about 4x on Intel / AMD / Apple / CPU (software decode + libplacebo).
 
 The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
 
@@ -601,6 +683,7 @@ Use this table to diagnose common failures quickly.
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |
 | New job starts after I paused | Global pause not set or UI not refreshed | Use **Pause Processing** (Current Job or Job Queue header). Pause is global and persisted; in-flight files finish before workers idle. |
+| DV Profile 5 thumbnails have a bright green rectangle or overall green cast | libplacebo is falling back to `llvmpipe` (software Vulkan) because the container has no real Vulkan device | Forward an iGPU or render node to the container with `--device /dev/dri:/dev/dri` (Intel/AMD) or ensure the NVIDIA runtime exposes the Vulkan ICD with `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics`. Most users already forward `/dev/dri` for VAAPI, which brings Mesa's Vulkan driver along for free. |
 
 ### Validate Plex Config Path
 

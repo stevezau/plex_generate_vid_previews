@@ -417,4 +417,152 @@ class TestGetScheduleManager:
 
         assert m1 is m2
         assert m2.run_job_callback is mock_cb
-        m1.stop()
+
+
+# ========================================================================
+# Scheduled job dispatch (full_library vs recently_added)
+# ========================================================================
+
+
+class TestExecuteScheduledJobDispatch:
+    """Verify that execute_scheduled_job branches correctly on config.job_type."""
+
+    def test_dispatches_full_library_by_default(self, scheduler_manager):
+        """A schedule with no job_type in config goes through run_job_callback."""
+        from plex_generate_previews.web.scheduler import execute_scheduled_job
+
+        mock_callback = MagicMock()
+        scheduler_manager.set_run_job_callback(mock_callback)
+
+        schedule = scheduler_manager.create_schedule(
+            name="Test",
+            library_id="123",
+            library_name="Movies",
+            cron_expression="0 2 * * *",
+        )
+
+        execute_scheduled_job(
+            schedule["id"],
+            library_id="123",
+            library_name="Movies",
+            config={},
+        )
+
+        mock_callback.assert_called_once()
+        kwargs = mock_callback.call_args.kwargs
+        assert kwargs["library_id"] == "123"
+        assert kwargs["library_name"] == "Movies"
+
+    def test_dispatches_recently_added_calls_scanner(
+        self, scheduler_manager, monkeypatch
+    ):
+        """A schedule with job_type='recently_added' calls scan_recently_added."""
+        from plex_generate_previews.web import scheduler as sched_mod
+
+        mock_scanner = MagicMock(return_value=3)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            mock_scanner,
+        )
+
+        schedule = scheduler_manager.create_schedule(
+            name="Scanner",
+            library_id="2",
+            library_name="TV",
+            interval_minutes=15,
+            config={"job_type": "recently_added", "lookback_hours": 2},
+        )
+
+        sched_mod.execute_scheduled_job(
+            schedule["id"],
+            library_id="2",
+            library_name="TV",
+            config={"job_type": "recently_added", "lookback_hours": 2},
+        )
+
+        mock_scanner.assert_called_once_with(2.0, library_ids=["2"])
+
+    def test_dispatches_recently_added_with_no_library_passes_none(
+        self, scheduler_manager, monkeypatch
+    ):
+        """No library_id = scanner gets library_ids=None (scan all sections)."""
+        from plex_generate_previews.web import scheduler as sched_mod
+
+        mock_scanner = MagicMock(return_value=0)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            mock_scanner,
+        )
+
+        schedule = scheduler_manager.create_schedule(
+            name="Scanner",
+            library_id=None,
+            library_name="",
+            interval_minutes=15,
+            config={"job_type": "recently_added", "lookback_hours": 1},
+        )
+
+        sched_mod.execute_scheduled_job(
+            schedule["id"],
+            library_id=None,
+            library_name="",
+            config={"job_type": "recently_added", "lookback_hours": 1},
+        )
+
+        mock_scanner.assert_called_once_with(1.0, library_ids=None)
+
+    def test_recently_added_dispatch_clamps_invalid_lookback(
+        self, scheduler_manager, monkeypatch
+    ):
+        """Garbage lookback_hours values are coerced to a safe default."""
+        from plex_generate_previews.web import scheduler as sched_mod
+
+        mock_scanner = MagicMock(return_value=0)
+        monkeypatch.setattr(
+            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            mock_scanner,
+        )
+
+        schedule = scheduler_manager.create_schedule(
+            name="Scanner",
+            interval_minutes=15,
+            config={"job_type": "recently_added", "lookback_hours": "nope"},
+        )
+
+        sched_mod.execute_scheduled_job(
+            schedule["id"],
+            library_id=None,
+            library_name="",
+            config={"job_type": "recently_added", "lookback_hours": "nope"},
+        )
+
+        # Falls back to 1.0 hour default
+        mock_scanner.assert_called_once_with(1.0, library_ids=None)
+
+    def test_recently_added_dispatch_updates_last_run(
+        self, scheduler_manager, monkeypatch
+    ):
+        """After dispatching a recently_added scan the schedule's last_run updates."""
+        from plex_generate_previews.web import scheduler as sched_mod
+
+        monkeypatch.setattr(
+            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            MagicMock(return_value=0),
+        )
+
+        schedule = scheduler_manager.create_schedule(
+            name="Scanner",
+            interval_minutes=15,
+            config={"job_type": "recently_added", "lookback_hours": 1},
+        )
+        assert schedule["last_run"] is None
+
+        sched_mod.execute_scheduled_job(
+            schedule["id"],
+            library_id=None,
+            library_name="",
+            config={"job_type": "recently_added", "lookback_hours": 1},
+        )
+
+        updated = scheduler_manager.get_schedule(schedule["id"])
+        assert updated["last_run"] is not None

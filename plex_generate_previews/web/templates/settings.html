@@ -61,7 +61,7 @@
     }
 
     .settings-sidebar .nav-link {
-        color: #adb5bd;
+        color: var(--bs-secondary-color);
         font-size: 0.875rem;
         padding: 0.5rem 0.75rem;
         border-radius: 0.375rem;
@@ -70,8 +70,8 @@
     }
 
     .settings-sidebar .nav-link:hover {
-        color: #e0e0e0;
-        background-color: rgba(255, 255, 255, 0.05);
+        color: var(--bs-body-color);
+        background-color: var(--bs-tertiary-bg);
     }
 
     .settings-sidebar .nav-link.active {
@@ -106,12 +106,10 @@
     </div>
     <!-- Main Content -->
     <div class="col-lg-9 col-xl-8 settings-content">
-        <!-- Header with Save Button -->
+        <!-- Header with auto-save indicator -->
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h2><i class="bi bi-gear me-2"></i>Settings</h2>
-            <button class="btn btn-primary" id="saveAllBtn" disabled onclick="saveAllSettings()">
-                <i class="bi bi-check-lg me-1"></i>Save Changes
-            </button>
+            <span id="saveStatusIndicator" class="autosave-indicator"></span>
         </div>
 
         <!-- Token Expired Warning -->
@@ -133,6 +131,25 @@
                 See the <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md" target="_blank" rel="noopener" class="alert-link">getting started guide</a> for details.
             </span>
             <button type="button" class="btn-close" aria-label="Close" onclick="dismissTimezoneWarning()"></button>
+        </div>
+
+        <!-- Vulkan / libplacebo Warning (DV Profile 5 green overlay).
+             Body is injected from /api/system/vulkan so the text stays
+             in lock-step with the dashboard banner (see app.js). -->
+        <div id="vulkanWarning" class="alert alert-warning alert-dismissible d-none mb-4">
+            <div class="d-flex align-items-start">
+                <i class="bi bi-gpu-card me-2 mt-1"></i>
+                <div>
+                    <strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong>
+                    <div id="vulkanWarningBody"></div>
+                    <div class="mt-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyVulkanDiagnosticBundle(this)">
+                            <i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" onclick="dismissVulkanWarning()"></button>
         </div>
 
         <!-- Plex Connection -->
@@ -211,7 +228,18 @@
                     <label for="plexConfigFolder" class="form-label">Plex Media Server data folder</label>
                     <input type="text" class="form-control" id="plexConfigFolder"
                            placeholder="/plex">
-                    <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
+                    <div class="form-text">
+                        The folder where Plex stores its data, as this container sees it. Usually <code>/plex</code>.
+                        <details class="mt-1">
+                            <summary class="text-muted" style="cursor: pointer;">What if my Plex path looks different?</summary>
+                            <div class="mt-1">
+                                Your real Plex server might use a path like
+                                <code>/config/plex/Library/Application Support/Plex Media Server</code>, but
+                                what matters here is the path <strong>inside this container</strong>. If you
+                                mounted that folder as <code>/plex</code>, enter <code>/plex</code>.
+                            </div>
+                        </details>
+                    </div>
                 </div>
 
                 <hr class="my-4">
@@ -283,7 +311,7 @@
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control" id="cpuThreads"
                                min="0" max="32" value="1">
-                        <div class="form-text">Parallel CPU jobs from main queue</div>
+                        <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label for="cpuFallbackThreads" class="form-label">
@@ -292,7 +320,7 @@
                         <input type="number" class="form-control" id="cpuFallbackThreads"
                                min="0" max="32" value="0">
                         <div class="form-text">
-                            Handles GPU-failed items when CPU Workers is 0
+                            Retries on the CPU if the GPU can&rsquo;t handle a file (e.g. unsupported codec). Only used when CPU Workers is 0.
                         </div>
                     </div>
                 </div>
@@ -508,6 +536,34 @@
         </div>
     </div>
 </div>
+
+<!-- Plex Server Picker Modal (shown after re-auth when multiple servers
+     or connection URLs are available). -->
+<div class="modal fade" id="plexServerPickerModal" tabindex="-1" aria-labelledby="plexServerPickerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="plexServerPickerLabel">
+                    <i class="bi bi-hdd-network me-2"></i>Pick a Plex server
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">
+                    Your Plex account has more than one server or connection URL. Pick the one this app
+                    should use. If you're running in Docker, prefer the <strong>Local</strong> URL — the
+                    container typically can't reach your Plex server over its public URL.
+                </p>
+                <div id="plexServerPickerList" class="d-flex flex-column gap-3">
+                    <!-- Populated by _renderPlexServerPicker -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -526,6 +582,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // the GPU status fetch in parallel but render after both resolve.
     const gpuPromise = fetchGpuStatus();
     checkTimezoneWarning();
+    checkVulkanWarning();
     Promise.all([
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
         loadLibraries(),
@@ -535,11 +592,16 @@ document.addEventListener('DOMContentLoaded', function() {
         bootstrap.ScrollSpy.getInstance(document.body)?.refresh();
     });
 
-    // Track changes
-    document.querySelectorAll('input, select').forEach(el => {
-        el.addEventListener('change', markDirty);
-        el.addEventListener('input', markDirty);
-    });
+    // Auto-save: all stateful inputs/selects inside .settings-content
+    // kick the shared debounced save helper.
+    if (typeof window.bindAutoSave === 'function') {
+        window.bindAutoSave({
+            containerSelector: '.settings-content',
+            saveFn: saveAllSettings,
+            indicatorId: 'saveStatusIndicator',
+            skipSelectors: [],
+        });
+    }
 
     // Quality slider display
     document.getElementById('thumbnailQuality').addEventListener('input', function() {
@@ -561,8 +623,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-let isDirty = false;
-
 const tonemapDescriptions = {
     hable: 'Preserves dark and bright details with a filmic look. Good all-round choice.',
     reinhard: 'Produces the brightest thumbnails, closest to how SDR content looks. Great if your HDR thumbnails look too dark.',
@@ -577,9 +637,13 @@ function updateTonemapDescription() {
     document.getElementById('tonemapDescription').textContent = tonemapDescriptions[algo] || '';
 }
 
+// Programmatic edits (dynamic rows, GPU detection, etc.) call markDirty
+// to tell auto-save a change happened.  With the auto-save helper, we just
+// kick the shared per-container debounce chain.
 function markDirty() {
-    isDirty = true;
-    document.getElementById('saveAllBtn').disabled = false;
+    if (typeof window.autoSaveFlush === 'function') {
+        window.autoSaveFlush('.settings-content');
+    }
 }
 
 async function loadSettings() {
@@ -677,7 +741,6 @@ function createPathMappingRow(row) {
         if (rows.length > 1) div.remove();
         markDirty();
     });
-    div.querySelectorAll('input').forEach(inp => inp.addEventListener('input', markDirty));
     const localInput = div.querySelector('.path-mapping-local');
     localInput.addEventListener('input', debounceValidateLocalPath(localInput));
     if (row.local_prefix) validateLocalPath(localInput);
@@ -772,8 +835,6 @@ function createExcludePathRow(row) {
         div.remove();
         markDirty();
     });
-    div.querySelectorAll('input, select').forEach(el => el.addEventListener('input', markDirty));
-    div.querySelectorAll('input, select').forEach(el => el.addEventListener('change', markDirty));
     return div;
 }
 
@@ -954,7 +1015,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                         <input type="number" class="form-control form-control-sm gpu-ffmpeg-threads"
                                data-device="${gpu.device}" min="0" max="32"
                                value="${ffmpegThreads}" onchange="markDirty()">
-                        <small class="text-muted">0 = no limit &middot; recommended: 2</small>
+                        <small class="text-muted">0 = use all CPU cores &middot; recommended: 2</small>
                     </div>
                 </div>
             </div>
@@ -1081,51 +1142,38 @@ async function loadVersionInfo() {
 }
 
 async function saveAllSettings() {
-    const btn = document.getElementById('saveAllBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+    // Collect selected libraries
+    const libraries = [];
+    document.querySelectorAll('#libraryList input:checked').forEach(cb => {
+        libraries.push(cb.value);
+    });
 
-    try {
-        // Collect selected libraries
-        const libraries = [];
-        document.querySelectorAll('#libraryList input:checked').forEach(cb => {
-            libraries.push(cb.value);
-        });
+    const settings = {
+        plex_url: document.getElementById('plexUrl').value,
+        plex_verify_ssl: document.getElementById('plexVerifySsl').checked,
+        plex_config_folder: document.getElementById('plexConfigFolder').value,
+        path_mappings: collectPathMappingRows(),
+        exclude_paths: collectExcludePathRows(),
+        gpu_config: collectGpuConfig(),
+        cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+        cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
+        thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
+        thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
+        tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
+        selected_libraries: libraries,
+        log_level: document.getElementById('logLevel').value,
+        log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
+        log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
+        job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
+    };
 
-        const settings = {
-            plex_url: document.getElementById('plexUrl').value,
-            plex_verify_ssl: document.getElementById('plexVerifySsl').checked,
-            plex_config_folder: document.getElementById('plexConfigFolder').value,
-            path_mappings: collectPathMappingRows(),
-            exclude_paths: collectExcludePathRows(),
-            gpu_config: collectGpuConfig(),
-            cpu_threads: parseInt(document.getElementById('cpuThreads').value),
-            cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
-            thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
-            thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
-            tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
-            selected_libraries: libraries,
-            log_level: document.getElementById('logLevel').value,
-            log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
-            log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
-            job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
-        };
+    const result = await new SettingsManager().save(settings);
 
-        const result = await new SettingsManager().save(settings);
-
-        isDirty = false;
-        if (result.warning) {
-            showToast(result.warning, 'warning');
-        } else {
-            showToast('Settings saved successfully', 'success');
-        }
-
-    } catch (error) {
-        showToast('Failed to save settings: ' + error.message, 'danger');
+    if (result && result.warning) {
+        // Surface non-fatal clamps/validation notes as a toast in addition
+        // to the Saved indicator.
+        showToast(result.warning, 'warning');
     }
-
-    btn.disabled = !isDirty;
-    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
 }
 
 async function testConnection() {
@@ -1152,13 +1200,213 @@ async function testConnection() {
     }
 }
 
+// Pick the best Plex server from the list returned by /api/plex/servers.
+// Preference order: owned+local > owned > first.  Returns null if the
+// list is empty.
+function _pickBestPlexServer(servers) {
+    if (!Array.isArray(servers) || servers.length === 0) return null;
+    return (
+        servers.find(s => s && s.owned && s.local) ||
+        servers.find(s => s && s.owned) ||
+        servers[0]
+    );
+}
+
+// Build a connection URL from a server record the same way the setup
+// wizard does: prefer the remote ``uri`` for non-local servers, fall
+// back to ``protocol://host:port`` otherwise.
+function _plexServerToUrl(server) {
+    if (!server) return '';
+    const protocol = server.ssl ? 'https' : 'http';
+    if (server.local) {
+        return `${protocol}://${server.host}:${server.port}`;
+    }
+    return server.uri || `${protocol}://${server.host}:${server.port}`;
+}
+
+// Convert a connection record (from /api/plex/servers .connections[]) to
+// a usable URL.  Mirrors setup.html's "prefer uri, else build it" logic.
+function _plexConnectionToUrl(connection) {
+    if (!connection) return '';
+    if (connection.uri) return connection.uri;
+    const protocol = connection.protocol || (connection.ssl ? 'https' : 'http');
+    return `${protocol}://${connection.address}:${connection.port || 32400}`;
+}
+
+// How many connection rows a server contributes (defaults to 1 when
+// the backend didn't return an explicit .connections array — older
+// deployments).
+function _serverConnectionCount(server) {
+    if (server && Array.isArray(server.connections) && server.connections.length > 0) {
+        return server.connections.length;
+    }
+    return 1;
+}
+
+// Should the picker modal appear instead of auto-selecting?  Answer is
+// yes whenever there's a real choice to make: more than one server OR
+// any single server publishes more than one connection URL.
+function _needsPlexServerPicker(servers) {
+    if (!Array.isArray(servers)) return false;
+    if (servers.length > 1) return true;
+    if (servers.length === 1) return _serverConnectionCount(servers[0]) > 1;
+    return false;
+}
+
+// Commit a chosen (server, connection) pair: persist URL + name + SSL
+// flag via the settings API, update the visible form, close the modal,
+// and refresh the library list.
+async function _useSelectedPlexConnection(server, connection) {
+    const url = _plexConnectionToUrl(connection);
+    if (!url) {
+        showToast('That Plex connection has no usable URL', 'danger');
+        return;
+    }
+    try {
+        const verifySsl = document.getElementById('plexVerifySsl').checked;
+        await new SettingsManager().save({
+            plex_url: url,
+            plex_name: (server && server.name) || '',
+            plex_verify_ssl: verifySsl,
+        });
+        document.getElementById('plexUrl').value = url;
+        document.getElementById('plexServerName').textContent =
+            `Connected to: ${(server && server.name) || url}`;
+
+        const modalEl = document.getElementById('plexServerPickerModal');
+        const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
+        if (modal) modal.hide();
+
+        showToast(`Using ${(server && server.name) || 'Plex server'} · ${url}`, 'success');
+        loadLibraries();
+    } catch (err) {
+        console.error('Failed to save selected Plex connection:', err);
+        showToast('Could not save selection: ' + (err.message || 'unknown error'), 'danger');
+    }
+}
+
+function _renderPlexServerPicker(servers) {
+    const list = document.getElementById('plexServerPickerList');
+    if (!list) return;
+    list.innerHTML = '';
+    servers.forEach((server, serverIdx) => {
+        const card = document.createElement('div');
+        card.className = 'card bg-body-tertiary';
+        const header = document.createElement('div');
+        header.className = 'card-header d-flex align-items-center gap-2';
+        header.innerHTML =
+            '<i class="bi bi-hdd-network me-1"></i>' +
+            `<strong>${escapeHtml(server.name || 'Unnamed server')}</strong>` +
+            (server.owned ? '<span class="badge bg-success">Owned</span>' : '<span class="badge bg-secondary">Shared</span>');
+        card.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'list-group list-group-flush';
+        const connections = (Array.isArray(server.connections) && server.connections.length > 0)
+            ? server.connections
+            : [{
+                uri: server.uri || '',
+                address: server.host || '',
+                port: server.port || 32400,
+                protocol: server.ssl ? 'https' : 'http',
+                ssl: !!server.ssl,
+                local: !!server.local,
+                relay: false,
+            }];
+        connections.forEach((connection, connIdx) => {
+            const url = _plexConnectionToUrl(connection);
+            const kindBadges = [];
+            if (connection.local) kindBadges.push('<span class="badge bg-primary">Local</span>');
+            if (connection.relay) kindBadges.push('<span class="badge bg-warning text-dark">Relay</span>');
+            if (!connection.local && !connection.relay) kindBadges.push('<span class="badge bg-info text-dark">Remote</span>');
+            if (connection.ssl) kindBadges.push('<span class="badge bg-secondary">HTTPS</span>');
+
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'list-group-item list-group-item-action bg-transparent d-flex justify-content-between align-items-center gap-2';
+            row.innerHTML =
+                '<div class="text-start flex-grow-1">' +
+                `<div class="font-monospace small">${escapeHtml(url)}</div>` +
+                `<div class="mt-1 d-flex gap-1 flex-wrap">${kindBadges.join('')}</div>` +
+                '</div>' +
+                '<i class="bi bi-arrow-right-circle text-muted"></i>';
+            row.addEventListener('click', () => _useSelectedPlexConnection(server, connection));
+            body.appendChild(row);
+        });
+        card.appendChild(body);
+        list.appendChild(card);
+    });
+}
+
+function _showPlexServerPicker(servers) {
+    _renderPlexServerPicker(servers);
+    const modalEl = document.getElementById('plexServerPickerModal');
+    if (!modalEl) return;
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+}
+
 async function reAuthPlex() {
     const plexAuth = new PlexAuth({
-        onSuccess: async (token) => {
-            showToast('Successfully authenticated with Plex!', 'success');
+        onSuccess: async () => {
+            // Auth token is already persisted server-side by
+            // /api/plex/auth/pin/<id>.  From here we still need to make
+            // sure a Plex Server URL is saved — if the field is empty,
+            // loadLibraries has nothing to talk to.  We respect a URL
+            // the user has already typed (e.g. a docker-internal host)
+            // and only auto-select from plex.tv when the field is blank.
             document.getElementById('authBadge').classList.remove('d-none');
             document.getElementById('tokenWarning').classList.add('d-none');
-            loadLibraries();
+
+            const existingUrl = document.getElementById('plexUrl').value.trim();
+            if (existingUrl) {
+                showToast('Signed in with Plex — reusing the URL you already set.', 'success');
+                loadLibraries();
+                return;
+            }
+
+            try {
+                const serverManager = new PlexServerManager();
+                const servers = await serverManager.getServers();
+                if (!Array.isArray(servers) || servers.length === 0) {
+                    showToast(
+                        'No Plex servers found on this account. Type the Plex Server URL above manually.',
+                        'danger',
+                    );
+                    return;
+                }
+
+                // Whenever there's a real choice to make (more than one
+                // server, or a single server with multiple URLs), let the
+                // user pick — auto-picking in Docker especially tends to
+                // grab the public plex.direct URI when the container
+                // really needs the LAN IP.
+                if (_needsPlexServerPicker(servers)) {
+                    _showPlexServerPicker(servers);
+                    return;
+                }
+
+                // Single server with a single connection — safe to auto-select.
+                const best = _pickBestPlexServer(servers);
+                const only = (best.connections && best.connections[0]) || {
+                    uri: best.uri || '',
+                    address: best.host || '',
+                    port: best.port || 32400,
+                    ssl: !!best.ssl,
+                    local: !!best.local,
+                    relay: false,
+                    protocol: best.ssl ? 'https' : 'http',
+                };
+                await _useSelectedPlexConnection(best, only);
+            } catch (err) {
+                console.error('Post-auth server selection failed:', err);
+                showToast(
+                    'Signed in, but could not fetch the server list: ' +
+                    (err.message || 'unknown error') +
+                    '. You can type the Plex Server URL manually.',
+                    'danger',
+                );
+            }
         },
         onError: (error) => {
             showToast('Authentication failed: ' + error.message, 'danger');
@@ -1229,6 +1477,24 @@ function checkTimezoneWarning() {
 function dismissTimezoneWarning() {
     sessionStorage.setItem('tz_warning_dismissed', '1');
     document.getElementById('timezoneWarning').classList.add('d-none');
+}
+
+function checkVulkanWarning() {
+    if (sessionStorage.getItem('vk_warning_dismissed')) return;
+    fetch('/api/system/vulkan')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.warning) return;
+            var body = document.getElementById('vulkanWarningBody');
+            if (body) body.innerHTML = data.warning;
+            document.getElementById('vulkanWarning').classList.remove('d-none');
+        })
+        .catch(() => {});
+}
+
+function dismissVulkanWarning() {
+    sessionStorage.setItem('vk_warning_dismissed', '1');
+    document.getElementById('vulkanWarning').classList.add('d-none');
 }
 </script>
 {% endblock %}

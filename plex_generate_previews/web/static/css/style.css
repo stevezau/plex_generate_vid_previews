@@ -7,13 +7,18 @@
 }
 
 body {
-    background-color: var(--plex-gray);
     min-height: 100vh;
 }
 
-/* Navbar */
-.navbar {
+/* The navbar flips with the page theme. Dark mode keeps the deep Plex
+   background; light mode uses Bootstrap's tertiary body surface for a
+   clean header bar. Brand mark stays Plex-orange in both themes. */
+html[data-bs-theme="dark"] .navbar {
     background-color: var(--plex-dark) !important;
+}
+
+html[data-bs-theme="light"] .navbar {
+    background-color: var(--bs-tertiary-bg);
 }
 
 .navbar-brand {
@@ -21,15 +26,25 @@ body {
     font-weight: bold;
 }
 
-/* Cards */
-.card {
+/* Dark theme — custom overrides apply only when data-bs-theme=dark. Light
+   mode falls back to Bootstrap 5.3's built-in light theme, which handles
+   cards/modals/forms/tables natively. */
+html[data-bs-theme="dark"] body {
+    background-color: var(--plex-gray);
+}
+
+html[data-bs-theme="dark"] .card {
     background-color: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.card-header {
+html[data-bs-theme="dark"] .card-header {
     background-color: rgba(0, 0, 0, 0.2);
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    font-weight: 500;
+}
+
+html[data-bs-theme="light"] .card-header {
     font-weight: 500;
 }
 
@@ -45,8 +60,11 @@ body {
 
 /* Progress bars */
 .progress {
-    background-color: rgba(255, 255, 255, 0.1);
     height: 1.5rem;
+}
+
+html[data-bs-theme="dark"] .progress {
+    background-color: rgba(255, 255, 255, 0.1);
 }
 
 .progress-bar {
@@ -54,11 +72,11 @@ body {
 }
 
 /* Tables */
-.table {
+html[data-bs-theme="dark"] .table {
     color: #e0e0e0;
 }
 
-.table-hover tbody tr:hover {
+html[data-bs-theme="dark"] .table-hover tbody tr:hover {
     background-color: rgba(255, 255, 255, 0.05);
 }
 
@@ -103,10 +121,15 @@ body {
     text-align: left;
 }
 
-/* GPU cards */
-.gpu-card {
+/* GPU cards — blue-tinted accent that fits both themes */
+html[data-bs-theme="dark"] .gpu-card {
     background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 110, 253, 0.05));
     border: 1px solid rgba(13, 110, 253, 0.3);
+}
+
+html[data-bs-theme="light"] .gpu-card {
+    background: linear-gradient(135deg, rgba(13, 110, 253, 0.08), rgba(13, 110, 253, 0.03));
+    border: 1px solid rgba(13, 110, 253, 0.2);
 }
 
 /* Library list */
@@ -117,11 +140,22 @@ body {
     padding: 0.5rem;
     border-radius: 0.25rem;
     margin-bottom: 0.25rem;
+}
+
+html[data-bs-theme="dark"] .library-item {
     background-color: rgba(255, 255, 255, 0.05);
 }
 
-.library-item:hover {
+html[data-bs-theme="dark"] .library-item:hover {
     background-color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-bs-theme="light"] .library-item {
+    background-color: rgba(0, 0, 0, 0.04);
+}
+
+html[data-bs-theme="light"] .library-item:hover {
+    background-color: rgba(0, 0, 0, 0.08);
 }
 
 .library-item .library-name {
@@ -130,45 +164,53 @@ body {
 
 .library-item .library-count {
     font-size: 0.75rem;
-    color: #adb5bd;
+    color: var(--bs-secondary-color, #adb5bd);
 }
 
 /* Toast notifications */
-.toast {
+html[data-bs-theme="dark"] .toast {
     background-color: #1a1a2e;
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 /* Modals */
-.modal-content {
+html[data-bs-theme="dark"] .modal-content {
     background-color: #1a1a2e;
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.modal-header {
+html[data-bs-theme="dark"] .modal-header {
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.modal-footer {
+html[data-bs-theme="dark"] .modal-footer {
     border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 /* Form controls */
-.form-control, .form-select {
+html[data-bs-theme="dark"] .form-control,
+html[data-bs-theme="dark"] .form-select {
     background-color: rgba(0, 0, 0, 0.3);
     border-color: rgba(255, 255, 255, 0.2);
     color: #e0e0e0;
 }
 
-.form-control:focus, .form-select:focus {
+html[data-bs-theme="dark"] .form-control:focus,
+html[data-bs-theme="dark"] .form-select:focus {
     background-color: rgba(0, 0, 0, 0.4);
     border-color: var(--plex-orange);
     color: #e0e0e0;
     box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
 }
 
-.form-control::placeholder {
+html[data-bs-theme="dark"] .form-control::placeholder {
     color: #6c757d;
+}
+
+html[data-bs-theme="light"] .form-control:focus,
+html[data-bs-theme="light"] .form-select:focus {
+    border-color: var(--plex-orange);
+    box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
 }
 
 /* Alerts */
@@ -176,12 +218,19 @@ body {
     border: none;
 }
 
-/* Code blocks */
+/* Code blocks — brand-colored in both themes */
 code {
-    background-color: rgba(0, 0, 0, 0.3);
     padding: 0.125rem 0.375rem;
     border-radius: 0.25rem;
     color: var(--plex-orange);
+}
+
+html[data-bs-theme="dark"] code {
+    background-color: rgba(0, 0, 0, 0.3);
+}
+
+html[data-bs-theme="light"] code {
+    background-color: rgba(0, 0, 0, 0.05);
 }
 
 /* Scrollbar */
@@ -190,17 +239,30 @@ code {
     height: 8px;
 }
 
-::-webkit-scrollbar-track {
+html[data-bs-theme="dark"] ::-webkit-scrollbar-track {
     background: rgba(0, 0, 0, 0.2);
 }
 
-::-webkit-scrollbar-thumb {
+html[data-bs-theme="dark"] ::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.2);
     border-radius: 4px;
 }
 
-::-webkit-scrollbar-thumb:hover {
+html[data-bs-theme="dark"] ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.3);
+}
+
+html[data-bs-theme="light"] ::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+html[data-bs-theme="light"] ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
 }
 
 /* Animations */
@@ -238,7 +300,8 @@ code {
 }
 
 .log-line { display: block; padding: 1px 0; }
-.log-line:hover { background-color: rgba(255, 255, 255, 0.05); }
+html[data-bs-theme="dark"] .log-line:hover { background-color: rgba(255, 255, 255, 0.05); }
+html[data-bs-theme="light"] .log-line:hover { background-color: rgba(0, 0, 0, 0.05); }
 .log-level-debug { color: #6c757d; }
 .log-level-info { color: #20c997; }
 .log-level-warning { color: #ffc107; }
@@ -249,13 +312,13 @@ code {
 .log-nav-btn { padding: 0.15rem 0.35rem; line-height: 1; font-size: 0.8rem; backdrop-filter: blur(4px); }
 .log-nav-btn:hover { opacity: 1 !important; }
 
-/* Dropdown menus (dark theme) */
-.dropdown-menu {
+/* Dropdown menus (dark theme only — light mode uses Bootstrap defaults) */
+html[data-bs-theme="dark"] .dropdown-menu {
     background-color: #1a1a2e;
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.dropdown-menu .form-check-label {
+html[data-bs-theme="dark"] .dropdown-menu .form-check-label {
     color: #e0e0e0;
 }
 
