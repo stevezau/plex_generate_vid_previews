@@ -45,7 +45,12 @@ services:
     environment:
       # --- NVIDIA only (uncomment if using NVIDIA) ---
       # - NVIDIA_VISIBLE_DEVICES=all
-      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      # Use 'all' (or at minimum 'compute,video,utility,graphics') so the
+      # NVIDIA Vulkan driver is injected into the container. The 'graphics'
+      # capability is required for Dolby Vision Profile 5 thumbnails (which
+      # use libplacebo Vulkan tone-mapping) — without it, the NVIDIA Vulkan
+      # ICD is not mounted and tone-mapping falls back to software rendering.
+      # - NVIDIA_DRIVER_CAPABILITIES=all
 
       # User/group (match your host user; Unraid: 99/100)
       - PUID=1000
@@ -116,7 +121,11 @@ services:
     environment:
       # --- NVIDIA only (uncomment if using NVIDIA, remove devices block) ---
       # - NVIDIA_VISIBLE_DEVICES=all
-      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      # Use 'all' (or at minimum 'compute,video,utility,graphics') so the
+      # NVIDIA Vulkan driver is injected. The 'graphics' capability is
+      # required for Dolby Vision Profile 5 thumbnails (libplacebo Vulkan
+      # tone-mapping); without it the NVIDIA Vulkan ICD is not mounted.
+      # - NVIDIA_DRIVER_CAPABILITIES=all
 
       # Unraid permissions (nobody:users)
       - PUID=99

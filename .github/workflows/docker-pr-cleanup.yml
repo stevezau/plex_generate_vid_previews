@@ -1,0 +1,40 @@
+name: Cleanup PR Docker Image
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete PR image tag from GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          TAG="pr-${PR_NUMBER}"
+          echo "Looking for ${PACKAGE} GHCR versions tagged ${TAG} under user ${OWNER}..."
+
+          # stevezau is a User account, so use the /users/ endpoint.
+          # The jq filter selects versions whose container tags include our PR tag.
+          VERSIONS=$(gh api --paginate \
+            "/users/${OWNER}/packages/container/${PACKAGE}/versions" \
+            --jq ".[] | select(.metadata.container.tags | index(\"${TAG}\")) | .id" || true)
+
+          if [ -z "${VERSIONS}" ]; then
+            echo "No GHCR versions tagged ${TAG} — nothing to clean up."
+            exit 0
+          fi
+
+          for ID in ${VERSIONS}; do
+            echo "Deleting GHCR version ${ID} (tag ${TAG})..."
+            gh api -X DELETE "/users/${OWNER}/packages/container/${PACKAGE}/versions/${ID}"
+          done
+          echo "Cleanup complete."

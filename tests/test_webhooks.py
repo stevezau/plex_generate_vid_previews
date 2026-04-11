@@ -43,6 +43,7 @@ def _reset_singletons():
             t.cancel()
         wh._pending_timers.clear()
         wh._pending_batches.clear()
+        wh._recent_dispatches.clear()
     yield
     reset_settings_manager()
     with jobs_mod._job_lock:
@@ -56,6 +57,7 @@ def _reset_singletons():
             t.cancel()
         wh._pending_timers.clear()
         wh._pending_batches.clear()
+        wh._recent_dispatches.clear()
 
 
 @pytest.fixture()
@@ -823,6 +825,169 @@ def test_triggered_history_entry_includes_batch_metadata(
     assert evt.get("title") == "Show"  # first batch title used for triggered entry
     assert evt.get("path_count") == 2
     assert evt.get("files_preview") == ["S01E01.mkv", "S01E02.mkv"]
+
+
+# ---------------------------------------------------------------------------
+# Dedup: drop duplicate webhook deliveries for the same (source, path)
+# ---------------------------------------------------------------------------
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_dedupes_within_ttl(
+    mock_timer_cls, mock_settings_mgr, app
+):
+    """A second call with the same (source, path) during the TTL window
+    should be dropped without starting a new timer, and should log a
+    'deduped' history entry."""
+    from plex_generate_previews.web import webhooks as wh
+    from datetime import datetime, timezone
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(
+        get=lambda key, default=None: 60 if key == "webhook_delay" else default
+    )
+
+    # Prime the dedup cache with a recent dispatch for this exact (source, path).
+    normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with wh._pending_lock:
+        wh._recent_dispatches[("sonarr", normalized_path)] = now_ts
+
+    result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
+
+    assert result is False
+    # No timer should have been created
+    mock_timer_cls.assert_not_called()
+    # No batch should have been created either
+    assert wh._pending_batches.get(wh._debounce_key("sonarr")) is None
+    # A 'deduped' history entry should exist
+    assert any(
+        e.get("source") == "sonarr" and e.get("status") == "deduped"
+        for e in wh._webhook_history
+    )
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_allows_dispatch_after_ttl(
+    mock_timer_cls, mock_settings_mgr, app
+):
+    """Entries older than _RECENT_DISPATCH_TTL_SECONDS should be pruned
+    and no longer block new dispatches."""
+    from plex_generate_previews.web import webhooks as wh
+    from datetime import datetime, timezone
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(
+        get=lambda key, default=None: 60 if key == "webhook_delay" else default
+    )
+
+    normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    stale_ts = (
+        datetime.now(timezone.utc).timestamp() - wh._RECENT_DISPATCH_TTL_SECONDS - 5
+    )
+    with wh._pending_lock:
+        wh._recent_dispatches[("sonarr", normalized_path)] = stale_ts
+
+    result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
+
+    assert result is True
+    mock_timer_cls.assert_called_once()
+    # Stale entry should have been pruned from the cache
+    assert ("sonarr", normalized_path) not in wh._recent_dispatches
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_dedup_is_per_source(
+    mock_timer_cls, mock_settings_mgr, app
+):
+    """A recent dispatch for ('plex', path) must not block ('sonarr', path)."""
+    from plex_generate_previews.web import webhooks as wh
+    from datetime import datetime, timezone
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(
+        get=lambda key, default=None: 60 if key == "webhook_delay" else default
+    )
+
+    normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with wh._pending_lock:
+        wh._recent_dispatches[("plex", normalized_path)] = now_ts
+
+    result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
+
+    assert result is True
+    mock_timer_cls.assert_called_once()
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_execute_webhook_job_records_dispatch_before_start(
+    mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, app
+):
+    """After _execute_webhook_job runs, every path in the batch should be
+    recorded in _recent_dispatches so subsequent duplicates are dropped."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_job = MagicMock()
+    mock_job.id = "job-dedup-123"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    mock_settings = MagicMock()
+    mock_settings.get.side_effect = lambda key, default=None: (
+        [] if key == "selected_libraries" else default
+    )
+    mock_settings_mgr.return_value = mock_settings
+
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E02.mkv")
+    wh._execute_webhook_job(wh._debounce_key("sonarr"))
+
+    normalized_e1 = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    normalized_e2 = os.path.normpath("/tv/Show/S01E02.mkv").replace("\\", "/")
+    assert ("sonarr", normalized_e1) in wh._recent_dispatches
+    assert ("sonarr", normalized_e2) in wh._recent_dispatches
+    mock_start_job.assert_called_once()
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.get_job_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("plex_generate_previews.web.routes._start_job_async")
+def test_duplicate_after_dispatch_is_dropped_end_to_end(
+    mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, app
+):
+    """End-to-end: fire a batch, then a second 'retry' webhook for the same
+    path. The second call must be dropped (no new timer, no second job)."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_job = MagicMock()
+    mock_job.id = "job-e2e-1"
+    mock_job_mgr.return_value.create_job.return_value = mock_job
+
+    mock_settings = MagicMock()
+    mock_settings.get.side_effect = lambda key, default=None: (
+        [] if key == "selected_libraries" else default
+    )
+    mock_settings_mgr.return_value = mock_settings
+
+    wh._schedule_webhook_job("plex", "Show S01E01", "/tv/Show/S01E01.mkv")
+    wh._execute_webhook_job(wh._debounce_key("plex"))
+    assert mock_start_job.call_count == 1
+
+    mock_timer_cls.reset_mock()
+    result = wh._schedule_webhook_job("plex", "Show S01E01", "/tv/Show/S01E01.mkv")
+    assert result is False
+    mock_timer_cls.assert_not_called()
+    # No second job was dispatched
+    assert mock_start_job.call_count == 1
 
 
 # ---------------------------------------------------------------------------

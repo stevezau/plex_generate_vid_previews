@@ -212,13 +212,18 @@ def _filter_excluded_by_path(media_items: List[tuple], config: Config) -> List[t
     return out
 
 
-def get_library_sections(plex, config: Config, cancel_check=None):
+def get_library_sections(
+    plex, config: Config, cancel_check=None, progress_callback=None
+):
     """Get all library sections from Plex server.
 
     Args:
         plex: Plex server instance
         config: Configuration object
         cancel_check: Optional callable returning True when processing should stop
+        progress_callback: Optional callable(current, total, message) that
+            surfaces pre-dispatch status to the UI while each library is
+            being enumerated.
 
     Yields:
         tuple: (section, media_items) for each library
@@ -228,6 +233,8 @@ def get_library_sections(plex, config: Config, cancel_check=None):
 
     # Step 1: Get all library sections (1 API call)
     logger.info("Getting all Plex library sections...")
+    if progress_callback:
+        progress_callback(0, 0, "Listing Plex libraries...")
     start_time = time.time()
 
     try:
@@ -249,7 +256,21 @@ def get_library_sections(plex, config: Config, cancel_check=None):
         f"Retrieved {len(sections)} library sections in {sections_time:.2f} seconds"
     )
 
+    # Pre-filter sections so pre-dispatch progress reporting can show
+    # "library i of N" using the count of libraries we'll actually scan,
+    # not the raw section count returned by Plex.
+    def _section_is_in_scope(section) -> bool:
+        if getattr(config, "plex_library_ids", None):
+            return str(section.key) in config.plex_library_ids
+        if config.plex_libraries:
+            return section.title.lower() in config.plex_libraries
+        return True
+
+    scoped_sections = [s for s in sections if _section_is_in_scope(s)]
+    total_scoped = len(scoped_sections)
+
     # Step 2: Filter and process each library
+    scoped_index = 0
     for section in sections:
         if cancel_check and cancel_check():
             logger.info("Cancellation detected during library scan — aborting")
@@ -273,7 +294,15 @@ def get_library_sections(plex, config: Config, cancel_check=None):
             )
             continue
 
+        scoped_index += 1
         logger.info("Getting media files from library '{}'...".format(section.title))
+        if progress_callback:
+            progress_callback(
+                0,
+                0,
+                f"Querying library '{section.title}' ({scoped_index}/{total_scoped}) — "
+                "this can take a while for big libraries...",
+            )
         library_start_time = time.time()
 
         # Determine sort parameter if sort_by is configured

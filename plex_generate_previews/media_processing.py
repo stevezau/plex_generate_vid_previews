@@ -5,6 +5,8 @@ logic including HDR detection, skip frame heuristics, and GPU acceleration.
 """
 
 import array
+import contextlib
+import contextvars
 import glob
 import os
 import re
@@ -16,7 +18,7 @@ import tempfile
 import threading
 import time
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
@@ -57,15 +59,53 @@ FFMPEG_STALL_TIMEOUT_SEC = 300
 # ---------------------------------------------------------------------------
 # Failure tracker — collects per-file failure info for end-of-run summary
 # ---------------------------------------------------------------------------
+#
+# Failure records are stored in a dict keyed by job id so that concurrent
+# jobs do not contaminate each other's summaries.  Every thread that wants
+# to record, read, or clear failures must first enter ``failure_scope(job_id)``
+# — that sets a ContextVar which all record/get/clear helpers read to know
+# *which* job's records to touch.  The job runner enters the scope on its
+# dispatcher thread; each worker thread enters the scope on its own thread
+# using ``worker.current_job_id`` so calls made deep inside process_item /
+# generate_images / _run_ffmpeg land in the right bucket.
 
 _failure_lock = threading.Lock()
-_failures: List[dict] = []
+_failures_by_job: Dict[str, List[dict]] = {}
+_failure_job_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "failure_job_id", default=None
+)
+
+
+@contextlib.contextmanager
+def failure_scope(job_id: Optional[str]) -> Iterator[None]:
+    """Bind the current thread's failure-tracking scope to ``job_id``.
+
+    Any ``record_failure``/``get_failures``/``clear_failures``/
+    ``log_failure_summary`` calls that run on this thread while the
+    context manager is active will operate on the failure list for
+    ``job_id`` instead of a shared global, preventing cross-job
+    contamination when concurrent jobs run in the same process.
+
+    The same scope can be safely entered from multiple threads (the
+    job runner's dispatcher thread plus N worker threads) because
+    the underlying storage is a dict keyed by ``job_id``.
+    """
+    token = _failure_job_id_var.set(job_id)
+    try:
+        yield
+    finally:
+        _failure_job_id_var.reset(token)
 
 
 def record_failure(
     file_path: str, exit_code: int, reason: str, worker_type: str = ""
 ) -> None:
     """Record an FFmpeg / processing failure for the end-of-run summary.
+
+    The failure is attributed to the job whose ``failure_scope`` is
+    active on the current thread.  Calls made outside any scope are
+    logged and dropped — that's a programming error, not a recoverable
+    condition.
 
     Args:
         file_path: Media file that failed.
@@ -74,8 +114,15 @@ def record_failure(
         worker_type: 'GPU', 'CPU', or '' if unknown.
 
     """
+    job_id = _failure_job_id_var.get()
+    if job_id is None:
+        logger.warning(
+            f"record_failure called outside failure_scope; dropping "
+            f"failure for {file_path!r} (exit={exit_code}, reason={reason!r})"
+        )
+        return
     with _failure_lock:
-        _failures.append(
+        _failures_by_job.setdefault(job_id, []).append(
             {
                 "file": file_path,
                 "exit_code": exit_code,
@@ -86,15 +133,26 @@ def record_failure(
 
 
 def get_failures() -> List[dict]:
-    """Return a copy of the failure list (thread-safe)."""
+    """Return a copy of the current scope's failure list (thread-safe)."""
+    job_id = _failure_job_id_var.get()
+    if job_id is None:
+        return []
     with _failure_lock:
-        return list(_failures)
+        return list(_failures_by_job.get(job_id, []))
 
 
 def clear_failures() -> None:
-    """Reset the failure list (call between runs)."""
+    """Drop the current scope's failure list.
+
+    Call at the start of a job to reset stale state and at the end
+    once the summary has been consumed to release memory.  Calls made
+    outside any scope are a no-op.
+    """
+    job_id = _failure_job_id_var.get()
+    if job_id is None:
+        return
     with _failure_lock:
-        _failures.clear()
+        _failures_by_job.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -869,16 +927,35 @@ def generate_images(
                 #  - No filters before hwupload (preserve RPU side-data)
                 #  - No forced colorspace (apply_dolbyvision sets it)
                 #  - No -skip_frame (RPU has inter-frame dependencies)
-                #  - No HW decode (decoders mishandle DV enhancement layer)
+                #  - HW decode: NVDEC is validated (~3x speedup on 4K DV5
+                #    with visually identical output); VAAPI/QSV/D3D11VA/
+                #    VideoToolbox are untested on this path and stay on
+                #    software decode.  See the vendor gate in _run_ffmpeg
+                #    below.
                 logger.info(
                     f"Dolby Vision Profile 5 detected for {video_file}; "
                     f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                 )
                 use_libplacebo = True
+                # contrast=1.3, saturation=1.3 restore the punch that
+                # libplacebo's default PQ→SDR curve leaves on the table.
+                # Default reinhard compresses mids into a narrow band
+                # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
+                # which reads as dim and washed-out next to the zscale
+                # chain used for HDR10/DV P7+8.
+                #
+                # A plain brightness offset was rejected: it lifts black
+                # levels as much as mids, so blacks turn gray and colors
+                # stay muted.  Scaling contrast and saturation instead
+                # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
+                # preserving deep blacks.  Verified across three MIB
+                # scenes (dark/mid/bright) — no highlight clipping,
+                # punchy output comparable to the DV P7+8 reference.
                 vf_parameters = (
                     f"hwupload,"
                     f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                    f":format=yuv420p:fps={fps_value},"
+                    f":format=yuv420p:fps={fps_value}"
+                    f":contrast=1.3:saturation=1.3,"
                     f"hwdownload,format=yuv420p,{base_scale}"
                 )
             elif _is_dolby_vision(hdr_fmt):
@@ -948,26 +1025,43 @@ def generate_images(
         if init_vulkan:
             args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
 
-        args += ["-threads:v", "1"]
-
         # Hardware acceleration for decoding (before -i flag).
-        # Disabled for DV Profile 5 (init_vulkan=True) because HW
-        # decoders cannot process DV enhancement-layer-only content.
-        # DV Profile 7/8 uses init_vulkan=False and benefits from
-        # HW decode since FFmpeg reads the HDR10 base layer.
+        #
+        # Non-libplacebo paths (HDR10, SDR, DV Profile 7/8 via zscale on
+        # the HDR10 base layer) have always benefited from HW decode
+        # across all supported vendors.
+        #
+        # The DV Profile 5 libplacebo path (``init_vulkan=True``) is
+        # more restrictive: it was blanket-disabled in ``a06ed98`` when
+        # green-tinted output was observed on DV Profile 7/8 + libplacebo
+        # (see issue #178).  That P7/8 code path was removed by
+        # ``85c5212`` (P7/8 now uses zscale on the HDR10 base layer) but
+        # the HW-decode block on P5 stayed off as a conservative
+        # carry-over.  A 2026-04 benchmark with FFmpeg 8.0.1 /
+        # libplacebo on a real DV Profile 5 4K file showed NVDEC + the
+        # libplacebo DV tone-map produces visually identical output to
+        # software decode and runs ~3x faster, so NVDEC is re-enabled
+        # here for DV5.  Intel VAAPI benchmarked *slower* than software
+        # decode on the same file/hardware (Intel UHD 770), and other
+        # vendors are untested, so they continue to fall through to
+        # software decode on the libplacebo path.
         effective_gpu_device_path = (
             gpu_device_path_override
             if gpu_device_path_override is not None
             else gpu_device_path
         )
         use_gpu = effective_gpu is not None
-        if use_gpu and not init_vulkan:
-            if effective_gpu == "NVIDIA":
-                args += ["-hwaccel", "cuda"]
-            elif effective_gpu == "WINDOWS_GPU":
+        hw_decode_active = False
+        if use_gpu and effective_gpu == "NVIDIA":
+            args += ["-hwaccel", "cuda"]
+            hw_decode_active = True
+        elif use_gpu and not init_vulkan:
+            if effective_gpu == "WINDOWS_GPU":
                 args += ["-hwaccel", "d3d11va"]
+                hw_decode_active = True
             elif effective_gpu == "APPLE":
                 args += ["-hwaccel", "videotoolbox"]
+                hw_decode_active = True
             elif effective_gpu_device_path and effective_gpu_device_path.startswith(
                 "/dev/dri/"
             ):
@@ -977,11 +1071,24 @@ def generate_images(
                     "-vaapi_device",
                     effective_gpu_device_path,
                 ]
+                hw_decode_active = True
         elif use_gpu and init_vulkan:
             logger.debug(
-                f"Skipping HW decode for DV Profile 5 ({video_file}); "
-                f"using software decode + Vulkan/libplacebo tone mapping"
+                f"Skipping HW decode for DV Profile 5 ({video_file}) on "
+                f"{effective_gpu}; using software decode + Vulkan/libplacebo "
+                f"tone mapping (HW decode validated only for NVIDIA on this path)"
             )
+
+        # Cap the video decoder to 1 thread ONLY when decode is offloaded
+        # to a hardware accelerator.  With hwaccel the CPU thread is just
+        # an orchestrator and the cap prevents thread oversubscription
+        # across parallel GPU workers.  For software decode — pure CPU
+        # workers, or DV Profile 5 on non-NVIDIA GPUs where the vendor
+        # gate above skips hwaccel — let FFmpeg pick the default thread
+        # count so 4K HEVC can saturate available cores.  Fixes issue
+        # #212 (DV P5 pinned to one core at ~0.8x before this gate).
+        if hw_decode_active:
+            args += ["-threads:v", "1"]
 
         # Add skip_frame option for faster decoding (if safe).
         # Disabled for DV Profile 5 (init_vulkan) — RPU side-data has
@@ -1008,6 +1115,24 @@ def generate_images(
         logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
         logger.info(f"FFmpeg command: {' '.join(args)}")
 
+        # When the Layer-3 probe retry in gpu_detection succeeded only with
+        # VK_DRIVER_FILES set, propagate those env overrides to the real
+        # FFmpeg invocation on the libplacebo DV Profile 5 path. On every
+        # other path the override dict is empty and we pass env=None so
+        # the child process inherits the parent environment unchanged.
+        ffmpeg_env: dict | None = None
+        if init_vulkan:
+            from .gpu_detection import get_vulkan_env_overrides
+
+            vulkan_overrides = get_vulkan_env_overrides()
+            if vulkan_overrides:
+                ffmpeg_env = os.environ.copy()
+                ffmpeg_env.update(vulkan_overrides)
+                logger.debug(
+                    f"FFmpeg libplacebo path: injecting Vulkan env overrides "
+                    f"{vulkan_overrides} into subprocess"
+                )
+
         # Use file polling approach for non-blocking, high-frequency progress monitoring
         thread_id = threading.get_ident()
         output_file = os.path.join(
@@ -1016,7 +1141,12 @@ def generate_images(
         )
         stderr_fh = open(output_file, "w", encoding="utf-8")
         try:
-            proc = subprocess.Popen(args, stderr=stderr_fh, stdout=subprocess.DEVNULL)
+            proc = subprocess.Popen(
+                args,
+                stderr=stderr_fh,
+                stdout=subprocess.DEVNULL,
+                env=ffmpeg_env,
+            )
 
             # Signal that FFmpeg process has started
             if progress_callback:

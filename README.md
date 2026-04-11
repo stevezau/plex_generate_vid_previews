@@ -64,6 +64,8 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 | **Credits Detection** | Automatic "Skip Credits" markers for movies and episodes |
 | **Intro Detection** | Cross-episode audio fingerprinting finds recurring intros |
 | **Radarr/Sonarr** | Webhook integration for auto-processing on import |
+| **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ---
 

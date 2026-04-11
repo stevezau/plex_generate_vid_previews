@@ -1138,12 +1138,17 @@ class TestWSL2NoDRMDevices:
         return_value=["cuda"],
     )
     @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="UNKNOWN",
+    )
+    @patch(
         "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_not_wsl2_no_drm_no_render_devices(
         self,
         _mock_scan,
+        _mock_nvidia_smi,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1401,6 +1406,174 @@ class TestWSL2NoDRMDevices:
         assert gpus == []
 
 
+class TestLinuxContainerNvidiaFallback:
+    """Test NVIDIA CUDA fallback for Linux containers without DRM render nodes.
+
+    nvidia-container-runtime exposes GPUs via /dev/nvidia* but does NOT mount
+    /dev/dri/renderD* nodes. When /sys/class/drm is passed through (common on
+    Unraid), _get_gpu_devices() sees card0/card1 but skips them because their
+    render nodes are absent. Detection must fall back to probing CUDA directly.
+    """
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda", "vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=True,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_gpu_name",
+        return_value="NVIDIA GeForce RTX 3080",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
+    def test_linux_container_cuda_detected(
+        self,
+        _mock_scan,
+        _mock_name,
+        _mock_test,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Non-WSL2 Linux + no physical GPUs + nvidia-smi + CUDA works -> NVIDIA GPU."""
+        gpus = detect_all_gpus()
+
+        assert len(gpus) == 1
+        gpu_type, gpu_device, gpu_info = gpus[0]
+        assert gpu_type == "NVIDIA"
+        assert gpu_device == "cuda"
+        assert gpu_info["acceleration"] == "CUDA"
+        assert gpu_info["render_device"] is None
+        assert gpu_info["card"] == "nvidia-container"
+        assert gpu_info["driver"] == "nvidia"
+        assert gpu_info["status"] == "ok"
+        assert "RTX 3080" in gpu_info["name"]
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="UNKNOWN",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
+    def test_linux_container_nvidia_smi_unknown(
+        self,
+        _mock_scan,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Non-WSL2 Linux + CUDA available + nvidia-smi returns UNKNOWN -> no GPU."""
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["vaapi"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
+    def test_linux_container_no_cuda_hwaccel(
+        self,
+        _mock_scan,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Non-WSL2 Linux + CUDA not compiled into FFmpeg -> NVIDIA fallback skipped, no GPU."""
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("platform.system", return_value="Linux")
+    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch(
+        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        return_value=["cuda"],
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        return_value="NVIDIA",
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        return_value=False,
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        return_value=[],
+    )
+    def test_linux_container_cuda_test_fails(
+        self,
+        _mock_scan,
+        _mock_test,
+        _mock_nvidia_smi,
+        _mock_hwaccels,
+        _mock_wsl2,
+        _mock_devices,
+        _mock_platform,
+        _mock_windows,
+        _mock_macos,
+    ):
+        """Non-WSL2 Linux + nvidia-smi confirms + CUDA functional test fails -> no GPU.
+
+        This is the scenario where the container has nvidia-smi but is missing the
+        'video' driver capability (NVIDIA_DRIVER_CAPABILITIES lacks 'video'), so
+        NVDEC/NVENC cannot initialize.
+        """
+        gpus = detect_all_gpus()
+        assert gpus == []
+
+
 class TestDetectWindowsGPUs:
     """Tests for _detect_windows_gpus().
 
@@ -1531,3 +1704,939 @@ class TestDetectWindowsGPUs:
         types = [g[0] for g in gpus]
         assert "WINDOWS_GPU" not in types
         assert len(gpus) == 1
+
+
+class TestProbeVulkanDevice:
+    """Unit tests for the libplacebo Vulkan device probe (DV5 green-bug detector)."""
+
+    def setup_method(self):
+        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+
+        _reset_vulkan_device_cache()
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_parses_intel_hardware_device(self, mock_run, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr=(
+                "[Vulkan @ 0x7f00] Supported layers:\n"
+                "[Vulkan @ 0x7f00] GPU listing:\n"
+                "[Vulkan @ 0x7f00]     0: Intel(R) Graphics (RPL-S) (integrated) (0xa780)\n"
+                "[Vulkan @ 0x7f00]     1: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+                "[Vulkan @ 0x7f00] Device 0 selected: Intel(R) Graphics (RPL-S) (integrated) (0xa780)\n"
+            ),
+        )
+        assert (
+            _probe_vulkan_device() == "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        )
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_parses_llvmpipe_software_device(self, mock_run, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr=(
+                "[Vulkan @ 0x7f00] GPU listing:\n"
+                "[Vulkan @ 0x7f00]     0: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+                "[Vulkan @ 0x7f00] Device 0 selected: llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)\n"
+            ),
+        )
+        assert (
+            _probe_vulkan_device()
+            == "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+        )
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=False
+    )
+    def test_no_vulkan_support_returns_none(self, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        # Must not invoke subprocess when Vulkan hwaccel is absent.
+        with patch("plex_generate_previews.gpu_detection.subprocess.run") as mock_run:
+            assert _probe_vulkan_device() is None
+            mock_run.assert_not_called()
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_subprocess_timeout_returns_none(self, mock_run, _mock_vk):
+        import subprocess as _sp
+
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.side_effect = _sp.TimeoutExpired(cmd=["ffmpeg"], timeout=10)
+        assert _probe_vulkan_device() is None
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_stderr_without_device_line_returns_none(self, mock_run, _mock_vk):
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr="ffmpeg error: no Vulkan driver available\n",
+        )
+        assert _probe_vulkan_device() is None
+
+    # --- Layer 3 multi-strategy probe tests ---------------------------------
+
+    @staticmethod
+    def _stderr_with_device(device_name: str) -> str:
+        return f"[Vulkan @ 0x7f00] Device 0 selected: {device_name}\n"
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_2_egl_vendor_override_succeeds(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Strategy 1 returns llvmpipe, Strategy 2 forces
+        __EGL_VENDOR_LIBRARY_FILENAMES → subprocess picks up NVIDIA →
+        env override is cached and the NVIDIA device is returned. The
+        VK_DRIVER_FILES fallback (Strategy 2b) does NOT fire.
+        """
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device(
+                    "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+                ),
+            ),
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA TITAN RTX (discrete) (0x1e02)"),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "NVIDIA TITAN RTX (discrete) (0x1e02)"
+        # Two probes fired: Strategy 1 + Strategy 2. Strategy 2b and 3
+        # did NOT fire because Strategy 2 succeeded.
+        assert mock_run.call_count == 2
+        strategy_2_call = mock_run.call_args_list[1]
+        env_arg = strategy_2_call.kwargs.get("env") or {}
+        assert (
+            env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+        # Strategy 2 does NOT set VK_DRIVER_FILES — it's a gentler fix
+        # that still lets the loader enumerate other ICDs for Mesa
+        # fallback on dual-GPU hosts.
+        assert "VK_DRIVER_FILES" not in env_arg
+        assert get_vulkan_env_overrides() == {
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            )
+        }
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_2b_vk_driver_files_fallback_when_egl_retry_fails(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Strategy 1 fails, Strategy 2 (EGL vendor override) also
+        fails, Strategy 2b (VK_DRIVER_FILES + EGL) succeeds → cached
+        env override carries BOTH keys."""
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_run.side_effect = [
+            # Strategy 1: llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2: still llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2b: success
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA GeForce RTX 4090 (discrete)"),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "NVIDIA GeForce RTX 4090 (discrete)"
+        assert mock_run.call_count == 3
+        strategy_2b_call = mock_run.call_args_list[2]
+        env_arg = strategy_2b_call.kwargs.get("env") or {}
+        assert env_arg.get("VK_DRIVER_FILES") == "/etc/vulkan/icd.d/nvidia_icd.json"
+        assert (
+            env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+        assert get_vulkan_env_overrides() == {
+            "VK_DRIVER_FILES": "/etc/vulkan/icd.d/nvidia_icd.json",
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            ),
+        }
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_all_retries_skipped_when_nothing_to_retry(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """No NVIDIA ICD JSON, no EGL vendor JSON → Strategy 2 and 2b
+        are both skipped → Strategy 3 runs a VK_LOADER_DEBUG=all
+        capture → only two subprocess calls (Strategy 1 + Strategy 3).
+        """
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_egl.return_value = None
+        mock_find_icd.return_value = None
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            MagicMock(
+                returncode=0,
+                stderr=(
+                    "[Vulkan Loader] Searching ICDs in /etc/vulkan/icd.d/\n"
+                    "[Vulkan Loader] No ICDs found\n"
+                    + self._stderr_with_device("llvmpipe (software) (0x0)")
+                ),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "llvmpipe (software) (0x0)"
+        assert mock_run.call_count == 2
+        assert get_vulkan_env_overrides() == {}
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_3_diagnostic_capture_populates_debug_buffer(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Strategy 1, 2, and 2b all fail → Strategy 3 captures the
+        VK_LOADER_DEBUG=all stderr into the module-level debug buffer
+        that ``/api/system/vulkan/debug`` exposes.
+        """
+        # Use the public entry point `get_vulkan_device_info` so the
+        # cache flag is set correctly and the auto-trigger in
+        # `get_vulkan_debug_buffer` does not re-probe.
+        from plex_generate_previews.gpu_detection import (
+            get_vulkan_debug_buffer,
+            get_vulkan_device_info,
+        )
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        diagnostic_stderr = (
+            "[Vulkan Loader] VK_LOADER_DEBUG=all\n"
+            "[Vulkan Loader] Scanning /etc/vulkan/icd.d/nvidia_icd.json\n"
+            "[Vulkan Loader] ERROR: libnvidia-glvkspirv.so: cannot open shared object file\n"
+            "[Vulkan Loader] Skipping ICD\n"
+            + self._stderr_with_device("llvmpipe (software) (0x0)")
+        )
+        mock_run.side_effect = [
+            # Strategy 1: software
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2: still software
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2b: still software
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 3: diagnostic capture
+            MagicMock(returncode=0, stderr=diagnostic_stderr),
+        ]
+
+        get_vulkan_device_info()
+        assert mock_run.call_count == 4
+        strategy_3_call = mock_run.call_args_list[3]
+        env_arg = strategy_3_call.kwargs.get("env") or {}
+        assert env_arg.get("VK_LOADER_DEBUG") == "all"
+        assert env_arg.get("VK_DRIVER_FILES") == "/etc/vulkan/icd.d/nvidia_icd.json"
+        assert (
+            env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES")
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+        buf = get_vulkan_debug_buffer()
+        assert "libnvidia-glvkspirv.so: cannot open" in buf
+        assert "VK_LOADER_DEBUG=all" in buf
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_get_vulkan_env_overrides_auto_triggers_probe(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Calling get_vulkan_env_overrides() before the probe has run
+        must trigger the probe synchronously so that workers on the
+        libplacebo DV5 path don't see an empty override dict just
+        because no HTTP endpoint has warmed the cache yet.
+
+        This is the regression guard for the startup-timing bug where
+        the Plex scheduler revived a pending job before the first
+        /api/system/vulkan poll fired.
+        """
+        from plex_generate_previews.gpu_detection import (
+            _VULKAN_DEVICE_PROBED,
+            get_vulkan_env_overrides,
+        )
+
+        # Sanity: the setup_method reset made _VULKAN_DEVICE_PROBED False.
+        assert _VULKAN_DEVICE_PROBED is False
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_run.side_effect = [
+            # Strategy 1: llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2: NVIDIA via EGL override
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA TITAN RTX (discrete)"),
+            ),
+        ]
+
+        # First call: no probe has run. The accessor must trigger one.
+        overrides = get_vulkan_env_overrides()
+        assert overrides == {
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            )
+        }
+        assert mock_run.call_count == 2  # Strategy 1 + Strategy 2
+
+        # Second call: cached. Must NOT re-probe.
+        overrides_again = get_vulkan_env_overrides()
+        assert overrides_again == overrides
+        assert mock_run.call_count == 2  # unchanged
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_1_success_does_not_touch_debug_buffer_or_overrides(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Happy path: Strategy 1 returns a real hardware device → no
+        retries, no diagnostic capture, no env override."""
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_debug_buffer,
+            get_vulkan_env_overrides,
+        )
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr=self._stderr_with_device(
+                "NVIDIA GeForce RTX 4090 (discrete) (0x2684)"
+            ),
+        )
+
+        device = _probe_vulkan_device()
+        assert device == "NVIDIA GeForce RTX 4090 (discrete) (0x2684)"
+        assert mock_run.call_count == 1
+        # File-discovery helpers must NOT be called on the happy path.
+        mock_find_egl.assert_not_called()
+        mock_find_icd.assert_not_called()
+        assert get_vulkan_env_overrides() == {}
+        assert get_vulkan_debug_buffer() == ""
+
+
+class TestGetVulkanDeviceInfo:
+    """Unit tests for get_vulkan_device_info() — the cached info builder."""
+
+    def setup_method(self):
+        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+
+        _reset_vulkan_device_cache()
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_intel_hardware_is_not_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        info = get_vulkan_device_info()
+        assert info["device"].startswith("Intel(R) Graphics")
+        assert info["is_software"] is False
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_llvmpipe_is_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
+        info = get_vulkan_device_info()
+        assert "llvmpipe" in info["device"]
+        assert info["is_software"] is True
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_lavapipe_is_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "lavapipe (whatever) (software)"
+        info = get_vulkan_device_info()
+        assert info["is_software"] is True
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_none_device_not_software(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = None
+        info = get_vulkan_device_info()
+        assert info["device"] is None
+        assert info["is_software"] is False
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_probe_is_called_once_and_cached(self, mock_probe):
+        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+
+        mock_probe.return_value = "Intel(R) Graphics"
+        get_vulkan_device_info()
+        get_vulkan_device_info()
+        get_vulkan_device_info()
+        assert mock_probe.call_count == 1
+
+
+class TestGetVulkanInfoAPI:
+    """Unit tests for _get_vulkan_info() in api_system (the HTML warning builder)."""
+
+    def setup_method(self):
+        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+        from plex_generate_previews.web.routes._helpers import _gpu_cache
+
+        _reset_vulkan_device_cache()
+        # Force-populate the shared GPU cache with an empty list so
+        # _ensure_gpu_cache() inside _get_vulkan_info() skips real
+        # hardware detection.  Individual tests override this via
+        # _set_gpus() to exercise specific branches.
+        _gpu_cache["result"] = []
+
+    def teardown_method(self):
+        from plex_generate_previews.web.routes._helpers import _gpu_cache
+
+        # Leave the cache in the default "not yet detected" state so
+        # unrelated tests that follow behave like a fresh process.
+        _gpu_cache["result"] = None
+
+    @staticmethod
+    def _set_gpus(gpus):
+        from plex_generate_previews.web.routes._helpers import _gpu_cache
+
+        _gpu_cache["result"] = gpus
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_hardware_device_returns_no_warning(self, mock_probe):
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "Intel(R) Graphics (RPL-S)"
+        info = _get_vulkan_info()
+        assert info["device"].startswith("Intel(R) Graphics")
+        assert "warning" not in info
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_llvmpipe_returns_warning_with_fix_instructions(self, mock_probe):
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        # setup_method sets an empty GPU cache → Case E (no GPU detected);
+        # that branch still contains the shared-header plain-English
+        # summary and the generic /dev/dri forwarding hint.
+        info = _get_vulkan_info()
+        assert "warning" in info
+        warning = info["warning"]
+        assert "Dolby Vision Profile 5" in warning
+        assert "green" in warning  # "green rectangle" / "green overlay"
+        assert "software rendering" in warning
+        assert "/dev/dri" in warning
+
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_no_vulkan_returns_no_warning(self, mock_probe):
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = None
+        info = _get_vulkan_info()
+        assert info["device"] is None
+        assert "warning" not in info
+
+    # --- GPU-aware branches -------------------------------------------------
+
+    # --- Case A (pure NVIDIA) diagnostic dispatch --------------------------
+    #
+    # Case A now splits into four sub-cases based on what
+    # _diagnose_vulkan_environment() returns. Each test mocks the
+    # diagnostic helper to target one sub-case deterministically.
+
+    @staticmethod
+    def _diag_fixture(
+        *,
+        has_graphics: bool = True,
+        icd_path: str | None = "/etc/vulkan/icd.d/nvidia_icd.json",
+        glvkspirv: bool = True,
+        drm_loaded: bool = True,
+        driver_version: str | None = "580.0.0",
+    ) -> dict:
+        """Build a _diagnose_vulkan_environment() return-value fixture."""
+        return {
+            "nvidia_capabilities": "all" if has_graphics else "compute,video,utility",
+            "nvidia_capabilities_has_graphics": has_graphics,
+            "nvidia_icd_json_path": icd_path,
+            "libnvidia_glvkspirv_found": glvkspirv,
+            "nvidia_drm_loaded": drm_loaded,
+            "nvidia_driver_version": driver_version,
+        }
+
+    @patch("plex_generate_previews.web.routes.api_system._diagnose_vulkan_environment")
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_case_a1_missing_graphics_capability(
+        self, mock_probe, mock_glob, mock_diag
+    ):
+        """Case A1: NVIDIA-only + NVIDIA_DRIVER_CAPABILITIES missing 'graphics'
+        → warning names the specific env var and gives the fix.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        mock_diag.return_value = self._diag_fixture(has_graphics=False)
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA GeForce RTX 3080",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA GeForce RTX 3080" in warning
+        # Case A1 specifically names the missing capability and the fix.
+        assert "graphics" in warning
+        assert "NVIDIA_DRIVER_CAPABILITIES" in warning
+        assert "NVIDIA_DRIVER_CAPABILITIES=all" in warning
+        # Must NOT trigger the other sub-cases.
+        assert "VK_ERROR_INCOMPATIBLE_DRIVER" not in warning
+        assert "nvidia-container-toolkit#1559" not in warning
+        assert "already forwarded" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system._diagnose_vulkan_environment")
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_case_a2_graphics_set_but_icd_json_missing(
+        self, mock_probe, mock_glob, mock_diag
+    ):
+        """Case A2: 'graphics' capability is set but the NVIDIA ICD JSON
+        is missing → blame the driver 570–579 regression or CDI mode.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        mock_diag.return_value = self._diag_fixture(
+            has_graphics=True,
+            icd_path=None,
+            driver_version="572.56",
+        )
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA TITAN RTX",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA TITAN RTX" in warning
+        # Case A2 cites the specific driver regression and the issue link.
+        assert "nvidia-container-toolkit#1041" in warning
+        assert "570" in warning
+        assert "572.56" in warning  # echoes the detected driver version back
+
+    @patch("plex_generate_previews.web.routes.api_system._diagnose_vulkan_environment")
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_case_a3_icd_present_but_libnvidia_glvkspirv_missing(
+        self, mock_probe, mock_glob, mock_diag
+    ):
+        """Case A3: ICD JSON is present but libnvidia-glvkspirv.so is not
+        → blame the CDI manifest bug and point at legacy-mode workaround.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        mock_diag.return_value = self._diag_fixture(
+            has_graphics=True,
+            icd_path="/etc/vulkan/icd.d/nvidia_icd.json",
+            glvkspirv=False,
+        )
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA GeForce RTX 4090",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA GeForce RTX 4090" in warning
+        assert "libnvidia-glvkspirv" in warning
+        assert "nvidia-container-toolkit#1559" in warning
+        assert "legacy" in warning  # points at mode = "legacy" workaround
+
+    @patch("plex_generate_previews.web.routes.api_system._diagnose_vulkan_environment")
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_case_a4_all_checks_pass_but_loader_still_rejected(
+        self, mock_probe, mock_glob, mock_diag
+    ):
+        """Case A4: all the usual NVIDIA container requirements are
+        satisfied but Vulkan still fell back to software → tell the
+        user to file an issue with the diagnostic bundle.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        mock_diag.return_value = self._diag_fixture(
+            has_graphics=True,
+            icd_path="/etc/vulkan/icd.d/nvidia_icd.json",
+            glvkspirv=True,
+        )
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA Quadro P2000",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA Quadro P2000" in warning
+        assert "diagnostic bundle" in warning
+        assert "/api/system/vulkan/debug" in warning
+
+    @patch("plex_generate_previews.web.routes.api_system._diagnose_vulkan_environment")
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_pure_nvidia_with_dri_mapped_still_dispatches_into_case_a(
+        self, mock_probe, mock_glob, mock_diag
+    ):
+        """Regression guard: pure-NVIDIA host with /dev/dri already
+        forwarded should STILL go through the Case A dispatch, not fall
+        through to Case D (which is for Mesa hosts whose setup is
+        broken). Mounting /dev/dri on a Mesa-less host does nothing —
+        the fix has to come from the NVIDIA side.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = ["/dev/dri/renderD128"]  # IS mapped
+        mock_diag.return_value = self._diag_fixture(has_graphics=False)
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA TITAN RTX",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        # Should hit A1 (missing graphics), not Case D.
+        assert "NVIDIA TITAN RTX" in warning
+        assert "NVIDIA_DRIVER_CAPABILITIES" in warning
+        assert "already forwarded" not in warning  # Case D text
+        assert "vainfo" not in warning  # Case D text
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_nvidia_plus_intel_no_dri_recommends_mount(self, mock_probe, mock_glob):
+        """Case B: NVIDIA + Intel with no /dev/dri → names both GPUs,
+        gives the mount fix, notes NVIDIA decoding is independent.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus(
+            [
+                {
+                    "type": "NVIDIA",
+                    "device": "/dev/nvidia0",
+                    "name": "NVIDIA GeForce RTX 4090",
+                },
+                {
+                    "type": "INTEL",
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel UHD Graphics 770",
+                },
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "NVIDIA GeForce RTX 4090" in warning
+        assert "Intel UHD Graphics 770" in warning
+        assert "Your GPUs:" in warning
+        assert "Docker Compose:" in warning
+        assert "two paths are independent" in warning
+        # Case B must not imply the NVIDIA-only workaround list.
+        assert "Pure NVIDIA hosts" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_intel_only_no_dri_recommends_mount(self, mock_probe, mock_glob):
+        """Case C: Intel-only host with no /dev/dri → names the Intel
+        GPU and gives the mount fix, without dragging in NVIDIA-specific
+        language that would only confuse the user.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus(
+            [
+                {
+                    "type": "INTEL",
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel UHD Graphics 770",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "Intel UHD Graphics 770" in warning
+        assert "Docker Compose:" in warning
+        assert "NVIDIA" not in warning
+        assert "VK_ERROR_INCOMPATIBLE_DRIVER" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_intel_with_dri_mapped_points_at_drivers_or_perms(
+        self, mock_probe, mock_glob
+    ):
+        """Case D: Intel host with /dev/dri already forwarded but
+        rendering still fell back → diagnose host drivers or render-node
+        permissions rather than repeating the mount instructions.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = ["/dev/dri/renderD128"]
+        self._set_gpus(
+            [
+                {
+                    "type": "INTEL",
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel UHD Graphics 630",
+                }
+            ]
+        )
+
+        warning = _get_vulkan_info()["warning"]
+        assert "Intel UHD Graphics 630" in warning
+        assert "already forwarded" in warning
+        assert "vainfo" in warning
+        assert "permissions" in warning
+        # Already mounted — must not re-recommend mounting.
+        assert "Docker Compose:" not in warning
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
+    def test_no_gpu_detected_explains_missing_hardware(self, mock_probe, mock_glob):
+        """Case E: Vulkan is llvmpipe and no GPU is detected at all →
+        explain that no hardware is visible to the container and give
+        per-vendor forwarding hints.
+        """
+        from plex_generate_previews.web.routes.api_system import _get_vulkan_info
+
+        mock_probe.return_value = "llvmpipe (software)"
+        mock_glob.return_value = []
+        self._set_gpus([])
+
+        warning = _get_vulkan_info()["warning"]
+        assert "No GPU detected" in warning
+        assert "--runtime=nvidia" in warning
+        assert "/dev/dri" in warning
+
+
+class TestDiagnoseVulkanEnvironment:
+    """Unit tests for _diagnose_vulkan_environment() — the Layer-4 helper
+    that reads ``os.environ`` and the filesystem to power the Case A
+    dispatch and the ``/api/system/vulkan/debug`` endpoint."""
+
+    def _diag(self):
+        from plex_generate_previews.web.routes.api_system import (
+            _diagnose_vulkan_environment,
+        )
+
+        return _diagnose_vulkan_environment()
+
+    def test_graphics_capability_detected_when_all(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        assert self._diag()["nvidia_capabilities_has_graphics"] is True
+
+    def test_graphics_capability_detected_when_explicit(self, monkeypatch):
+        monkeypatch.setenv(
+            "NVIDIA_DRIVER_CAPABILITIES", "compute,video,utility,graphics"
+        )
+        assert self._diag()["nvidia_capabilities_has_graphics"] is True
+
+    def test_graphics_capability_missing_with_common_default(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "compute,video,utility")
+        diag = self._diag()
+        assert diag["nvidia_capabilities_has_graphics"] is False
+        assert diag["nvidia_capabilities"] == "compute,video,utility"
+
+    def test_graphics_capability_missing_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("NVIDIA_DRIVER_CAPABILITIES", raising=False)
+        diag = self._diag()
+        assert diag["nvidia_capabilities_has_graphics"] is False
+        assert diag["nvidia_capabilities"] is None
+
+    @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
+    def test_nvidia_icd_json_found_at_etc_path(self, mock_exists, monkeypatch):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        # Return True only for the /etc/ path, False elsewhere.
+        mock_exists.side_effect = lambda p: p == "/etc/vulkan/icd.d/nvidia_icd.json"
+        diag = self._diag()
+        assert diag["nvidia_icd_json_path"] == "/etc/vulkan/icd.d/nvidia_icd.json"
+
+    @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
+    def test_nvidia_icd_json_found_at_usr_share_path(self, mock_exists, monkeypatch):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_exists.side_effect = lambda p: (
+            p == "/usr/share/vulkan/icd.d/nvidia_icd.json"
+        )
+        diag = self._diag()
+        assert diag["nvidia_icd_json_path"] == "/usr/share/vulkan/icd.d/nvidia_icd.json"
+
+    @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
+    def test_nvidia_icd_json_absent_returns_none(self, mock_exists, monkeypatch):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_exists.return_value = False
+        diag = self._diag()
+        assert diag["nvidia_icd_json_path"] is None
+        assert diag["nvidia_drm_loaded"] is False
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    def test_libnvidia_glvkspirv_found_when_any_glob_matches(
+        self, mock_glob, monkeypatch
+    ):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        # Make the first glob path return a match, others empty.
+        mock_glob.side_effect = lambda p: (
+            ["/usr/lib/x86_64-linux-gnu/libnvidia-glvkspirv.so.580.0.0"]
+            if "x86_64" in p
+            else []
+        )
+        assert self._diag()["libnvidia_glvkspirv_found"] is True
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    def test_libnvidia_glvkspirv_missing_when_all_globs_empty(
+        self, mock_glob, monkeypatch
+    ):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_glob.return_value = []
+        assert self._diag()["libnvidia_glvkspirv_found"] is False
+
+    @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
+    def test_nvidia_driver_version_parsed_from_proc(
+        self, mock_exists, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_exists.side_effect = lambda p: (
+            p
+            in (
+                "/proc/driver/nvidia",
+                "/proc/driver/nvidia/version",
+            )
+        )
+        # Point the open() inside _diagnose_vulkan_environment at a real
+        # temp file whose content looks like a real NVRM version line.
+        proc_file = tmp_path / "nvidia_version"
+        proc_file.write_text(
+            "NVRM version: NVIDIA UNIX x86_64 Kernel Module  570.133.07  "
+            "Thu Mar 20 14:50:40 UTC 2025\n"
+            "GCC version:  gcc (Debian 12.2.0-14) 12.2.0\n"
+        )
+
+        original_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/driver/nvidia/version":
+                return original_open(proc_file, *args, **kwargs)
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "plex_generate_previews.web.routes.api_system.open",
+            fake_open,
+            raising=False,
+        )
+        diag = self._diag()
+        assert diag["nvidia_drm_loaded"] is True
+        assert diag["nvidia_driver_version"] == "570.133.07"

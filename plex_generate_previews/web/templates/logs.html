@@ -39,10 +39,10 @@
     #logContainer .log-line.log-level-warning { border-left-color: #ffc107; }
     #logContainer .log-line.log-level-error,
     #logContainer .log-line.log-level-critical { border-left-color: #dc3545; }
-    .log-line .log-ts   { color: #6c757d; margin-right: 6px; }
+    .log-line .log-ts   { color: var(--bs-secondary-color); margin-right: 6px; }
     .log-line .log-lvl   { font-weight: 600; margin-right: 6px; min-width: 60px; display: inline-block; }
-    .log-line .log-mod   { color: #888; margin-right: 6px; }
-    .log-line .log-detail { display: none; font-size: 0.78rem; color: #777; padding-top: 2px; }
+    .log-line .log-mod   { color: var(--bs-tertiary-color); margin-right: 6px; }
+    .log-line .log-detail { display: none; font-size: 0.78rem; color: var(--bs-tertiary-color); padding-top: 2px; }
     .log-line.expanded .log-detail { display: block; }
     #logCount { font-size: 0.82rem; }
     #loadOlderBtn { display: none; }
@@ -75,8 +75,9 @@
         transform: translateX(-50%);
         z-index: 5;
         cursor: pointer;
-        box-shadow: 0 2px 8px rgba(0,0,0,.5);
     }
+    html[data-bs-theme="dark"] #followPill  { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
+    html[data-bs-theme="light"] #followPill { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); }
     .log-nav-btns {
         position: absolute;
         right: 1rem;
@@ -91,7 +92,7 @@
 
 {% block content %}
 <div class="log-page">
-    <div class="log-toolbar bg-dark">
+    <div class="log-toolbar bg-body-tertiary">
         <div class="d-flex flex-wrap align-items-center gap-2">
             <span id="serverLevelBadge" class="badge bg-secondary me-1" title="Server log level (change in Settings)">…</span>
             <div class="btn-group btn-group-sm" role="group" aria-label="Minimum level to show">
@@ -124,7 +125,7 @@
     </div>
 
     <div class="log-scroll-wrap">
-        <div id="logContainer" class="bg-dark text-light">
+        <div id="logContainer" class="bg-body-tertiary text-body">
             <button id="loadOlderBtn" class="btn btn-sm btn-outline-secondary w-100 my-1">
                 <i class="bi bi-clock-history me-1"></i>Load older...
             </button>

@@ -29,6 +29,13 @@ _pending_timers: dict[str, threading.Timer] = {}
 _pending_batches: dict[str, dict[str, object]] = {}
 _pending_lock = threading.Lock()
 
+# Recently dispatched (source, normalized_path) entries, used to drop
+# duplicate webhook deliveries that arrive after the debounce batch has
+# already fired — Plex in particular re-sends library.new events after
+# metadata refreshes and analyzer reruns.
+_recent_dispatches: dict[tuple[str, str], float] = {}
+_RECENT_DISPATCH_TTL_SECONDS = 600
+
 # In-memory log of received webhook events, persisted to disk on each write.
 _HISTORY_MAX = 100
 _webhook_history: deque = deque(maxlen=_HISTORY_MAX)
@@ -80,13 +87,19 @@ def _save_history_to_disk() -> None:
 
 
 def _authenticate_webhook(f):
-    """Check X-Auth-Token, Authorization Bearer, or Basic auth password as token.
+    """Check X-Auth-Token, Authorization Bearer, Basic auth, or ``?token=`` query param.
 
     Collects candidate tokens from all sources and tries each against the
     webhook secret and app auth token.  ``X-Auth-Token`` is checked first
     because it is the dedicated webhook header; ``Authorization`` (Bearer /
     Basic) is a fallback.  This prevents browser-injected JWTs (e.g. from
     Tdarr's session) from shadowing the explicit webhook token.
+
+    The ``?token=`` query parameter exists specifically for the native
+    Plex webhook: Plex's webhook UI offers no place to add headers or
+    HTTP Basic credentials, so the only way to authenticate a request
+    coming from Plex Media Server is to embed the token in the URL
+    that's registered with plex.tv.
     """
 
     @wraps(f)
@@ -113,6 +126,10 @@ def _authenticate_webhook(f):
                         candidates.append(("Basic", basic_pw))
             except (ValueError, UnicodeDecodeError):
                 logger.debug("Failed to decode Basic auth header")
+
+        query_token = request.args.get("token", "").strip()
+        if query_token:
+            candidates.append(("query", query_token))
 
         if not candidates:
             logger.warning(
@@ -291,6 +308,70 @@ def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:
     return f"{series_title.strip()} {', '.join(parts)}"
 
 
+def _format_plex_title_from_metadata(metadata: dict) -> str | None:
+    """Build a descriptive job title from a Plex webhook Metadata dict.
+
+    Episodes return ``"Show - SxxExx - Episode Title"`` (or just
+    ``"Show - SxxExx"`` when the episode title is blank or the generic
+    ``"Episode N"`` placeholder Plex uses for shows without canonical titles).
+    Movies return ``"Title (Year)"`` (or bare title if year is missing).
+    Returns ``None`` when required fields are absent so the caller can fall
+    back to a ratingKey lookup or the raw ``metadata.title``.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    item_type = str(metadata.get("type", "")).strip().lower()
+
+    if item_type == "episode":
+        show = str(metadata.get("grandparentTitle", "")).strip()
+        if not show:
+            return None
+        try:
+            season_num = int(metadata.get("parentIndex"))
+            episode_num = int(metadata.get("index"))
+        except (TypeError, ValueError):
+            return None
+        season_episode = f"S{season_num:02d}E{episode_num:02d}"
+        ep_title = str(metadata.get("title", "")).strip()
+        tautology = f"episode {episode_num}"
+        if not ep_title or ep_title.lower() == tautology:
+            return f"{show} - {season_episode}"
+        return f"{show} - {season_episode} - {ep_title}"
+
+    if item_type == "movie":
+        title = str(metadata.get("title", "")).strip()
+        if not title:
+            return None
+        year = metadata.get("year")
+        try:
+            year_int = int(year) if year is not None else None
+        except (TypeError, ValueError):
+            year_int = None
+        if year_int:
+            return f"{title} ({year_int})"
+        return title
+
+    return None
+
+
+def _format_plex_title_from_item(item) -> str | None:
+    """Same format as :func:`_format_plex_title_from_metadata` but for a
+    ``plexapi`` item object. Used when the webhook payload lacks structured
+    fields and we have to fall back to a ratingKey lookup.
+    """
+    if item is None:
+        return None
+    synthetic: dict = {
+        "type": getattr(item, "type", ""),
+        "grandparentTitle": getattr(item, "grandparentTitle", ""),
+        "parentIndex": getattr(item, "parentIndex", None),
+        "index": getattr(item, "index", None),
+        "title": getattr(item, "title", ""),
+        "year": getattr(item, "year", None),
+    }
+    return _format_plex_title_from_metadata(synthetic)
+
+
 def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     """Schedule a debounced single-file webhook job and batch paths per source."""
     safe_source = str(source or "unknown")
@@ -306,31 +387,59 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     delay = int(settings.get("webhook_delay", 60))
     debounce_key = _debounce_key(safe_source)
     normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
+    dedup_key = (safe_source, normalized_path)
 
     with _pending_lock:
-        existing = _pending_timers.get(debounce_key)
-        if existing:
-            existing.cancel()
+        now_ts = datetime.now(timezone.utc).timestamp()
 
-        batch = _pending_batches.get(debounce_key)
-        if not batch:
-            batch = {
-                "source": source,
-                "file_paths": set(),
-                "titles": [],
-            }
-            _pending_batches[debounce_key] = batch
-        batch["file_paths"].add(normalized_path)
-        batch["titles"].append(safe_title)
+        # Opportunistically prune expired dedup entries — keeps the dict bounded.
+        expired = [
+            key
+            for key, ts in _recent_dispatches.items()
+            if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS
+        ]
+        for key in expired:
+            _recent_dispatches.pop(key, None)
 
-        fire_at = datetime.now(timezone.utc).timestamp() + delay
-        batch["fire_at"] = fire_at
+        recent_ts = _recent_dispatches.get(dedup_key)
+        if recent_ts is not None:
+            age = int(now_ts - recent_ts)
+            logger.info(
+                f"Webhook: {safe_source} duplicate of '{safe_title}' ignored "
+                f"(already dispatched {age}s ago)"
+            )
+            dedup_skip = True
+        else:
+            dedup_skip = False
 
-        timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
-        timer.daemon = True
-        _pending_timers[debounce_key] = timer
-        timer.start()
-        path_count = len(batch["file_paths"])
+        if not dedup_skip:
+            existing = _pending_timers.get(debounce_key)
+            if existing:
+                existing.cancel()
+
+            batch = _pending_batches.get(debounce_key)
+            if not batch:
+                batch = {
+                    "source": source,
+                    "file_paths": set(),
+                    "titles": [],
+                }
+                _pending_batches[debounce_key] = batch
+            batch["file_paths"].add(normalized_path)
+            batch["titles"].append(safe_title)
+
+            fire_at = now_ts + delay
+            batch["fire_at"] = fire_at
+
+            timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
+            timer.daemon = True
+            _pending_timers[debounce_key] = timer
+            timer.start()
+            path_count = len(batch["file_paths"])
+
+    if dedup_skip:
+        _add_history_entry(safe_source, "Download", safe_title, "deduped")
+        return False
 
     logger.info(
         f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with "
@@ -398,6 +507,11 @@ def _execute_webhook_job(debounce_key: str) -> None:
         ]
         retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
         retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
+
+        with _pending_lock:
+            dispatch_ts = datetime.now(timezone.utc).timestamp()
+            for p in webhook_paths:
+                _recent_dispatches[(source, p)] = dispatch_ts
 
         _start_job_async(
             job.id,
@@ -597,6 +711,242 @@ def sonarr_webhook():
 def sportarr_webhook():
     """Receive Sportarr webhook payloads (Sonarr-compatible format)."""
     return _handle_sonarr_compatible_webhook("sportarr")
+
+
+def _extract_plex_payload(req) -> tuple[dict | None, str | None]:
+    """Extract the JSON payload from a Plex multipart webhook request.
+
+    Plex sends ``multipart/form-data`` with a ``payload`` part containing
+    the JSON event body and (for ``media.play`` / ``media.rate`` events)
+    a second part with a JPEG thumbnail.  Whether the payload arrives as
+    a regular form field or a file part depends on the client / proxy
+    in front of Plex, so we check both.  As a convenience for tests and
+    curl-based debugging we also accept a raw JSON body — Plex itself
+    will never send that.
+    """
+    raw: str | None = None
+
+    if req.form:
+        raw = req.form.get("payload")
+
+    if raw is None and req.files:
+        file_part = req.files.get("payload")
+        if file_part is not None:
+            try:
+                raw = file_part.read().decode("utf-8", errors="replace")
+            except Exception as exc:
+                return None, f"could not read payload part: {exc}"
+
+    if raw is None:
+        try:
+            data = req.get_json(force=True, silent=True)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return data, None
+        return None, "missing 'payload' field"
+
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        return None, f"invalid JSON in payload: {exc}"
+    if not isinstance(data, dict):
+        return None, "payload must be a JSON object"
+    return data, None
+
+
+def _resolve_plex_paths_from_rating_key(
+    rating_key: int | str,
+) -> tuple[list[str], str | None]:
+    """Look up a Plex item by ratingKey and return its file paths and a
+    formatted display title.
+
+    Plex's ``library.new`` payload identifies items by ratingKey but
+    does not consistently include file paths in the Metadata block.
+    This helper instantiates a PlexServer using the configured token,
+    walks ``item.media[*].parts[*].file`` to recover the paths, and
+    derives a descriptive title from the same fetched item so callers
+    don't need a second Plex round trip.
+
+    Returns ``([], None)`` on any failure (item not found, Plex
+    unreachable, no media parts).
+    """
+    try:
+        from ..config import load_config
+        from ..plex_client import plex_server, retry_plex_call
+    except ImportError as exc:
+        logger.debug("Webhook: cannot import plex client modules: {}", exc)
+        return [], None
+
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.warning("Webhook: failed to load config for Plex lookup: {}", exc)
+        return [], None
+
+    try:
+        plex = plex_server(config)
+    except Exception as exc:
+        logger.warning("Webhook: failed to connect to Plex for lookup: {}", exc)
+        return [], None
+
+    try:
+        item = retry_plex_call(plex.fetchItem, int(rating_key))
+    except Exception as exc:
+        logger.warning(
+            "Webhook: Plex item lookup failed for ratingKey={}: {}",
+            rating_key,
+            exc,
+        )
+        return [], None
+
+    paths: list[str] = []
+    media_list = getattr(item, "media", None) or []
+    for media in media_list:
+        for part in getattr(media, "parts", None) or []:
+            file_path = getattr(part, "file", None)
+            if file_path:
+                paths.append(str(file_path))
+
+    display_title = _format_plex_title_from_item(item)
+    return paths, display_title
+
+
+@webhooks_bp.route("/plex", methods=["POST"])
+@_authenticate_webhook
+def plex_webhook():
+    """Receive native Plex webhook payloads (Plex Pass).
+
+    Plex POSTs ``multipart/form-data`` with a JSON ``payload`` field on
+    server events.  We only act on ``library.new`` events; everything
+    else (media.play, media.rate, library.on.deck, etc.) is acknowledged
+    with 200 so Plex doesn't retry.
+
+    The endpoint also accepts two synthetic events used by the UI:
+
+    * ``test.ping`` — sent by the "Test reachability" button.  Returns
+      success without resolving paths or scheduling work, and records a
+      "test" history entry so the user can see it landed.
+    * ``library.new`` payloads with no Metadata are treated as malformed.
+    """
+    data, parse_error = _extract_plex_payload(request)
+    if data is None:
+        logger.warning(
+            "Webhook: Plex request ignored ({}) — Host={}, Content-Type={}, Remote={}",
+            parse_error,
+            request.host,
+            request.content_type,
+            request.remote_addr,
+        )
+        return jsonify({"success": False, "error": parse_error}), 400
+
+    event = str(data.get("event", "")).strip()
+
+    if event == "test.ping":
+        _add_history_entry("plex", "Test", "", "test")
+        return jsonify({"success": True, "message": "Plex webhook endpoint reachable"})
+
+    settings = get_settings_manager()
+    if not settings.get("webhook_enabled", True) or not settings.get(
+        "plex_webhook_enabled", False
+    ):
+        _add_history_entry("plex", event or "Plex", "", "disabled")
+        logger.info("Webhook: Plex event '{}' ignored (Plex webhook disabled)", event)
+        return jsonify({"success": True, "message": "Plex webhook disabled"})
+
+    if event != "library.new":
+        # Plex always sends every event the user has subscribed the URL to —
+        # ignoring noise like media.play silently is intentional.
+        _add_history_entry("plex", event or "Plex", "", "ignored")
+        logger.debug("Webhook: Plex event '{}' ignored (not library.new)", event)
+        return jsonify({"success": True, "message": f"Ignored event: {event}"})
+
+    metadata = _as_dict(data.get("Metadata"))
+    rating_key = metadata.get("ratingKey")
+    raw_title = str(metadata.get("title", "")).strip() or "Plex item"
+    display_title = _format_plex_title_from_metadata(metadata)
+
+    if not rating_key:
+        logger.warning(
+            "Webhook: Plex library.new payload missing ratingKey. Structure: {}",
+            _summarize_payload(data),
+        )
+        _add_history_entry(
+            "plex", "library.new", display_title or raw_title, "ignored_no_path"
+        )
+        return jsonify({"success": False, "error": "Missing Metadata.ratingKey"}), 400
+
+    # Try the cheap path first: file paths embedded in the payload's
+    # Media[].Part[].file fields.  Plex includes these inconsistently —
+    # they're present for some media types but not all — so fall back to
+    # a Plex API lookup by ratingKey when they're missing.
+    paths: list[str] = []
+    media_list = metadata.get("Media")
+    if isinstance(media_list, list):
+        for media in media_list:
+            parts = _as_dict(media).get("Part")
+            if isinstance(parts, list):
+                for part in parts:
+                    file_path = _as_dict(part).get("file")
+                    if isinstance(file_path, str) and file_path.strip():
+                        paths.append(file_path.strip())
+
+    # Fall back to the ratingKey lookup if we're missing either paths or
+    # a descriptive title — the lookup gives us both in a single round trip.
+    if not paths or display_title is None:
+        resolved_paths, resolved_title = _resolve_plex_paths_from_rating_key(rating_key)
+        if not paths:
+            paths = resolved_paths
+        if display_title is None:
+            display_title = resolved_title
+
+    if display_title is None:
+        display_title = raw_title
+
+    if not paths:
+        logger.warning(
+            "Webhook: Plex library.new for '{}' (ratingKey={}) had no file paths",
+            display_title,
+            rating_key,
+        )
+        _add_history_entry("plex", "library.new", display_title, "ignored_no_path")
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "message": (
+                        f"No file paths found for '{display_title}' "
+                        f"(ratingKey={rating_key})"
+                    ),
+                }
+            ),
+            200,
+        )
+
+    queued_any = False
+    for path in paths:
+        if _schedule_webhook_job("plex", display_title, path):
+            queued_any = True
+
+    if not queued_any:
+        _add_history_entry("plex", "library.new", display_title, "ignored_no_path")
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "message": f"No valid paths queued for '{display_title}'",
+                }
+            ),
+            200,
+        )
+
+    _add_history_entry("plex", "library.new", display_title, "queued")
+    return (
+        jsonify(
+            {"success": True, "message": f"Processing queued for '{display_title}'"}
+        ),
+        202,
+    )
 
 
 @webhooks_bp.route("/custom", methods=["POST"])

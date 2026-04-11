@@ -133,7 +133,7 @@ function initDashboard() {
     loadJobs().then(() => loadWorkerStatuses());
     refreshStatus();
     loadLibraries();
-    loadSchedules();
+    loadSchedules().then(() => maybeAutoOpenScheduleEdit());
     loadJobStats();
     loadWorkerConfigCounts();
     loadProcessingState();
@@ -274,23 +274,33 @@ function getCsrfToken() {
     return meta ? meta.getAttribute('content') : '';
 }
 
+// Extract a user-friendly error message from a non-OK fetch Response.
+// Prefers the backend's `{ error: "..." }` field when present, so callers
+// surface "Could not connect to Plex at ..." instead of "HTTP 502: BAD GATEWAY".
+async function _extractApiError(response) {
+    const text = await response.text().catch(() => '');
+    if (text) {
+        try {
+            const json = JSON.parse(text);
+            if (json && typeof json.error === 'string' && json.error.trim()) {
+                return json.error.trim();
+            }
+        } catch (_e) {
+            // Non-JSON body — fall through to the generic status line.
+        }
+    }
+    return `HTTP ${response.status}: ${response.statusText}`;
+}
+
 async function apiGet(url) {
     const response = await fetch(url);
     if (!response.ok) {
-        // Handle authentication errors
         if (response.status === 401) {
             console.error('Authentication failed, redirecting to login');
             window.location.href = '/login';
             throw new Error('Authentication required');
         }
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP') || e.message.includes('Authentication')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -305,14 +315,7 @@ async function apiPost(url, data = {}) {
         body: JSON.stringify(data)
     });
     if (!response.ok) {
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -323,14 +326,7 @@ async function apiDelete(url) {
         headers: { 'X-CSRFToken': getCsrfToken() }
     });
     if (!response.ok) {
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -345,14 +341,7 @@ async function apiPut(url, data = {}) {
         body: JSON.stringify(data)
     });
     if (!response.ok) {
-        const text = await response.text();
-        try {
-            const json = JSON.parse(text);
-            throw new Error(json.error || `HTTP ${response.status}`);
-        } catch (e) {
-            if (e.message.includes('HTTP')) throw e;
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        throw new Error(await _extractApiError(response));
     }
     return response.json();
 }
@@ -375,32 +364,7 @@ async function refreshStatus() {
     }
 
     // --- Plex server status ---
-    try {
-        const plexStatus = document.getElementById('plexStatus');
-        const plexInfo = document.getElementById('plexServerInfo');
-        if (plexStatus && plexInfo && typeof SettingsManager !== 'undefined') {
-            const settings = await new SettingsManager().get();
-            if (settings.plex_name) {
-                plexInfo.textContent = settings.plex_name;
-                plexStatus.textContent = 'Connected';
-                plexStatus.className = 'badge bg-success';
-            } else if (settings.plex_url) {
-                plexInfo.textContent = settings.plex_url;
-                plexStatus.textContent = 'Configured';
-                plexStatus.className = 'badge bg-info';
-            } else {
-                plexStatus.textContent = 'Not configured';
-                plexStatus.className = 'badge bg-warning';
-            }
-        }
-    } catch (e) {
-        console.warn('Failed to refresh Plex status:', e);
-        const plexStatus = document.getElementById('plexStatus');
-        if (plexStatus) {
-            plexStatus.textContent = 'Unknown';
-            plexStatus.className = 'badge bg-secondary';
-        }
-    }
+    await updatePlexStatusBadge();
 
     // --- Worker thread counts ---
     // Keep config counts cached for idle-state badge rendering. Actual live
@@ -440,17 +404,79 @@ async function loadWorkerConfigCounts(forceRefresh = false) {
     return cachedWorkerConfigCounts;
 }
 
+// Tracks whether the last /api/libraries call failed so modal renderers
+// (which read the cached `libraries` array) can tell "no libraries" apart
+// from "couldn't load libraries" and show the right message.
+let librariesLoadError = null;
+
+// The Dashboard Plex Server badge reflects the live connection state.
+// Keeps "Connected", "Can't reach Plex", and "Not set up" in one place so
+// both refreshStatus() and loadLibraries() can call it.
+async function updatePlexStatusBadge() {
+    const plexStatus = document.getElementById('plexStatus');
+    const plexInfo = document.getElementById('plexServerInfo');
+    if (!plexStatus || !plexInfo || typeof SettingsManager === 'undefined') return;
+
+    let settings;
+    try {
+        settings = await new SettingsManager().get();
+    } catch (e) {
+        console.warn('Failed to read settings for Plex status:', e);
+        plexStatus.textContent = 'Unknown';
+        plexStatus.className = 'badge bg-secondary';
+        return;
+    }
+
+    plexInfo.textContent = settings.plex_name || settings.plex_url || '';
+
+    if (!settings.plex_url) {
+        plexStatus.textContent = 'Not set up';
+        plexStatus.className = 'badge bg-secondary';
+        plexStatus.title = '';
+    } else if (librariesLoadError) {
+        plexStatus.textContent = "Can't reach Plex";
+        plexStatus.className = 'badge bg-warning text-dark';
+        plexStatus.title = librariesLoadError;
+    } else {
+        plexStatus.textContent = 'Connected';
+        plexStatus.className = 'badge bg-success';
+        plexStatus.title = '';
+    }
+}
+
 async function loadLibraries() {
     try {
         const data = await apiGet('/api/libraries');
         libraries = data.libraries || [];
+        librariesLoadError = null;
         await updateLibraryList();
         updateLibrarySelects();
+        updatePlexStatusBadge();
     } catch (error) {
         console.error('Failed to load libraries:', error);
-        const detail = error.message || 'Unknown error';
-        document.getElementById('libraryList').innerHTML =
-            `<div class="text-danger small">Failed to load libraries: ${detail}</div>`;
+        librariesLoadError = error.message || 'Unknown error';
+        updatePlexStatusBadge();
+
+        const listEl = document.getElementById('libraryList');
+        if (!listEl) return;
+
+        // Dashboard Quick Actions teaser stays short and actionable; the
+        // Settings page gets the full backend-supplied detail since it's a
+        // dedicated troubleshooting surface.
+        const parentCardHeader = listEl.closest('.card')?.querySelector('.card-header')?.textContent || '';
+        const isDashboardTeaser = parentCardHeader.includes('Quick Actions');
+
+        if (isDashboardTeaser) {
+            listEl.innerHTML =
+                '<div class="text-warning small d-flex align-items-start gap-2">' +
+                '<i class="bi bi-exclamation-triangle-fill mt-1"></i>' +
+                '<span>Can\'t load libraries right now. ' +
+                '<a href="/settings" class="text-decoration-none">Check your Plex connection</a>.</span>' +
+                '</div>';
+        } else {
+            listEl.innerHTML =
+                `<div class="text-danger small">Failed to load libraries. ${escapeHtml(librariesLoadError)}</div>`;
+        }
     }
 }
 
@@ -501,6 +527,55 @@ async function loadSchedules() {
         console.error('Failed to load schedules:', error);
     }
 }
+
+// Check for ?editSchedule=<id> in the URL on page load — when a user
+// clicked "Edit" on a scanner from the Webhooks page we want to scroll
+// to the schedules table and open the edit modal for that specific
+// schedule.  Only does work when the full schedule table is on the
+// page (the Schedules page); on the Dashboard it redirects to /schedules
+// so stale links still land in the right place.
+function maybeAutoOpenScheduleEdit() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const editId = params.get('editSchedule');
+        if (!editId) return;
+
+        const scheduleTable = document.getElementById('scheduleList');
+        if (!scheduleTable) {
+            // Dashboard or any page without the full table — redirect to
+            // the Schedules page and let it handle the edit.
+            window.location.replace('/schedules?editSchedule=' + encodeURIComponent(editId));
+            return;
+        }
+
+        // Scroll the schedules card into view with a bit of breathing
+        // room below the sticky navbar.
+        const row = scheduleTable.closest('.card');
+        const navbar = document.querySelector('.navbar.sticky-top');
+        const navHeight = navbar ? navbar.offsetHeight : 56;
+        const target = (row || scheduleTable).getBoundingClientRect().top + window.scrollY - navHeight - 16;
+        window.scrollTo({ top: target < 0 ? 0 : target, behavior: 'smooth' });
+
+        if (schedules.some(s => s.id === editId)) {
+            // Tiny delay so the scroll animation starts before the modal
+            // opens — feels smoother than a dead-snap.
+            setTimeout(() => showEditScheduleModal(editId), 200);
+        } else {
+            console.warn('editSchedule=' + editId + ' not found in schedules list');
+            showToast('Not found', 'Schedule not found — it may have been deleted.', 'warning');
+        }
+
+        // Clean the query param from the URL so a refresh doesn't re-trigger.
+        if (window.history && window.history.replaceState) {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('editSchedule');
+            window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+        }
+    } catch (e) {
+        console.error('maybeAutoOpenScheduleEdit failed:', e);
+    }
+}
+
 
 async function loadJobStats() {
     try {
@@ -618,7 +693,107 @@ function updateSystemStatus(status) {
 
     document.getElementById('systemStatus').innerHTML = html;
 
+    // Timezone warning
+    var tzBanner = document.getElementById('timezoneWarningBanner');
+    if (status.timezone_warning && !sessionStorage.getItem('tz_warning_dismissed')) {
+        if (!tzBanner) {
+            var tzRow = document.createElement('div');
+            tzRow.id = 'timezoneWarningRow';
+            tzRow.className = 'row';
+            tzRow.innerHTML = '<div class="col-12 mb-3">' +
+                '<div class="alert alert-warning alert-dismissible mb-0" id="timezoneWarningBanner">' +
+                '<div class="d-flex align-items-start">' +
+                '<i class="bi bi-clock-history me-2 mt-1"></i>' +
+                '<div>' +
+                '<strong>Timezone not configured.</strong><br>' +
+                status.timezone_warning +
+                '</div>' +
+                '</div>' +
+                '<button type="button" class="btn-close" aria-label="Close" ' +
+                'onclick="sessionStorage.setItem(\'tz_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
+                '</div></div>';
+            var statusEl = document.getElementById('systemStatus');
+            if (statusEl) statusEl.closest('.row').before(tzRow);
+        }
+    } else if (tzBanner) {
+        var tzRowEl = document.getElementById('timezoneWarningRow');
+        if (tzRowEl) tzRowEl.remove();
+    }
+
+    // Vulkan / libplacebo warning (DV Profile 5 green overlay bug)
+    var vkBanner = document.getElementById('vulkanWarningBanner');
+    if (status.vulkan_warning && !sessionStorage.getItem('vk_warning_dismissed')) {
+        if (!vkBanner) {
+            var vkRow = document.createElement('div');
+            vkRow.id = 'vulkanWarningRow';
+            vkRow.className = 'row';
+            vkRow.innerHTML = '<div class="col-12 mb-3">' +
+                '<div class="alert alert-warning alert-dismissible mb-0" id="vulkanWarningBanner">' +
+                '<div class="d-flex align-items-start">' +
+                '<i class="bi bi-gpu-card me-2 mt-1"></i>' +
+                '<div>' +
+                '<strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong><br>' +
+                status.vulkan_warning +
+                '<div class="mt-2">' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary" ' +
+                'onclick="copyVulkanDiagnosticBundle(this)">' +
+                '<i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle' +
+                '</button>' +
+                '</div>' +
+                '</div>' +
+                '</div>' +
+                '<button type="button" class="btn-close" aria-label="Close" ' +
+                'onclick="sessionStorage.setItem(\'vk_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
+                '</div></div>';
+            var statusEl2 = document.getElementById('systemStatus');
+            if (statusEl2) statusEl2.closest('.row').before(vkRow);
+        }
+    } else if (vkBanner) {
+        var vkRowEl = document.getElementById('vulkanWarningRow');
+        if (vkRowEl) vkRowEl.remove();
+    }
+
     renderDashboardGpuConfig();
+}
+
+// Copy the plain-text Vulkan diagnostic bundle from /api/system/vulkan/debug
+// to the clipboard. Bound to the "Copy diagnostic bundle" button inside
+// the dashboard and settings-page vulkan warning banners.
+function copyVulkanDiagnosticBundle(btn) {
+    var originalHtml = btn ? btn.innerHTML : '';
+    function restore(html, ms) {
+        if (!btn) return;
+        setTimeout(function () { btn.innerHTML = originalHtml; }, ms || 2000);
+        btn.innerHTML = html;
+    }
+    fetch('/api/system/vulkan/debug')
+        .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+        })
+        .then(function (text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text).then(function () { return text; });
+            }
+            // Fallback for older browsers / non-secure contexts.
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'absolute';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            return text;
+        })
+        .then(function () {
+            restore('<i class="bi bi-check2 me-1"></i>Copied to clipboard');
+        })
+        .catch(function (err) {
+            console.error('copyVulkanDiagnosticBundle failed:', err);
+            restore('<i class="bi bi-x-circle me-1"></i>Copy failed — see console', 4000);
+        });
 }
 
 function renderNoWorkersWarning(message) {
@@ -670,11 +845,12 @@ function renderDashboardGpuConfig() {
         const safeDevice = escapeHtml(device);
         const isFailed = gpu.status === 'failed';
 
+        const fullNameTitle = escapeHtml(`${gpu.name || 'GPU'}${device ? ' · ' + device : ''}`);
         if (isFailed) {
             const errorTitle = escapeHtml(gpu.error || 'GPU unusable');
             const errorDetail = escapeHtml(gpu.error_detail || '');
             html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
-            html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${safeDevice}">`;
+            html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${fullNameTitle}">`;
             html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
             html += `${escapeHtml(gpu.name)} <span class="badge bg-danger">failed</span>`;
             html += `</span>`;
@@ -693,7 +869,7 @@ function renderDashboardGpuConfig() {
             : '<span class="badge bg-secondary">disabled</span>';
 
         html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
-        html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${safeDevice}">`;
+        html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${fullNameTitle}">`;
         html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
         html += `${escapeHtml(gpu.name)} ${statusBadge}`;
         html += `</span>`;
@@ -769,11 +945,17 @@ async function scaleGpuWorkers(device, direction) {
 }
 
 async function updateLibraryList() {
+    const listEl = document.getElementById('libraryList');
+    // Only rendered on the Settings page.  Other pages that call
+    // loadLibraries() (e.g. Schedules) still need updateLibrarySelects
+    // to run, so bail out silently instead of throwing.
+    if (!listEl) return;
+
     let html = '';
 
     if (libraries.length === 0) {
         html = '<div class="text-muted small">No libraries found</div>';
-        document.getElementById('libraryList').innerHTML = html;
+        listEl.innerHTML = html;
         return;
     }
 
@@ -814,7 +996,7 @@ async function updateLibraryList() {
         `;
     }
 
-    document.getElementById('libraryList').innerHTML = html;
+    listEl.innerHTML = html;
 }
 
 function updateLibrarySelects() {
@@ -938,14 +1120,25 @@ function updateJobQueue() {
     _jobQueueUpdatePending = false;
 
     if (jobs.length === 0) {
-        const msg = jobTotal === 0 ? 'No jobs in queue' : 'No jobs on this page';
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="7" class="text-center text-muted py-4">
-                    ${msg}
-                </td>
-            </tr>
-        `;
+        if (jobTotal === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-5">
+                        <i class="bi bi-inbox fs-2 d-block mb-2 opacity-50"></i>
+                        <div>Nothing queued.</div>
+                        <div class="small">New jobs will show up here once you start one.</div>
+                    </td>
+                </tr>
+            `;
+        } else {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-4">
+                        No jobs on this page
+                    </td>
+                </tr>
+            `;
+        }
         return;
     }
 
@@ -1039,7 +1232,7 @@ function updateJobQueue() {
                 : '';
             html += `
             <tr id="job-detail-${escapeHtml(job.id)}" class="${isFilesExpanded ? '' : 'd-none'} job-files-detail" aria-hidden="${isFilesExpanded ? 'false' : 'true'}">
-                <td colspan="7" class="bg-dark bg-opacity-10 small py-2 ps-4">
+                <td colspan="7" class="bg-body-tertiary small py-2 ps-4">
                     <strong>Files:</strong>
                     <div class="mt-1">${filesList}${overflow}</div>
                 </td>
@@ -1184,9 +1377,11 @@ function updateActiveJobs(runningJobs) {
                     </button>
                     <div id="${filesId}" class="${isExpanded ? '' : 'd-none'} mt-1 ms-3">${filesList}${overflow}</div>
                 </div>`;
-        } else if (webhookFiles && webhookFiles.length === 1) {
-            webhookFilesHtml = `<br><strong>File:</strong> <span class="text-muted small">${escapeHtml(webhookFiles[0])}</span>`;
         }
+        // Single-file jobs intentionally omit the "File:" line here — the
+        // library_name already contains the filename (e.g.
+        // "Manual: Foo.mkv", "Sonarr: Show S01E01") so showing it twice
+        // is redundant noise. Multi-file jobs keep the expandable list.
 
         // Start time and elapsed
         const startedLine = job.started_at
@@ -1324,7 +1519,7 @@ function updateWorkerStatuses(workers, options = {}) {
 
         html += `
             <div class="col-md-6">
-                <div class="card bg-dark">
+                <div class="card bg-body-tertiary">
                     <div class="card-body py-2">
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}</span>
@@ -2040,7 +2235,8 @@ function describeSchedule(triggerType, triggerValue) {
 
     if (isSimple) {
         const timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
-        const dayNums = dow.split(',').map(Number);
+        // Convert APScheduler day (0=Mon) to Unix cron day (0=Sun) for DAY_NAMES lookup
+        const dayNums = dow.split(',').map(d => (Number(d) + 1) % 7);
         const allDays = dayNums.length === 7;
         const weekdays = dayNums.length === 5
             && [1,2,3,4,5].every(d => dayNums.includes(d));
@@ -2059,8 +2255,148 @@ function describeSchedule(triggerType, triggerValue) {
     return triggerValue;
 }
 
+// Compact schedule summary rendered inside the Job Statistics card on the
+// Dashboard.  Shows next upcoming run + a small configured/enabled count.
+// The Schedules page is the authoritative place for CRUD — this is just
+// an at-a-glance pointer.
+function updateScheduleTeaser() {
+    const body = document.getElementById('scheduleTeaserBody');
+    if (!body) return;
+
+    if (!schedules || schedules.length === 0) {
+        body.innerHTML =
+            '<div class="d-flex align-items-center gap-2 text-muted small">' +
+            '<i class="bi bi-calendar-x"></i>' +
+            '<span>No schedules configured.</span>' +
+            '<a href="/schedules" class="ms-auto">Create one →</a>' +
+            '</div>';
+        return;
+    }
+
+    const total = schedules.length;
+    const enabled = schedules.filter(s => s.enabled !== false);
+    const enabledCount = enabled.length;
+    const disabledCount = total - enabledCount;
+    const upcoming = enabled
+        .filter(s => s.next_run)
+        .sort((a, b) => new Date(a.next_run) - new Date(b.next_run));
+    const nextOne = upcoming[0] || null;
+
+    const countWord = total === 1 ? 'schedule' : 'schedules';
+    let summary = total + ' ' + countWord;
+    if (total > 0 && enabledCount === total) {
+        summary += ' · all enabled';
+    } else if (enabledCount === 0) {
+        summary += ' · all disabled';
+    } else if (disabledCount === 1) {
+        summary += ' · 1 disabled';
+    } else {
+        summary += ' · ' + disabledCount + ' disabled';
+    }
+
+    let topLine;
+    if (nextOne) {
+        const dt = new Date(nextOne.next_run);
+        const rel = _formatRelativeToNow(dt);
+        const absolute = _formatAbsoluteShort(dt);
+        const tooltip = dt.toLocaleString();
+        topLine =
+            '<div class="d-flex align-items-baseline gap-2" title="' + escapeHtml(tooltip) + '">' +
+            '<i class="bi bi-clock-history text-muted"></i>' +
+            '<div class="text-truncate">' +
+            '<span class="text-muted">Next:</span> ' +
+            '<strong>' + escapeHtml(nextOne.name) + '</strong>' +
+            '<span class="text-muted"> — ' + escapeHtml(rel) + '</span>' +
+            '<span class="text-muted small ms-1">(' + escapeHtml(absolute) + ')</span>' +
+            '</div>' +
+            '</div>';
+    } else {
+        topLine =
+            '<div class="d-flex align-items-center gap-2 text-muted">' +
+            '<i class="bi bi-clock-history"></i>' +
+            '<span>No upcoming runs</span>' +
+            '</div>';
+    }
+
+    body.innerHTML =
+        topLine +
+        '<div class="small text-muted mt-1">' + escapeHtml(summary) + '</div>';
+}
+
+// Natural-language "time until" for the schedule teaser.  Kept separate from
+// the generic formatDate helper so we can tune the copy for the dashboard
+// without affecting other screens.
+function _formatRelativeToNow(dt) {
+    const diffMs = dt.getTime() - Date.now();
+    const absMs = Math.abs(diffMs);
+    const past = diffMs < 0;
+
+    if (absMs < 45 * 1000) return past ? 'just now' : 'any moment now';
+
+    const mins = Math.round(absMs / 60000);
+    if (mins < 60) {
+        const unit = mins === 1 ? 'minute' : 'minutes';
+        return past ? mins + ' ' + unit + ' ago' : 'in ' + mins + ' ' + unit;
+    }
+
+    const hours = Math.round(mins / 60);
+    if (hours < 24) {
+        const unit = hours === 1 ? 'hour' : 'hours';
+        return past ? 'about ' + hours + ' ' + unit + ' ago' : 'in about ' + hours + ' ' + unit;
+    }
+
+    // 24h+ — prefer day-anchored wording ("tomorrow", "Saturday", "in 2 weeks")
+    if (past) {
+        const days = Math.round(hours / 24);
+        if (days === 1) return 'yesterday';
+        if (days < 7) return days + ' days ago';
+        if (days < 14) return '1 week ago';
+        if (days < 30) return Math.round(days / 7) + ' weeks ago';
+        return days + ' days ago';
+    }
+
+    const now = new Date();
+    const nowMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+    const dayDiff = Math.round((dtMid - nowMid) / 86400000);
+
+    if (dayDiff === 1) return 'tomorrow';
+    if (dayDiff >= 2 && dayDiff <= 6) {
+        const weekday = dt.toLocaleDateString(undefined, { weekday: 'long' });
+        return 'on ' + weekday;
+    }
+    if (dayDiff === 7) return 'in 1 week';
+    if (dayDiff < 14) return 'in ' + dayDiff + ' days';
+    if (dayDiff < 30) return 'in ' + Math.round(dayDiff / 7) + ' weeks';
+    return 'in ' + dayDiff + ' days';
+}
+
+// Short absolute timestamp for the schedule teaser hint line.  Shows just
+// the time for runs today, weekday+time within a week, and date+time for
+// anything farther out.  Locale-respecting.
+function _formatAbsoluteShort(dt) {
+    const now = new Date();
+    const nowMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+    const dayDiff = Math.round((dtMid - nowMid) / 86400000);
+
+    const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (dayDiff === 0) return timeStr;
+    if (dayDiff >= 1 && dayDiff <= 6) {
+        const weekday = dt.toLocaleDateString(undefined, { weekday: 'short' });
+        return weekday + ' ' + timeStr;
+    }
+    return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + timeStr;
+}
+
 function updateScheduleList() {
+    // Always update the teaser card if it exists (Dashboard).
+    updateScheduleTeaser();
+
+    // Full schedule table only lives on the Schedules page.  When the
+    // tbody isn't in the DOM, there's nothing else to render.
     const tbody = document.getElementById('scheduleList');
+    if (!tbody) return;
 
     if (schedules.length === 0) {
         tbody.innerHTML = `
@@ -2088,9 +2424,17 @@ function updateScheduleList() {
         const schedPriLabel = PRIORITY_LABELS[schedPri] || 'Normal';
         const schedPriBadge = PRIORITY_BADGE_CLASS[schedPri] || 'bg-primary';
 
+        // Recently-added schedules get a subtle primary badge next to
+        // the name so users can tell them apart from full-library scans.
+        const cfg = schedule.config || {};
+        const isRecentlyAdded = cfg.job_type === 'recently_added';
+        const typeBadge = isRecentlyAdded
+            ? ' <span class="badge bg-primary bg-opacity-25 text-primary" title="Scans items added in the last ' + (cfg.lookback_hours || 1) + 'h"><i class="bi bi-arrow-repeat me-1"></i>Recently Added</span>'
+            : '';
+
         html += `
             <tr>
-                <td>${escapeHtml(schedule.name)}</td>
+                <td>${escapeHtml(schedule.name)}${typeBadge}</td>
                 <td>${escapeHtml(schedule.library_name) || 'All Libraries'}</td>
                 <td><code>${escapeHtml(cronDisplay)}</code></td>
                 <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
@@ -2132,8 +2476,15 @@ function showNewJobModal() {
                 </label>
             </div>
         `).join('');
+    } else if (librariesLoadError) {
+        libraryList.innerHTML =
+            '<div class="text-warning small d-flex align-items-start gap-2">' +
+            '<i class="bi bi-exclamation-triangle-fill mt-1"></i>' +
+            '<span>Can\'t load libraries right now. ' +
+            '<a href="/settings" class="text-decoration-none">Check your Plex connection in Settings</a>.</span>' +
+            '</div>';
     } else {
-        libraryList.innerHTML = '<div class="text-muted small">No libraries found</div>';
+        libraryList.innerHTML = '<div class="text-muted small">No libraries found on this Plex server.</div>';
     }
 
     // Reset "All Libraries" checkbox to checked
@@ -2471,6 +2822,27 @@ function onScheduleTypeChange() {
     document.getElementById('scheduleFieldsCron').classList.toggle('d-none', selected !== 'cron');
 }
 
+function onScanModeChange() {
+    const selected = document.querySelector('input[name="scanMode"]:checked').value;
+    const lookbackGroup = document.getElementById('scheduleLookbackGroup');
+    if (lookbackGroup) {
+        lookbackGroup.style.display = selected === 'recently_added' ? '' : 'none';
+    }
+    // When flipping to recently-added in "Add" mode with untouched defaults,
+    // nudge the trigger type to Interval and pre-fill 15 minutes — that's
+    // the canonical shape of a Recently Added scanner.
+    if (selected === 'recently_added') {
+        const editId = document.getElementById('scheduleEditId').value;
+        const intervalInput = document.getElementById('scheduleIntervalValue');
+        if (!editId && intervalInput && intervalInput.value === '2') {
+            document.getElementById('scheduleTypeInterval').checked = true;
+            intervalInput.value = '15';
+            document.getElementById('scheduleIntervalUnit').value = 'minutes';
+            onScheduleTypeChange();
+        }
+    }
+}
+
 function _getSelectedScheduleType() {
     return document.querySelector('input[name="scheduleType"]:checked').value;
 }
@@ -2482,6 +2854,11 @@ function _resetScheduleForm() {
     document.getElementById('scheduleEditId').value = '';
     document.getElementById('scheduleEnabled').checked = true;
     document.getElementById('schedulePriority').value = '2';
+
+    // Reset scan mode to Full library and hide lookback group
+    document.getElementById('scanModeFull').checked = true;
+    document.getElementById('scheduleLookback').value = '1';
+    onScanModeChange();
 
     // Reset schedule type to Specific Time
     document.getElementById('scheduleTypeTime').checked = true;
@@ -2528,6 +2905,20 @@ function showEditScheduleModal(scheduleId) {
     document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
     document.getElementById('schedulePriority').value = String(schedule.priority || 2);
 
+    // Pre-fill scan mode + lookback from the schedule's config
+    const cfg = schedule.config || {};
+    if (cfg.job_type === 'recently_added') {
+        document.getElementById('scanModeRecent').checked = true;
+        const lookbackSelect = document.getElementById('scheduleLookback');
+        const lookbackVal = String(cfg.lookback_hours || 1);
+        if (Array.from(lookbackSelect.options).some(o => o.value === lookbackVal)) {
+            lookbackSelect.value = lookbackVal;
+        }
+    } else {
+        document.getElementById('scanModeFull').checked = true;
+    }
+    onScanModeChange();
+
     if (schedule.trigger_type === 'interval' && schedule.trigger_value) {
         // Interval schedule: populate interval fields
         document.getElementById('scheduleTypeInterval').checked = true;
@@ -2553,7 +2944,8 @@ function showEditScheduleModal(scheduleId) {
             document.getElementById('scheduleTypeTime').checked = true;
             document.getElementById('scheduleTime').value =
                 `${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}`;
-            const cronDays = parts[4].split(',').map(d => d.trim());
+            // Convert APScheduler day (0=Mon) back to Unix cron day (0=Sun)
+            const cronDays = parts[4].split(',').map(d => String((parseInt(d.trim()) + 1) % 7));
             document.querySelectorAll('.schedule-day').forEach(cb => {
                 cb.checked = cronDays.includes(cb.value);
             });
@@ -2585,13 +2977,23 @@ async function saveSchedule() {
     const scheduleType = _getSelectedScheduleType();
     const libraryId = document.getElementById('scheduleLibrary').value;
     const library = libraries.find(l => l.id === libraryId);
+    const scanMode = document.querySelector('input[name="scanMode"]:checked').value;
+
+    // Build the config blob — recently-added schedules carry their
+    // lookback_hours value through the same config dict that user
+    // schedules already use.
+    const scheduleConfig = { job_type: scanMode };
+    if (scanMode === 'recently_added') {
+        scheduleConfig.lookback_hours = parseFloat(document.getElementById('scheduleLookback').value) || 1;
+    }
 
     const payload = {
         name: name,
         library_id: libraryId || null,
         library_name: library ? library.name : 'All Libraries',
         enabled: document.getElementById('scheduleEnabled').checked,
-        priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2
+        priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2,
+        config: scheduleConfig,
     };
 
     if (scheduleType === 'specific-time') {
@@ -2606,7 +3008,9 @@ async function saveSchedule() {
             return;
         }
         const [hours, minutes] = timeValue.split(':');
-        payload.cron_expression = `${parseInt(minutes)} ${parseInt(hours)} * * ${selectedDays.join(',')}`;
+        // Convert Unix cron day (0=Sun) to APScheduler day (0=Mon)
+        const apsDays = selectedDays.map(d => (parseInt(d) + 6) % 7);
+        payload.cron_expression = `${parseInt(minutes)} ${parseInt(hours)} * * ${apsDays.join(',')}`;
     } else if (scheduleType === 'interval') {
         const intervalValue = parseInt(document.getElementById('scheduleIntervalValue').value, 10);
         if (!intervalValue || intervalValue < 1) {

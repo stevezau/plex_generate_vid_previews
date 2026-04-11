@@ -221,7 +221,7 @@ class TestBifViewerPage:
     def test_renders_when_authenticated(self, authed_client):
         resp = authed_client.get("/bif-viewer")
         assert resp.status_code == 200
-        assert b"BIF Viewer" in resp.data
+        assert b"Preview Inspector" in resp.data
 
 
 # ---------------------------------------------------------------------------

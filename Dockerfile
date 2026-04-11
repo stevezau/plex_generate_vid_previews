@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Builder — compile native extensions and build wheels
 # =============================================================================
-FROM linuxserver/ffmpeg:8.0.1-cli-ls56 AS builder
+FROM linuxserver/ffmpeg:8.0.1-cli-ls64 AS builder
 
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 
@@ -39,6 +39,12 @@ ARG GIT_SHA=unknown
 # - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9)
 # - AMD: mesa-va-drivers (AMD GPUs via VAAPI)
 # - ARM/VideoCore: mesa-va-drivers (Mali GPUs, Raspberry Pi)
+# - mesa-vulkan-drivers: Mesa's Vulkan ICDs (Intel ANV, AMD RADV, llvmpipe).
+#   Required so libplacebo's Dolby Vision Profile 5 tone mapping can use
+#   Mesa Vulkan on dual-GPU hosts where /dev/dri is mounted (e.g. NVIDIA
+#   + Intel iGPU). Without this the container has no hardware Vulkan
+#   driver from apt and falls back to llvmpipe, which has a libplacebo
+#   rendering bug that paints a green rectangle onto DV5 thumbnails.
 # - libva2, libva-drm2: VA-API libraries
 # - vainfo: Tool to test/verify VA-API functionality
 # - pciutils: Provides lspci for better GPU naming
@@ -48,7 +54,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     mediainfo python3 python3-pip gosu pciutils git \
     libchromaprint-tools \
-    mesa-va-drivers libva2 libva-drm2 vainfo && \
+    mesa-va-drivers mesa-vulkan-drivers libva2 libva-drm2 vainfo && \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       apt-get install -y --no-install-recommends \
         intel-media-va-driver-non-free i965-va-driver; \
