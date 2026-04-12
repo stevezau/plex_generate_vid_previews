@@ -558,6 +558,31 @@ document.addEventListener('DOMContentLoaded', function() {
         smoothScroll: true
     });
 
+    // Manual scroll on sidebar click — CSS scroll-margin-top is inconsistent
+    // with Bootstrap's sticky navbar + smooth scroll on this page, so we
+    // measure navbar height at click time and scroll explicitly.
+    function scrollToSection(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var navbar = document.querySelector('.navbar.sticky-top');
+        var navH = navbar ? navbar.offsetHeight : 56;
+        var top = el.getBoundingClientRect().top + window.scrollY - navH - 16;
+        window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
+    }
+    document.querySelectorAll('#settings-sidebar a.nav-link[href^="#section-"]').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+            var href = link.getAttribute('href') || '';
+            if (!href.startsWith('#')) return;
+            e.preventDefault();
+            scrollToSection(href.substring(1));
+            if (history.pushState) history.pushState(null, '', href);
+        });
+    });
+    // Honour an initial #section-... in the URL on first load
+    if (window.location.hash && window.location.hash.startsWith('#section-')) {
+        setTimeout(function () { scrollToSection(window.location.hash.substring(1)); }, 100);
+    }
+
     // Fire all API calls concurrently to avoid a sequential waterfall.
     // GPU rendering needs window._gpuConfig from settings, so we start
     // the GPU status fetch in parallel but render after both resolve.
