@@ -294,26 +294,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Libraries are needed for the schedule modal's library selector.
     if (typeof loadLibraries === 'function') loadLibraries();
 
-    // Load the schedule list, then honour ?editSchedule=<id> on the URL.
-    if (typeof loadSchedules === 'function') {
-        loadSchedules().then(() => {
-            if (typeof maybeAutoOpenScheduleEdit === 'function') {
-                maybeAutoOpenScheduleEdit();
-            }
-        });
-    }
-
-    // Poll schedules every 10s so "Next Run" and "Status" stay fresh.
-    setInterval(() => {
-        if (typeof loadSchedules === 'function') loadSchedules();
-    }, 10000);
-
-    // Activate ScrollSpy for the sidebar.
-    new bootstrap.ScrollSpy(document.body, {
-        target: '#schedules-sidebar',
-        rootMargin: '0px 0px -60%',
-        smoothScroll: true,
-    });
+    // Polling and ScrollSpy are managed by automation.html's coordinator
+    // to avoid duplicate /api/schedules requests and ScrollSpy collisions.
 
     // Smooth-scroll for sidebar anchors with navbar offset.
     document.querySelectorAll('a[href^="#section-schedules-"]').forEach(function(link) {

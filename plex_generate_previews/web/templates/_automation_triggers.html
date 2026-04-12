@@ -686,21 +686,10 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('recentlyAddedCreateDefaultBtn').addEventListener('click', createDefaultRecentlyAddedScanner);
     document.getElementById('recentlyAddedScanNowBtn').addEventListener('click', scanAllRecentlyAddedNow);
 
+    // Initial data load — polling is managed by automation.html's coordinator
+    // to avoid duplicate /api/schedules requests from both tabs.
     loadRecentlyAddedScanners();
-    // Keep the scanner status fresh — the user might be editing schedules
-    // in another tab.  10s is enough to feel responsive without hammering.
-    setInterval(loadRecentlyAddedScanners, 10000);
-
-    setInterval(loadHistory, 10000);
-
-    // Activate ScrollSpy so the sidebar tracks the scrolled section.
-    // The mirror target is the body; a 60% bottom margin means a
-    // section is "active" when its top half is in view.
-    new bootstrap.ScrollSpy(document.body, {
-        target: '#webhooks-sidebar',
-        rootMargin: '0px 0px -60%',
-        smoothScroll: true,
-    });
+    loadHistory();
 
     // Intercept every anchor link targeting a #section-webhooks-* id and
     // scroll manually, measuring the navbar height at click time.  CSS
@@ -948,8 +937,7 @@ async function loadWebhookSettings() {
 
 function refreshScrollSpy() {
     try {
-        var spy = bootstrap.ScrollSpy.getInstance(document.body);
-        if (spy) spy.refresh();
+        if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
     } catch (e) { /* no-op */ }
 }
 

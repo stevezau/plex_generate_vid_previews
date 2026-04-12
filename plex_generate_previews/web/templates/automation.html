@@ -138,6 +138,64 @@
         btn.addEventListener('shown.bs.tab', openModal, { once: true });
         bootstrap.Tab.getOrCreateInstance(btn).show();
     };
+
+    /* --- Polling coordinator ---
+     * Both partials need /api/schedules data on a 10s loop, but we only
+     * fetch once and let each handler consume the result. History polling
+     * only runs while the Triggers tab is visible. */
+    var _historyTimer = null;
+    function startHistoryPolling() {
+        if (_historyTimer) return;
+        _historyTimer = setInterval(function () {
+            if (typeof loadHistory === 'function') loadHistory();
+        }, 10000);
+    }
+    function stopHistoryPolling() {
+        if (_historyTimer) { clearInterval(_historyTimer); _historyTimer = null; }
+    }
+
+    setInterval(function () {
+        if (typeof loadSchedules === 'function') {
+            loadSchedules().then(function () {
+                if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
+            });
+        }
+    }, 10000);
+
+    // Initial load: schedules first (populates global array), then scanners + editSchedule deep-link
+    if (typeof loadSchedules === 'function') {
+        loadSchedules().then(function () {
+            if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
+            if (typeof maybeAutoOpenScheduleEdit === 'function') maybeAutoOpenScheduleEdit();
+        });
+    }
+
+    // History polling — active only when Triggers tab is showing
+    startHistoryPolling();
+    var triggersBtn = document.getElementById('tab-triggers-tab');
+    var schedulesBtn = document.getElementById('tab-schedules-tab');
+    if (triggersBtn) triggersBtn.addEventListener('shown.bs.tab', startHistoryPolling);
+    if (schedulesBtn) schedulesBtn.addEventListener('shown.bs.tab', stopHistoryPolling);
+
+    /* --- ScrollSpy per-tab ---
+     * Only one ScrollSpy on document.body at a time to avoid collisions.
+     * Construct on tab show, dispose on tab hide. */
+    function activateScrollSpy(target) {
+        var existing = bootstrap.ScrollSpy.getInstance(document.body);
+        if (existing) existing.dispose();
+        var spy = new bootstrap.ScrollSpy(document.body, {
+            target: target,
+            rootMargin: '0px 0px -60%',
+            smoothScroll: true,
+        });
+        if (target === '#webhooks-sidebar') window._triggersScrollSpy = spy;
+        return spy;
+    }
+
+    // Activate for the default tab (Triggers), then swap on tab change
+    activateScrollSpy('#webhooks-sidebar');
+    if (triggersBtn) triggersBtn.addEventListener('shown.bs.tab', function () { activateScrollSpy('#webhooks-sidebar'); });
+    if (schedulesBtn) schedulesBtn.addEventListener('shown.bs.tab', function () { activateScrollSpy('#schedules-sidebar'); });
 })();
 </script>
 {% endblock %}
