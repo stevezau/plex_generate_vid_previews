@@ -96,7 +96,7 @@
     <!-- Main Content -->
     <div class="col-lg-9 col-xl-8 automation-content">
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2><i class="bi bi-magic me-2"></i>Automation</h2>
+            <h2 id="automationHeading"><i class="bi bi-broadcast me-2" id="automationHeadingIcon"></i><span id="automationHeadingText">Triggers</span></h2>
             <span id="saveStatusIndicator" class="autosave-indicator"></span>
         </div>
 
@@ -121,6 +121,19 @@
 
     /* --- Tab switching --------------------------------------------------- */
 
+    function setHeading(which) {
+        var icon = document.getElementById('automationHeadingIcon');
+        var text = document.getElementById('automationHeadingText');
+        if (!icon || !text) return;
+        if (which === 'schedules') {
+            icon.className = 'bi bi-calendar-event me-2';
+            text.textContent = 'Schedules';
+        } else {
+            icon.className = 'bi bi-broadcast me-2';
+            text.textContent = 'Triggers';
+        }
+    }
+
     function showAutomationTab(which) {
         var triggersPane = document.getElementById('pane-triggers');
         var schedulesPane = document.getElementById('pane-schedules');
@@ -136,6 +149,7 @@
             schedulesLinks.classList.remove('d-none');
             triggersGroup.classList.remove('active');
             schedulesGroup.classList.add('active');
+            setHeading('schedules');
             if (window.history && history.replaceState) {
                 history.replaceState(null, '', window.location.pathname + '#schedules');
             }
@@ -147,6 +161,7 @@
             triggersLinks.classList.remove('d-none');
             schedulesGroup.classList.remove('active');
             triggersGroup.classList.add('active');
+            setHeading('triggers');
             if (window.history && history.replaceState) {
                 history.replaceState(null, '', window.location.pathname + '#webhooks');
             }
