@@ -826,19 +826,12 @@ def get_system_status():
         job_manager = get_job_manager()
         running_job = job_manager.get_running_job()
 
-        tz_info = _get_timezone_info()
-        vk_info = _get_vulkan_info()
         resp = {
             "gpus": gpus,
             "gpu_stats": [],
             "running_job": running_job.to_dict() if running_job else None,
             "pending_jobs": len(job_manager.get_pending_jobs()),
         }
-        if "warning" in tz_info:
-            resp["timezone_warning"] = tz_info["warning"]
-        if "warning" in vk_info:
-            resp["vulkan_warning"] = vk_info["warning"]
-
         return jsonify(resp)
     except Exception as e:
         logger.error(f"Failed to get system status: {e}")

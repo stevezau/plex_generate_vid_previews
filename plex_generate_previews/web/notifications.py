@@ -8,11 +8,10 @@ when the warning body evolves between releases.
 
 Current sources:
 
-- ``vulkan_software_fallback`` — the existing Dolby Vision Profile 5
-  green-overlay warning previously rendered as a settings-page banner.
-  The detailed HTML body is produced by ``api_system._get_vulkan_info``
-  and relocated into a notification entry here.  No content changes —
-  this module only wraps the existing warning.
+- ``vulkan_software_fallback`` — Dolby Vision Profile 5 green-overlay
+  warning, sourced from ``api_system._get_vulkan_info``.
+- ``timezone_misconfigured`` — container is running UTC without an
+  explicit TZ env var, sourced from ``api_system._get_timezone_info``.
 
 Session-only dismissals live in ``_SESSION_DISMISSED`` (process memory,
 cleared on restart); permanent dismissals live in ``settings.json``.
@@ -27,6 +26,7 @@ from loguru import logger
 
 
 VULKAN_SOFTWARE_FALLBACK_ID = "vulkan_software_fallback"
+TIMEZONE_MISCONFIGURED_ID = "timezone_misconfigured"
 
 
 _SESSION_DISMISSED: set[str] = set()
@@ -90,10 +90,34 @@ def _build_vulkan_software_fallback_notification() -> Optional[Dict[str, Any]]:
     }
 
 
+def _build_timezone_misconfigured_notification() -> Optional[Dict[str, Any]]:
+    """Return a notification dict when the container is running UTC without TZ.
+
+    Reuses the warning HTML produced by ``api_system._get_timezone_info``
+    so there's a single source of truth for the remediation text.
+    """
+    from .routes.api_system import _get_timezone_info
+
+    info = _get_timezone_info()
+    warning_html = info.get("warning")
+    if not warning_html:
+        return None
+
+    return {
+        "id": TIMEZONE_MISCONFIGURED_ID,
+        "severity": "warning",
+        "title": "Timezone not configured",
+        "body_html": warning_html,
+        "dismissable": True,
+        "source": "timezone_probe",
+    }
+
+
 def _notification_sources() -> List[Optional[Dict[str, Any]]]:
     """All notification builders.  Add new sources here as they arrive."""
     return [
         _build_vulkan_software_fallback_notification(),
+        _build_timezone_misconfigured_notification(),
     ]
 
 
