@@ -4,10 +4,13 @@ Detects available GPU hardware and returns appropriate configuration
 for FFmpeg hardware acceleration. Supports NVIDIA, AMD, Intel, Apple (macOS), and Windows GPUs.
 """
 
+import glob
+import json
 import os
 import platform
 import re
 import subprocess
+import tempfile
 from typing import List, Optional, Tuple
 
 from loguru import logger
@@ -550,6 +553,37 @@ def _find_nvidia_egl_vendor_json() -> Optional[str]:
     return None
 
 
+# Glob patterns for ``libEGL_nvidia.so*``. nvidia-container-toolkit mounts
+# this library when the ``graphics`` driver capability is declared, and
+# Strategy 2c (below) needs to know whether it's present before trying to
+# route GLVND's libEGL lookup at it. If it isn't mounted, synthesising a
+# ``10_nvidia.json`` that points at ``libEGL_nvidia.so.0`` is a dead end.
+_LIBEGL_NVIDIA_GLOBS = (
+    "/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so*",
+    "/usr/lib/aarch64-linux-gnu/libEGL_nvidia.so*",
+    "/usr/lib/libEGL_nvidia.so*",
+    "/usr/lib64/libEGL_nvidia.so*",
+)
+
+
+def _find_libegl_nvidia() -> Optional[str]:
+    """Return the first path to ``libEGL_nvidia.so*`` if the library is present.
+
+    Searches the standard Debian multiarch paths plus the classic
+    ``/usr/lib`` / ``/usr/lib64`` fallbacks that nvidia-container-toolkit
+    uses when mounting the ``graphics`` capability.  Returns the first
+    match or None.  Used by :func:`_probe_vulkan_device` Strategy 2c to
+    decide whether synthesising a GLVND vendor JSON is useful: if the
+    library is absent, GLVND would route to a file that doesn't exist
+    and the fix would no-op.
+    """
+    for pattern in _LIBEGL_NVIDIA_GLOBS:
+        matches = glob.glob(pattern)
+        if matches:
+            return matches[0]
+    return None
+
+
 def _run_vulkan_probe(
     env_overrides: Optional[dict] = None,
 ) -> tuple[Optional[str], str]:
@@ -727,6 +761,75 @@ def _probe_vulkan_device() -> Optional[str]:
             "Vulkan probe: no NVIDIA GLVND EGL vendor JSON found at "
             f"{_NVIDIA_EGL_VENDOR_JSON_PATHS}; skipping Strategy 2."
         )
+
+    # Strategy 2c: synthesise a GLVND NVIDIA EGL vendor JSON into a
+    # temp file when one doesn't exist on disk AND ``libEGL_nvidia.so``
+    # is present in the container.  This is the fix for users whose
+    # ``nvidia-container-toolkit`` mounts the NVIDIA libraries (ICD,
+    # libEGL_nvidia, libGLX_nvidia, the glvkspirv SPIR-V compiler, ...)
+    # but does NOT mount the single tiny ``10_nvidia.json`` GLVND vendor
+    # config that tells the libEGL dispatcher which vendor library to
+    # hand out.  Without that file, GLVND picks whichever vendor config
+    # is first on disk — which is Mesa's on the linuxserver/ffmpeg image
+    # — the libGLX_nvidia init-time EGL probe gets a Mesa context, and
+    # NVIDIA's Vulkan ICD quietly marks itself unusable.
+    #
+    # NVIDIA's own "minimal Docker Vulkan offscreen setup" guidance on
+    # forums.developer.nvidia.com (thread id 242883) confirms that the
+    # GLVND vendor JSON is required and that it is a three-line file:
+    #
+    #     {"file_format_version":"1.0.0",
+    #      "ICD":{"library_path":"libEGL_nvidia.so.0"}}
+    #
+    # We write that verbatim to ``{tempdir}/plex_previews_nvidia_egl_
+    # vendor.json`` and set ``__EGL_VENDOR_LIBRARY_FILENAMES`` at it.
+    # The library_path stays bare so the dynamic loader resolves it via
+    # the standard search path (exactly what NVIDIA's own Dockerfile
+    # does).  Gated on ``libEGL_nvidia.so*`` actually being present in
+    # the container so we don't fabricate a pointer to a file that
+    # doesn't exist.
+    if nvidia_egl_vendor is None:
+        libegl_nvidia = _find_libegl_nvidia()
+        if libegl_nvidia:
+            synth_vendor_path = os.path.join(
+                tempfile.gettempdir(), "plex_previews_nvidia_egl_vendor.json"
+            )
+            synth_payload = {
+                "file_format_version": "1.0.0",
+                "ICD": {"library_path": "libEGL_nvidia.so.0"},
+            }
+            try:
+                with open(synth_vendor_path, "w", encoding="utf-8") as fh:
+                    json.dump(synth_payload, fh)
+                logger.debug(
+                    f"Vulkan probe (strategy 2c): synthesised GLVND NVIDIA "
+                    f"EGL vendor JSON at {synth_vendor_path} "
+                    f"(libEGL_nvidia.so found at {libegl_nvidia}); retrying probe"
+                )
+                retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": synth_vendor_path}
+                retry_device, _ = _run_vulkan_probe(retry_env)
+                if retry_device and not _is_software_vulkan_device(retry_device):
+                    logger.info(
+                        f"Vulkan probe (strategy 2c): success with "
+                        f"{retry_device!r} via synthesised GLVND vendor JSON "
+                        f"at {synth_vendor_path}"
+                    )
+                    _VULKAN_ENV_OVERRIDES = dict(retry_env)
+                    return retry_device
+                logger.debug(
+                    f"Vulkan probe (strategy 2c): synthesised vendor JSON "
+                    f"probe still returned {retry_device!r}; trying Strategy 2b."
+                )
+            except OSError as exc:
+                logger.debug(
+                    f"Vulkan probe (strategy 2c): could not write "
+                    f"{synth_vendor_path}: {exc}; trying Strategy 2b."
+                )
+        else:
+            logger.debug(
+                "Vulkan probe: no libEGL_nvidia.so* found in standard "
+                f"library paths ({_LIBEGL_NVIDIA_GLOBS}); skipping Strategy 2c."
+            )
 
     # Strategy 2b: older heuristic — force VK_DRIVER_FILES at the NVIDIA
     # ICD. Kept for the case where the ICD JSON is injected but the EGL

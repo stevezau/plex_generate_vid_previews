@@ -1726,8 +1726,15 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
         gpu=None,
+        vulkan_device_info=None,
     ):
-        """Shared helper: run generate_images and return the FFmpeg args."""
+        """Shared helper: run generate_images and return the FFmpeg args.
+
+        ``vulkan_device_info`` patches ``get_vulkan_device_info`` for the
+        duration of the call.  Defaults to a healthy hardware device so
+        existing DV5 tests continue to hit the libplacebo path; tests
+        for the software-fallback guard pass a software dict.
+        """
         mock_run.return_value = MagicMock(returncode=0)
 
         mock_info = MagicMock()
@@ -1755,9 +1762,18 @@ class TestProactiveDVSkip:
 
         mock_glob.side_effect = glob_side_effect
 
-        success, image_count, hw_used, seconds, speed, *_ = generate_images(
-            video_filename, temp_dir, gpu, None, mock_config
-        )
+        default_vulkan = vulkan_device_info or {
+            "device": "Quadro P4000 (NVIDIA)",
+            "is_software": False,
+        }
+
+        with patch(
+            "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+            return_value=default_vulkan,
+        ):
+            success, image_count, hw_used, seconds, speed, *_ = generate_images(
+                video_filename, temp_dir, gpu, None, mock_config
+            )
 
         assert success is True
         assert image_count >= 1
@@ -1825,12 +1841,19 @@ class TestProactiveDVSkip:
         assert "-skip_frame:v" not in args
 
         # Regression guard for issue #212: on the software-decode DV5 path
-        # the video decoder must NOT be capped to 1 thread — doing so
-        # pinned 4K HEVC to a single core and produced ~0.8x realtime on
-        # otherwise capable hardware.  NVDEC (separate test) DOES re-apply
-        # the cap because its decoder work is offloaded to hardware.
-        assert "-threads:v" not in args, (
-            "DV Profile 5 software decode must not cap the video-thread pool"
+        # the video decoder must explicitly override the global -threads N
+        # cap with -threads:v 0 (FFmpeg "pick optimal count") so 4K HEVC
+        # can saturate all available cores.  Without this, the global
+        # -threads N from config.ffmpeg_threads bleeds into the decoder
+        # pool and pins it to N threads → ~0.8–1.5x realtime.  NVDEC
+        # (separate test) uses -threads:v 1 because its decoder work is
+        # offloaded to hardware and the CPU thread is just an orchestrator.
+        assert "-threads:v" in args, (
+            "DV Profile 5 software decode must pass -threads:v to FFmpeg"
+        )
+        assert args[args.index("-threads:v") + 1] == "0", (
+            "DV Profile 5 software decode must pass -threads:v 0 (unbounded), "
+            "not a capped value — see issue #212"
         )
 
         vf = args[args.index("-vf") + 1]
@@ -1838,6 +1861,140 @@ class TestProactiveDVSkip:
         assert "hwupload" in vf
         assert "colorspace=bt709" not in vf
         assert "zscale" not in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_software_vulkan_uses_dv_safe_filter(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV5 + software Vulkan drops libplacebo and uses the DV-safe filter.
+
+        Regression guard for issue #213's latent bug: if Vulkan falls
+        back to ``llvmpipe`` (e.g. because the container's NVIDIA GLVND
+        config is missing), libplacebo would silently produce green
+        thumbnails.  The pre-flight guard in ``generate_images`` checks
+        ``get_vulkan_device_info()["is_software"]`` and, when true,
+        skips libplacebo entirely and falls through to a plain
+        ``fps=...,scale=...`` filter chain that produces dim-but-
+        colour-correct output.
+        """
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5_sw_vulkan.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu="NVIDIA",
+            vulkan_device_info={
+                "device": "llvmpipe (LLVM 18.1.3, 256 bits) (software)",
+                "is_software": True,
+            },
+        )
+
+        # The pre-flight guard must bypass libplacebo entirely — no
+        # Vulkan init, no hwupload, no libplacebo filter.
+        assert "-init_hw_device" not in args, (
+            "Software Vulkan must not initialise a Vulkan device for DV5"
+        )
+        assert "-filter_hw_device" not in args
+        vf = args[args.index("-vf") + 1]
+        assert "libplacebo" not in vf, (
+            "Software Vulkan must not run libplacebo on DV5 (green overlay bug)"
+        )
+        assert "hwupload" not in vf
+        # Zscale is also wrong on DV5 (no HDR10 base layer) — the
+        # fallback must use the plain fps+scale chain, same as the
+        # DV-safe retry target.
+        assert "zscale" not in vf
+        assert "tonemap" not in vf
+        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf
+        assert vf.startswith("fps=fps=")
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_no_vulkan_device_uses_dv_safe_filter(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV5 + no Vulkan device at all also falls back to DV-safe filter.
+
+        Same guard as the software-Vulkan case but with ``device=None``
+        instead of a software rasteriser string.  Both mean "libplacebo
+        is not usable" and must route to the fps+scale chain.
+        """
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5_no_vulkan.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu="INTEL",
+            vulkan_device_info={"device": None, "is_software": False},
+        )
+
+        assert "-init_hw_device" not in args
+        vf = args[args.index("-vf") + 1]
+        assert "libplacebo" not in vf
+        assert "hwupload" not in vf
+        assert "zscale" not in vf
+        assert vf.startswith("fps=fps=")
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -2200,10 +2357,17 @@ class TestLibplaceboFallback:
 
         mock_glob.side_effect = glob_side_effect
 
-        # Act
-        success, image_count, hw_used, seconds, speed, *_ = generate_images(
-            "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
-        )
+        # Act — force a healthy Vulkan device so the pre-flight software
+        # guard added in Change 3 lets the libplacebo path build normally.
+        # This test specifically exercises the in-flight libplacebo failure
+        # path, not the software-Vulkan pre-flight fallback.
+        with patch(
+            "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+            return_value={"device": "Quadro P4000", "is_software": False},
+        ):
+            success, image_count, hw_used, seconds, speed, *_ = generate_images(
+                "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
+            )
 
         # Assert — success after DV-safe retry
         assert success is True

@@ -107,6 +107,30 @@ _LIBNVIDIA_GLVKSPIRV_GLOBS = (
     "/usr/lib64/libnvidia-glvkspirv.so*",
 )
 
+# Glob patterns for libEGL_nvidia.so, the library GLVND routes to when
+# NVIDIA's vendor config is present.  Strategy 2c in gpu_detection.py only
+# runs when this library is present (otherwise synthesising a vendor JSON
+# would be pointing at a non-existent target).  Exposed in the diagnostic
+# bundle so users / upstream issue readers can see whether Strategy 2c
+# could have helped.
+_LIBEGL_NVIDIA_GLOBS = (
+    "/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so*",
+    "/usr/lib/aarch64-linux-gnu/libEGL_nvidia.so*",
+    "/usr/lib/libEGL_nvidia.so*",
+    "/usr/lib64/libEGL_nvidia.so*",
+)
+
+# Standard locations the GLVND libEGL dispatcher searches for vendor
+# configs.  nvidia-container-toolkit injects its NVIDIA config at
+# /usr/share/glvnd/egl_vendor.d/10_nvidia.json when the ``graphics``
+# capability is set; some setups instead drop it under /etc/glvnd.  Both
+# are checked so the diagnostic bundle can show whether the file is
+# present before Strategy 2c synthesises a replacement.
+_NVIDIA_EGL_VENDOR_JSON_SEARCH_PATHS = (
+    "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+    "/etc/glvnd/egl_vendor.d/10_nvidia.json",
+)
+
 
 def _diagnose_vulkan_environment() -> dict:
     """Gather facts about the container's Vulkan configuration.
@@ -159,6 +183,18 @@ def _diagnose_vulkan_environment() -> dict:
             libnvidia_glvkspirv_found = True
             break
 
+    libegl_nvidia_found = False
+    for pattern in _LIBEGL_NVIDIA_GLOBS:
+        if glob.glob(pattern):
+            libegl_nvidia_found = True
+            break
+
+    nvidia_egl_vendor_json_path: str | None = None
+    for path in _NVIDIA_EGL_VENDOR_JSON_SEARCH_PATHS:
+        if os.path.exists(path):
+            nvidia_egl_vendor_json_path = path
+            break
+
     nvidia_drm_loaded = os.path.exists("/proc/driver/nvidia")
     nvidia_driver_version: str | None = None
     version_path = "/proc/driver/nvidia/version"
@@ -185,6 +221,8 @@ def _diagnose_vulkan_environment() -> dict:
         "nvidia_capabilities_has_graphics": caps_has_graphics,
         "nvidia_icd_json_path": nvidia_icd_json_path,
         "libnvidia_glvkspirv_found": libnvidia_glvkspirv_found,
+        "libegl_nvidia_found": libegl_nvidia_found,
+        "nvidia_egl_vendor_json_path": nvidia_egl_vendor_json_path,
         "nvidia_drm_loaded": nvidia_drm_loaded,
         "nvidia_driver_version": nvidia_driver_version,
     }
@@ -629,6 +667,8 @@ def get_vulkan_debug():
         f"  has 'graphics':            {diag['nvidia_capabilities_has_graphics']}",
         f"nvidia_icd_json_path:        {diag['nvidia_icd_json_path']!r}",
         f"libnvidia_glvkspirv_found:   {diag['libnvidia_glvkspirv_found']}",
+        f"libegl_nvidia_found:         {diag['libegl_nvidia_found']}",
+        f"nvidia_egl_vendor_json_path: {diag['nvidia_egl_vendor_json_path']!r}",
         f"nvidia_drm_loaded:           {diag['nvidia_drm_loaded']}",
         f"nvidia_driver_version:       {diag['nvidia_driver_version']!r}",
         "",
@@ -671,6 +711,87 @@ def get_vulkan_debug():
 
     response_body = "\n".join(bundle_lines)
     return response_body, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@api.route("/system/notifications")
+def list_notifications():
+    """Return active system notifications for the bell-icon dropdown.
+
+    Filters out notifications the user has permanently dismissed (stored
+    in ``settings.json``) and those dismissed for this process session.
+    No authentication required — notifications contain environment
+    diagnostics, not secrets.
+    """
+    from ..notifications import build_active_notifications
+    from ..settings_manager import get_settings_manager
+
+    try:
+        dismissed = get_settings_manager().dismissed_notifications
+    except Exception as exc:
+        logger.warning(
+            f"Notifications: settings lookup failed ({exc!r}); "
+            "treating dismissal list as empty."
+        )
+        dismissed = []
+
+    notifications = build_active_notifications(dismissed_permanent=dismissed)
+    return jsonify({"notifications": notifications})
+
+
+@api.route("/system/notifications/<notification_id>/dismiss", methods=["POST"])
+def dismiss_notification_session(notification_id: str):
+    """Dismiss a notification for the current process session only.
+
+    Cleared on container restart.  No authentication required.
+    """
+    from ..notifications import dismiss_session
+
+    dismiss_session(notification_id)
+    return jsonify({"ok": True, "id": notification_id, "persisted": False})
+
+
+@api.route(
+    "/system/notifications/<notification_id>/dismiss-permanent", methods=["POST"]
+)
+def dismiss_notification_permanent(notification_id: str):
+    """Dismiss a notification permanently (persist to ``settings.json``).
+
+    Survives container restarts.  No authentication required.
+    """
+    from ..settings_manager import get_settings_manager
+
+    try:
+        get_settings_manager().dismiss_notification_permanent(notification_id)
+    except Exception as exc:
+        logger.error(
+            f"Notifications: failed to persist dismissal for {notification_id}: {exc}"
+        )
+        return (
+            jsonify({"ok": False, "error": "Failed to persist dismissal"}),
+            500,
+        )
+    return jsonify({"ok": True, "id": notification_id, "persisted": True})
+
+
+@api.route("/system/notifications/reset-dismissed", methods=["POST"])
+@setup_or_auth_required
+def reset_dismissed_notifications():
+    """Clear all permanently-dismissed notifications.
+
+    Exposed as a settings-page action so users who accidentally
+    dismissed a notification can bring them back.  Requires auth because
+    it modifies persistent settings state.
+    """
+    from ..notifications import reset_session
+    from ..settings_manager import get_settings_manager
+
+    try:
+        get_settings_manager().reset_dismissed_notifications()
+    except Exception as exc:
+        logger.error(f"Notifications: failed to reset dismissed list: {exc}")
+        return jsonify({"ok": False, "error": "Failed to reset"}), 500
+    reset_session()
+    return jsonify({"ok": True})
 
 
 @api.route("/system/rescan-gpus", methods=["POST"])

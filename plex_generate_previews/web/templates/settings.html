@@ -133,25 +133,6 @@
             <button type="button" class="btn-close" aria-label="Close" onclick="dismissTimezoneWarning()"></button>
         </div>
 
-        <!-- Vulkan / libplacebo Warning (DV Profile 5 green overlay).
-             Body is injected from /api/system/vulkan so the text stays
-             in lock-step with the dashboard banner (see app.js). -->
-        <div id="vulkanWarning" class="alert alert-warning alert-dismissible d-none mb-4">
-            <div class="d-flex align-items-start">
-                <i class="bi bi-gpu-card me-2 mt-1"></i>
-                <div>
-                    <strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong>
-                    <div id="vulkanWarningBody"></div>
-                    <div class="mt-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyVulkanDiagnosticBundle(this)">
-                            <i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle
-                        </button>
-                    </div>
-                </div>
-            </div>
-            <button type="button" class="btn-close" aria-label="Close" onclick="dismissVulkanWarning()"></button>
-        </div>
-
         <!-- Plex Connection -->
         <div class="card section-card" id="section-plex-connection">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -582,7 +563,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // the GPU status fetch in parallel but render after both resolve.
     const gpuPromise = fetchGpuStatus();
     checkTimezoneWarning();
-    checkVulkanWarning();
     Promise.all([
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
         loadLibraries(),
@@ -1477,24 +1457,6 @@ function checkTimezoneWarning() {
 function dismissTimezoneWarning() {
     sessionStorage.setItem('tz_warning_dismissed', '1');
     document.getElementById('timezoneWarning').classList.add('d-none');
-}
-
-function checkVulkanWarning() {
-    if (sessionStorage.getItem('vk_warning_dismissed')) return;
-    fetch('/api/system/vulkan')
-        .then(r => r.json())
-        .then(data => {
-            if (!data.warning) return;
-            var body = document.getElementById('vulkanWarningBody');
-            if (body) body.innerHTML = data.warning;
-            document.getElementById('vulkanWarning').classList.remove('d-none');
-        })
-        .catch(() => {});
-}
-
-function dismissVulkanWarning() {
-    sessionStorage.setItem('vk_warning_dismissed', '1');
-    document.getElementById('vulkanWarning').classList.add('d-none');
 }
 </script>
 {% endblock %}

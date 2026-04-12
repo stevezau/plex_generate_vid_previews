@@ -365,6 +365,56 @@ class SettingsManager:
     def processing_paused(self, value: bool) -> None:
         self.set("processing_paused", bool(value))
 
+    @property
+    def dismissed_notifications(self) -> List[str]:
+        """IDs of notifications the user has permanently dismissed.
+
+        Keyed by stable notification ID (e.g. ``"vulkan_software_fallback"``)
+        so the warning message can evolve between releases without
+        un-suppressing the dismissal.  Session-only dismissals live in
+        memory in the notifications module and are not persisted here.
+        """
+        val = self.get("dismissed_notifications", [])
+        if not isinstance(val, list):
+            return []
+        return [str(entry) for entry in val if isinstance(entry, str)]
+
+    @dismissed_notifications.setter
+    def dismissed_notifications(self, value: List[str]) -> None:
+        cleaned = [str(entry) for entry in (value or []) if isinstance(entry, str)]
+        self.set("dismissed_notifications", cleaned)
+
+    def dismiss_notification_permanent(self, notification_id: str) -> None:
+        """Append a notification ID to the persistent dismissal list.
+
+        Idempotent: calling twice with the same ID is a no-op.
+        """
+        with self._lock:
+            current = list(self.dismissed_notifications)
+            if notification_id not in current:
+                current.append(notification_id)
+                self._settings["dismissed_notifications"] = current
+                self._save()
+
+    def undismiss_notification(self, notification_id: str) -> None:
+        """Remove a notification ID from the persistent dismissal list.
+
+        Used by the "reset dismissed notifications" UI button.  Idempotent.
+        """
+        with self._lock:
+            current = list(self.dismissed_notifications)
+            if notification_id in current:
+                current = [n for n in current if n != notification_id]
+                self._settings["dismissed_notifications"] = current
+                self._save()
+
+    def reset_dismissed_notifications(self) -> None:
+        """Clear all persistently-dismissed notifications."""
+        with self._lock:
+            if self._settings.get("dismissed_notifications"):
+                self._settings["dismissed_notifications"] = []
+                self._save()
+
     # =========================================================================
     # Configuration Status Methods
     # =========================================================================

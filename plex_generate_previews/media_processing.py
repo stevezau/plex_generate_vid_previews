@@ -910,6 +910,13 @@ def generate_images(
 
     # Track whether the filter chain requires Vulkan (libplacebo).
     use_libplacebo = False
+    # DV5 content + software/missing Vulkan: skip both libplacebo AND
+    # the zscale fallback, because zscale on a DV5 stream produces a
+    # green overlay (no HDR10 base layer to read).  The default
+    # vf_parameters set above — fps+scale with no tonemap — is the
+    # same DV-safe chain used by the downstream DV-safe retry and
+    # produces dim-but-correct thumbnails.
+    dv5_software_fallback = False
 
     # Check if we have HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
@@ -932,32 +939,52 @@ def generate_images(
                 #    VideoToolbox are untested on this path and stay on
                 #    software decode.  See the vendor gate in _run_ffmpeg
                 #    below.
-                logger.info(
-                    f"Dolby Vision Profile 5 detected for {video_file}; "
-                    f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
-                )
-                use_libplacebo = True
-                # contrast=1.3, saturation=1.3 restore the punch that
-                # libplacebo's default PQ→SDR curve leaves on the table.
-                # Default reinhard compresses mids into a narrow band
-                # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
-                # which reads as dim and washed-out next to the zscale
-                # chain used for HDR10/DV P7+8.
-                #
-                # A plain brightness offset was rejected: it lifts black
-                # levels as much as mids, so blacks turn gray and colors
-                # stay muted.  Scaling contrast and saturation instead
-                # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
-                # preserving deep blacks.  Verified across three MIB
-                # scenes (dark/mid/bright) — no highlight clipping,
-                # punchy output comparable to the DV P7+8 reference.
-                vf_parameters = (
-                    f"hwupload,"
-                    f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                    f":format=yuv420p:fps={fps_value}"
-                    f":contrast=1.3:saturation=1.3,"
-                    f"hwdownload,format=yuv420p,{base_scale}"
-                )
+                #  - Vulkan MUST be hardware.  libplacebo on a software
+                #    rasterizer (llvmpipe/lavapipe) produces a green
+                #    overlay on DV5 output.  Probe the Vulkan state
+                #    first and drop to the DV-safe filter when software.
+                from .gpu_detection import get_vulkan_device_info
+
+                vulkan_info = get_vulkan_device_info()
+                vk_device = vulkan_info.get("device")
+                vk_is_software = vulkan_info.get("is_software", False)
+                if vk_is_software or vk_device is None:
+                    logger.warning(
+                        f"Dolby Vision Profile 5 detected for {video_file} "
+                        f"but Vulkan is unavailable or software only "
+                        f"(device={vk_device!r}); skipping libplacebo and "
+                        "using the DV-safe filter chain (dim but colour-"
+                        "correct thumbnails).  See the dashboard notification "
+                        "centre for the specific remediation steps."
+                    )
+                    dv5_software_fallback = True
+                else:
+                    logger.info(
+                        f"Dolby Vision Profile 5 detected for {video_file}; "
+                        f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
+                    )
+                    use_libplacebo = True
+                    # contrast=1.3, saturation=1.3 restore the punch that
+                    # libplacebo's default PQ→SDR curve leaves on the table.
+                    # Default reinhard compresses mids into a narrow band
+                    # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
+                    # which reads as dim and washed-out next to the zscale
+                    # chain used for HDR10/DV P7+8.
+                    #
+                    # A plain brightness offset was rejected: it lifts black
+                    # levels as much as mids, so blacks turn gray and colors
+                    # stay muted.  Scaling contrast and saturation instead
+                    # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
+                    # preserving deep blacks.  Verified across three MIB
+                    # scenes (dark/mid/bright) — no highlight clipping,
+                    # punchy output comparable to the DV P7+8 reference.
+                    vf_parameters = (
+                        f"hwupload,"
+                        f"libplacebo=tonemapping={config.tonemap_algorithm}"
+                        f":format=yuv420p:fps={fps_value}"
+                        f":contrast=1.3:saturation=1.3,"
+                        f"hwdownload,format=yuv420p,{base_scale}"
+                    )
             elif _is_dolby_vision(hdr_fmt):
                 # Dolby Vision Profile 7/8 with HDR10 backward-compat
                 # base layer.  FFmpeg reads the HDR10 base layer by
@@ -969,8 +996,10 @@ def generate_images(
                     f"mapping (hdr_format={hdr_fmt!r})"
                 )
             # For both DV-with-fallback (above) and non-DV HDR, use
-            # the zscale/tonemap chain.
-            if not use_libplacebo:
+            # the zscale/tonemap chain.  Skip for DV5 software fallback:
+            # zscale on a DV5 stream (no HDR10 base) produces a green
+            # overlay, so the default fps+scale chain is used instead.
+            if not use_libplacebo and not dv5_software_fallback:
                 # npl=100 (SDR reference white) is the standard value
                 # for PQ-to-linear conversion.  Using MaxCLL here would
                 # normalise all luminance to the content peak, making
@@ -1089,6 +1118,21 @@ def generate_images(
         # #212 (DV P5 pinned to one core at ~0.8x before this gate).
         if hw_decode_active:
             args += ["-threads:v", "1"]
+        elif init_vulkan and use_gpu:
+            # DV Profile 5 on non-NVIDIA GPUs: the vendor gate above
+            # fell through to software decode, but the global
+            # "-threads N" / "-filter_threads N" above is still in the
+            # command.  FFmpeg treats "-threads N" as the default for
+            # every codec pool including the video decoder, so without
+            # an explicit override the HEVC 4K 10-bit decoder would
+            # run on only N threads (2 by default).  Set "-threads:v 0"
+            # to tell FFmpeg "pick the optimal count for this decoder",
+            # which lets it saturate available cores while the global
+            # "-threads N" keeps filter-graph / libplacebo threads
+            # bounded.  Fixes issue #212 second-order: bfa67e2 removed
+            # the explicit "-threads:v 1" cap but left the global cap
+            # bleeding into the decoder.
+            args += ["-threads:v", "0"]
 
         # Add skip_frame option for faster decoding (if safe).
         # Disabled for DV Profile 5 (init_vulkan) — RPU side-data has

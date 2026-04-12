@@ -5,6 +5,7 @@ Comprehensive tests for multi-GPU detection, hwaccel testing,
 and device enumeration using extensive mocking.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 from plex_generate_previews.gpu_detection import (
@@ -1909,15 +1910,193 @@ class TestProbeVulkanDevice:
     @patch(
         "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
     )
+    @patch("plex_generate_previews.gpu_detection._find_libegl_nvidia")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_2c_synthesises_vendor_json_when_missing_but_libegl_present(
+        self,
+        mock_run,
+        mock_find_icd,
+        mock_find_egl,
+        mock_find_libegl,
+        _mock_vk,
+        tmp_path,
+    ):
+        """Strategy 2c: no GLVND vendor JSON on disk but libEGL_nvidia.so.0
+        IS present → synthesise a JSON into a tempfile, point
+        ``__EGL_VENDOR_LIBRARY_FILENAMES`` at it, re-probe, and cache
+        the env override on success.
+
+        This is the in-container fix for users whose
+        ``nvidia-container-toolkit`` mounts the NVIDIA libraries but
+        omits the three-line GLVND vendor config that routes libEGL
+        lookups at NVIDIA.  Per NVIDIA's own minimum Dockerfile
+        guidance (forums.developer.nvidia.com thread 242883), a bare
+        ``libEGL_nvidia.so.0`` ``library_path`` is sufficient.
+        """
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_egl.return_value = None  # no GLVND vendor JSON on disk
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_find_libegl.return_value = (
+            "/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.580.119.02"
+        )
+
+        mock_run.side_effect = [
+            # Strategy 1: llvmpipe (no vendor JSON on disk → NVIDIA ICD
+            # init fails internally and loader falls back to llvmpipe)
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2c: probe with the synthesised vendor JSON →
+            # NVIDIA ICD init succeeds and the loader returns the real
+            # Quadro.
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("Quadro P4000 (discrete) (0x1bb1)"),
+            ),
+        ]
+
+        # Point the tempfile root at pytest's tmp_path for cleanliness.
+        with patch(
+            "plex_generate_previews.gpu_detection.tempfile.gettempdir",
+            return_value=str(tmp_path),
+        ):
+            device = _probe_vulkan_device()
+
+        assert device == "Quadro P4000 (discrete) (0x1bb1)"
+
+        # Strategy 1 ran, Strategy 2 was skipped (no vendor on disk),
+        # Strategy 2c synthesised + re-probed.  Total subprocess runs: 2.
+        assert mock_run.call_count == 2
+
+        # Synthesised JSON must exist and have the exact three-line
+        # payload NVIDIA's own minimum Dockerfile uses.
+        synth_path = tmp_path / "plex_previews_nvidia_egl_vendor.json"
+        assert synth_path.exists()
+        payload = json.loads(synth_path.read_text())
+        assert payload == {
+            "file_format_version": "1.0.0",
+            "ICD": {"library_path": "libEGL_nvidia.so.0"},
+        }
+
+        # Strategy 2c probe was invoked with the synthesised path as
+        # __EGL_VENDOR_LIBRARY_FILENAMES.
+        strategy_2c_call = mock_run.call_args_list[1]
+        env_arg = strategy_2c_call.kwargs.get("env") or {}
+        assert env_arg.get("__EGL_VENDOR_LIBRARY_FILENAMES") == str(synth_path)
+        assert "VK_DRIVER_FILES" not in env_arg
+
+        # Env override is cached so ``get_vulkan_env_overrides()``
+        # propagates it into the real FFmpeg subprocess on the
+        # libplacebo DV5 path.
+        assert get_vulkan_env_overrides() == {
+            "__EGL_VENDOR_LIBRARY_FILENAMES": str(synth_path),
+        }
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_libegl_nvidia")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_2c_skipped_when_libegl_nvidia_missing(
+        self, mock_run, mock_find_icd, mock_find_egl, mock_find_libegl, _mock_vk
+    ):
+        """Strategy 2c must not fabricate a vendor JSON when
+        ``libEGL_nvidia.so.0`` is absent — the synthesised file would
+        point at a non-existent library.  Falls through to Strategy 2b.
+        """
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_find_egl.return_value = None
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_find_libegl.return_value = None  # the critical gate
+
+        mock_run.side_effect = [
+            # Strategy 1: llvmpipe
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 2b (VK_DRIVER_FILES): also fails
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            # Strategy 3: diagnostic capture
+            MagicMock(
+                returncode=0,
+                stderr="[Vulkan Loader] Diagnostic capture\n"
+                + self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "llvmpipe (software) (0x0)"
+        # Strategy 2 skipped (no vendor JSON), Strategy 2c skipped (no
+        # libEGL_nvidia target), Strategy 2b runs, Strategy 3 captures.
+        # Total: Strategy 1 + 2b + 3 = 3 calls.
+        assert mock_run.call_count == 3
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_libegl_nvidia")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_2c_skipped_when_vendor_json_already_present(
+        self, mock_run, mock_find_icd, mock_find_egl, mock_find_libegl, _mock_vk
+    ):
+        """Strategy 2c must not synthesise a file when the real GLVND
+        vendor JSON is already on disk — Strategy 2 handles that case.
+        """
+        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_find_libegl.return_value = "/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0"
+
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("llvmpipe (software) (0x0)"),
+            ),
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA RTX A4000 (discrete)"),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "NVIDIA RTX A4000 (discrete)"
+        # Strategy 1 + Strategy 2 (real vendor JSON succeeds) = 2 calls.
+        # Strategy 2c is gated on ``nvidia_egl_vendor is None`` and
+        # must not invoke ``_find_libegl_nvidia``.
+        assert mock_run.call_count == 2
+        mock_find_libegl.assert_not_called()
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_libegl_nvidia")
     @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
     @patch("plex_generate_previews.gpu_detection.subprocess.run")
     def test_all_retries_skipped_when_nothing_to_retry(
-        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+        self, mock_run, mock_find_icd, mock_find_egl, mock_find_libegl, _mock_vk
     ):
-        """No NVIDIA ICD JSON, no EGL vendor JSON → Strategy 2 and 2b
-        are both skipped → Strategy 3 runs a VK_LOADER_DEBUG=all
-        capture → only two subprocess calls (Strategy 1 + Strategy 3).
+        """No NVIDIA ICD JSON, no EGL vendor JSON, no libEGL_nvidia →
+        Strategies 2, 2c, and 2b are all skipped → Strategy 3 runs a
+        VK_LOADER_DEBUG=all capture → only two subprocess calls
+        (Strategy 1 + Strategy 3).
         """
         from plex_generate_previews.gpu_detection import (
             _probe_vulkan_device,
@@ -1926,6 +2105,10 @@ class TestProbeVulkanDevice:
 
         mock_find_egl.return_value = None
         mock_find_icd.return_value = None
+        # Strategy 2c gate: no libEGL_nvidia on the host means
+        # synthesising a vendor JSON would point at a non-existent
+        # library, so 2c correctly no-ops.
+        mock_find_libegl.return_value = None
         mock_run.side_effect = [
             MagicMock(
                 returncode=0,
@@ -2228,6 +2411,8 @@ class TestGetVulkanInfoAPI:
         has_graphics: bool = True,
         icd_path: str | None = "/etc/vulkan/icd.d/nvidia_icd.json",
         glvkspirv: bool = True,
+        libegl_nvidia: bool = True,
+        egl_vendor_json_path: str | None = None,
         drm_loaded: bool = True,
         driver_version: str | None = "580.0.0",
     ) -> dict:
@@ -2237,6 +2422,8 @@ class TestGetVulkanInfoAPI:
             "nvidia_capabilities_has_graphics": has_graphics,
             "nvidia_icd_json_path": icd_path,
             "libnvidia_glvkspirv_found": glvkspirv,
+            "libegl_nvidia_found": libegl_nvidia,
+            "nvidia_egl_vendor_json_path": egl_vendor_json_path,
             "nvidia_drm_loaded": drm_loaded,
             "nvidia_driver_version": driver_version,
         }
@@ -2603,6 +2790,53 @@ class TestDiagnoseVulkanEnvironment:
         monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
         mock_glob.return_value = []
         assert self._diag()["libnvidia_glvkspirv_found"] is False
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    def test_libegl_nvidia_found_when_any_glob_matches(self, mock_glob, monkeypatch):
+        """Strategy 2c gate: ``libEGL_nvidia.so.0`` present in the
+        container must be reflected in the diagnostic dict so the
+        debug bundle can tell users why Strategy 2c did or didn't run.
+        """
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_glob.side_effect = lambda p: (
+            ["/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.580.119.02"]
+            if "libEGL_nvidia" in p
+            else []
+        )
+        diag = self._diag()
+        assert diag["libegl_nvidia_found"] is True
+
+    @patch("plex_generate_previews.web.routes.api_system.glob.glob")
+    def test_libegl_nvidia_missing_when_all_globs_empty(self, mock_glob, monkeypatch):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_glob.return_value = []
+        assert self._diag()["libegl_nvidia_found"] is False
+
+    @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
+    def test_nvidia_egl_vendor_json_path_found_at_usr_share(
+        self, mock_exists, monkeypatch
+    ):
+        """Strategy 2c informational field: the GLVND vendor JSON path
+        if present at either standard location, or None otherwise.
+        """
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_exists.side_effect = lambda p: (
+            p == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+        diag = self._diag()
+        assert (
+            diag["nvidia_egl_vendor_json_path"]
+            == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        )
+
+    @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
+    def test_nvidia_egl_vendor_json_path_absent_returns_none(
+        self, mock_exists, monkeypatch
+    ):
+        monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+        mock_exists.return_value = False
+        diag = self._diag()
+        assert diag["nvidia_egl_vendor_json_path"] is None
 
     @patch("plex_generate_previews.web.routes.api_system.os.path.exists")
     def test_nvidia_driver_version_parsed_from_proc(
