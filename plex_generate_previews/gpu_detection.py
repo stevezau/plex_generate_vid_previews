@@ -940,12 +940,9 @@ def get_vulkan_device_info() -> dict:
         else:
             via = ""
             if _VULKAN_ENV_OVERRIDES:
-                # Let power users see which env var(s) unblocked the
-                # retry in a single glance, without dumping the full
-                # Strategy-2 trace at INFO level.
                 override_keys = ", ".join(sorted(_VULKAN_ENV_OVERRIDES))
                 via = f" (via {override_keys} override)"
-            logger.info(
+            logger.debug(
                 f"Vulkan ready for Dolby Vision Profile 5 tone-mapping: "
                 f"{probe_device}{via}"
             )
