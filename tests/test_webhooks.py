@@ -1007,8 +1007,8 @@ def test_webhooks_page_requires_login(client):
     assert "/login" in resp.headers.get("Location", "")
 
 
-def test_webhooks_page_authenticated(authed_client):
-    """GET /webhooks with session → 200."""
-    resp = authed_client.get("/webhooks")
-    assert resp.status_code == 200
-    assert b"Webhooks" in resp.data
+def test_webhooks_page_redirects_to_automation(authed_client):
+    """GET /webhooks with session → 302 redirect to /automation#webhooks."""
+    resp = authed_client.get("/webhooks", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/automation#webhooks")

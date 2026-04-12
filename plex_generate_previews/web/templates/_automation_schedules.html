@@ -1,17 +1,10 @@
-{% extends "base.html" %}
-
-{% block title %}Schedules - Plex Preview Generator{% endblock %}
-
-{% block head %}
 <style>
-    html { scroll-behavior: smooth; }
-
     .section-card {
         margin-bottom: 1.5rem;
         scroll-margin-top: 6rem;
     }
 
-    /* Sidebar navigation — mirrors settings.html / webhooks.html */
+    /* Sidebar navigation — mirrors settings.html */
     .schedules-sidebar {
         top: 5rem;
         max-height: calc(100vh - 6rem);
@@ -45,9 +38,7 @@
         color: var(--bs-primary);
     }
 </style>
-{% endblock %}
 
-{% block content %}
 <div class="row">
     <!-- Sidebar -->
     <div class="col-lg-3 col-xl-2 d-none d-lg-block">
@@ -61,8 +52,7 @@
 
     <!-- Main Content -->
     <div class="col-lg-9 col-xl-8 schedules-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2><i class="bi bi-calendar-event me-2"></i>Schedules</h2>
+        <div class="d-flex justify-content-end align-items-center mb-4">
             <button class="btn btn-primary" onclick="showNewScheduleModal()">
                 <i class="bi bi-plus me-1"></i>Add Schedule
             </button>
@@ -84,7 +74,9 @@
                     </li>
                     <li>
                         <strong>Recently added only</strong> — fast poll that just checks what Plex added in the last few minutes. Good for tight, frequent intervals (every 15 min) when you want fresh imports to get previews quickly without scanning everything. See the
-                        <a href="{{ url_for('main.webhooks_page') }}#section-webhooks-recently-added">Webhooks page</a> for a one-click "Create default scanner" shortcut.
+                        <a href="#section-webhooks-recently-added"
+                           data-bs-toggle="tab" data-bs-target="#pane-triggers"
+                           onclick="var self=this; setTimeout(function(){ var el=document.getElementById('section-webhooks-recently-added'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }, 200); return false;">Triggers tab</a> for a one-click "Create default scanner" shortcut.
                     </li>
                 </ul>
                 <div class="small text-muted">
@@ -293,9 +285,7 @@
         </div>
     </div>
 </div>
-{% endblock %}
 
-{% block scripts %}
 <script>
 // This page reuses the schedule-management functions from app.js (loadSchedules,
 // saveSchedule, showNewScheduleModal, showEditScheduleModal, updateScheduleList,
@@ -342,4 +332,3 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
-{% endblock %}

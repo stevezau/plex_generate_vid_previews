@@ -151,13 +151,13 @@ Settings for automatic preview generation when media is imported via Radarr or S
 
 Webhook processing respects `selected_libraries`; paths outside unchecked libraries are ignored.
 
-The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules](#post-apischedules) below). Create one through the Webhooks page's "Create default scanner" shortcut, or through the Schedules modal with **Scan mode → Recently added only**.
+The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules](#post-apischedules) below). Create one through the Automation page (Triggers tab) "Create default scanner" shortcut, or through the Schedules tab modal with **Scan mode → Recently added only**.
 
 > [!IMPORTANT]
 > The Plex direct webhook and Recently Added schedules trigger only on **new** library items (new `ratingKey`s). They do **not** detect in-place file upgrades — Plex keeps the same item when Sonarr/Radarr replaces a file. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
 
 > [!TIP]
-> Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.
+> Configure webhooks on the **Automation** page (`/automation`, Triggers tab) in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions. The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to the relevant tab.
 
 ---
 
@@ -645,7 +645,7 @@ Receive a custom webhook payload from any external tool (Tdarr, scripts, etc.). 
 
 Receive a native Plex webhook (Plex Pass feature). Plex POSTs `multipart/form-data` with a `payload` part containing the JSON event body. Only `library.new` events trigger work; other events (`media.play`, `media.rate`, `library.on.deck`, etc.) are acknowledged with 200 and ignored.
 
-The endpoint also accepts a synthetic `test.ping` event used by the **Test reachability** button on the Webhooks page.
+The endpoint also accepts a synthetic `test.ping` event used by the **Test reachability** button on the Automation page (Triggers tab).
 
 **`library.new` payload (excerpt):**
 
@@ -716,7 +716,7 @@ To run a Recently Added scan immediately, call `POST /api/schedules/<id>/run` on
 
 ### GET /api/webhooks/history
 
-Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files" / "Custom: N files") and on the Webhooks page Recent Activity (expand triggered rows).
+Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files" / "Custom: N files") and on the Automation page (Triggers tab) Activity Log (expand triggered rows).
 
 ```json
 {

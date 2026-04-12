@@ -1,11 +1,4 @@
-{% extends "base.html" %}
-
-{% block title %}Webhooks - Plex Preview Generator{% endblock %}
-
-{% block head %}
 <style>
-    html { scroll-behavior: smooth; }
-
     /* Section cards — the precise scroll-to position is handled in JS
        (see scrollToSection) because CSS scroll-margin-top doesn't always
        behave consistently with Bootstrap's sticky navbar + smooth scroll.
@@ -115,9 +108,7 @@
     /* History table */
     .history-table { font-size: 0.875rem; }
 </style>
-{% endblock %}
 
-{% block content %}
 <div class="row">
     <!-- Sidebar Navigation -->
     <div class="col-lg-3 col-xl-2 d-none d-lg-block">
@@ -136,11 +127,6 @@
 
     <!-- Main Content -->
     <div class="col-lg-9 col-xl-8 webhooks-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2><i class="bi bi-broadcast me-2"></i>Webhooks</h2>
-            <span id="saveStatusIndicator" class="autosave-indicator"></span>
-        </div>
-
         <!-- Section 1: Overview -->
         <div class="card section-card" id="section-webhooks-overview">
             <div class="card-header">
@@ -321,9 +307,10 @@
                     <button class="btn btn-sm btn-outline-primary d-none" type="button" id="recentlyAddedScanNowBtn">
                         <i class="bi bi-play-circle me-1"></i>Scan all now
                     </button>
-                    <a href="/schedules" class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-sliders me-1"></i>Manage on Schedules page
-                    </a>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            data-bs-toggle="tab" data-bs-target="#pane-schedules">
+                        <i class="bi bi-sliders me-1"></i>Manage in Schedules tab
+                    </button>
                 </div>
                 <div id="recentlyAddedScanResult" class="small mt-2"></div>
             </div>
@@ -639,9 +626,7 @@
         </div>
     </div>
 </div>
-{% endblock %}
 
-{% block scripts %}
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
 // Format a minute count as a short human-readable string for slider labels.
@@ -852,9 +837,11 @@ async function loadRecentlyAddedScanners() {
                     (lookback ? ' · ' + escapeHtml(lookback) : '') +
                     '</div>' +
                     '</div>' +
-                    '<a href="/schedules?editSchedule=' + encodeURIComponent(s.id) + '" class="btn btn-sm btn-outline-secondary">' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary" ' +
+                    'data-schedule-id="' + escapeHtml(s.id) + '" ' +
+                    'onclick="switchToSchedulesAndEdit(this.dataset.scheduleId)">' +
                     '<i class="bi bi-sliders me-1"></i>Edit' +
-                    '</a>' +
+                    '</button>' +
                     '</div>';
             });
             html += '</div>';
@@ -1372,4 +1359,3 @@ function timeAgo(date) {
     return days + 'd ago';
 }
 </script>
-{% endblock %}

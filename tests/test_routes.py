@@ -2166,13 +2166,48 @@ class TestValidatePathsBranches:
 class TestPageRoutesAdditional:
     """Test additional page routes."""
 
-    def test_webhooks_page_requires_auth(self, client):
-        resp = client.get("/webhooks", follow_redirects=False)
+    def test_automation_page_requires_auth(self, client):
+        resp = client.get("/automation", follow_redirects=False)
         assert resp.status_code in (302, 308)
 
-    def test_webhooks_page_accessible_when_authenticated(self, authed_client):
-        resp = authed_client.get("/webhooks")
+    def test_automation_page_renders_with_both_tabs(self, authed_client):
+        resp = authed_client.get("/automation")
         assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert 'id="pane-triggers"' in body
+        assert 'id="pane-schedules"' in body
+        assert 'id="tab-triggers-tab"' in body
+        assert 'id="tab-schedules-tab"' in body
+
+    def test_webhooks_route_redirects_to_automation(self, authed_client):
+        resp = authed_client.get("/webhooks", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/automation#webhooks")
+
+    def test_schedules_route_redirects_to_automation(self, authed_client):
+        resp = authed_client.get("/schedules", follow_redirects=False)
+        assert resp.status_code == 302
+        location = resp.headers["Location"]
+        assert location.startswith("/automation?")
+        assert "tab=schedules" in location
+        assert location.endswith("#schedules")
+
+    def test_schedules_route_redirect_preserves_edit_query(self, authed_client):
+        resp = authed_client.get(
+            "/schedules?editSchedule=abc123", follow_redirects=False
+        )
+        assert resp.status_code == 302
+        location = resp.headers["Location"]
+        assert "editSchedule=abc123" in location
+        assert "tab=schedules" in location
+        assert location.endswith("#schedules")
+
+    def test_webhooks_route_redirect_preserves_query(self, authed_client):
+        resp = authed_client.get("/webhooks?foo=bar", follow_redirects=False)
+        assert resp.status_code == 302
+        location = resp.headers["Location"]
+        assert "foo=bar" in location
+        assert location.endswith("#webhooks")
 
     def test_logs_page_requires_auth(self, client):
         resp = client.get("/logs", follow_redirects=False)

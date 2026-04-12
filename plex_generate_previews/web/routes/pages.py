@@ -58,18 +58,45 @@ def logs_page():
     return render_template("logs.html")
 
 
+@main.route("/automation")
+@login_required
+def automation_page():
+    """Automation page — unified Triggers (webhooks) + Schedules tabs."""
+    return render_template("automation.html")
+
+
 @main.route("/webhooks")
 @login_required
 def webhooks_page():
-    """Webhooks configuration page."""
-    return render_template("webhooks.html")
+    """Legacy /webhooks route — redirects to the Triggers tab on /automation.
+
+    Kept so existing bookmarks, shared links, and any internal
+    `url_for('main.webhooks_page')` calls keep resolving.
+    """
+    return redirect(
+        url_for(
+            "main.automation_page",
+            _anchor="webhooks",
+            **request.args.to_dict(flat=True),
+        ),
+        code=302,
+    )
 
 
 @main.route("/schedules")
 @login_required
 def schedules_page():
-    """Schedules management page."""
-    return render_template("schedules.html")
+    """Legacy /schedules route — redirects to the Schedules tab on /automation.
+
+    Preserves the query string so `?editSchedule=<id>` deep links still fire
+    the edit modal on the new page.
+    """
+    params = request.args.to_dict(flat=True)
+    params.setdefault("tab", "schedules")
+    return redirect(
+        url_for("main.automation_page", _anchor="schedules", **params),
+        code=302,
+    )
 
 
 @main.route("/bif-viewer")

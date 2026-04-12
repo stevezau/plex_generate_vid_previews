@@ -529,10 +529,10 @@ async function loadSchedules() {
 }
 
 // Check for ?editSchedule=<id> in the URL on page load — when a user
-// clicked "Edit" on a scanner from the Webhooks page we want to scroll
+// clicked "Edit" on a scanner from the Triggers tab we want to scroll
 // to the schedules table and open the edit modal for that specific
 // schedule.  Only does work when the full schedule table is on the
-// page (the Schedules page); on the Dashboard it redirects to /schedules
+// page (the Automation page); on the Dashboard it redirects to /automation
 // so stale links still land in the right place.
 function maybeAutoOpenScheduleEdit() {
     try {
@@ -543,8 +543,10 @@ function maybeAutoOpenScheduleEdit() {
         const scheduleTable = document.getElementById('scheduleList');
         if (!scheduleTable) {
             // Dashboard or any page without the full table — redirect to
-            // the Schedules page and let it handle the edit.
-            window.location.replace('/schedules?editSchedule=' + encodeURIComponent(editId));
+            // the Automation page (Schedules tab) and let it handle the edit.
+            window.location.replace(
+                '/automation?tab=schedules&editSchedule=' + encodeURIComponent(editId) + '#schedules'
+            );
             return;
         }
 
@@ -777,6 +779,7 @@ function copyVulkanDiagnosticBundle(btn) {
 
 function loadNotifications() {
     var list = document.getElementById('notificationList');
+    var empty = document.getElementById('notificationEmpty');
     var badge = document.getElementById('notificationBellBadge');
     if (!list || !badge) return;
 
@@ -2441,8 +2444,8 @@ function describeSchedule(triggerType, triggerValue) {
 
 // Compact schedule summary rendered inside the Job Statistics card on the
 // Dashboard.  Shows next upcoming run + a small configured/enabled count.
-// The Schedules page is the authoritative place for CRUD — this is just
-// an at-a-glance pointer.
+// The Automation page (Schedules tab) is the authoritative place for CRUD —
+// this is just an at-a-glance pointer.
 function updateScheduleTeaser() {
     const body = document.getElementById('scheduleTeaserBody');
     if (!body) return;
@@ -2452,7 +2455,7 @@ function updateScheduleTeaser() {
             '<div class="d-flex align-items-center gap-2 text-muted small">' +
             '<i class="bi bi-calendar-x"></i>' +
             '<span>No schedules configured.</span>' +
-            '<a href="/schedules" class="ms-auto">Create one →</a>' +
+            '<a href="/automation#schedules" class="ms-auto">Create one →</a>' +
             '</div>';
         return;
     }

@@ -61,13 +61,8 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.webhooks_page' %}active{% endif %}" href="{{ url_for('main.webhooks_page') }}">
-                            <i class="bi bi-broadcast me-1"></i>Webhooks
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.schedules_page' %}active{% endif %}" href="{{ url_for('main.schedules_page') }}">
-                            <i class="bi bi-calendar-event me-1"></i>Schedules
+                        <a class="nav-link {% if request.endpoint == 'main.automation_page' %}active{% endif %}" href="{{ url_for('main.automation_page') }}">
+                            <i class="bi bi-magic me-1"></i>Automation
                         </a>
                     </li>
                     <li class="nav-item">

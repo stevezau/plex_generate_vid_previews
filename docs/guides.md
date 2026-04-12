@@ -65,12 +65,14 @@ After setup completes, you'll be taken to the dashboard.
 
 **Scheduling:**
 
-The Dashboard shows a compact "Schedules" teaser with the next upcoming run and a total count. Full schedule management lives on the dedicated **Schedules** page (`/schedules`, also linked from the top nav):
+The Dashboard shows a compact "Schedules" teaser with the next upcoming run and a total count. Full schedule management lives on the **Automation** page, under the **Schedules** tab (`/automation#schedules`, also linked from the top nav):
 
 - **Cron schedules** — set up recurring processing
 - **Interval-based** — run every X minutes
 - **Per-library** — schedule specific libraries
 - **Scan mode** — each schedule is either a *Full library scan* (default) or a *Recently added only* scan (see [Auto-trigger from Plex](#auto-trigger-from-plex-no-sonarrradarr))
+
+> **Legacy URL note:** `/schedules` and `/webhooks` still work — they 302-redirect to `/automation#schedules` and `/automation#webhooks` respectively, so existing bookmarks and shared links keep working.
 
 ### Settings Page
 
@@ -81,7 +83,7 @@ Access settings at `/settings` to manage:
 - **Path Mappings** — media path, Plex videos path, local videos path
 - **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, CPU fallback workers, thumbnail interval and quality
 
-Settings and Webhooks pages **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
+The Settings page and the Automation page's **Triggers** tab **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
 
 ### CPU Fallback Workers (GPU Safety Net)
 
@@ -98,16 +100,23 @@ Behavior:
 
 Settings are saved to `/config/settings.json` and persist across restarts.
 
-### Webhooks Page
+### Automation Page
 
-Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
+The **Automation** page (`/automation`) hosts two tabs:
+
+- **Triggers** — incoming webhooks from Radarr, Sonarr, Sportarr, Tdarr / custom scripts, and Plex Direct. Also houses the Recently Added Scanner shortcut. This is where you wire the app up to whatever puts media into Plex.
+- **Schedules** — full CRUD for recurring scans (cron / interval / specific time). Both Full library and Recently-Added scanners live here.
+
+The Triggers tab includes:
 
 - **Enable/Disable** — master toggle for webhook processing
-- **Webhook URLs** — copy-ready URLs for Radarr and Sonarr
+- **Webhook URLs** — copy-ready URLs for Radarr, Sonarr, Sportarr, and the generic Custom webhook
 - **Delay** — seconds to wait after import (gives Plex time to index)
 - **Webhook Secret** — optional dedicated authentication token
-- **Setup Instructions** — step-by-step guide for Radarr/Sonarr configuration
+- **Setup instructions** — step-by-step guides for each source
 - **Activity Log** — recent webhook events with status badges
+
+The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to the Triggers and Schedules tabs on the new page.
 
 ### Production Server
 
@@ -261,7 +270,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### Configure Radarr
 
-1. Open the web UI and navigate to **Webhooks** (in the top nav)
+1. Open the web UI and navigate to **Automation** → **Triggers** tab (in the top nav)
 2. Copy the **Radarr Webhook URL**
 3. In Radarr, go to **Settings → Connect → + → Webhook**
 4. Set **Name**: `Plex Previews`
@@ -277,7 +286,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### Configure Sonarr
 
-1. Copy the **Sonarr Webhook URL** from the web UI Webhooks page
+1. Copy the **Sonarr Webhook URL** from the web UI Automation → Triggers tab
 2. In Sonarr, go to **Settings → Connect → + → Webhook**
 3. Set **Name**: `Plex Previews`
 4. Set **URL**: paste the Sonarr Webhook URL
@@ -334,7 +343,7 @@ Authentication is the same as Radarr/Sonarr: use `X-Auth-Token` header, `Authori
 
 Tdarr doesn't have built-in webhook support like Sonarr/Radarr. Instead, use the **Send Web Request** Flow plugin to POST to the custom endpoint after each transcode.
 
-1. Open the web UI and navigate to **Webhooks** — copy the **Custom Webhook URL**
+1. Open the web UI and navigate to **Automation** → **Triggers** tab — copy the **Custom Webhook URL**
 2. In Tdarr, open the **Flow** you want to trigger previews from
 3. Add a **Send Web Request** plugin after your transcode step
 4. Configure the plugin:
@@ -359,7 +368,7 @@ curl -X POST "http://your-server:8080/api/webhooks/custom" \
 ```
 
 ### Configuration
-All settings are configurable from the **Webhooks** page in the web UI.
+All settings are configurable from the **Automation** page → **Triggers** tab in the web UI.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -373,7 +382,7 @@ Webhook processing uses your Settings library selection. If a webhook path belon
 
 By default, webhooks authenticate using your main API token. You can optionally configure a **dedicated webhook secret** for better security isolation:
 
-1. On the Webhooks page, click **Generate** next to the secret field
+1. On the Automation page (Triggers tab), click **Generate** next to the secret field
 2. Click **Save Changes**
 3. Use the generated secret as the token: in Radarr/Sonarr, either put it in **Password** (leave Username empty) or in the **X-Auth-Token** header if your form has a Headers section.
 
@@ -383,13 +392,13 @@ When multiple files are imported in quick succession (e.g., a season pack), the 
 
 **Example:** Sonarr imports 10 episodes over 30 seconds with a 60s delay. The timer keeps resetting as each episode arrives. One job runs 60 seconds after the *last* episode and processes all 10 files. A file that arrived at 59 seconds is not processed in an earlier batch — it goes in this batch, and the batch runs 60 seconds after it, so Plex has time to index it.
 
-**Viewing files in a batch:** On the **Dashboard**, jobs from webhooks show a label like "Sonarr: 3 files". Click the **+** (chevron) next to the label to expand and see the list of files. On the **Webhooks** page, **Recent Activity** rows for triggered batches include a chevron; click it to expand and see the files in that batch.
+**Viewing files in a batch:** On the **Dashboard**, jobs from webhooks show a label like "Sonarr: 3 files". Click the **+** (chevron) next to the label to expand and see the list of files. On the **Automation** page (Triggers tab), **Activity Log** rows for triggered batches include a chevron; click it to expand and see the files in that batch.
 
 ---
 
 ## Auto-trigger from Plex (no Sonarr/Radarr)
 
-For media you add to Plex **manually** — copying files into a watched folder, importing through Plex itself, or using any tool other than Sonarr/Radarr/Tdarr — there are two built-in ways to auto-trigger preview generation. Both live on the **Webhooks** page as dedicated sections (**Plex Direct** and **Recently Added Scanner** in the sidebar), and both feed into the same job pipeline as the existing webhooks.
+For media you add to Plex **manually** — copying files into a watched folder, importing through Plex itself, or using any tool other than Sonarr/Radarr/Tdarr — there are two built-in ways to auto-trigger preview generation. Both live on the **Automation** page's **Triggers** tab as dedicated sections (**Plex Direct** and **Recently Added Scanner** in the sidebar), and both feed into the same job pipeline as the existing webhooks.
 
 > [!IMPORTANT]
 > **Both options trigger only on _new_ library items.** When Sonarr or Radarr **upgrades** an existing file in place, Plex keeps the same library item, so neither option will see it. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
@@ -403,7 +412,7 @@ This uses Plex's built-in webhook feature. The app calls Plex's account API to r
 - **Mobile Push Notifications enabled** on your Plex server. This is the catch: Plex's `library.new` event is delivered through the same code path as mobile push notifications, and if push notifications are off, library events are silently dropped. Enable them under Plex Web → Settings → Server → Notifications. You don't have to actually use mobile push — they just need to be turned on.
 
 **Setup:**
-1. Open the web UI → **Webhooks** and scroll to (or click) the **Plex Direct** sidebar link.
+1. Open the web UI → **Automation** → **Triggers** tab and scroll to (or click) the **Plex Direct** sidebar link.
 2. The URL field is pre-filled with the URL you're currently accessing the app at (typically correct for same-host setups). If your Plex Media Server is on a different host or behind a different network/proxy, override it with a URL Plex can reach.
 3. Click **Test reachability** to verify the URL is routable. The app self-POSTs a synthetic ping; success means Plex should also be able to deliver.
 4. Click **Register with Plex**. If you're missing Plex Pass, the UI will tell you and disable the button.
@@ -420,12 +429,12 @@ A scheduled poll for items where Plex's `addedAt` falls within a configured look
 **The scanner is a first-class schedule type.**  You create, edit, enable, disable, and delete Recently Added scanners through the same Schedules UI as any other scheduled job — and you can create **multiple scanners** with different libraries, intervals, or lookback windows.  For example: scan Movies every 15 minutes with a 1-hour lookback, and your 4K library every 6 hours with a 24-hour lookback.
 
 **Quick start (one click):**
-1. Open the web UI → **Webhooks** → **Recently Added Scanner** (sidebar link).
+1. Open the web UI → **Automation** → **Triggers** tab → **Recently Added Scanner** (sidebar link).
 2. Click **Create default scanner**.  A schedule is created with sensible defaults: runs every **15 minutes**, lookback window **1 hour**, all libraries.
 3. That's it.  You can stop here, or continue to customize it.
 
 **Customize or add more scanners:**
-1. Click **Manage on Schedules page** on the Webhooks card, or open the **Schedules** page directly from the top nav.
+1. Click **Manage in Schedules tab** on the scanner card, or switch to the **Schedules** tab directly.
 2. Click **Add Schedule** (or **Edit** on an existing scanner).
 3. In the modal, choose **Scan mode → Recently added only**.  The Schedule Type field defaults to Interval; pick your frequency.
 4. Choose a **Lookback window** — 15 min / 30 min / 1 hour (default) / 2 hours / 6 hours / 24 hours / 3 days / 7 days.

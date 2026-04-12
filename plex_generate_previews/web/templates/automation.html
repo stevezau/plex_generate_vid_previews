@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Automation - Plex Preview Generator{% endblock %}
+
+{% block head %}
+<style>
+    .automation-tabs {
+        border-bottom: 1px solid var(--bs-border-color);
+        margin-bottom: 1.5rem;
+    }
+    .automation-tabs .nav-link {
+        color: var(--bs-secondary-color);
+        border: none;
+        border-bottom: 2px solid transparent;
+        padding: 0.75rem 1.25rem;
+        font-weight: 500;
+    }
+    .automation-tabs .nav-link:hover {
+        color: var(--bs-body-color);
+        border-bottom-color: var(--bs-border-color);
+    }
+    .automation-tabs .nav-link.active {
+        color: var(--plex-orange);
+        background: transparent;
+        border-bottom-color: var(--plex-orange);
+    }
+    .automation-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="automation-header">
+    <h2><i class="bi bi-magic me-2"></i>Automation</h2>
+    <span id="saveStatusIndicator" class="autosave-indicator"></span>
+</div>
+
+<ul class="nav nav-tabs automation-tabs" id="automationTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="tab-triggers-tab" data-bs-toggle="tab"
+                data-bs-target="#pane-triggers" type="button" role="tab"
+                aria-controls="pane-triggers" aria-selected="true">
+            <i class="bi bi-broadcast me-1"></i>Triggers
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-schedules-tab" data-bs-toggle="tab"
+                data-bs-target="#pane-schedules" type="button" role="tab"
+                aria-controls="pane-schedules" aria-selected="false">
+            <i class="bi bi-calendar-event me-1"></i>Schedules
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content" id="automationTabContent">
+    <div class="tab-pane fade show active" id="pane-triggers" role="tabpanel"
+         aria-labelledby="tab-triggers-tab">
+        {% include "_automation_triggers.html" %}
+    </div>
+    <div class="tab-pane fade" id="pane-schedules" role="tabpanel"
+         aria-labelledby="tab-schedules-tab">
+        {% include "_automation_schedules.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* Tab wiring for the Automation page:
+ *   - Picks the initial tab from ?tab=, URL hash, or an ?editSchedule= marker.
+ *   - Writes the hash on tab change so bookmarks land on the same tab.
+ *   - Exposes switchToSchedulesAndEdit() for the Triggers pane's scanner list. */
+(function () {
+    function showTab(btnId) {
+        var btn = document.getElementById(btnId);
+        if (!btn) return;
+        try { bootstrap.Tab.getOrCreateInstance(btn).show(); }
+        catch (e) { console.warn('Failed to activate tab ' + btnId + ':', e); }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        var params = new URLSearchParams(window.location.search);
+        var hash = (window.location.hash || '').toLowerCase();
+        var tabParam = (params.get('tab') || '').toLowerCase();
+
+        var wantSchedules = (
+            tabParam === 'schedules'
+            || hash === '#schedules'
+            || hash.indexOf('#section-schedules-') === 0
+            || params.has('editSchedule')
+        );
+        var wantTriggers = (
+            tabParam === 'triggers'
+            || tabParam === 'webhooks'
+            || hash === '#webhooks'
+            || hash === '#triggers'
+            || hash.indexOf('#section-webhooks-') === 0
+        );
+
+        if (wantSchedules) {
+            showTab('tab-schedules-tab');
+        } else if (wantTriggers) {
+            showTab('tab-triggers-tab');
+        }
+
+        var triggersBtn = document.getElementById('tab-triggers-tab');
+        var schedulesBtn = document.getElementById('tab-schedules-tab');
+        if (triggersBtn) {
+            triggersBtn.addEventListener('shown.bs.tab', function () {
+                if (window.history && history.replaceState) {
+                    history.replaceState(null, '', window.location.pathname + '#webhooks');
+                }
+            });
+        }
+        if (schedulesBtn) {
+            schedulesBtn.addEventListener('shown.bs.tab', function () {
+                if (window.history && history.replaceState) {
+                    history.replaceState(null, '', window.location.pathname + '#schedules');
+                }
+            });
+        }
+    });
+
+    window.switchToSchedulesAndEdit = function (scheduleId) {
+        var btn = document.getElementById('tab-schedules-tab');
+        if (!btn) return;
+        function openModal() {
+            if (typeof showEditScheduleModal === 'function') showEditScheduleModal(scheduleId);
+        }
+        if (btn.classList.contains('active')) {
+            openModal();
+            return;
+        }
+        btn.addEventListener('shown.bs.tab', openModal, { once: true });
+        bootstrap.Tab.getOrCreateInstance(btn).show();
+    };
+})();
+</script>
+{% endblock %}
