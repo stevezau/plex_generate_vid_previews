@@ -9,33 +9,6 @@
         scroll-margin-top: 6rem;
     }
 
-    /* Sidebar navigation (mirrors settings.html) */
-    .webhooks-sidebar {
-        top: 5rem;
-        max-height: calc(100vh - 6rem);
-        overflow-y: auto;
-        padding-top: 0.5rem;
-    }
-    .webhooks-sidebar .nav-link {
-        color: var(--bs-secondary-color);
-        font-size: 0.875rem;
-        padding: 0.5rem 0.75rem;
-        border-radius: 0.375rem;
-        border-left: 3px solid transparent;
-        margin-bottom: 0.125rem;
-    }
-    .webhooks-sidebar .nav-link:hover {
-        color: var(--bs-body-color);
-        background-color: var(--bs-tertiary-bg);
-    }
-    .webhooks-sidebar .nav-link.active {
-        color: var(--plex-orange);
-        background-color: rgba(229, 160, 13, 0.1);
-        border-left-color: var(--plex-orange);
-        font-weight: 500;
-    }
-    .webhooks-content { padding-bottom: 40vh; }
-
     /* Webhook URL input */
     .webhook-url {
         font-family: monospace;
@@ -109,24 +82,6 @@
     .history-table { font-size: 0.875rem; }
 </style>
 
-<div class="row">
-    <!-- Sidebar Navigation -->
-    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
-        <nav id="webhooks-sidebar" class="webhooks-sidebar sticky-top">
-            <div class="nav flex-column nav-pills">
-                <a class="nav-link" href="#section-webhooks-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
-                <a class="nav-link" href="#section-webhooks-plex-direct"><i class="bi bi-lightning-charge me-2"></i>Plex Direct</a>
-                <a class="nav-link" href="#section-webhooks-recently-added"><i class="bi bi-arrow-repeat me-2"></i>Recently Added Scanner</a>
-                <a class="nav-link" href="#section-webhooks-sonarr-radarr"><i class="bi bi-download me-2"></i>*arr apps</a>
-                <a class="nav-link" href="#section-webhooks-custom"><i class="bi bi-plug me-2"></i>Custom (Tdarr / scripts)</a>
-                <a class="nav-link" href="#section-webhooks-settings"><i class="bi bi-sliders me-2"></i>Settings</a>
-                <a class="nav-link" href="#section-webhooks-activity"><i class="bi bi-clock-history me-2"></i>Activity Log</a>
-            </div>
-        </nav>
-    </div>
-
-    <!-- Main Content -->
-    <div class="col-lg-9 col-xl-8 webhooks-content">
         <!-- Section 1: Overview -->
         <div class="card section-card" id="section-webhooks-overview">
             <div class="card-header">
@@ -624,8 +579,6 @@
                 </div>
             </div>
         </div>
-    </div>
-</div>
 
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
@@ -716,7 +669,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // explicitly skipped kicks a debounced save through saveWebhookSettings.
     if (typeof window.bindAutoSave === 'function') {
         window.bindAutoSave({
-            containerSelector: '.webhooks-content',
+            containerSelector: '#pane-triggers',
             saveFn: saveWebhookSettings,
             indicatorId: 'saveStatusIndicator',
             skipSelectors: [

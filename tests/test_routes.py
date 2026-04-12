@@ -2170,14 +2170,14 @@ class TestPageRoutesAdditional:
         resp = client.get("/automation", follow_redirects=False)
         assert resp.status_code in (302, 308)
 
-    def test_automation_page_renders_with_both_tabs(self, authed_client):
+    def test_automation_page_renders_with_both_panes(self, authed_client):
         resp = authed_client.get("/automation")
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
         assert 'id="pane-triggers"' in body
         assert 'id="pane-schedules"' in body
-        assert 'id="tab-triggers-tab"' in body
-        assert 'id="tab-schedules-tab"' in body
+        assert 'id="sidebar-group-triggers"' in body
+        assert 'id="sidebar-group-schedules"' in body
 
     def test_webhooks_route_redirects_to_automation(self, authed_client):
         resp = authed_client.get("/webhooks", follow_redirects=False)

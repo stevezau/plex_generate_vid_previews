@@ -4,83 +4,159 @@
 
 {% block head %}
 <style>
-    .automation-tabs {
-        border-bottom: 1px solid var(--bs-border-color);
+    .section-card {
         margin-bottom: 1.5rem;
+        scroll-margin-top: 6rem;
     }
-    .automation-tabs .nav-link {
+
+    /* Sidebar — matches settings.html */
+    .automation-sidebar {
+        top: 5rem;
+        max-height: calc(100vh - 6rem);
+        overflow-y: auto;
+        padding-top: 0.5rem;
+    }
+    .automation-sidebar .nav-link {
         color: var(--bs-secondary-color);
-        border: none;
-        border-bottom: 2px solid transparent;
-        padding: 0.75rem 1.25rem;
+        font-size: 0.875rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.375rem;
+        border-left: 3px solid transparent;
+        margin-bottom: 0.125rem;
+    }
+    .automation-sidebar .nav-link:hover {
+        color: var(--bs-body-color);
+        background-color: var(--bs-tertiary-bg);
+    }
+    .automation-sidebar .nav-link.active {
+        color: var(--plex-orange);
+        background-color: rgba(229, 160, 13, 0.1);
+        border-left-color: var(--plex-orange);
         font-weight: 500;
     }
-    .automation-tabs .nav-link:hover {
+    .automation-sidebar .sidebar-group {
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
         color: var(--bs-body-color);
-        border-bottom-color: var(--bs-border-color);
+        padding: 0.6rem 0.75rem 0.3rem;
+        cursor: pointer;
+        user-select: none;
     }
-    .automation-tabs .nav-link.active {
+    .automation-sidebar .sidebar-group:not(:first-child) {
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px solid var(--bs-border-color);
+    }
+    .automation-sidebar .sidebar-group:hover {
         color: var(--plex-orange);
-        background: transparent;
-        border-bottom-color: var(--plex-orange);
     }
-    .automation-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.5rem;
+    .automation-sidebar .sidebar-group.active {
+        color: var(--plex-orange);
     }
+    .automation-content { padding-bottom: 40vh; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="automation-header">
-    <h2><i class="bi bi-magic me-2"></i>Automation</h2>
-    <span id="saveStatusIndicator" class="autosave-indicator"></span>
-</div>
+<div class="row">
+    <!-- Sidebar -->
+    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
+        <nav id="automation-sidebar" class="automation-sidebar sticky-top">
+            <div class="nav flex-column nav-pills">
+                <!-- Triggers group -->
+                <div class="sidebar-group active" id="sidebar-group-triggers"
+                     onclick="showAutomationTab('triggers')">
+                    <i class="bi bi-broadcast me-2"></i>Triggers
+                </div>
+                <div id="sidebar-triggers-links">
+                    <a class="nav-link" href="#section-webhooks-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
+                    <a class="nav-link" href="#section-webhooks-plex-direct"><i class="bi bi-lightning-charge me-2"></i>Plex Direct</a>
+                    <a class="nav-link" href="#section-webhooks-recently-added"><i class="bi bi-arrow-repeat me-2"></i>Recently Added Scanner</a>
+                    <a class="nav-link" href="#section-webhooks-sonarr-radarr"><i class="bi bi-download me-2"></i>*arr apps</a>
+                    <a class="nav-link" href="#section-webhooks-custom"><i class="bi bi-plug me-2"></i>Custom (Tdarr / scripts)</a>
+                    <a class="nav-link" href="#section-webhooks-settings"><i class="bi bi-sliders me-2"></i>Settings</a>
+                    <a class="nav-link" href="#section-webhooks-activity"><i class="bi bi-clock-history me-2"></i>Activity Log</a>
+                </div>
 
-<ul class="nav nav-tabs automation-tabs" id="automationTabs" role="tablist">
-    <li class="nav-item" role="presentation">
-        <button class="nav-link active" id="tab-triggers-tab" data-bs-toggle="tab"
-                data-bs-target="#pane-triggers" type="button" role="tab"
-                aria-controls="pane-triggers" aria-selected="true">
-            <i class="bi bi-broadcast me-1"></i>Triggers
-        </button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="tab-schedules-tab" data-bs-toggle="tab"
-                data-bs-target="#pane-schedules" type="button" role="tab"
-                aria-controls="pane-schedules" aria-selected="false">
-            <i class="bi bi-calendar-event me-1"></i>Schedules
-        </button>
-    </li>
-</ul>
-
-<div class="tab-content" id="automationTabContent">
-    <div class="tab-pane fade show active" id="pane-triggers" role="tabpanel"
-         aria-labelledby="tab-triggers-tab">
-        {% include "_automation_triggers.html" %}
+                <!-- Schedules group -->
+                <div class="sidebar-group" id="sidebar-group-schedules"
+                     onclick="showAutomationTab('schedules')">
+                    <i class="bi bi-calendar-event me-2"></i>Schedules
+                </div>
+                <div id="sidebar-schedules-links" class="d-none">
+                    <a class="nav-link" href="#section-schedules-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
+                    <a class="nav-link" href="#section-schedules-list"><i class="bi bi-calendar-event me-2"></i>All Schedules</a>
+                </div>
+            </div>
+        </nav>
     </div>
-    <div class="tab-pane fade" id="pane-schedules" role="tabpanel"
-         aria-labelledby="tab-schedules-tab">
-        {% include "_automation_schedules.html" %}
+
+    <!-- Main Content -->
+    <div class="col-lg-9 col-xl-8 automation-content">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2><i class="bi bi-magic me-2"></i>Automation</h2>
+            <span id="saveStatusIndicator" class="autosave-indicator"></span>
+        </div>
+
+        <div class="tab-content" id="automationTabContent">
+            <div class="tab-pane fade show active" id="pane-triggers" role="tabpanel">
+                {% include "_automation_triggers.html" %}
+            </div>
+            <div class="tab-pane fade" id="pane-schedules" role="tabpanel">
+                {% include "_automation_schedules.html" %}
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-/* Tab wiring for the Automation page:
- *   - Picks the initial tab from ?tab=, URL hash, or an ?editSchedule= marker.
- *   - Writes the hash on tab change so bookmarks land on the same tab.
- *   - Exposes switchToSchedulesAndEdit() for the Triggers pane's scanner list. */
+/* Automation page — sidebar-driven tab switching, polling, and ScrollSpy.
+ * The sidebar groups ("Triggers" / "Schedules") act as tab switchers while
+ * their child links scroll to sections within the active pane. */
 (function () {
-    function showTab(btnId) {
-        var btn = document.getElementById(btnId);
-        if (!btn) return;
-        try { bootstrap.Tab.getOrCreateInstance(btn).show(); }
-        catch (e) { console.warn('Failed to activate tab ' + btnId + ':', e); }
+
+    /* --- Tab switching --------------------------------------------------- */
+
+    function showAutomationTab(which) {
+        var triggersPane = document.getElementById('pane-triggers');
+        var schedulesPane = document.getElementById('pane-schedules');
+        var triggersLinks = document.getElementById('sidebar-triggers-links');
+        var schedulesLinks = document.getElementById('sidebar-schedules-links');
+        var triggersGroup = document.getElementById('sidebar-group-triggers');
+        var schedulesGroup = document.getElementById('sidebar-group-schedules');
+
+        if (which === 'schedules') {
+            triggersPane.classList.remove('show', 'active');
+            schedulesPane.classList.add('show', 'active');
+            triggersLinks.classList.add('d-none');
+            schedulesLinks.classList.remove('d-none');
+            triggersGroup.classList.remove('active');
+            schedulesGroup.classList.add('active');
+            if (window.history && history.replaceState) {
+                history.replaceState(null, '', window.location.pathname + '#schedules');
+            }
+            onTabChanged('schedules');
+        } else {
+            schedulesPane.classList.remove('show', 'active');
+            triggersPane.classList.add('show', 'active');
+            schedulesLinks.classList.add('d-none');
+            triggersLinks.classList.remove('d-none');
+            schedulesGroup.classList.remove('active');
+            triggersGroup.classList.add('active');
+            if (window.history && history.replaceState) {
+                history.replaceState(null, '', window.location.pathname + '#webhooks');
+            }
+            onTabChanged('triggers');
+        }
+        window.scrollTo({ top: 0 });
     }
+    window.showAutomationTab = showAutomationTab;
+
+    /* --- Initial tab from URL -------------------------------------------- */
 
     document.addEventListener('DOMContentLoaded', function () {
         var params = new URLSearchParams(window.location.search);
@@ -93,56 +169,52 @@
             || hash.indexOf('#section-schedules-') === 0
             || params.has('editSchedule')
         );
-        var wantTriggers = (
-            tabParam === 'triggers'
-            || tabParam === 'webhooks'
-            || hash === '#webhooks'
-            || hash === '#triggers'
-            || hash.indexOf('#section-webhooks-') === 0
-        );
 
         if (wantSchedules) {
-            showTab('tab-schedules-tab');
-        } else if (wantTriggers) {
-            showTab('tab-triggers-tab');
+            showAutomationTab('schedules');
         }
 
-        var triggersBtn = document.getElementById('tab-triggers-tab');
-        var schedulesBtn = document.getElementById('tab-schedules-tab');
-        if (triggersBtn) {
-            triggersBtn.addEventListener('shown.bs.tab', function () {
-                if (window.history && history.replaceState) {
-                    history.replaceState(null, '', window.location.pathname + '#webhooks');
-                }
+        // Wire sidebar anchor smooth-scroll (same pattern as settings.html)
+        document.querySelectorAll('#automation-sidebar a.nav-link[href^="#section-"]').forEach(function (link) {
+            link.addEventListener('click', function (e) {
+                var href = link.getAttribute('href') || '';
+                if (!href.startsWith('#')) return;
+                e.preventDefault();
+                var el = document.getElementById(href.substring(1));
+                if (!el) return;
+                var navbar = document.querySelector('.navbar.sticky-top');
+                var navH = navbar ? navbar.offsetHeight : 56;
+                var top = el.getBoundingClientRect().top + window.scrollY - navH - 16;
+                window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
+                if (history.pushState) history.pushState(null, '', href);
             });
-        }
-        if (schedulesBtn) {
-            schedulesBtn.addEventListener('shown.bs.tab', function () {
-                if (window.history && history.replaceState) {
-                    history.replaceState(null, '', window.location.pathname + '#schedules');
-                }
-            });
+        });
+
+        // Honour an initial #section-... in the URL
+        if (window.location.hash && window.location.hash.startsWith('#section-')) {
+            setTimeout(function () {
+                var el = document.getElementById(window.location.hash.substring(1));
+                if (!el) return;
+                var navbar = document.querySelector('.navbar.sticky-top');
+                var navH = navbar ? navbar.offsetHeight : 56;
+                var top = el.getBoundingClientRect().top + window.scrollY - navH - 16;
+                window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
+            }, 100);
         }
     });
 
+    /* --- Cross-tab helpers ----------------------------------------------- */
+
     window.switchToSchedulesAndEdit = function (scheduleId) {
-        var btn = document.getElementById('tab-schedules-tab');
-        if (!btn) return;
-        function openModal() {
+        showAutomationTab('schedules');
+        // Wait a tick for the pane to become visible before opening the modal
+        setTimeout(function () {
             if (typeof showEditScheduleModal === 'function') showEditScheduleModal(scheduleId);
-        }
-        if (btn.classList.contains('active')) {
-            openModal();
-            return;
-        }
-        btn.addEventListener('shown.bs.tab', openModal, { once: true });
-        bootstrap.Tab.getOrCreateInstance(btn).show();
+        }, 100);
     };
 
-    /* --- Polling coordinator ---
-     * Both partials need /api/schedules data on a 10s loop, but we only
-     * fetch once and let each handler consume the result. History polling
-     * only runs while the Triggers tab is visible. */
+    /* --- Polling coordinator --------------------------------------------- */
+
     var _historyTimer = null;
     function startHistoryPolling() {
         if (_historyTimer) return;
@@ -154,6 +226,8 @@
         if (_historyTimer) { clearInterval(_historyTimer); _historyTimer = null; }
     }
 
+    // Single 10s poll for schedules — feeds both the schedules table and the
+    // recently-added scanner list on the Triggers tab.
     setInterval(function () {
         if (typeof loadSchedules === 'function') {
             loadSchedules().then(function () {
@@ -162,7 +236,7 @@
         }
     }, 10000);
 
-    // Initial load: schedules first (populates global array), then scanners + editSchedule deep-link
+    // Initial load
     if (typeof loadSchedules === 'function') {
         loadSchedules().then(function () {
             if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
@@ -170,32 +244,35 @@
         });
     }
 
-    // History polling — active only when Triggers tab is showing
+    // History polling — only while Triggers tab is active
     startHistoryPolling();
-    var triggersBtn = document.getElementById('tab-triggers-tab');
-    var schedulesBtn = document.getElementById('tab-schedules-tab');
-    if (triggersBtn) triggersBtn.addEventListener('shown.bs.tab', startHistoryPolling);
-    if (schedulesBtn) schedulesBtn.addEventListener('shown.bs.tab', stopHistoryPolling);
 
-    /* --- ScrollSpy per-tab ---
-     * Only one ScrollSpy on document.body at a time to avoid collisions.
-     * Construct on tab show, dispose on tab hide. */
+    /* --- ScrollSpy per-tab ----------------------------------------------- */
+
+    var _currentSpy = null;
     function activateScrollSpy(target) {
-        var existing = bootstrap.ScrollSpy.getInstance(document.body);
-        if (existing) existing.dispose();
-        var spy = new bootstrap.ScrollSpy(document.body, {
+        if (_currentSpy) { try { _currentSpy.dispose(); } catch (e) { /* */ } }
+        _currentSpy = new bootstrap.ScrollSpy(document.body, {
             target: target,
             rootMargin: '0px 0px -60%',
             smoothScroll: true,
         });
-        if (target === '#webhooks-sidebar') window._triggersScrollSpy = spy;
-        return spy;
+        if (target === '#sidebar-triggers-links') window._triggersScrollSpy = _currentSpy;
     }
 
-    // Activate for the default tab (Triggers), then swap on tab change
-    activateScrollSpy('#webhooks-sidebar');
-    if (triggersBtn) triggersBtn.addEventListener('shown.bs.tab', function () { activateScrollSpy('#webhooks-sidebar'); });
-    if (schedulesBtn) schedulesBtn.addEventListener('shown.bs.tab', function () { activateScrollSpy('#schedules-sidebar'); });
+    // Called on tab change
+    function onTabChanged(which) {
+        if (which === 'schedules') {
+            stopHistoryPolling();
+            activateScrollSpy('#sidebar-schedules-links');
+        } else {
+            startHistoryPolling();
+            activateScrollSpy('#sidebar-triggers-links');
+        }
+    }
+
+    // Activate for the default tab
+    activateScrollSpy('#sidebar-triggers-links');
 })();
 </script>
 {% endblock %}
