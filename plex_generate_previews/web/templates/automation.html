@@ -4,9 +4,12 @@
 
 {% block head %}
 <style>
+    html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 6rem;
+    }
     .section-card {
         margin-bottom: 1.5rem;
-        scroll-margin-top: 6rem;
     }
 
     /* Sidebar — matches settings.html */
@@ -188,34 +191,9 @@
         if (wantSchedules) {
             showAutomationTab('schedules');
         }
-
-        // Wire sidebar anchor smooth-scroll (same pattern as settings.html)
-        document.querySelectorAll('#automation-sidebar a.nav-link[href^="#section-"]').forEach(function (link) {
-            link.addEventListener('click', function (e) {
-                var href = link.getAttribute('href') || '';
-                if (!href.startsWith('#')) return;
-                e.preventDefault();
-                var el = document.getElementById(href.substring(1));
-                if (!el) return;
-                var navbar = document.querySelector('.navbar.sticky-top');
-                var navH = navbar ? navbar.offsetHeight : 56;
-                var top = el.getBoundingClientRect().top + window.scrollY - navH - 16;
-                window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
-                if (history.pushState) history.pushState(null, '', href);
-            });
-        });
-
-        // Honour an initial #section-... in the URL
-        if (window.location.hash && window.location.hash.startsWith('#section-')) {
-            setTimeout(function () {
-                var el = document.getElementById(window.location.hash.substring(1));
-                if (!el) return;
-                var navbar = document.querySelector('.navbar.sticky-top');
-                var navH = navbar ? navbar.offsetHeight : 56;
-                var top = el.getBoundingClientRect().top + window.scrollY - navH - 16;
-                window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
-            }, 100);
-        }
+        // Sidebar anchor scrolling uses native browser behaviour — html
+        // sets scroll-padding-top and scroll-behavior: smooth, so clicking
+        // an <a href="#section-..."> lands at the right spot automatically.
     });
 
     /* --- Cross-tab helpers ----------------------------------------------- */

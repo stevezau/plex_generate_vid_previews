@@ -1,12 +1,6 @@
 <style>
-    /* Section cards — the precise scroll-to position is handled in JS
-       (see scrollToSection) because CSS scroll-margin-top doesn't always
-       behave consistently with Bootstrap's sticky navbar + smooth scroll.
-       This value is just a sensible fallback for direct anchor navigation
-       (e.g. page load with a #hash in the URL). */
     .section-card {
         margin-bottom: 1.5rem;
-        scroll-margin-top: 6rem;
     }
 
     /* Webhook URL input */
@@ -644,28 +638,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadRecentlyAddedScanners();
     loadHistory();
 
-    // Intercept every anchor link targeting a #section-webhooks-* id and
-    // scroll manually, measuring the navbar height at click time.  CSS
-    // scroll-margin-top is finicky with Bootstrap's sticky navbar + smooth
-    // scroll, so this guarantees the section header lands clearly below
-    // the navbar whether the click originated in the sidebar, the Overview
-    // decision list, or an inline callout link.
-    document.querySelectorAll('a[href^="#section-webhooks-"]').forEach(function(link) {
-        link.addEventListener('click', function(e) {
-            var href = link.getAttribute('href') || '';
-            if (!href.startsWith('#')) return;
-            e.preventDefault();
-            scrollToSection(href.substring(1));
-            if (history.pushState) history.pushState(null, '', href);
-        });
-    });
-
-    // Honour an initial #section-... in the URL too, with the same offset.
-    if (window.location.hash && window.location.hash.startsWith('#section-')) {
-        setTimeout(function() { scrollToSection(window.location.hash.substring(1)); }, 50);
-    }
-
-    // Auto-save: any stateful control inside .webhooks-content that isn't
+    // Auto-save: any stateful control inside #pane-triggers that isn't
     // explicitly skipped kicks a debounced save through saveWebhookSettings.
     if (typeof window.bindAutoSave === 'function') {
         window.bindAutoSave({
@@ -684,19 +657,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-function scrollToSection(id) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    var navbar = document.querySelector('.navbar.sticky-top');
-    var navbarHeight = navbar ? navbar.offsetHeight : 56;
-    var breathingRoom = 16; // 1rem padding between navbar and section top
-    var top = el.getBoundingClientRect().top + window.scrollY - navbarHeight - breathingRoom;
-    window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
-}
-
 // Used by the Overview status cards that visually look clickable.
 function jumpToSection(id) {
-    scrollToSection(id);
+    var el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 let allHistoryEvents = [];
