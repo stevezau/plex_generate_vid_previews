@@ -4,9 +4,8 @@ on:
   workflow_run:
     workflows: [Tests]
     types: [completed]
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [dev]
     tags: ['*.*.*']
   workflow_dispatch:
 
@@ -30,7 +29,12 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/'))) }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
 
     steps:
       - name: Validate Docker secrets
@@ -44,6 +48,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for setuptools-scm versioning
+          # In workflow_run context, github.ref points to the default branch,
+          # not the tested commit — pin checkout to the upstream run's SHA.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -61,8 +68,8 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           build-args: |
-            GIT_BRANCH=${{ github.ref_name }}
-            GIT_SHA=${{ github.sha }}
+            GIT_BRANCH=${{ github.event.workflow_run.head_branch || github.ref_name }}
+            GIT_SHA=${{ github.event.workflow_run.head_sha || github.sha }}
             ${{ startsWith(github.ref, 'refs/tags/') && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', github.ref_name) || '' }}
           outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
@@ -90,6 +97,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for setuptools-scm versioning
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -109,11 +117,22 @@ jobs:
 
       - name: Set image tags
         id: set_tags
+        env:
+          # In workflow_run context, GITHUB_REF is the default branch — fall
+          # back to the upstream run's head_branch so dev builds get :dev and
+          # main builds get :latest.
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
         run: |
           REF="${GITHUB_REF}"
           if [[ "$REF" == refs/tags/* ]]; then
             VERSION="${REF#refs/tags/}"
             TAGS="-t ${{ env.DOCKER_IMAGE }}:${VERSION} -t ${{ env.DOCKER_IMAGE }}:latest"
+          elif [[ -n "$HEAD_BRANCH" ]]; then
+            if [[ "$HEAD_BRANCH" == "main" ]]; then
+              TAGS="-t ${{ env.DOCKER_IMAGE }}:latest"
+            else
+              TAGS="-t ${{ env.DOCKER_IMAGE }}:dev"
+            fi
           elif [[ "$REF" == refs/heads/main ]]; then
             TAGS="-t ${{ env.DOCKER_IMAGE }}:latest"
           else
@@ -132,8 +151,11 @@ jobs:
     runs-on: ubuntu-latest
     # Only update the public Docker Hub description from main
     if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
