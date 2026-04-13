@@ -4,9 +4,6 @@ on:
   workflow_run:
     workflows: [Tests]
     types: [completed]
-    branches: [main, dev]
-  push:
-    tags: ['*.*.*']
   workflow_dispatch:
 
 env:
@@ -15,11 +12,57 @@ env:
   DOCKER_IMAGE: stevezzau/plex_generate_vid_previews
 
 concurrency:
-  group: docker-publish-${{ github.ref }}
+  # In workflow_run context, github.ref is the default branch, so dev/main/
+  # tag runs would share one group. Key off the upstream run's head_branch
+  # so parallel dev+main+tag builds don't queue behind each other.
+  group: docker-publish-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  context:
+    runs-on: ubuntu-latest
+    # Gate every downstream job: manual dispatch, or a successful Tests run
+    # triggered by a push (main/dev branches or *.*.* tags — test.yml's
+    # triggers). PR-triggered Tests runs are explicitly excluded so opening
+    # a PR never publishes a Docker image.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    outputs:
+      head_branch: ${{ steps.ctx.outputs.head_branch }}
+      head_sha: ${{ steps.ctx.outputs.head_sha }}
+      is_tag: ${{ steps.ctx.outputs.is_tag }}
+      docker_tags: ${{ steps.ctx.outputs.docker_tags }}
+    steps:
+      - name: Compute build context
+        id: ctx
+        env:
+          # In workflow_run context, github.ref points to the default branch.
+          # Use the upstream run's head_branch/head_sha so dev and tag builds
+          # resolve correctly. Falls back to github.ref_name/github.sha for
+          # workflow_dispatch.
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "head_branch=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$HEAD_BRANCH" == "main" ]]; then
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          elif [[ "$HEAD_BRANCH" == "dev" ]]; then
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
+          else
+            # test.yml only triggers on main/dev/*.*.* tags, so any other
+            # head_branch here must be a semver tag from a release.
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: context
     strategy:
       fail-fast: true
       matrix:
@@ -29,12 +72,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
 
     steps:
       - name: Validate Docker secrets
@@ -48,9 +85,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for setuptools-scm versioning
-          # In workflow_run context, github.ref points to the default branch,
-          # not the tested commit — pin checkout to the upstream run's SHA.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.context.outputs.head_sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -68,9 +103,9 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           build-args: |
-            GIT_BRANCH=${{ github.event.workflow_run.head_branch || github.ref_name }}
-            GIT_SHA=${{ github.event.workflow_run.head_sha || github.sha }}
-            ${{ startsWith(github.ref, 'refs/tags/') && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', github.ref_name) || '' }}
+            GIT_BRANCH=${{ needs.context.outputs.head_branch }}
+            GIT_SHA=${{ needs.context.outputs.head_sha }}
+            ${{ needs.context.outputs.is_tag == 'true' && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', needs.context.outputs.head_branch) || '' }}
           outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
@@ -91,13 +126,13 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [context, build]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for setuptools-scm versioning
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.context.outputs.head_sha }}
 
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -115,47 +150,18 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Set image tags
-        id: set_tags
-        env:
-          # In workflow_run context, GITHUB_REF is the default branch — fall
-          # back to the upstream run's head_branch so dev builds get :dev and
-          # main builds get :latest.
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
-        run: |
-          REF="${GITHUB_REF}"
-          if [[ "$REF" == refs/tags/* ]]; then
-            VERSION="${REF#refs/tags/}"
-            TAGS="-t ${{ env.DOCKER_IMAGE }}:${VERSION} -t ${{ env.DOCKER_IMAGE }}:latest"
-          elif [[ -n "$HEAD_BRANCH" ]]; then
-            if [[ "$HEAD_BRANCH" == "main" ]]; then
-              TAGS="-t ${{ env.DOCKER_IMAGE }}:latest"
-            else
-              TAGS="-t ${{ env.DOCKER_IMAGE }}:dev"
-            fi
-          elif [[ "$REF" == refs/heads/main ]]; then
-            TAGS="-t ${{ env.DOCKER_IMAGE }}:latest"
-          else
-            TAGS="-t ${{ env.DOCKER_IMAGE }}:dev"
-          fi
-          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
-
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            ${{ steps.set_tags.outputs.tags }} \
+            ${{ needs.context.outputs.docker_tags }} \
             $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
 
   update-dockerhub-description:
     runs-on: ubuntu-latest
-    # Only update the public Docker Hub description from main
-    if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    needs: context
+    # Only update the public Docker Hub description from main builds.
+    if: needs.context.outputs.head_branch == 'main'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
