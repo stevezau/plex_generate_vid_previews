@@ -35,6 +35,21 @@ def _reset_notification_session():
     reset_session()
 
 
+@pytest.fixture(autouse=True)
+def _mock_healthy_timezone():
+    """Force the timezone probe to report healthy.
+
+    CI runs with ``TZ`` unset and system timezone UTC, which otherwise
+    makes ``_build_timezone_misconfigured_notification`` fire in every
+    test and breaks assertions that only account for the Vulkan source.
+    """
+    with patch(
+        "plex_generate_previews.web.routes.api_system._get_timezone_info",
+        return_value={"timezone": "America/New_York", "tz_env_set": True},
+    ):
+        yield
+
+
 @pytest.fixture()
 def app_with_config(tmp_path):
     """Create a Flask test app against a temp config directory."""
