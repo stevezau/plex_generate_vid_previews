@@ -2,7 +2,8 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
+    tags: ['*.*.*']
     paths-ignore:
       - 'docs/**'
       - '*.md'
