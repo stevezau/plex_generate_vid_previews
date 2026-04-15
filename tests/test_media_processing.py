@@ -29,7 +29,6 @@ from plex_generate_previews.media_processing import (
     generate_bif,
     generate_images,
     get_failures,
-    heuristic_allows_skip,
     parse_ffmpeg_progress_line,
     process_item,
     record_failure,
@@ -324,26 +323,6 @@ class TestFFmpegProgressParsing:
         parse_ffmpeg_progress_line(line, 100.0, callback)
         # speed not parseable -> falls back to raw remaining = 90s
         assert abs(captured["remaining"] - 90.0) < 0.1
-
-
-class TestHeuristicAllowsSkip:
-    """Test skip frame heuristic."""
-
-    @patch("subprocess.run")
-    def test_heuristic_allows_skip_success(self, mock_run, mock_config):
-        """Test that heuristic passes when FFmpeg succeeds."""
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        result = heuristic_allows_skip(mock_config.ffmpeg_path, "/test/video.mp4")
-        assert result is True
-
-    @patch("subprocess.run")
-    def test_heuristic_allows_skip_failure(self, mock_run, mock_config):
-        """Test that heuristic fails when FFmpeg fails."""
-        mock_run.return_value = MagicMock(returncode=1, stderr="Error decoding frame\n")
-
-        result = heuristic_allows_skip(mock_config.ffmpeg_path, "/test/video.mp4")
-        assert result is False
 
 
 class TestDetectCodecError:
@@ -3084,18 +3063,6 @@ class TestFfmpegThreadFlags:
         bare_threads = [i for i, a in enumerate(args) if a == "-threads"]
         assert len(bare_threads) == 0, "ffmpeg_threads=0 should omit global -threads"
 
-    @patch("subprocess.run")
-    def test_heuristic_probe_includes_thread_cap(self, mock_run, mock_config):
-        """The skip-frame probe should include -threads 2 and -filter_threads 2."""
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        heuristic_allows_skip(mock_config.ffmpeg_path, "/test/video.mp4")
-
-        args = mock_run.call_args[0][0]
-        assert "-threads" in args
-        thread_idx = args.index("-threads")
-        assert args[thread_idx + 1] == "2"
-        assert "-filter_threads" in args
-
 
 class TestCancellation:
     """Test that cancellation kills FFmpeg and skips retries."""
@@ -3415,3 +3382,221 @@ class TestFailureScope:
         with failure_scope("job-keep"):
             assert [f["file"] for f in get_failures()] == ["/tmp/keep.mkv"]
             clear_failures()
+
+
+class TestSkipFrameInitialDefaults:
+    """Test that ``-skip_frame:v nokey`` is applied to the first FFmpeg
+    attempt on every path except DV Profile 5 / libplacebo.
+
+    Regression guard for issue #216: a previous preflight probe gave
+    false negatives on benign Dolby Vision RPU parsing artifacts and
+    caused ~20x slowdowns on DV Profile 8.x content.  The probe has been
+    removed; the retry cascade handles genuine skip_frame failures.
+    """
+
+    def _setup_success_mocks(
+        self,
+        hdr_format_str,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        mock_exists,
+        mock_file,
+        mock_detect,
+        mock_glob,
+        temp_dir,
+    ):
+        """Wire mocks so a single FFmpeg Popen call returns success."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=hdr_format_str)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = []
+        mock_detect.return_value = False
+
+        img1 = f"{temp_dir}/img-000001.jpg"
+        ts1 = f"{temp_dir}/0000000000.jpg"
+
+        def glob_side_effect(pattern):
+            if "img*.jpg" in pattern:
+                return [img1]
+            if pattern.endswith("*.jpg"):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_sdr_first_attempt_uses_skip_frame(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """SDR content (no HDR format) must attempt -skip_frame:v nokey
+        on the first FFmpeg invocation.
+        """
+        self._setup_success_mocks(
+            None,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            mock_exists,
+            mock_file,
+            mock_detect,
+            mock_glob,
+            temp_dir,
+        )
+
+        generate_images("/test/video.mkv", temp_dir, None, None, mock_config)
+
+        assert mock_popen.call_count == 1
+        args = mock_popen.call_args_list[0][0][0]
+        assert "-skip_frame:v" in args
+        assert args[args.index("-skip_frame:v") + 1] == "nokey"
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_dv_profile8_hdr10_first_attempt_uses_skip_frame(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Dolby Vision Profile 8.x with HDR10 fallback must attempt
+        -skip_frame:v nokey on the first FFmpeg invocation.
+
+        This is the exact profile from issue #216: the reporter's slow
+        file was DV Profile 8.6 BL+RPU / HDR10 compatible, and the old
+        probe rejected skip_frame on benign RPU parsing artifacts,
+        costing ~20x speed.
+        """
+        self._setup_success_mocks(
+            "Dolby Vision / SMPTE ST 2086",
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            mock_exists,
+            mock_file,
+            mock_detect,
+            mock_glob,
+            temp_dir,
+        )
+
+        generate_images("/test/video.mkv", temp_dir, None, None, mock_config)
+
+        assert mock_popen.call_count == 1
+        args = mock_popen.call_args_list[0][0][0]
+        assert "-skip_frame:v" in args
+        assert args[args.index("-skip_frame:v") + 1] == "nokey"
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_retry_drops_skip_frame_when_first_attempt_fails(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """If the first FFmpeg attempt returns non-zero, a second call
+        must run without -skip_frame:v. This exercises the retry path
+        that makes removal of the preflight probe safe.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        first_proc = MagicMock()
+        first_proc.poll.side_effect = [None, 0]
+        first_proc.returncode = 1
+
+        retry_proc = MagicMock()
+        retry_proc.poll.side_effect = [None, 0]
+        retry_proc.returncode = 0
+
+        mock_popen.side_effect = [first_proc, retry_proc]
+        mock_exists.return_value = True
+        mock_file.return_value.readlines.return_value = []
+        mock_detect.return_value = False
+
+        img1 = f"{temp_dir}/img-000001.jpg"
+        ts1 = f"{temp_dir}/0000000000.jpg"
+
+        def glob_side_effect(pattern):
+            if "img*.jpg" in pattern:
+                return [img1]
+            if pattern.endswith("*.jpg"):
+                return [ts1]
+            return []
+
+        mock_glob.side_effect = glob_side_effect
+
+        generate_images("/test/video.mkv", temp_dir, None, None, mock_config)
+
+        assert mock_popen.call_count == 2
+        first_args = mock_popen.call_args_list[0][0][0]
+        retry_args = mock_popen.call_args_list[1][0][0]
+        assert "-skip_frame:v" in first_args
+        assert "-skip_frame:v" not in retry_args

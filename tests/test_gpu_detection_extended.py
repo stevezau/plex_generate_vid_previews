@@ -6,14 +6,19 @@ and device enumeration using extensive mocking.
 """
 
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from plex_generate_previews.gpu_detection import (
     _build_gpu_error_detail,
     _detect_windows_gpus,
+    _format_driver_label,
     _get_ffmpeg_hwaccels,
     _get_gpu_devices,
     _is_hwaccel_available,
+    _probe_vaapi_driver,
     _test_acceleration_method,
     _test_hwaccel_functionality,
     detect_all_gpus,
@@ -2874,3 +2879,114 @@ class TestDiagnoseVulkanEnvironment:
         diag = self._diag()
         assert diag["nvidia_drm_loaded"] is True
         assert diag["nvidia_driver_version"] == "570.133.07"
+
+
+class TestProbeVaapiDriver:
+    """Test the vainfo probe that identifies the user-space VA-API driver.
+
+    The probe lets the GPU detection log line distinguish between the
+    kernel DRM driver (``i915``/``xe``) and the VA-API backend
+    (``iHD``/``i965``) so users do not mistake one for the other (see
+    issue #216).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_probe_cache(self):
+        """Reset the lru_cache between tests so each test sees a fresh
+        subprocess invocation rather than a value cached from an earlier
+        test that used the same render device path.
+        """
+        _probe_vaapi_driver.cache_clear()
+        yield
+        _probe_vaapi_driver.cache_clear()
+
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_probe_returns_driver_version_on_success(self, mock_run):
+        """Probe extracts the Driver version line from vainfo stdout."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "libva info: VA-API version 1.23.0\n"
+                "vainfo: VA-API version: 1.23 (libva 2.12.0)\n"
+                "vainfo: Driver version: "
+                "Intel iHD driver for Intel(R) Gen Graphics - 25.3.4 ()\n"
+            ),
+        )
+        result = _probe_vaapi_driver("/dev/dri/renderD128")
+        assert result == "Intel iHD driver for Intel(R) Gen Graphics - 25.3.4 ()"
+
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_probe_returns_none_when_vainfo_missing(self, mock_run):
+        """FileNotFoundError from subprocess.run collapses to None."""
+        mock_run.side_effect = FileNotFoundError("vainfo not installed")
+        assert _probe_vaapi_driver("/dev/dri/renderD128") is None
+
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_probe_returns_none_on_timeout(self, mock_run):
+        """TimeoutExpired from subprocess.run collapses to None."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="vainfo", timeout=5)
+        assert _probe_vaapi_driver("/dev/dri/renderD128") is None
+
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_probe_returns_none_when_driver_line_absent(self, mock_run):
+        """stdout that lacks a Driver version: line yields None."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="libva info: VA-API version 1.23.0\n",
+        )
+        assert _probe_vaapi_driver("/dev/dri/renderD128") is None
+
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_probe_returns_none_when_driver_line_is_empty(self, mock_run):
+        """An empty Driver version: value yields None rather than ''."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="vainfo: Driver version:   \n",
+        )
+        assert _probe_vaapi_driver("/dev/dri/renderD128") is None
+
+
+class TestFormatDriverLabel:
+    """Test the driver label formatter used in GPU detection log lines.
+
+    For Intel GPUs the label combines the kernel driver and the VA-API
+    driver. For other vendors (or when vainfo is unavailable) the label
+    falls back to the legacy ``driver: <kernel_driver>`` format so
+    nothing regresses on systems without ``vainfo``.
+    """
+
+    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    def test_intel_label_includes_both_drivers(self, mock_probe):
+        """i915 + successful vainfo probe produces a two-driver label."""
+        mock_probe.return_value = "Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"
+        label = _format_driver_label("/dev/dri/renderD128", "i915")
+        assert label == (
+            "kernel driver: i915, "
+            "va-api driver: Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"
+        )
+
+    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    def test_xe_driver_is_treated_as_intel(self, mock_probe):
+        """xe (new Intel DRM driver) also triggers the vainfo probe."""
+        mock_probe.return_value = "Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"
+        label = _format_driver_label("/dev/dri/renderD128", "xe")
+        assert label.startswith("kernel driver: xe, va-api driver: Intel iHD")
+        mock_probe.assert_called_once_with("/dev/dri/renderD128")
+
+    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    def test_intel_falls_back_to_legacy_when_probe_fails(self, mock_probe):
+        """Missing vainfo must not regress the log format on Intel."""
+        mock_probe.return_value = None
+        label = _format_driver_label("/dev/dri/renderD128", "i915")
+        assert label == "driver: i915"
+
+    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    def test_non_intel_driver_never_probes(self, mock_probe):
+        """nvidia/amdgpu GPUs produce the legacy label and skip vainfo."""
+        label = _format_driver_label("/dev/dri/renderD128", "nvidia")
+        assert label == "driver: nvidia"
+        mock_probe.assert_not_called()
+
+        label = _format_driver_label("/dev/dri/renderD128", "amdgpu")
+        assert label == "driver: amdgpu"
+        assert mock_probe.call_count == 0

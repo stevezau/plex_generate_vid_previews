@@ -11,6 +11,7 @@ import platform
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from typing import List, Optional, Tuple
 
 from loguru import logger
@@ -35,6 +36,9 @@ GPU_ACCELERATION_MAP = {
         "requires_runtime": False,
         "test_encoder": None,  # Use hwaccel test instead
     },
+    # VAAPI only. QSV is not implemented: on Linux it runs through the
+    # same iHD/oneVPL runtime as VAAPI (no decode-only speed gain) and
+    # has documented H.264 instability on Intel Arc.
     "INTEL": {
         "primary": "VAAPI",
         "fallback": None,
@@ -78,6 +82,82 @@ DRIVER_VENDOR_MAP = {
     "panfrost": "ARM",
     "vc4": "VIDEOCORE",
 }
+
+# Kernel drivers that correspond to Intel GPUs (worth probing vainfo for
+# the user-space VA-API driver identity, since the kernel driver name
+# alone is misleading — i915/xe sit underneath iHD).
+_INTEL_KERNEL_DRIVERS = frozenset({"i915", "xe"})
+
+
+@lru_cache(maxsize=None)
+def _probe_vaapi_driver(render_device: str) -> Optional[str]:
+    """Return the user-space VA-API driver version string for a render node.
+
+    Runs ``vainfo --display drm --device <render_device>`` and extracts
+    the ``Driver version:`` line. Returns None on any failure (missing
+    binary, timeout, parse failure) so callers can fall back to a
+    legacy log format.
+
+    Cached for the lifetime of the process: the underlying VA-API
+    driver does not change at runtime, and three log sites probe the
+    same device during startup.
+
+    Args:
+        render_device: Path to a DRM render node (e.g. ``/dev/dri/renderD128``).
+
+    Returns:
+        Optional[str]: The raw driver version string (e.g.
+        ``"Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"``) on
+        success, or None if the probe could not determine a driver.
+
+    """
+    try:
+        result = subprocess.run(
+            ["vainfo", "--display", "drm", "--device", render_device],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    marker = "Driver version:"
+    for line in result.stdout.splitlines():
+        idx = line.find(marker)
+        if idx == -1:
+            continue
+        value = line[idx + len(marker) :].strip()
+        return value or None
+    return None
+
+
+def _format_driver_label(render_device: str, kernel_driver: str) -> str:
+    """Build the parenthesised driver label for a GPU log line.
+
+    For Intel GPUs the label shows both the kernel DRM driver (``i915``
+    or ``xe``) and the user-space VA-API driver from ``vainfo``. For
+    everything else, or when ``vainfo`` is unavailable, the label falls
+    back to the legacy ``driver: <kernel_driver>`` format.
+
+    Args:
+        render_device: Render node path (e.g. ``/dev/dri/renderD128``).
+        kernel_driver: Kernel driver name read from
+            ``/sys/class/drm/cardX/device/driver``.
+
+    Returns:
+        str: Label without enclosing parens, suitable for inclusion in
+        debug log lines, e.g. ``"kernel driver: i915, va-api driver:
+        Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"`` or
+        ``"driver: i915"``.
+
+    """
+    if kernel_driver in _INTEL_KERNEL_DRIVERS:
+        vaapi_driver = _probe_vaapi_driver(render_device)
+        if vaapi_driver:
+            return f"kernel driver: {kernel_driver}, va-api driver: {vaapi_driver}"
+    return f"driver: {kernel_driver}"
 
 
 def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
@@ -1144,7 +1224,8 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
                 driver = os.path.basename(os.readlink(driver_path))
 
             devices.append((entry, render_device, driver))
-            logger.debug(f"Found GPU: {entry} -> {render_device} (driver: {driver})")
+            label = _format_driver_label(render_device, driver)
+            logger.debug(f"Found GPU: {entry} -> {render_device} ({label})")
 
     except Exception as e:
         logger.debug(f"Error scanning GPU devices: {e}")
@@ -1365,7 +1446,8 @@ def _log_system_info() -> None:
     if gpu_devices:
         logger.debug("GPU device mapping:")
         for card_name, render_device, driver in gpu_devices:
-            logger.debug(f"  {card_name} -> {render_device} (driver: {driver})")
+            label = _format_driver_label(render_device, driver)
+            logger.debug(f"  {card_name} -> {render_device} ({label})")
 
     logger.debug("=== End System Information ===")
 
@@ -1830,7 +1912,8 @@ def _detect_linux_gpus() -> List[Tuple[str, str, dict]]:
     else:
         logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
         for card_name, render_device, driver in physical_gpus:
-            logger.debug(f"  {card_name}: {render_device} (driver: {driver})")
+            label = _format_driver_label(render_device, driver)
+            logger.debug(f"  {card_name}: {render_device} ({label})")
 
     # For each physical GPU, test appropriate acceleration methods
     logger.debug("=== Testing GPU Acceleration Methods ===")

@@ -785,79 +785,6 @@ def _detect_hwaccel_runtime_error(stderr_lines: List[str]) -> bool:
     return any(pattern in stderr_text for pattern in hwaccel_error_patterns)
 
 
-def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
-    """Probe the first 10 frames to decide if ``-skip_frame:v nokey`` is safe.
-
-    Uses ``-err_detect explode`` + ``-xerror`` to bail immediately on the
-    first decode error.  Returns ``True`` if the probe succeeds (zero exit
-    code), else ``False``.
-
-    .. note::
-
-       For Dolby Vision content this function almost always returns ``False``
-       because ``-err_detect explode`` triggers on RPU NAL-unit parsing
-       artefacts.  This is **benign** — it simply forces the slower no-skip
-       decode path, which is the correct behaviour for DV anyway.
-
-    Args:
-        ffmpeg_path: Path to the FFmpeg binary.
-        video_file: Path to the media file to probe.
-
-    Returns:
-        bool: ``True`` when skip_frame is safe, ``False`` otherwise.
-
-    """
-    null_sink = "NUL" if os.name == "nt" else "/dev/null"
-    cmd = [
-        ffmpeg_path,
-        "-hide_banner",
-        "-nostats",
-        "-v",
-        "error",  # only errors
-        "-xerror",  # make errors set non-zero exit
-        "-err_detect",
-        "explode",  # fail fast on decode issues
-        "-skip_frame:v",
-        "nokey",
-        "-threads",
-        "2",
-        "-filter_threads",
-        "2",
-        "-threads:v",
-        "1",
-        "-i",
-        video_file,
-        "-an",
-        "-sn",
-        "-dn",
-        "-frames:v",
-        "10",  # stop as soon as one frame decodes
-        "-f",
-        "null",
-        null_sink,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        logger.debug(f"skip_frame probe timed out for {video_file}")
-        return False
-    ok = proc.returncode == 0
-    if not ok:
-        last = (proc.stderr or "").strip().splitlines()[-1:]  # tail(1)
-        logger.debug(f"skip_frame probe FAILED at 0s: rc={proc.returncode} msg={last}")
-    else:
-        logger.debug("skip_frame probe OK at 0s")
-    return ok
-
-
 def generate_images(
     video_file: str,
     output_folder: str,
@@ -870,9 +797,11 @@ def generate_images(
 ) -> tuple:
     """Generate thumbnail images from a video using FFmpeg.
 
-    Runs FFmpeg with hardware acceleration when configured. If the skip-frame
-    heuristic allowed it, attempts with '-skip_frame:v nokey' first. If that
-    yields zero images or returns non-zero, automatically retries without '-skip_frame'.
+    Runs FFmpeg with hardware acceleration when configured. Attempts with
+    '-skip_frame:v nokey' first on paths that support it (disabled for DV
+    Profile 5 and libplacebo because the RPU side-data has inter-frame
+    dependencies). If the first attempt returns non-zero, automatically
+    retries without '-skip_frame'.
 
     If GPU processing fails with a codec error (detected via stderr parsing for
     patterns like "Codec not supported", "Unsupported codec", etc., or exit codes
@@ -1378,8 +1307,10 @@ def generate_images(
 
         return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines
 
-    # Decide initial skip usage from heuristic
-    use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
+    # DV Profile 5 paths cannot use -skip_frame (RPU side-data has
+    # inter-frame dependencies). Everything else attempts skip_frame
+    # first and falls back via the retry below if the decoder rejects it.
+    use_skip_initial = not (use_libplacebo or dv5_software_fallback)
 
     # Ensure output folder exists
     os.makedirs(output_folder, exist_ok=True)
