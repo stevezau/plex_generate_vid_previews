@@ -1132,11 +1132,14 @@ class TestGenerateImages:
         assert hw_used is True
         assert mock_popen.call_count == 3  # skip + no-skip + DV-safe retry
 
-        # Assert the third invocation used the DV-safe vf: fps+scale only, no zscale/tonemap
+        # Assert the third invocation used the DV-safe vf: fps+scale only, no zscale/tonemap.
+        # On NVIDIA the DV-safe retry keeps the GPU-scale win from issue #218 —
+        # scale_cuda + hwdownload rather than a CPU scale on full-resolution frames.
         third_args = mock_popen.call_args_list[2][0][0]
         vf_index = third_args.index("-vf")
         vf_value = third_args[vf_index + 1]
-        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+        assert "scale_cuda=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+        assert "hwdownload" in vf_value
         assert "zscale" not in vf_value
         assert "tonemap" not in vf_value
 
@@ -1792,13 +1795,14 @@ class TestProactiveDVSkip:
         mock_config,
     ):
         """DV Profile 5 on an Intel host with a VAAPI render device
-        uses VAAPI hardware decode + Vulkan libplacebo via zero-copy
-        DMA-BUF interop.
+        uses VAAPI hardware decode + OpenCL tonemap_opencl via
+        jellyfin-ffmpeg's DV-aware patch.
 
-        2026-04-16 benchmark on Intel UHD 770 (Raptor Lake-S): 16.2x
-        real-time with ~0 CPU, pixel-identical (PSNR=inf) vs software
-        decode + libplacebo.  NVIDIA keeps the separate CUDA/NVDEC
-        path (see ``test_generate_images_dv_profile5_nvidia_uses_nvdec``).
+        Intel's VAAPI→Vulkan libplacebo path is broken upstream on
+        Mesa ANV (libplacebo vkCreateImage returns VK_ERROR_OUT_OF_
+        DEVICE_MEMORY).  Jellyfin-ffmpeg's tonemap_opencl reads DV RPU
+        side-data correctly and produces correct colours at ~17x on
+        Intel UHD 770.  See issue #212.
         """
         args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
@@ -1819,17 +1823,16 @@ class TestProactiveDVSkip:
             gpu_device_path="/dev/dri/renderD128",
         )
 
-        # VAAPI device must be initialised on the render node, then a
-        # Vulkan device derived from it via vk@va for zero-copy interop.
+        # Intel DV5 path initialises VAAPI on the render node and an
+        # OpenCL context derived from that VAAPI device (ocl@va).
         init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
-        assert len(init_indices) == 3, (
-            "VAAPI DV5 path must initialise DRM + VAAPI + Vulkan (3 devices)"
+        assert len(init_indices) == 2, (
+            "Intel DV5 path must initialise VAAPI + derived OpenCL (2 devices)"
         )
-        assert args[init_indices[0] + 1] == "drm=dr:/dev/dri/renderD128"
-        assert args[init_indices[1] + 1] == "vaapi=va@dr"
-        assert args[init_indices[2] + 1] == "vulkan=vk@dr"
+        assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD128"
+        assert args[init_indices[1] + 1] == "opencl=ocl@va"
         assert "-filter_hw_device" in args
-        assert args[args.index("-filter_hw_device") + 1] == "vk"
+        assert args[args.index("-filter_hw_device") + 1] == "ocl"
 
         # -hwaccel must be vaapi, output format kept on-device (vaapi),
         # device reference must match the named "va" VAAPI context.
@@ -1840,8 +1843,7 @@ class TestProactiveDVSkip:
         assert "-hwaccel_output_format" in args
         assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
 
-        # The VAAPI DV5 path is hardware-decoded, so -threads:v must be
-        # capped to 1 (the CPU thread is a decode orchestrator only).
+        # Hardware-decoded DV5, so -threads:v 1.
         assert "-threads:v" in args
         assert args[args.index("-threads:v") + 1] == "1"
 
@@ -1849,17 +1851,29 @@ class TestProactiveDVSkip:
         # inter-frame dependencies.
         assert "-skip_frame:v" not in args
 
-        # Filter chain must map VAAPI frames into Vulkan via hwmap (not
-        # hwupload), run libplacebo, then hwdownload for JPEG encoding.
+        # Filter chain: fps first (drop frames BEFORE the expensive tonemap
+        # step), then setparams to tag the base layer as BT.2020/PQ, then
+        # hwmap to OpenCL and tonemap_opencl, then hwdownload for mjpeg.
         vf = args[args.index("-vf") + 1]
-        assert "hwmap=derive_device=vulkan" in vf
-        assert "hwupload" not in vf, (
-            "VAAPI DV5 path uses hwmap for zero-copy interop, not hwupload"
+        assert "hwmap=derive_device=opencl:mode=read" in vf
+        assert "tonemap_opencl=" in vf
+        assert "hwmap=derive_device=vulkan" not in vf, (
+            "Intel DV5 uses OpenCL, not Vulkan (libplacebo interop is broken)"
         )
-        assert "libplacebo" in vf
+        assert "libplacebo=" not in vf, (
+            "Intel DV5 path uses tonemap_opencl, not libplacebo"
+        )
+        assert "hwupload" not in vf
         assert "hwdownload" in vf
         assert "zscale" not in vf
-        assert "colorspace=bt709" not in vf
+        # fps filter must come BEFORE hwmap — that's the 6x speed-up
+        # (benchmarked 2.71x→17.3x on UHD 770).
+        fps_pos = vf.find("fps=fps=")
+        hwmap_pos = vf.find("hwmap=")
+        assert 0 <= fps_pos < hwmap_pos, (
+            "fps filter must run BEFORE hwmap so we drop frames at the "
+            "VAAPI surface and don't waste tonemap cycles"
+        )
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -1886,10 +1900,12 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """AMD on DV Profile 5 takes the same VAAPI + Vulkan interop
-        path as Intel.  Mesa's ``radeonsi`` VA-API driver handles HEVC
-        Main10 and RADV Vulkan supports the same DMA-BUF interop, so
-        the FFmpeg command is identical apart from the render node.
+        """AMD on DV Profile 5 uses VAAPI decode + Vulkan libplacebo
+        via the Jellyfin ``drm=dr → vaapi=va@dr → vulkan=vk@dr`` pattern.
+        Intel takes a separate OpenCL tonemap path (see Intel test above)
+        because Mesa ANV's Vulkan DMA-BUF import is broken for DV5 format
+        modifiers.  AMD's Mesa RADV has working DMA-BUF interop so we
+        keep the libplacebo path there.
         """
         args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
@@ -2060,10 +2076,13 @@ class TestProactiveDVSkip:
         assert "hwupload" not in vf
         # Zscale is also wrong on DV5 (no HDR10 base layer) — the
         # fallback must use the plain fps+scale chain, same as the
-        # DV-safe retry target.
+        # DV-safe retry target.  On NVIDIA, fps is followed by
+        # scale_cuda+hwdownload (issue #218 GPU-scale optimisation)
+        # rather than a CPU scale.
         assert "zscale" not in vf
         assert "tonemap" not in vf
-        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf
+        assert "scale_cuda=w=320:h=240:force_original_aspect_ratio=decrease" in vf
+        assert "hwdownload" in vf
         assert vf.startswith("fps=fps=")
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
@@ -2612,7 +2631,9 @@ class TestZscaleErrorRetry:
         third_args = mock_popen.call_args_list[2][0][0]
         vf_index = third_args.index("-vf")
         vf_value = third_args[vf_index + 1]
-        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+        # NVIDIA DV-safe retry keeps scale_cuda + hwdownload (issue #218).
+        assert "scale_cuda=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+        assert "hwdownload" in vf_value
         assert "zscale" not in vf_value
         assert "tonemap" not in vf_value
 
@@ -3077,6 +3098,192 @@ class TestHdrFormatNoneString:
         assert "tonemap" not in vf_value
         assert "fps=" in vf_value
         assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
+
+
+class TestGpuScaleOptimisation:
+    """Issue #218: keep decoded frames on the GPU through downscale so
+    per-worker RSS drops from ~1 GB to ~300 MB on 4K HDR10.
+    """
+
+    @staticmethod
+    def _run(mock_mediainfo, mock_popen, mock_config, *, gpu, gpu_device, hdr_fmt):
+        info = MagicMock()
+        info.video_tracks = [MagicMock(hdr_format=hdr_fmt)]
+        mock_mediainfo.parse.return_value = info
+        proc = MagicMock()
+        proc.poll.side_effect = [None, 0]
+        proc.returncode = 0
+        mock_popen.return_value = proc
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("builtins.open", new_callable=mock_open),
+            patch("time.sleep"),
+            patch("plex_generate_previews.media_processing.glob.glob", return_value=[]),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            generate_images("/test/v.mp4", "/tmp/o", gpu, gpu_device, mock_config)
+        return mock_popen.call_args[0][0]
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    def test_nvidia_sdr_uses_scale_cuda_with_hwaccel_output_format(
+        self, mock_popen, mock_mediainfo, mock_config
+    ):
+        args = self._run(
+            mock_mediainfo,
+            mock_popen,
+            mock_config,
+            gpu="NVIDIA",
+            gpu_device="cuda",
+            hdr_fmt=None,
+        )
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "cuda"
+        assert "-hwaccel_output_format" in args
+        assert args[args.index("-hwaccel_output_format") + 1] == "cuda"
+        vf = args[args.index("-vf") + 1]
+        assert "scale_cuda=w=320:h=240:force_original_aspect_ratio=decrease" in vf
+        assert "force_divisible_by=2" in vf, (
+            "Letterboxed 2.4:1 content needs even output dims or zscale rejects it"
+        )
+        assert "format=nv12" in vf
+        assert "hwdownload" in vf
+        # The old CPU-scale bug must not re-appear.
+        assert "scale=w=320" not in vf.replace("scale_cuda=w=320", "")
+        # Decoder thread cap unchanged.
+        assert "-threads:v" in args
+        assert args[args.index("-threads:v") + 1] == "1"
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    def test_nvidia_hdr10_downscales_on_gpu_before_zscale(
+        self, mock_popen, mock_mediainfo, mock_config
+    ):
+        args = self._run(
+            mock_mediainfo,
+            mock_popen,
+            mock_config,
+            gpu="NVIDIA",
+            gpu_device="cuda",
+            hdr_fmt="SMPTE ST 2086",
+        )
+        vf = args[args.index("-vf") + 1]
+        # scale_cuda must appear BEFORE zscale so zscale tonemaps a
+        # 320x240 frame, not a 4K one.
+        scale_idx = vf.find("scale_cuda=")
+        zscale_idx = vf.find("zscale=t=linear")
+        assert scale_idx != -1 and zscale_idx != -1
+        assert scale_idx < zscale_idx
+        assert "format=p010le" in vf, "HDR10 path must keep 10-bit through GPU scale"
+        assert "tonemap=hable" in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    def test_vaapi_sdr_uses_scale_vaapi_with_even_parity_safety(
+        self, mock_popen, mock_mediainfo, mock_config
+    ):
+        args = self._run(
+            mock_mediainfo,
+            mock_popen,
+            mock_config,
+            gpu="INTEL",
+            gpu_device="/dev/dri/renderD128",
+            hdr_fmt=None,
+        )
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "vaapi"
+        # Modern -hwaccel_device pairs with -hwaccel_output_format;
+        # the deprecated -vaapi_device would break this pairing.
+        assert "-hwaccel_device" in args
+        assert args[args.index("-hwaccel_device") + 1] == "/dev/dri/renderD128"
+        assert "-vaapi_device" not in args
+        assert "-hwaccel_output_format" in args
+        assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
+        vf = args[args.index("-vf") + 1]
+        assert "scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease" in vf
+        assert "hwdownload" in vf
+        # scale_vaapi lacks force_divisible_by; the CPU parity fix after
+        # hwdownload snaps letterboxed odd heights (e.g. 320x133) to even.
+        assert "scale=trunc(iw/2)*2:trunc(ih/2)*2" in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    def test_vaapi_hdr10_downscales_on_gpu_before_zscale(
+        self, mock_popen, mock_mediainfo, mock_config
+    ):
+        args = self._run(
+            mock_mediainfo,
+            mock_popen,
+            mock_config,
+            gpu="AMD",
+            gpu_device="/dev/dri/renderD128",
+            hdr_fmt="SMPTE ST 2086",
+        )
+        vf = args[args.index("-vf") + 1]
+        scale_idx = vf.find("scale_vaapi=")
+        parity_idx = vf.find("scale=trunc(iw/2)*2")
+        zscale_idx = vf.find("zscale=t=linear")
+        assert scale_idx != -1 and parity_idx != -1 and zscale_idx != -1
+        # scale_vaapi (GPU) → hwdownload → parity-fix scale (CPU, tiny)
+        # → zscale tonemap on the 320x240 frame.
+        assert scale_idx < parity_idx < zscale_idx
+        assert "format=p010le" in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    def test_cpu_path_retains_software_scale(
+        self, mock_popen, mock_mediainfo, mock_config
+    ):
+        args = self._run(
+            mock_mediainfo,
+            mock_popen,
+            mock_config,
+            gpu=None,
+            gpu_device=None,
+            hdr_fmt=None,
+        )
+        vf = args[args.index("-vf") + 1]
+        # CPU path: plain libswscale scale — no GPU filters.
+        assert "scale_cuda" not in vf
+        assert "scale_vaapi" not in vf
+        assert "hwdownload" not in vf
+        assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf
+        # And no hwaccel_output_format leaked in.
+        assert "-hwaccel_output_format" not in args
+
+    @patch(
+        "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+        return_value={"device": "vk", "is_software": False},
+    )
+    @patch(
+        "plex_generate_previews.gpu_detection.get_vulkan_env_overrides",
+        return_value={},
+    )
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    def test_dv5_libplacebo_vf_unchanged(
+        self, mock_popen, mock_mediainfo, _vk_env, _vk_info, mock_config
+    ):
+        args = self._run(
+            mock_mediainfo,
+            mock_popen,
+            mock_config,
+            gpu="NVIDIA",
+            gpu_device="cuda",
+            hdr_fmt="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+        )
+        vf = args[args.index("-vf") + 1]
+        # DV5 libplacebo chain stays intact — it uses hwupload from
+        # CPU frames, so -hwaccel_output_format cuda would break it.
+        assert vf.startswith("hwupload,")
+        assert "libplacebo=tonemapping=" in vf
+        assert "hwdownload,format=yuv420p" in vf
+        assert "scale_cuda" not in vf, "DV5 libplacebo path must not use scale_cuda"
+        # -hwaccel cuda is still set (NVDEC decodes the HEVC base), but
+        # output format must NOT be cuda on this path.
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "cuda"
+        assert "-hwaccel_output_format" not in args
 
 
 class TestFfmpegThreadFlags:

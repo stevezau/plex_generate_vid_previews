@@ -833,24 +833,54 @@ def generate_images(
     media_info = MediaInfo.parse(video_file)
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
 
-    # Base video filter for SDR content
+    # Filter primitives.  The final vf chain is assembled inside
+    # _run_ffmpeg so it can adapt to the effective GPU on each attempt
+    # (GPU→CPU retry, NVIDIA↔VAAPI overrides, etc.).
+    fps_filter = f"fps=fps={fps_value}:round=up"
     base_scale = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
-    vf_parameters = f"fps=fps={fps_value}:round=up,{base_scale}"
 
-    # Track whether the filter chain requires Vulkan (libplacebo).
+    # vf assembly classification.  Set by HDR detection below; consumed
+    # by _run_ffmpeg.  Possible values:
+    #   "sdr"               — fps + scale (or GPU-scale segment)
+    #   "hdr10_zscale"      — HDR10 / DV P7+8: zscale tonemap chain
+    #   "libplacebo_dv5"    — DV Profile 5 with libplacebo (CPU/NVIDIA input)
+    #   "libplacebo_vaapi"  — DV Profile 5 on AMD: VAAPI→Vulkan DMA-BUF
+    #   "opencl_dv5_intel"  — DV Profile 5 on Intel: VAAPI→OpenCL tonemap
+    #                         (Intel VAAPI + Vulkan libplacebo has an upstream
+    #                         interop bug that returns VK_ERROR_OUT_OF_DEVICE_MEMORY
+    #                         in containers on both iGPU and DG2 Arc; jellyfin-
+    #                         ffmpeg's patched tonemap_opencl handles DV5 RPU
+    #                         correctly and runs on the Intel media engine
+    #                         entirely.  See issue #212.)
+    path_kind = "sdr"
+    # Pre-assembled filter chain for the libplacebo / OpenCL paths (they
+    # already contain hwupload/hwmap/hwdownload and do not need GPU-scale
+    # rewriting).
+    libplacebo_vf: Optional[str] = None
+
+    # Track whether the filter chain requires Vulkan (libplacebo) or OpenCL.
     use_libplacebo = False
-    # True when the DV5 libplacebo path is running on a Linux VAAPI GPU
-    # (Intel iGPU/Arc, AMD Radeon) and should use zero-copy VAAPI→Vulkan
-    # DMA-BUF interop via -hwaccel vaapi + -hwaccel_output_format vaapi
-    # + hwmap=derive_device=vulkan.  NVIDIA keeps its CUDA/NVDEC path.
+    # True when DV5 uses AMD's VAAPI→Vulkan DMA-BUF libplacebo path.
     use_vaapi_dv5_path = False
+    # True when DV5 uses Intel's VAAPI→OpenCL tonemap_opencl path (Jellyfin
+    # pattern).  Intel's VAAPI→Vulkan libplacebo path is broken upstream on
+    # Mesa ANV — see path_kind doc above.
+    use_intel_opencl_dv5_path = False
     # DV5 content + software/missing Vulkan: skip both libplacebo AND
     # the zscale fallback, because zscale on a DV5 stream produces a
-    # green overlay (no HDR10 base layer to read).  The default
-    # vf_parameters set above — fps+scale with no tonemap — is the
-    # same DV-safe chain used by the downstream DV-safe retry and
-    # produces dim-but-correct thumbnails.
+    # green overlay (no HDR10 base layer to read).  The SDR path_kind
+    # (fps + scale, no tonemap) is the same DV-safe chain used by the
+    # downstream DV-safe retry and produces dim-but-correct thumbnails.
     dv5_software_fallback = False
+
+    # HDR10 / DV P7+8 zscale chain (sans fps and base_scale).  See
+    # _assemble_vf below for how it's composed with the GPU-scale
+    # segment when hardware decode is active.
+    hdr10_zscale_chain = (
+        "zscale=t=linear:npl=100,format=gbrpf32le,"
+        f"zscale=p=bt709,tonemap={config.tonemap_algorithm}:desat=0,"
+        "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    )
 
     # Check if we have HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
@@ -898,50 +928,92 @@ def generate_images(
                         f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                     )
                     use_libplacebo = True
-                    # On Linux VAAPI GPUs (Intel iGPU/Arc, AMD Radeon), the
-                    # frames coming out of the decoder are VAAPI surfaces that
-                    # map zero-copy into Vulkan via hwmap=derive_device=vulkan.
-                    # Software and NVIDIA CUDA paths take CPU frames that need
-                    # an explicit hwupload into Vulkan instead.  _run_ffmpeg
-                    # mirrors this same decision when picking the hwaccel and
-                    # the device init flags.
-                    use_vaapi_dv5_path = bool(
-                        gpu is not None
-                        and gpu != "NVIDIA"
+                    # Pick the DV5 filter chain based on GPU vendor.
+                    #
+                    # Intel (iGPU + Arc DG2): use VAAPI decode + OpenCL tonemap.
+                    #   Intel's VAAPI→Vulkan DMA-BUF interop path is broken
+                    #   upstream (libplacebo's vkCreateImage returns
+                    #   VK_ERROR_OUT_OF_DEVICE_MEMORY on Mesa ANV for the
+                    #   format+modifier combinations used for DV5 hwmap —
+                    #   reproduces on my own UHD 770 in-container and on
+                    #   the reporter's Arc A380).  Jellyfin-ffmpeg's
+                    #   patched tonemap_opencl reads DV RPU side-data and
+                    #   produces correct colours — benchmarked 17x/0 CPU
+                    #   on UHD 770.  See issue #212.
+                    #
+                    # AMD Radeon: use VAAPI→Vulkan DMA-BUF libplacebo.
+                    #   Jellyfin ships this pattern in production for
+                    #   discrete AMD cards; untested locally but FFmpeg
+                    #   flags are vendor-agnostic.
+                    #
+                    # NVIDIA: CUDA decode (set in _run_ffmpeg) + Vulkan
+                    #   libplacebo via hwupload of CPU frames.
+                    #
+                    # Other / no device path: software decode + libplacebo
+                    #   via plain vulkan=vk + hwupload.
+                    if (
+                        gpu == "INTEL"
                         and gpu_device_path is not None
                         and gpu_device_path.startswith("/dev/dri/")
-                    )
-                    # contrast=1.3, saturation=1.3 restore the punch that
-                    # libplacebo's default PQ→SDR curve leaves on the table.
-                    # Default reinhard compresses mids into a narrow band
-                    # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
-                    # which reads as dim and washed-out next to the zscale
-                    # chain used for HDR10/DV P7+8.
-                    #
-                    # A plain brightness offset was rejected: it lifts black
-                    # levels as much as mids, so blacks turn gray and colors
-                    # stay muted.  Scaling contrast and saturation instead
-                    # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
-                    # preserving deep blacks.  Verified across three MIB
-                    # scenes (dark/mid/bright) — no highlight clipping,
-                    # punchy output comparable to the DV P7+8 reference.
-                    libplacebo_opts = (
-                        f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                        f":format=yuv420p:fps={fps_value}"
-                        f":contrast=1.3:saturation=1.3"
-                    )
-                    if use_vaapi_dv5_path:
-                        vf_parameters = (
-                            f"hwmap=derive_device=vulkan,"
-                            f"{libplacebo_opts},"
-                            f"hwdownload,format=yuv420p,{base_scale}"
+                    ):
+                        use_intel_opencl_dv5_path = True
+                        path_kind = "opencl_dv5_intel"
+                        # fps first: drop frames on VAAPI surfaces BEFORE
+                        # the OpenCL tonemap.  Without this, every source
+                        # frame (24 fps × 60s = 1440) would be mapped to
+                        # OpenCL and tonemapped just for us to keep ~20.
+                        # Putting fps first gives 17x vs 2.7x measured.
+                        libplacebo_vf = (
+                            f"fps=fps={fps_value}:round=up,"
+                            "setparams=color_primaries=bt2020:"
+                            "color_trc=smpte2084:colorspace=bt2020nc,"
+                            "hwmap=derive_device=opencl:mode=read,"
+                            f"tonemap_opencl=format=nv12:p=bt709:t=bt709:"
+                            f"m=bt709:tonemap={config.tonemap_algorithm}"
+                            f":peak=100:desat=0,"
+                            f"hwdownload,format=nv12,format=yuv420p,{base_scale}"
                         )
                     else:
-                        vf_parameters = (
-                            f"hwupload,"
-                            f"{libplacebo_opts},"
-                            f"hwdownload,format=yuv420p,{base_scale}"
+                        # Non-Intel path (AMD VAAPI, NVIDIA CUDA, SW fallback).
+                        use_vaapi_dv5_path = bool(
+                            gpu is not None
+                            and gpu != "NVIDIA"
+                            and gpu_device_path is not None
+                            and gpu_device_path.startswith("/dev/dri/")
                         )
+                        # contrast=1.3, saturation=1.3 restore the punch that
+                        # libplacebo's default PQ→SDR curve leaves on the table.
+                        # Default reinhard compresses mids into a narrow band
+                        # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
+                        # which reads as dim and washed-out next to the zscale
+                        # chain used for HDR10/DV P7+8.
+                        #
+                        # A plain brightness offset was rejected: it lifts black
+                        # levels as much as mids, so blacks turn gray and colors
+                        # stay muted.  Scaling contrast and saturation instead
+                        # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
+                        # preserving deep blacks.  Verified across three MIB
+                        # scenes (dark/mid/bright) — no highlight clipping,
+                        # punchy output comparable to the DV P7+8 reference.
+                        libplacebo_opts = (
+                            f"libplacebo=tonemapping={config.tonemap_algorithm}"
+                            f":format=yuv420p:fps={fps_value}"
+                            f":contrast=1.3:saturation=1.3"
+                        )
+                        if use_vaapi_dv5_path:
+                            libplacebo_vf = (
+                                f"hwmap=derive_device=vulkan,"
+                                f"{libplacebo_opts},"
+                                f"hwdownload,format=yuv420p,{base_scale}"
+                            )
+                            path_kind = "libplacebo_vaapi"
+                        else:
+                            libplacebo_vf = (
+                                f"hwupload,"
+                                f"{libplacebo_opts},"
+                                f"hwdownload,format=yuv420p,{base_scale}"
+                            )
+                            path_kind = "libplacebo_dv5"
             elif _is_dolby_vision(hdr_fmt):
                 # Dolby Vision Profile 7/8 with HDR10 backward-compat
                 # base layer.  FFmpeg reads the HDR10 base layer by
@@ -957,17 +1029,86 @@ def generate_images(
             # zscale on a DV5 stream (no HDR10 base) produces a green
             # overlay, so the default fps+scale chain is used instead.
             if not use_libplacebo and not dv5_software_fallback:
-                # npl=100 (SDR reference white) is the standard value
-                # for PQ-to-linear conversion.  Using MaxCLL here would
-                # normalise all luminance to the content peak, making
-                # typical scene content (50-200 nits) map to tiny linear
-                # values that barely get tone mapped → dark output.
-                vf_parameters = (
-                    f"fps=fps={fps_value}:round=up,"
-                    f"zscale=t=linear:npl=100,format=gbrpf32le,"
-                    f"zscale=p=bt709,tonemap={config.tonemap_algorithm}:desat=0,"
-                    f"zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
-                )
+                # HDR10 or DV Profile 7/8 (HDR10 base layer).  zscale
+                # tonemap chain.  npl=100 (SDR reference white) is the
+                # standard value for PQ-to-linear conversion.  Using
+                # MaxCLL here would normalise all luminance to the
+                # content peak, making typical scene content
+                # (50-200 nits) map to tiny linear values that barely
+                # get tone mapped → dark output.
+                path_kind = "hdr10_zscale"
+
+    def _gpu_scale_segment(
+        effective_gpu: Optional[str], hw_decode_active: bool, fmt: str
+    ) -> Optional[str]:
+        """GPU-side scale + hwdownload segment for the active vendor,
+        or None to keep CPU scale in place (software decode, DV5
+        libplacebo paths, unsupported vendor).  ``fmt`` is ``nv12`` for
+        8-bit paths, ``p010le`` for the HDR10 zscale chain.
+
+        scale_cuda supports ``force_divisible_by=2`` directly.
+        scale_vaapi does not, so a tiny CPU ``scale=trunc(iw/2)*2:
+        trunc(ih/2)*2`` runs after hwdownload — essentially free on a
+        320xN frame, a no-op on already-even dims.  Letterboxed 2.4:1
+        content would otherwise produce odd heights (e.g. 320x133) and
+        break zscale's 4:2:0 subsampling requirement.
+        """
+        if not hw_decode_active:
+            return None
+        if effective_gpu == "NVIDIA":
+            return (
+                f"scale_cuda=w=320:h=240:force_original_aspect_ratio=decrease:"
+                f"force_divisible_by=2:format={fmt},hwdownload,format={fmt}"
+            )
+        if effective_gpu in {"INTEL", "AMD"}:
+            return (
+                f"scale_vaapi=w=320:h=240:force_original_aspect_ratio=decrease:"
+                f"format={fmt},hwdownload,format={fmt},"
+                f"scale=trunc(iw/2)*2:trunc(ih/2)*2"
+            )
+        return None
+
+    def _assemble_vf(
+        effective_gpu: Optional[str],
+        hw_decode_active: bool,
+        effective_kind: str,
+    ) -> str:
+        """Build the vf chain for the current attempt.
+
+        For SDR and HDR10/DV P7+8 paths, the chain is vendor-aware: on
+        NVIDIA/VAAPI the downscale runs on the GPU and only the final
+        320x240 frame is hwdownloaded, so mjpeg encode (CPU-only) works
+        on a tiny frame instead of a full 4K one.  For HDR10, that also
+        means the zscale tonemap chain processes 320x240 frames rather
+        than source-resolution frames.
+
+        DV Profile 5 libplacebo / OpenCL chains are pre-assembled and
+        returned as-is — they already contain hwupload/hwmap/hwdownload
+        (and fps for the OpenCL variant) and are not touched by the
+        GPU-scale optimisation.
+
+        ``effective_kind`` lets the DV-safe retry collapse the HDR10
+        zscale path to an SDR fps+scale chain while preserving the
+        GPU-scale segment (so the retry doesn't lose the perf win
+        just because zscale / RPU parsing failed).
+        """
+        if effective_kind in {
+            "libplacebo_dv5",
+            "libplacebo_vaapi",
+            "opencl_dv5_intel",
+        }:
+            assert libplacebo_vf is not None
+            return libplacebo_vf
+        if effective_kind == "hdr10_zscale":
+            gpu_seg = _gpu_scale_segment(effective_gpu, hw_decode_active, "p010le")
+            if gpu_seg is not None:
+                return f"{fps_filter},{gpu_seg},{hdr10_zscale_chain}"
+            return f"{fps_filter},{hdr10_zscale_chain},{base_scale}"
+        # SDR (also covers dv5_software_fallback — DV-safe fps+scale).
+        gpu_seg = _gpu_scale_segment(effective_gpu, hw_decode_active, "nv12")
+        if gpu_seg is not None:
+            return f"{fps_filter},{gpu_seg}"
+        return f"{fps_filter},{base_scale}"
 
     def _run_ffmpeg(
         use_skip: bool,
@@ -976,11 +1117,11 @@ def generate_images(
         vf_override: Optional[str] = None,
         init_vulkan: bool = False,
         disable_vaapi_dv5: bool = False,
+        path_kind_override: Optional[str] = None,
     ) -> tuple:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
-        effective_vf = vf_override if vf_override is not None else vf_parameters
         # Propagate the app's log level to FFmpeg so DEBUG reports include
         # full VAAPI / Vulkan / Mesa / libplacebo internals (thousands of
         # lines per 4K job).  INFO is the everyday default.
@@ -1037,27 +1178,43 @@ def generate_images(
             else gpu_device_path
         )
         use_gpu = effective_gpu is not None
+        use_intel_opencl_dv5 = (
+            init_vulkan
+            and use_gpu
+            and effective_gpu == "INTEL"
+            and effective_gpu_device_path is not None
+            and effective_gpu_device_path.startswith("/dev/dri/")
+            and not disable_vaapi_dv5
+        )
         use_vaapi_dv5 = (
             init_vulkan
             and use_gpu
-            and effective_gpu != "NVIDIA"
+            and effective_gpu not in ("NVIDIA", "INTEL")
             and effective_gpu_device_path is not None
             and effective_gpu_device_path.startswith("/dev/dri/")
             and not disable_vaapi_dv5
         )
 
-        # Vulkan device for the libplacebo filter (Dolby Vision tone mapping).
-        # -filter_hw_device tells hwmap/hwupload which device to target when
-        # multiple hardware contexts coexist.  When VAAPI decode is active
-        # we derive both VAAPI and Vulkan from a common DRM device handle
-        # (drm=dr → vaapi=va@dr → vulkan=vk@dr).  This pattern works on
-        # both integrated GPUs (shared memory) and discrete GPUs (separate
-        # VRAM) because both APIs reference the same kernel DRM/KMS device.
-        # This is how Jellyfin handles discrete AMD Radeon + libplacebo in
-        # production.  The older vulkan=vk@va pattern failed on Intel Arc
-        # discrete (DG2) with VK_ERROR_DEVICE_LOST / Invalid argument.
+        # Device init for the DV5 tone-mapping context.  Intel and non-Intel
+        # VAAPI GPUs take different paths because Intel's VAAPI→Vulkan DMA-BUF
+        # interop is broken upstream (libplacebo's vkCreateImage returns
+        # VK_ERROR_OUT_OF_DEVICE_MEMORY on Mesa ANV for the format+modifier
+        # combinations used for DV5).  Intel gets VAAPI→OpenCL (via Jellyfin-
+        # ffmpeg's DV RPU-aware tonemap_opencl patch).  AMD keeps VAAPI→Vulkan
+        # derived from a common DRM device (drm=dr → vaapi=va@dr →
+        # vulkan=vk@dr), which is Jellyfin's proven pattern for discrete AMD.
+        # NVIDIA and software fallback use plain vulkan=vk for libplacebo.
         if init_vulkan:
-            if use_vaapi_dv5:
+            if use_intel_opencl_dv5:
+                args += [
+                    "-init_hw_device",
+                    f"vaapi=va:{effective_gpu_device_path}",
+                    "-init_hw_device",
+                    "opencl=ocl@va",
+                    "-filter_hw_device",
+                    "ocl",
+                ]
+            elif use_vaapi_dv5:
                 args += [
                     "-init_hw_device",
                     f"drm=dr:{effective_gpu_device_path}",
@@ -1071,14 +1228,30 @@ def generate_images(
             else:
                 args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
 
+        # Paths that can keep frames on the GPU end-to-end and use
+        # scale_cuda / scale_vaapi.  DV5 libplacebo uses hwupload from
+        # CPU frames (NVIDIA) or hwmap from VAAPI frames (Intel/AMD),
+        # so -hwaccel_output_format is either harmful (NVIDIA — breaks
+        # hwupload) or already set (VAAPI DV5 branch below).
+        effective_kind = path_kind_override or path_kind
+        keep_on_gpu = effective_kind in {"sdr", "hdr10_zscale"}
+
         hw_decode_active = False
         if use_gpu and effective_gpu == "NVIDIA":
             args += ["-hwaccel", "cuda"]
+            if keep_on_gpu:
+                # Keep decoded CUDA surfaces on the GPU so scale_cuda
+                # can downscale there and only the 320x240 frame is
+                # hwdownloaded to the mjpeg encoder.  Without this,
+                # FFmpeg silently downloads every 4K frame to host
+                # RAM (~990 MB RSS per worker on 4K HDR10, issue #218).
+                args += ["-hwaccel_output_format", "cuda"]
             hw_decode_active = True
-        elif use_vaapi_dv5:
-            # Intel/AMD Linux DV Profile 5: VAAPI decode + Vulkan
-            # libplacebo interop.  Frames stay on the GPU end-to-end
-            # and are handed to libplacebo via DMA-BUF.
+        elif use_intel_opencl_dv5 or use_vaapi_dv5:
+            # Intel DV5 via VAAPI decode + OpenCL tonemap, OR AMD DV5 via
+            # VAAPI decode + Vulkan libplacebo.  Same hwaccel flags (VAAPI
+            # decode, frames stay as VAAPI surfaces); the device init
+            # block above picks OpenCL vs Vulkan for the tone-map stage.
             args += [
                 "-hwaccel",
                 "vaapi",
@@ -1098,12 +1271,20 @@ def generate_images(
             elif effective_gpu_device_path and effective_gpu_device_path.startswith(
                 "/dev/dri/"
             ):
+                # -hwaccel_device (not the deprecated -vaapi_device)
+                # pairs with -hwaccel_output_format vaapi so decoded
+                # frames stay in VAAPI surfaces for scale_vaapi.  Pre-
+                # refactor this path also used scale_vaapi and only
+                # hwdownloaded the 320x240 frame; issue #218 restores
+                # that.
                 args += [
                     "-hwaccel",
                     "vaapi",
-                    "-vaapi_device",
+                    "-hwaccel_device",
                     effective_gpu_device_path,
                 ]
+                if keep_on_gpu:
+                    args += ["-hwaccel_output_format", "vaapi"]
                 hw_decode_active = True
         elif use_gpu and init_vulkan:
             logger.debug(
@@ -1143,6 +1324,16 @@ def generate_images(
         # inter-frame dependencies that break with keyframe-only decode.
         if use_skip and not init_vulkan:
             args += ["-skip_frame:v", "nokey"]
+
+        # Assemble the vf chain now that effective_gpu / hw_decode_active
+        # are known.  Explicit vf_override (software libplacebo retry)
+        # is honoured verbatim.  path_kind_override lets the DV-safe
+        # retry collapse HDR10 to SDR while preserving the GPU-scale
+        # segment.
+        if vf_override is not None:
+            effective_vf = vf_override
+        else:
+            effective_vf = _assemble_vf(effective_gpu, hw_decode_active, effective_kind)
 
         # Add input file and output options
         args += [
@@ -1431,18 +1622,24 @@ def generate_images(
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
 
-    # If the VAAPI DV5 interop failed (e.g. Intel Arc discrete where
-    # DRM-based DMA-BUF derivation isn't supported), retry with software
+    # If the hardware DV5 path failed (Intel OpenCL unavailable — e.g.
+    # NVIDIA container runtime shadowing Intel ICD; or AMD VAAPI+Vulkan
+    # interop broken on a given Mesa/driver combo), retry with software
     # decode + plain hwupload + libplacebo before falling through to the
     # dim fps+scale DV-safe chain.  Software decode + libplacebo still
     # hits ~13x with correct colours — much better than fps+scale at ~1.7x.
     did_sw_libplacebo_retry = False
-    if rc != 0 and image_count == 0 and use_vaapi_dv5_path:
+    if (
+        rc != 0
+        and image_count == 0
+        and (use_vaapi_dv5_path or use_intel_opencl_dv5_path)
+    ):
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_sw_libplacebo_retry = True
+        hw_name = "Intel OpenCL" if use_intel_opencl_dv5_path else "VAAPI+Vulkan"
         logger.warning(
-            f"VAAPI+Vulkan interop failed for {video_file}; "
+            f"Hardware {hw_name} DV5 path failed for {video_file}; "
             f"retrying with software decode + libplacebo"
         )
         for img in glob.glob(os.path.join(output_folder, "*.jpg")):
@@ -1511,11 +1708,14 @@ def generate_images(
                 except OSError:
                     pass
 
-            # DV-safe filter: avoid zscale/tonemap; mirror the known-working workaround in issue #130.
-            dv_safe_vf = f"fps=fps={fps_value}:round=up,{base_scale}"
-
+            # DV-safe filter: avoid zscale/tonemap; mirror the known-working
+            # workaround in issue #130.  path_kind_override="sdr" lets
+            # _assemble_vf build the vendor-correct SDR chain — including
+            # scale_cuda / scale_vaapi + hwdownload when GPU decode is
+            # still active — so the retry doesn't choke on -hwaccel_output_format
+            # surfaces feeding a CPU-only scale filter.
             rc, seconds, speed, stderr_lines = _run_ffmpeg(
-                use_skip=False, vf_override=dv_safe_vf
+                use_skip=False, path_kind_override="sdr"
             )
             if stderr_lines:
                 stderr_lines_all.extend(stderr_lines)

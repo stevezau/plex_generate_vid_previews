@@ -34,29 +34,58 @@ FROM linuxserver/ffmpeg:8.0.1-cli-ls56
 ARG GIT_BRANCH=unknown
 ARG GIT_SHA=unknown
 
-# Runtime dependencies only — no gcc, musl-dev, or software-properties-common
+# Runtime dependencies.  Split into two apt passes because we add two
+# third-party repos before pulling jellyfin-ffmpeg + newer Intel drivers.
+#
 # GPU drivers for hardware acceleration:
-# - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9)
+# - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9).
+#   Ubuntu Noble ships 24.1.0 which is 18 months old and missing DG2
+#   (Arc Alchemist) fixes.  We pull 25.x from Intel's graphics apt repo
+#   on amd64 to get working VAAPI on Arc A380/A750/A770 + modern iGPUs.
 # - AMD: mesa-va-drivers (AMD GPUs via VAAPI)
 # - ARM/VideoCore: mesa-va-drivers (Mali GPUs, Raspberry Pi)
 # - mesa-vulkan-drivers: Mesa's Vulkan ICDs (Intel ANV, AMD RADV, llvmpipe).
-#   Required so libplacebo's Dolby Vision Profile 5 tone mapping can use
-#   Mesa Vulkan on dual-GPU hosts where /dev/dri is mounted (e.g. NVIDIA
-#   + Intel iGPU). Without this the container has no hardware Vulkan
-#   driver from apt and falls back to llvmpipe, which has a libplacebo
-#   rendering bug that paints a green rectangle onto DV5 thumbnails.
+#   Used by libplacebo DV5 tone mapping on NVIDIA and AMD.  (Intel DV5 uses
+#   tonemap_opencl via intel-opencl-icd instead — libplacebo+Vulkan+Intel
+#   VAAPI has an upstream interop bug that returns VK_ERROR_OUT_OF_DEVICE_MEMORY
+#   on both iGPU and Arc discrete inside containers.  See issue #212.)
+# - intel-opencl-icd: Intel's OpenCL runtime for DV5 tone mapping via
+#   tonemap_opencl (Jellyfin-ffmpeg's patched DV-aware code path).
+# - libvpl2 / libmfx-gen1: Intel oneVPL runtime (QSV).
 # - libva2, libva-drm2: VA-API libraries
 # - vainfo: Tool to test/verify VA-API functionality
 # - pciutils: Provides lspci for better GPU naming
 # - git: For version detection when running from mounted git repository
 # - mediainfo: For media file metadata
+#
+# ffmpeg: we ship jellyfin-ffmpeg (7.1.3) as /usr/lib/jellyfin-ffmpeg/ffmpeg.
+# The base image also has an 8.0.1 build at /usr/local/bin/ffmpeg which we
+# leave in place as a fallback (our code defaults to the Jellyfin binary
+# because it carries the DV RPU-aware tonemap_opencl patches upstream lacks).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    mediainfo python3 python3-pip gosu pciutils git \
-    mesa-va-drivers mesa-vulkan-drivers libva2 libva-drm2 vainfo && \
+      mediainfo python3 python3-pip gosu pciutils git curl gnupg ca-certificates \
+      mesa-va-drivers mesa-vulkan-drivers libva2 libva-drm2 vainfo && \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      # Jellyfin apt repo (Ubuntu Noble) for jellyfin-ffmpeg7
+      curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg && \
+      printf 'Types: deb\nURIs: https://repo.jellyfin.org/ubuntu\nSuites: noble\nComponents: main\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/jellyfin.gpg\n' \
+        > /etc/apt/sources.list.d/jellyfin.sources && \
+      # Intel graphics apt repo (Ubuntu Noble) for newer VAAPI + OpenCL
+      curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key \
+        | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg && \
+      echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble unified" \
+        > /etc/apt/sources.list.d/intel-graphics.list && \
+      apt-get update && \
       apt-get install -y --no-install-recommends \
-        intel-media-va-driver-non-free i965-va-driver; \
+        jellyfin-ffmpeg7 \
+        intel-media-va-driver-non-free \
+        i965-va-driver \
+        libmfx-gen1 \
+        libvpl2 \
+        intel-opencl-icd \
+        ocl-icd-libopencl1; \
     fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

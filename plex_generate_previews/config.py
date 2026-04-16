@@ -1244,8 +1244,17 @@ def load_config() -> Config:
             f"SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})"
         )
 
-    # Find FFmpeg path
-    ffmpeg_path = shutil.which("ffmpeg")
+    # Find FFmpeg path.  Prefer jellyfin-ffmpeg at /usr/lib/jellyfin-ffmpeg/ffmpeg
+    # when present: it's a patched build that handles Dolby Vision Profile 5
+    # RPU metadata inside tonemap_opencl (upstream FFmpeg's tonemap_opencl
+    # treats the base layer as plain HDR10 and produces wrong colours on DV5).
+    # Fall back to whatever's in PATH for dev/native installs without the
+    # Jellyfin build.
+    jellyfin_ffmpeg = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
+    if os.path.isfile(jellyfin_ffmpeg) and os.access(jellyfin_ffmpeg, os.X_OK):
+        ffmpeg_path = jellyfin_ffmpeg
+    else:
+        ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
         logger.error(
             "FFmpeg not found. FFmpeg must be installed and available in PATH."
