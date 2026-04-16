@@ -981,10 +981,14 @@ def generate_images(
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
         effective_vf = vf_override if vf_override is not None else vf_parameters
+        # Propagate the app's log level to FFmpeg so DEBUG reports include
+        # full VAAPI / Vulkan / Mesa / libplacebo internals (thousands of
+        # lines per 4K job).  INFO is the everyday default.
+        ffmpeg_loglevel = "debug" if config.log_level == "DEBUG" else "info"
         args = [
             config.ffmpeg_path,
             "-loglevel",
-            "info",
+            ffmpeg_loglevel,
         ]
 
         # Cap FFmpeg's global and filter-graph thread pools for GPU workers.
@@ -1356,9 +1360,13 @@ def generate_images(
                         f"  ... and {len(permission_errors) - 3} more permission-related error(s)"
                     )
 
-            # Log full FFmpeg output at DEBUG level for detailed troubleshooting
+            # Log full FFmpeg output at DEBUG level for detailed troubleshooting.
+            # When config.log_level=DEBUG, FFmpeg itself is invoked with
+            # -loglevel debug (see ffmpeg_loglevel above), so these lines
+            # include VAAPI / Vulkan / Mesa / libplacebo internals — exactly
+            # what's needed to diagnose hwaccel and filter-graph failures.
             logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
-            for i, line in enumerate(ffmpeg_output_lines[-10:]):
+            for i, line in enumerate(ffmpeg_output_lines):
                 logger.debug(f"  {i + 1:3d}: {line}")
 
             # Save full FFmpeg stderr to a per-file log for post-mortem debugging
