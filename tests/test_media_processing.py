@@ -1705,6 +1705,7 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
         gpu=None,
+        gpu_device_path=None,
         vulkan_device_info=None,
     ):
         """Shared helper: run generate_images and return the FFmpeg args.
@@ -1713,6 +1714,11 @@ class TestProactiveDVSkip:
         duration of the call.  Defaults to a healthy hardware device so
         existing DV5 tests continue to hit the libplacebo path; tests
         for the software-fallback guard pass a software dict.
+
+        ``gpu_device_path`` is forwarded to ``generate_images`` so tests
+        can select between the VAAPI+Vulkan interop DV5 path (pass a
+        ``/dev/dri/renderD*`` path) and the software-fallback DV5 path
+        (pass ``None``).
         """
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -1751,7 +1757,7 @@ class TestProactiveDVSkip:
             return_value=default_vulkan,
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
-                video_filename, temp_dir, gpu, None, mock_config
+                video_filename, temp_dir, gpu, gpu_device_path, mock_config
             )
 
         assert success is True
@@ -1785,12 +1791,14 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV Profile 5 on an Intel host uses libplacebo with software HEVC decode.
+        """DV Profile 5 on an Intel host with a VAAPI render device
+        uses VAAPI hardware decode + Vulkan libplacebo via zero-copy
+        DMA-BUF interop.
 
-        NVIDIA hosts take the NVDEC path (see
-        ``test_generate_images_dv_profile5_nvidia_uses_nvdec`` below).  All
-        other vendors fall through to software decode + libplacebo because
-        HW decode was only validated for NVDEC on this path.
+        2026-04-16 benchmark on Intel UHD 770 (Raptor Lake-S): 16.2x
+        real-time with ~0 CPU, pixel-identical (PSNR=inf) vs software
+        decode + libplacebo.  NVIDIA keeps the separate CUDA/NVDEC
+        path (see ``test_generate_images_dv_profile5_nvidia_uses_nvdec``).
         """
         args = self._run_generate(
             "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
@@ -1808,38 +1816,176 @@ class TestProactiveDVSkip:
             temp_dir,
             mock_config,
             gpu="INTEL",
+            gpu_device_path="/dev/dri/renderD128",
         )
 
-        # Profile 5 must use Vulkan/libplacebo
-        assert "-init_hw_device" in args
-        assert args[args.index("-init_hw_device") + 1] == "vulkan=vk"
+        # VAAPI device must be initialised on the render node, then a
+        # Vulkan device derived from it via vk@va for zero-copy interop.
+        init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
+        assert len(init_indices) == 2, (
+            "VAAPI DV5 path must initialise both VAAPI and derived Vulkan"
+        )
+        assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD128"
+        assert args[init_indices[1] + 1] == "vulkan=vk@va"
         assert "-filter_hw_device" in args
-        # Intel on DV5 stays on software decode — VAAPI benchmarked
-        # slower than SW on Intel UHD 770 for this filter graph.
-        assert "-hwaccel" not in args
+        assert args[args.index("-filter_hw_device") + 1] == "vk"
+
+        # -hwaccel must be vaapi, output format kept on-device (vaapi),
+        # device reference must match the named "va" VAAPI context.
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "vaapi"
+        assert "-hwaccel_device" in args
+        assert args[args.index("-hwaccel_device") + 1] == "va"
+        assert "-hwaccel_output_format" in args
+        assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
+
+        # The VAAPI DV5 path is hardware-decoded, so -threads:v must be
+        # capped to 1 (the CPU thread is a decode orchestrator only).
+        assert "-threads:v" in args
+        assert args[args.index("-threads:v") + 1] == "1"
+
+        # Skip-frame stays disabled on DV5 because RPU side data has
+        # inter-frame dependencies.
         assert "-skip_frame:v" not in args
 
-        # Regression guard for issue #212: on the software-decode DV5 path
-        # the video decoder must explicitly override the global -threads N
-        # cap with -threads:v 0 (FFmpeg "pick optimal count") so 4K HEVC
-        # can saturate all available cores.  Without this, the global
-        # -threads N from config.ffmpeg_threads bleeds into the decoder
-        # pool and pins it to N threads → ~0.8–1.5x realtime.  NVDEC
-        # (separate test) uses -threads:v 1 because its decoder work is
-        # offloaded to hardware and the CPU thread is just an orchestrator.
-        assert "-threads:v" in args, (
-            "DV Profile 5 software decode must pass -threads:v to FFmpeg"
+        # Filter chain must map VAAPI frames into Vulkan via hwmap (not
+        # hwupload), run libplacebo, then hwdownload for JPEG encoding.
+        vf = args[args.index("-vf") + 1]
+        assert "hwmap=derive_device=vulkan" in vf
+        assert "hwupload" not in vf, (
+            "VAAPI DV5 path uses hwmap for zero-copy interop, not hwupload"
         )
-        assert args[args.index("-threads:v") + 1] == "0", (
-            "DV Profile 5 software decode must pass -threads:v 0 (unbounded), "
-            "not a capped value — see issue #212"
+        assert "libplacebo" in vf
+        assert "hwdownload" in vf
+        assert "zscale" not in vf
+        assert "colorspace=bt709" not in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_amd_uses_vaapi_hwaccel(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """AMD on DV Profile 5 takes the same VAAPI + Vulkan interop
+        path as Intel.  Mesa's ``radeonsi`` VA-API driver handles HEVC
+        Main10 and RADV Vulkan supports the same DMA-BUF interop, so
+        the FFmpeg command is identical apart from the render node.
+        """
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu="AMD",
+            gpu_device_path="/dev/dri/renderD129",
         )
 
+        # Same VAAPI + vk@va + hwmap structure as Intel, different node.
+        init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
+        assert len(init_indices) == 2
+        assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD129"
+        assert args[init_indices[1] + 1] == "vulkan=vk@va"
+        assert "-hwaccel" in args and args[args.index("-hwaccel") + 1] == "vaapi"
+        assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
+        assert args[args.index("-threads:v") + 1] == "1"
         vf = args[args.index("-vf") + 1]
+        assert "hwmap=derive_device=vulkan" in vf
         assert "libplacebo" in vf
+        assert "hwupload" not in vf
+
+    @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("plex_generate_previews.media_processing.os.rename")
+    @patch("plex_generate_previews.media_processing.os.remove")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("plex_generate_previews.media_processing.glob.glob")
+    @patch("plex_generate_previews.media_processing._detect_codec_error")
+    def test_generate_images_dv_profile5_non_dri_falls_back_to_sw_decode(
+        self,
+        mock_detect,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_remove,
+        mock_rename,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """DV Profile 5 on a Linux GPU without a /dev/dri render node
+        (defensive edge case) falls back to software decode + the
+        plain ``vulkan=vk`` libplacebo path with ``-threads:v 0`` so
+        the HEVC decoder can still saturate CPU cores.
+        """
+        args = self._run_generate(
+            "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+            "/test/dv_profile5.mkv",
+            mock_detect,
+            mock_glob,
+            mock_sleep,
+            mock_file,
+            mock_exists,
+            mock_remove,
+            mock_rename,
+            mock_run,
+            mock_popen,
+            mock_mediainfo,
+            temp_dir,
+            mock_config,
+            gpu="INTEL",
+            gpu_device_path=None,
+        )
+
+        # No VAAPI hwaccel, vanilla vulkan=vk device init only.
+        assert "-hwaccel" not in args
+        init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
+        assert len(init_indices) == 1
+        assert args[init_indices[0] + 1] == "vulkan=vk"
+
+        # Software decode path must uncap the video decoder threads.
+        assert "-threads:v" in args
+        assert args[args.index("-threads:v") + 1] == "0"
+
+        # Filter chain falls back to hwupload (CPU frame → Vulkan).
+        vf = args[args.index("-vf") + 1]
         assert "hwupload" in vf
-        assert "colorspace=bt709" not in vf
-        assert "zscale" not in vf
+        assert "hwmap=derive_device=vulkan" not in vf
+        assert "libplacebo" in vf
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")

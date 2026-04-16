@@ -839,6 +839,11 @@ def generate_images(
 
     # Track whether the filter chain requires Vulkan (libplacebo).
     use_libplacebo = False
+    # True when the DV5 libplacebo path is running on a Linux VAAPI GPU
+    # (Intel iGPU/Arc, AMD Radeon) and should use zero-copy VAAPI→Vulkan
+    # DMA-BUF interop via -hwaccel vaapi + -hwaccel_output_format vaapi
+    # + hwmap=derive_device=vulkan.  NVIDIA keeps its CUDA/NVDEC path.
+    use_vaapi_dv5_path = False
     # DV5 content + software/missing Vulkan: skip both libplacebo AND
     # the zscale fallback, because zscale on a DV5 stream produces a
     # green overlay (no HDR10 base layer to read).  The default
@@ -893,6 +898,19 @@ def generate_images(
                         f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
                     )
                     use_libplacebo = True
+                    # On Linux VAAPI GPUs (Intel iGPU/Arc, AMD Radeon), the
+                    # frames coming out of the decoder are VAAPI surfaces that
+                    # map zero-copy into Vulkan via hwmap=derive_device=vulkan.
+                    # Software and NVIDIA CUDA paths take CPU frames that need
+                    # an explicit hwupload into Vulkan instead.  _run_ffmpeg
+                    # mirrors this same decision when picking the hwaccel and
+                    # the device init flags.
+                    use_vaapi_dv5_path = bool(
+                        gpu is not None
+                        and gpu != "NVIDIA"
+                        and gpu_device_path is not None
+                        and gpu_device_path.startswith("/dev/dri/")
+                    )
                     # contrast=1.3, saturation=1.3 restore the punch that
                     # libplacebo's default PQ→SDR curve leaves on the table.
                     # Default reinhard compresses mids into a narrow band
@@ -907,13 +925,23 @@ def generate_images(
                     # preserving deep blacks.  Verified across three MIB
                     # scenes (dark/mid/bright) — no highlight clipping,
                     # punchy output comparable to the DV P7+8 reference.
-                    vf_parameters = (
-                        f"hwupload,"
+                    libplacebo_opts = (
                         f"libplacebo=tonemapping={config.tonemap_algorithm}"
                         f":format=yuv420p:fps={fps_value}"
-                        f":contrast=1.3:saturation=1.3,"
-                        f"hwdownload,format=yuv420p,{base_scale}"
+                        f":contrast=1.3:saturation=1.3"
                     )
+                    if use_vaapi_dv5_path:
+                        vf_parameters = (
+                            f"hwmap=derive_device=vulkan,"
+                            f"{libplacebo_opts},"
+                            f"hwdownload,format=yuv420p,{base_scale}"
+                        )
+                    else:
+                        vf_parameters = (
+                            f"hwupload,"
+                            f"{libplacebo_opts},"
+                            f"hwdownload,format=yuv420p,{base_scale}"
+                        )
             elif _is_dolby_vision(hdr_fmt):
                 # Dolby Vision Profile 7/8 with HDR10 backward-compat
                 # base layer.  FFmpeg reads the HDR10 base layer by
@@ -977,41 +1005,77 @@ def generate_images(
                 str(effective_ffmpeg_threads),
             ]
 
-        # Vulkan device for the libplacebo filter (Dolby Vision tone mapping).
-        # -filter_hw_device tells hwupload which device to target when
-        # multiple hardware contexts coexist (e.g. CUDA + Vulkan).
-        if init_vulkan:
-            args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
-
         # Hardware acceleration for decoding (before -i flag).
         #
         # Non-libplacebo paths (HDR10, SDR, DV Profile 7/8 via zscale on
         # the HDR10 base layer) have always benefited from HW decode
         # across all supported vendors.
         #
-        # The DV Profile 5 libplacebo path (``init_vulkan=True``) is
-        # more restrictive: it was blanket-disabled in ``a06ed98`` when
-        # green-tinted output was observed on DV Profile 7/8 + libplacebo
-        # (see issue #178).  That P7/8 code path was removed by
-        # ``85c5212`` (P7/8 now uses zscale on the HDR10 base layer) but
-        # the HW-decode block on P5 stayed off as a conservative
-        # carry-over.  A 2026-04 benchmark with FFmpeg 8.0.1 /
-        # libplacebo on a real DV Profile 5 4K file showed NVDEC + the
-        # libplacebo DV tone-map produces visually identical output to
-        # software decode and runs ~3x faster, so NVDEC is re-enabled
-        # here for DV5.  Intel VAAPI benchmarked *slower* than software
-        # decode on the same file/hardware (Intel UHD 770), and other
-        # vendors are untested, so they continue to fall through to
-        # software decode on the libplacebo path.
+        # The DV Profile 5 libplacebo path (``init_vulkan=True``) used
+        # to blanket-skip HW decode on non-NVIDIA vendors.  That gate
+        # was added in ``a06ed98`` after a bad P7/8 + libplacebo output
+        # (issue #178, P7/8 now uses zscale on the HDR10 base layer so
+        # the original reason no longer applies) and then re-validated
+        # on 2026-04-12 against a CPU path that was still pinned to 2
+        # threads.  A 2026-04-16 bench on Intel UHD 770 (Raptor Lake-S)
+        # with the ``-threads:v 0`` fix in place compared:
+        #   - software decode + libplacebo:  12.9x, ~10 cores saturated
+        #   - VAAPI decode + vulkan=vk@va :  16.2x,  ~0 cores (1s CPU)
+        # Output was pixel-identical (PSNR=inf) across dark, mid, and
+        # bright scenes.  So on Linux VAAPI GPUs (Intel iGPU/Arc + AMD
+        # Radeon) we now use zero-copy VAAPI→Vulkan DMA-BUF interop.
+        # NVIDIA keeps CUDA.  Non-Linux platforms don't reach the
+        # libplacebo branch and are unaffected.
         effective_gpu_device_path = (
             gpu_device_path_override
             if gpu_device_path_override is not None
             else gpu_device_path
         )
         use_gpu = effective_gpu is not None
+        use_vaapi_dv5 = (
+            init_vulkan
+            and use_gpu
+            and effective_gpu != "NVIDIA"
+            and effective_gpu_device_path is not None
+            and effective_gpu_device_path.startswith("/dev/dri/")
+        )
+
+        # Vulkan device for the libplacebo filter (Dolby Vision tone mapping).
+        # -filter_hw_device tells hwmap/hwupload which device to target when
+        # multiple hardware contexts coexist.  When VAAPI decode is active
+        # we derive the Vulkan device from VAAPI (vk@va) so both halves of
+        # the pipeline live on the same physical GPU and share frames
+        # zero-copy via DMA-BUF.  Order matters: VAAPI must be initialised
+        # first so the derived Vulkan device can reference it.
+        if init_vulkan:
+            if use_vaapi_dv5:
+                args += [
+                    "-init_hw_device",
+                    f"vaapi=va:{effective_gpu_device_path}",
+                    "-init_hw_device",
+                    "vulkan=vk@va",
+                    "-filter_hw_device",
+                    "vk",
+                ]
+            else:
+                args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
+
         hw_decode_active = False
         if use_gpu and effective_gpu == "NVIDIA":
             args += ["-hwaccel", "cuda"]
+            hw_decode_active = True
+        elif use_vaapi_dv5:
+            # Intel/AMD Linux DV Profile 5: VAAPI decode + Vulkan
+            # libplacebo interop.  Frames stay on the GPU end-to-end
+            # and are handed to libplacebo via DMA-BUF.
+            args += [
+                "-hwaccel",
+                "vaapi",
+                "-hwaccel_device",
+                "va",
+                "-hwaccel_output_format",
+                "vaapi",
+            ]
             hw_decode_active = True
         elif use_gpu and not init_vulkan:
             if effective_gpu == "WINDOWS_GPU":
@@ -1033,8 +1097,8 @@ def generate_images(
         elif use_gpu and init_vulkan:
             logger.debug(
                 f"Skipping HW decode for DV Profile 5 ({video_file}) on "
-                f"{effective_gpu}; using software decode + Vulkan/libplacebo "
-                f"tone mapping (HW decode validated only for NVIDIA on this path)"
+                f"{effective_gpu}: no VAAPI render device available; "
+                f"using software decode + Vulkan/libplacebo tone mapping"
             )
 
         # Cap the video decoder to 1 thread ONLY when decode is offloaded
