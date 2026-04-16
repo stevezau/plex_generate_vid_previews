@@ -1822,11 +1822,12 @@ class TestProactiveDVSkip:
         # VAAPI device must be initialised on the render node, then a
         # Vulkan device derived from it via vk@va for zero-copy interop.
         init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
-        assert len(init_indices) == 2, (
-            "VAAPI DV5 path must initialise both VAAPI and derived Vulkan"
+        assert len(init_indices) == 3, (
+            "VAAPI DV5 path must initialise DRM + VAAPI + Vulkan (3 devices)"
         )
-        assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD128"
-        assert args[init_indices[1] + 1] == "vulkan=vk@va"
+        assert args[init_indices[0] + 1] == "drm=dr:/dev/dri/renderD128"
+        assert args[init_indices[1] + 1] == "vaapi=va@dr"
+        assert args[init_indices[2] + 1] == "vulkan=vk@dr"
         assert "-filter_hw_device" in args
         assert args[args.index("-filter_hw_device") + 1] == "vk"
 
@@ -1911,9 +1912,10 @@ class TestProactiveDVSkip:
 
         # Same VAAPI + vk@va + hwmap structure as Intel, different node.
         init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
-        assert len(init_indices) == 2
-        assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD129"
-        assert args[init_indices[1] + 1] == "vulkan=vk@va"
+        assert len(init_indices) == 3
+        assert args[init_indices[0] + 1] == "drm=dr:/dev/dri/renderD129"
+        assert args[init_indices[1] + 1] == "vaapi=va@dr"
+        assert args[init_indices[2] + 1] == "vulkan=vk@dr"
         assert "-hwaccel" in args and args[args.index("-hwaccel") + 1] == "vaapi"
         assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
         assert args[args.index("-threads:v") + 1] == "1"

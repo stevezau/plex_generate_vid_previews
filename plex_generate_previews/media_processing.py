@@ -975,6 +975,7 @@ def generate_images(
         gpu_device_path_override: Optional[str] = None,
         vf_override: Optional[str] = None,
         init_vulkan: bool = False,
+        disable_vaapi_dv5: bool = False,
     ) -> tuple:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
@@ -1020,7 +1021,7 @@ def generate_images(
         # threads.  A 2026-04-16 bench on Intel UHD 770 (Raptor Lake-S)
         # with the ``-threads:v 0`` fix in place compared:
         #   - software decode + libplacebo:  12.9x, ~10 cores saturated
-        #   - VAAPI decode + vulkan=vk@va :  16.2x,  ~0 cores (1s CPU)
+        #   - VAAPI decode + drm→va@dr→vk@dr: 16.1x,  ~0 cores (1s CPU)
         # Output was pixel-identical (PSNR=inf) across dark, mid, and
         # bright scenes.  So on Linux VAAPI GPUs (Intel iGPU/Arc + AMD
         # Radeon) we now use zero-copy VAAPI→Vulkan DMA-BUF interop.
@@ -1038,22 +1039,28 @@ def generate_images(
             and effective_gpu != "NVIDIA"
             and effective_gpu_device_path is not None
             and effective_gpu_device_path.startswith("/dev/dri/")
+            and not disable_vaapi_dv5
         )
 
         # Vulkan device for the libplacebo filter (Dolby Vision tone mapping).
         # -filter_hw_device tells hwmap/hwupload which device to target when
         # multiple hardware contexts coexist.  When VAAPI decode is active
-        # we derive the Vulkan device from VAAPI (vk@va) so both halves of
-        # the pipeline live on the same physical GPU and share frames
-        # zero-copy via DMA-BUF.  Order matters: VAAPI must be initialised
-        # first so the derived Vulkan device can reference it.
+        # we derive both VAAPI and Vulkan from a common DRM device handle
+        # (drm=dr → vaapi=va@dr → vulkan=vk@dr).  This pattern works on
+        # both integrated GPUs (shared memory) and discrete GPUs (separate
+        # VRAM) because both APIs reference the same kernel DRM/KMS device.
+        # This is how Jellyfin handles discrete AMD Radeon + libplacebo in
+        # production.  The older vulkan=vk@va pattern failed on Intel Arc
+        # discrete (DG2) with VK_ERROR_DEVICE_LOST / Invalid argument.
         if init_vulkan:
             if use_vaapi_dv5:
                 args += [
                     "-init_hw_device",
-                    f"vaapi=va:{effective_gpu_device_path}",
+                    f"drm=dr:{effective_gpu_device_path}",
                     "-init_hw_device",
-                    "vulkan=vk@va",
+                    "vaapi=va@dr",
+                    "-init_hw_device",
+                    "vulkan=vk@dr",
                     "-filter_hw_device",
                     "vk",
                 ]
@@ -1416,6 +1423,42 @@ def generate_images(
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
 
+    # If the VAAPI DV5 interop failed (e.g. Intel Arc discrete where
+    # DRM-based DMA-BUF derivation isn't supported), retry with software
+    # decode + plain hwupload + libplacebo before falling through to the
+    # dim fps+scale DV-safe chain.  Software decode + libplacebo still
+    # hits ~13x with correct colours — much better than fps+scale at ~1.7x.
+    did_sw_libplacebo_retry = False
+    if rc != 0 and image_count == 0 and use_vaapi_dv5_path:
+        if cancel_check and cancel_check():
+            raise CancellationError(f"Processing cancelled for {video_file}")
+        did_sw_libplacebo_retry = True
+        logger.warning(
+            f"VAAPI+Vulkan interop failed for {video_file}; "
+            f"retrying with software decode + libplacebo"
+        )
+        for img in glob.glob(os.path.join(output_folder, "*.jpg")):
+            try:
+                os.remove(img)
+            except OSError:
+                pass
+        sw_libplacebo_vf = (
+            f"hwupload,"
+            f"libplacebo=tonemapping={config.tonemap_algorithm}"
+            f":format=yuv420p:fps={fps_value}"
+            f":contrast=1.3:saturation=1.3,"
+            f"hwdownload,format=yuv420p,{base_scale}"
+        )
+        rc, seconds, speed, stderr_lines = _run_ffmpeg(
+            use_skip=False,
+            init_vulkan=True,
+            disable_vaapi_dv5=True,
+            vf_override=sw_libplacebo_vf,
+        )
+        if stderr_lines:
+            stderr_lines_all.extend(stderr_lines)
+        image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
+
     did_dv_safe_retry = False
 
     # Dolby Vision / HDR colorspace errors can abort FFmpeg when the
@@ -1557,7 +1600,11 @@ def generate_images(
         fallback_suffix = (
             " (DV-safe retry)"
             if did_dv_safe_retry
-            else (" (retry no-skip)" if did_retry else "")
+            else (
+                " (sw libplacebo retry)"
+                if did_sw_libplacebo_retry
+                else (" (retry no-skip)" if did_retry else "")
+            )
         )
         logger.info(
             f"Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}"
@@ -1566,7 +1613,11 @@ def generate_images(
         fallback_suffix = (
             " after DV-safe retry"
             if did_dv_safe_retry
-            else (" after retry" if did_retry else "")
+            else (
+                " after sw libplacebo retry"
+                if did_sw_libplacebo_retry
+                else (" after retry" if did_retry else "")
+            )
         )
         logger.error(
             f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}"
