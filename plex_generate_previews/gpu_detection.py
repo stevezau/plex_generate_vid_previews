@@ -877,7 +877,13 @@ def _probe_vulkan_device() -> Optional[str]:
     # Strategy 2: point GLVND at NVIDIA's EGL vendor via
     # __EGL_VENDOR_LIBRARY_FILENAMES. This is the verified fix for the
     # linuxserver/ffmpeg + NVIDIA case — see the doc comment on
-    # _NVIDIA_EGL_VENDOR_JSON_PATHS above.
+    # _NVIDIA_EGL_VENDOR_JSON_PATHS above.  Unlike Strategy 2b below,
+    # Strategy 2 does NOT set VK_DRIVER_FILES — it leaves the Vulkan
+    # loader free to enumerate all ICDs, which is a gentler fix that
+    # still permits Mesa fallback on hosts where NVIDIA Vulkan breaks
+    # mid-run.  _retry_is_useful() on dual-GPU hosts with an NVIDIA ICD
+    # present filters out non-NVIDIA hits so we still fall through to
+    # Strategy 2b in that case.
     if nvidia_egl_vendor:
         logger.debug(
             f"Vulkan probe (strategy 2): forcing "

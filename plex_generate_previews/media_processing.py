@@ -895,7 +895,15 @@ def generate_images(
                 # then tonemapping converts to SDR.
                 #
                 # Constraints for correct output:
-                #  - No filters before hwupload (preserve RPU side-data)
+                #  - No expensive pixel-touching filters before hwupload.
+                #    The fps dropper IS OK (timestamp-only, preserves RPU
+                #    side-data) and is required on NVIDIA Turing — placing
+                #    fps inside libplacebo makes FFmpeg hwupload every
+                #    decoded frame (24 fps × 4K p010) before libplacebo
+                #    drops them, which exhausts the Vulkan allocator with
+                #    VK_ERROR_OUT_OF_DEVICE_MEMORY.  All three libplacebo
+                #    paths (Intel OpenCL, AMD VAAPI→Vulkan, NVIDIA/software)
+                #    put the fps filter first.
                 #  - No forced colorspace (apply_dolbyvision sets it)
                 #  - No -skip_frame (RPU has inter-frame dependencies)
                 #  - HW decode: NVDEC is validated (~3x speedup on 4K DV5
@@ -1784,8 +1792,11 @@ def generate_images(
                         "If this persists, try upgrading FFmpeg or re-encoding/remuxing the file to remove Dolby Vision metadata."
                     )
 
-    # Check for codec errors or crash signals after DV-safe retry (if any) and skip-frame retries.
-    # If in GPU context and codec/crash error detected, raise exception for worker pool to handle
+    # Check for codec errors or crash signals after every prior retry tier
+    # has had a chance: skip-frame retry (earliest, ~line 1614), software-
+    # libplacebo retry (~line 1660), DV-safe fps+scale retry (~line 1721).
+    # If this is still a GPU context and a codec/crash error is detected,
+    # raise so the worker pool can hand off to a CPU worker.
 
     if rc != 0 and image_count == 0 and gpu is not None:
         if cancel_check and cancel_check():
