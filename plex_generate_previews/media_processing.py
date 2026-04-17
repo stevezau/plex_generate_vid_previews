@@ -887,7 +887,7 @@ def generate_images(
     progress_callback=None,
     ffmpeg_threads_override: Optional[int] = None,
     cancel_check=None,
-) -> tuple:
+) -> Tuple[bool, int, str, float, float, Optional[str]]:
     """Generate thumbnail images from a video using FFmpeg.
 
     Runs FFmpeg with hardware acceleration when configured. Attempts with
@@ -1185,7 +1185,7 @@ def generate_images(
         init_vulkan: bool = False,
         disable_vaapi_dv5: bool = False,
         path_kind_override: Optional[str] = None,
-    ) -> tuple:
+    ) -> Tuple[int, float, float, List[str]]:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)

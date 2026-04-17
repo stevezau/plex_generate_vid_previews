@@ -315,7 +315,7 @@ def _is_hwaccel_available(hwaccel: str) -> bool:
     return is_available
 
 
-def _check_device_access(device_path: str) -> tuple[bool, str]:
+def _check_device_access(device_path: str) -> Tuple[bool, str]:
     """Check if a device is accessible (exists with read+write permission).
 
     VAAPI opens render devices with O_RDWR, so both read and write access are
@@ -719,7 +719,7 @@ def _find_libegl_nvidia() -> Optional[str]:
 
 def _run_vulkan_probe(
     env_overrides: Optional[dict] = None,
-) -> tuple[Optional[str], str]:
+) -> Tuple[Optional[str], str]:
     """Run a single Vulkan init probe and return ``(device, full_stderr)``.
 
     Runs a trivial FFmpeg command with ``-init_hw_device vulkan=vk`` at
@@ -1804,7 +1804,7 @@ def _build_gpu_error_detail(
     device_path: Optional[str],
     render_device: str,
     accel_config: dict,
-) -> tuple[str, str]:
+) -> Tuple[str, str]:
     """Build a user-facing error/detail pair for a failed GPU.
 
     Args:
