@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
+from plex_generate_previews.gpu_detection import VulkanProbeResult
+
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.notifications import (
     VULKAN_SOFTWARE_FALLBACK_ID,
@@ -87,10 +89,10 @@ class TestNotificationsAPI:
         """Healthy Vulkan probe → no active notifications."""
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={
-                "device": "NVIDIA RTX 4090 (discrete) (0x2684)",
-                "is_software": False,
-            },
+            return_value=VulkanProbeResult(
+                device="NVIDIA RTX 4090 (discrete) (0x2684)",
+                is_software=False,
+            ),
         ):
             resp = client.get("/api/system/notifications")
         assert resp.status_code == 200
@@ -101,10 +103,10 @@ class TestNotificationsAPI:
         """Software Vulkan probe → vulkan_software_fallback notification."""
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={
-                "device": "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)",
-                "is_software": True,
-            },
+            return_value=VulkanProbeResult(
+                device="llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)",
+                is_software=True,
+            ),
         ):
             resp = client.get("/api/system/notifications")
         assert resp.status_code == 200
@@ -123,10 +125,10 @@ class TestNotificationsAPI:
         """POST /dismiss hides the notification for the session without persisting."""
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={
-                "device": "llvmpipe (software)",
-                "is_software": True,
-            },
+            return_value=VulkanProbeResult(
+                device="llvmpipe (software)",
+                is_software=True,
+            ),
         ):
             first = client.get("/api/system/notifications").get_json()
             assert len(first["notifications"]) == 1
@@ -155,7 +157,7 @@ class TestNotificationsAPI:
 
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(
                 f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss"
@@ -172,7 +174,7 @@ class TestNotificationsAPI:
 
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             resp = client.post(
                 f"/api/system/notifications/"
@@ -192,7 +194,7 @@ class TestNotificationsAPI:
         _, config_dir = app_with_config
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(
                 f"/api/system/notifications/"
@@ -210,7 +212,7 @@ class TestNotificationsAPI:
         """After permanent dismiss, the notification no longer appears."""
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(
                 f"/api/system/notifications/"
@@ -223,7 +225,7 @@ class TestNotificationsAPI:
         """POST /reset-dismissed clears persistent + session dismissals."""
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(
                 f"/api/system/notifications/"
@@ -247,7 +249,7 @@ class TestBuildActiveNotifications:
     def test_builder_returns_empty_list_when_healthy(self):
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "NVIDIA", "is_software": False},
+            return_value=VulkanProbeResult(device="NVIDIA", is_software=False),
         ):
             notifications = build_active_notifications()
         assert notifications == []
@@ -255,7 +257,7 @@ class TestBuildActiveNotifications:
     def test_builder_includes_vulkan_warning_when_software(self):
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             notifications = build_active_notifications()
         ids = [n["id"] for n in notifications]
@@ -264,7 +266,7 @@ class TestBuildActiveNotifications:
     def test_builder_suppresses_permanently_dismissed(self):
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "llvmpipe", "is_software": True},
+            return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             notifications = build_active_notifications(
                 dismissed_permanent=[VULKAN_SOFTWARE_FALLBACK_ID]

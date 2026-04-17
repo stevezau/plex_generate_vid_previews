@@ -1011,8 +1011,8 @@ def generate_images(
                 from .gpu_detection import get_vulkan_device_info
 
                 vulkan_info = get_vulkan_device_info()
-                vk_device = vulkan_info.get("device")
-                vk_is_software = vulkan_info.get("is_software", False)
+                vk_device = vulkan_info.device
+                vk_is_software = vulkan_info.is_software
                 if vk_is_software or vk_device is None:
                     logger.warning(
                         f"Dolby Vision Profile 5 detected for {video_file} "

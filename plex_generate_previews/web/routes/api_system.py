@@ -259,8 +259,8 @@ def _get_vulkan_info() -> dict:
     from ...gpu_detection import get_vulkan_device_info
 
     info = get_vulkan_device_info()
-    device = info.get("device")
-    is_software = info.get("is_software", False)
+    device = info.device
+    is_software = info.is_software
 
     result: dict = {"device": device}
     if not is_software:
@@ -656,8 +656,8 @@ def get_vulkan_debug():
         "plus the full VK_LOADER_DEBUG=all trace (if one was captured).",
         "",
         "--- Probe result ---",
-        f"device:      {device_info.get('device')}",
-        f"is_software: {device_info.get('is_software')}",
+        f"device:      {device_info.device}",
+        f"is_software: {device_info.is_software}",
         "",
         "--- Detected GPUs (from gpu_detection cache) ---",
         *gpu_lines,

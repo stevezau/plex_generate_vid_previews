@@ -2393,8 +2393,8 @@ class TestGetVulkanDeviceInfo:
 
         mock_probe.return_value = "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
         info = get_vulkan_device_info()
-        assert info["device"].startswith("Intel(R) Graphics")
-        assert info["is_software"] is False
+        assert info.device.startswith("Intel(R) Graphics")
+        assert info.is_software is False
 
     @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
     def test_llvmpipe_is_software(self, mock_probe):
@@ -2402,8 +2402,8 @@ class TestGetVulkanDeviceInfo:
 
         mock_probe.return_value = "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
         info = get_vulkan_device_info()
-        assert "llvmpipe" in info["device"]
-        assert info["is_software"] is True
+        assert "llvmpipe" in info.device
+        assert info.is_software is True
 
     @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
     def test_lavapipe_is_software(self, mock_probe):
@@ -2411,7 +2411,7 @@ class TestGetVulkanDeviceInfo:
 
         mock_probe.return_value = "lavapipe (whatever) (software)"
         info = get_vulkan_device_info()
-        assert info["is_software"] is True
+        assert info.is_software is True
 
     @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
     def test_none_device_not_software(self, mock_probe):
@@ -2419,8 +2419,8 @@ class TestGetVulkanDeviceInfo:
 
         mock_probe.return_value = None
         info = get_vulkan_device_info()
-        assert info["device"] is None
-        assert info["is_software"] is False
+        assert info.device is None
+        assert info.is_software is False
 
     @patch("plex_generate_previews.gpu_detection._probe_vulkan_device")
     def test_probe_is_called_once_and_cached(self, mock_probe):

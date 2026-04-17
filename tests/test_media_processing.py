@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
+from plex_generate_previews.gpu_detection import VulkanProbeResult
 from plex_generate_previews.media_processing import (
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
@@ -1754,10 +1755,19 @@ class TestProactiveDVSkip:
 
         mock_glob.side_effect = glob_side_effect
 
-        default_vulkan = vulkan_device_info or {
-            "device": "Quadro P4000 (NVIDIA)",
-            "is_software": False,
-        }
+        # Accept either a dict (legacy test shape) or a VulkanProbeResult,
+        # normalising to VulkanProbeResult for the production contract.
+        if vulkan_device_info is None:
+            default_vulkan = VulkanProbeResult(
+                device="Quadro P4000 (NVIDIA)", is_software=False
+            )
+        elif isinstance(vulkan_device_info, VulkanProbeResult):
+            default_vulkan = vulkan_device_info
+        else:
+            default_vulkan = VulkanProbeResult(
+                device=vulkan_device_info.get("device"),
+                is_software=vulkan_device_info.get("is_software", False),
+            )
 
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
@@ -2513,7 +2523,7 @@ class TestLibplaceboFallback:
         # path, not the software-Vulkan pre-flight fallback.
         with patch(
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-            return_value={"device": "Quadro P4000", "is_software": False},
+            return_value=VulkanProbeResult(device="Quadro P4000", is_software=False),
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
                 "/test/dv_profile5.mkv", temp_dir, None, None, mock_config
@@ -3257,7 +3267,7 @@ class TestGpuScaleOptimisation:
 
     @patch(
         "plex_generate_previews.gpu_detection.get_vulkan_device_info",
-        return_value={"device": "vk", "is_software": False},
+        return_value=VulkanProbeResult(device="vk", is_software=False),
     )
     @patch(
         "plex_generate_previews.gpu_detection.get_vulkan_env_overrides",

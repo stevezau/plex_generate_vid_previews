@@ -11,6 +11,7 @@ import platform
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import List, Optional, Tuple
 
@@ -607,6 +608,33 @@ def _is_software_vulkan_device(device: Optional[str]) -> bool:
     return "llvmpipe" in d or "software" in d or "lavapipe" in d
 
 
+@dataclass(frozen=True)
+class VulkanProbeResult:
+    """Structured result of :func:`get_vulkan_device_info`.
+
+    Previously this function returned a plain ``dict`` with implicit
+    keys, which made the contract between gpu_detection and its
+    callers (api_system, media_processing, notifications) invisible
+    to type checkers.  Promoted to a frozen dataclass so downstream
+    code gets attribute access and misspellings surface at import
+    time.
+
+    Attributes:
+        device:      The Vulkan device description string FFmpeg
+                     selected (e.g. ``"NVIDIA TITAN RTX (discrete)
+                     (0x1e02)"``), or ``None`` if Vulkan is
+                     unavailable in the container.
+        is_software: True when the selected device is a software
+                     rasteriser (``llvmpipe`` / ``lavapipe``), which
+                     triggers libplacebo's green-overlay bug on DV5
+                     thumbnails and must short-circuit to the DV-safe
+                     fps+scale retry.
+    """
+
+    device: Optional[str]
+    is_software: bool
+
+
 # Substrings that identify an NVIDIA GPU in FFmpeg's Vulkan device listing.
 # Older proprietary drivers print just the marketing name ("Quadro P4000",
 # "GeForce RTX 3080"); newer ones include the "NVIDIA" prefix.  We match
@@ -1040,7 +1068,7 @@ def _probe_vulkan_device() -> Optional[str]:
     return device
 
 
-def get_vulkan_device_info() -> dict:
+def get_vulkan_device_info() -> VulkanProbeResult:
     """Return cached Vulkan device info for libplacebo diagnostics.
 
     The underlying probe (including Strategy-2 retry and Strategy-3
@@ -1050,12 +1078,13 @@ def get_vulkan_device_info() -> dict:
     startup.
 
     Returns:
-        dict: Contains ``device`` (Vulkan device description string, or
-            ``None`` if Vulkan is unavailable) and ``is_software`` (True
-            when the selected device is a software rasteriser like
-            ``llvmpipe``/``lavapipe``, which triggers the DV5 green
-            overlay bug in libplacebo). Callers assemble the
-            user-facing warning message themselves.
+        VulkanProbeResult: A frozen dataclass with ``device`` (the
+            Vulkan device description string, or ``None`` if Vulkan is
+            unavailable) and ``is_software`` (True when the selected
+            device is a software rasteriser like ``llvmpipe`` /
+            ``lavapipe``, which triggers the DV5 green overlay bug in
+            libplacebo).  Callers assemble the user-facing warning
+            message themselves.
     """
     global _VULKAN_DEVICE_CACHE, _VULKAN_DEVICE_PROBED
     if not _VULKAN_DEVICE_PROBED:
@@ -1096,11 +1125,11 @@ def get_vulkan_device_info() -> dict:
 
     device = _VULKAN_DEVICE_CACHE
     if device is None:
-        return {"device": None, "is_software": False}
-    return {
-        "device": device,
-        "is_software": _is_software_vulkan_device(device),
-    }
+        return VulkanProbeResult(device=None, is_software=False)
+    return VulkanProbeResult(
+        device=device,
+        is_software=_is_software_vulkan_device(device),
+    )
 
 
 def get_vulkan_env_overrides() -> dict:
