@@ -3273,10 +3273,18 @@ class TestGpuScaleOptimisation:
             hdr_fmt="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
         )
         vf = args[args.index("-vf") + 1]
-        # DV5 libplacebo chain stays intact — it uses hwupload from
-        # CPU frames, so -hwaccel_output_format cuda would break it.
-        assert vf.startswith("hwupload,")
+        # DV5 libplacebo chain: fps dropper runs FIRST (before hwupload)
+        # so the decode→upload→tonemap pipeline only processes frames we
+        # actually keep.  On NVIDIA Turing the old fps-inside-libplacebo
+        # ordering exhausted the Vulkan allocator at 4K p010.
+        assert vf.startswith("fps=fps=")
+        # Frame drop happens on CPU frames, THEN they go to Vulkan via
+        # hwupload and through libplacebo.
+        assert "fps=fps=" in vf and "hwupload," in vf
+        assert vf.index("fps=fps=") < vf.index("hwupload,")
         assert "libplacebo=tonemapping=" in vf
+        # No fps inside the libplacebo filter anymore — it's upstream.
+        assert ":fps=" not in vf
         assert "hwdownload,format=yuv420p" in vf
         assert "scale_cuda" not in vf, "DV5 libplacebo path must not use scale_cuda"
         # -hwaccel cuda is still set (NVDEC decodes the HEVC base), but

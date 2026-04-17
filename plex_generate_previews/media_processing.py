@@ -995,13 +995,26 @@ def generate_images(
                         # preserving deep blacks.  Verified across three MIB
                         # scenes (dark/mid/bright) — no highlight clipping,
                         # punchy output comparable to the DV P7+8 reference.
+                        # fps BEFORE hwupload/hwmap: mirror the Intel OpenCL
+                        # path ordering (verified there to preserve DV RPU
+                        # side-data and produce correct tonemap output).
+                        # Critical on NVIDIA: with fps inside libplacebo
+                        # the filter chain tries to hwupload every decoded
+                        # frame (24 fps × 4K p010) before libplacebo drops
+                        # them, which exhausts NVIDIA's Vulkan image
+                        # allocator with VK_ERROR_OUT_OF_DEVICE_MEMORY on
+                        # Turing and later.  Also ~50% faster because the
+                        # decode→upload→tonemap pipeline only processes
+                        # the frames we actually keep.
                         libplacebo_opts = (
                             f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                            f":format=yuv420p:fps={fps_value}"
+                            f":format=yuv420p"
                             f":contrast=1.3:saturation=1.3"
                         )
+                        fps_head = f"fps=fps={fps_value}:round=up"
                         if use_vaapi_dv5_path:
                             libplacebo_vf = (
+                                f"{fps_head},"
                                 f"hwmap=derive_device=vulkan,"
                                 f"{libplacebo_opts},"
                                 f"hwdownload,format=yuv420p,{base_scale}"
@@ -1009,6 +1022,7 @@ def generate_images(
                             path_kind = "libplacebo_vaapi"
                         else:
                             libplacebo_vf = (
+                                f"{fps_head},"
                                 f"hwupload,"
                                 f"{libplacebo_opts},"
                                 f"hwdownload,format=yuv420p,{base_scale}"
@@ -1672,10 +1686,14 @@ def generate_images(
                 os.remove(img)
             except OSError:
                 pass
+        # fps before hwupload: see the matching comment on the primary
+        # DV5 libplacebo chain (~line 1000) — keeps Vulkan image alloc
+        # from burning through every decoded frame on NVIDIA Turing.
         sw_libplacebo_vf = (
+            f"fps=fps={fps_value}:round=up,"
             f"hwupload,"
             f"libplacebo=tonemapping={config.tonemap_algorithm}"
-            f":format=yuv420p:fps={fps_value}"
+            f":format=yuv420p"
             f":contrast=1.3:saturation=1.3,"
             f"hwdownload,format=yuv420p,{base_scale}"
         )
