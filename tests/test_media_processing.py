@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from plex_generate_previews.media_processing import (
+    DV5_PATH_INTEL_OPENCL,
+    DV5_PATH_LIBPLACEBO,
+    DV5_PATH_VAAPI_VULKAN,
     FFMPEG_STALL_TIMEOUT_SEC,
     CancellationError,
     CodecNotSupportedError,
@@ -24,6 +27,7 @@ from plex_generate_previews.media_processing import (
     _is_dv_no_backward_compat,
     _save_ffmpeg_failure_log,
     _verify_tmp_folder_health,
+    build_dv5_vf,
     clear_failures,
     failure_scope,
     generate_bif,
@@ -3963,3 +3967,90 @@ class TestSkipFrameInitialDefaults:
         retry_args = mock_popen.call_args_list[1][0][0]
         assert "-skip_frame:v" in first_args
         assert "-skip_frame:v" not in retry_args
+
+
+class TestBuildDV5Vf:
+    """Contract tests for the unified DV5 filter-chain builder.
+
+    Each assertion is the exact string the three inline assemblies
+    produced prior to extraction — byte-for-byte — so the refactor
+    is demonstrably a pure code-motion change.
+    """
+
+    _BASE_SCALE = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
+
+    def test_intel_opencl_chain_is_byte_identical(self):
+        got = build_dv5_vf(
+            path_kind=DV5_PATH_INTEL_OPENCL,
+            tonemap_algorithm="reinhard",
+            fps_value=0.5,
+            base_scale=self._BASE_SCALE,
+        )
+        assert got == (
+            "fps=fps=0.5:round=up,"
+            "setparams=color_primaries=bt2020:"
+            "color_trc=smpte2084:colorspace=bt2020nc,"
+            "hwmap=derive_device=opencl:mode=read,"
+            "tonemap_opencl=format=nv12:p=bt709:t=bt709:"
+            "m=bt709:tonemap=reinhard"
+            ":peak=100:desat=0,"
+            f"hwdownload,format=nv12,format=yuv420p,{self._BASE_SCALE}"
+        )
+
+    def test_vaapi_vulkan_chain_is_byte_identical(self):
+        got = build_dv5_vf(
+            path_kind=DV5_PATH_VAAPI_VULKAN,
+            tonemap_algorithm="reinhard",
+            fps_value=0.5,
+            base_scale=self._BASE_SCALE,
+        )
+        assert got == (
+            "fps=fps=0.5:round=up,"
+            "hwmap=derive_device=vulkan,"
+            "libplacebo=tonemapping=reinhard"
+            ":format=yuv420p"
+            ":contrast=1.3:saturation=1.3,"
+            f"hwdownload,format=yuv420p,{self._BASE_SCALE}"
+        )
+
+    def test_libplacebo_hwupload_chain_is_byte_identical(self):
+        got = build_dv5_vf(
+            path_kind=DV5_PATH_LIBPLACEBO,
+            tonemap_algorithm="reinhard",
+            fps_value=0.5,
+            base_scale=self._BASE_SCALE,
+        )
+        assert got == (
+            "fps=fps=0.5:round=up,"
+            "hwupload,"
+            "libplacebo=tonemapping=reinhard"
+            ":format=yuv420p"
+            ":contrast=1.3:saturation=1.3,"
+            f"hwdownload,format=yuv420p,{self._BASE_SCALE}"
+        )
+
+    def test_unknown_path_kind_raises(self):
+        with pytest.raises(ValueError, match="Unknown DV5 path_kind"):
+            build_dv5_vf(
+                path_kind="not_a_real_path",
+                tonemap_algorithm="reinhard",
+                fps_value=0.5,
+                base_scale=self._BASE_SCALE,
+            )
+
+    def test_fps_appears_first_in_every_variant(self):
+        """fps-first ordering is required on NVIDIA Turing (VK OOM fix)
+        and significantly faster on Intel OpenCL.  All three variants
+        must place the fps dropper at the head of the chain."""
+        for path in (
+            DV5_PATH_INTEL_OPENCL,
+            DV5_PATH_VAAPI_VULKAN,
+            DV5_PATH_LIBPLACEBO,
+        ):
+            got = build_dv5_vf(
+                path_kind=path,
+                tonemap_algorithm="reinhard",
+                fps_value=0.5,
+                base_scale=self._BASE_SCALE,
+            )
+            assert got.startswith("fps=fps=0.5:round=up,"), path

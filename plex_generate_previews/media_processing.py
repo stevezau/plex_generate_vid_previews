@@ -800,6 +800,84 @@ def _clean_output_images(output_folder: str) -> None:
             pass
 
 
+# Recognised DV5 filter-chain kinds.  Each maps to a specific hardware-path
+# produced by :func:`build_dv5_vf`.  Kept as plain strings (not an Enum) so
+# existing callers comparing against `path_kind` continue to work.
+DV5_PATH_INTEL_OPENCL = "opencl_dv5_intel"
+DV5_PATH_VAAPI_VULKAN = "libplacebo_vaapi"
+DV5_PATH_LIBPLACEBO = "libplacebo_dv5"
+
+
+def build_dv5_vf(
+    path_kind: str,
+    tonemap_algorithm: str,
+    fps_value: float,
+    base_scale: str,
+) -> str:
+    """Return the ``-vf`` filter string for a DV Profile 5 thumbnail run.
+
+    Three vendor variants share the same high-level shape:
+
+        fps-drop → upload-to-GPU → tonemap → hwdownload → format → scale
+
+    but differ in the GPU hop and tonemap filter:
+
+    * ``opencl_dv5_intel``   – VAAPI → OpenCL hwmap, ``tonemap_opencl``
+      (Jellyfin's DV-aware patch).  The only path that handles DV5 RPU on
+      an Intel iGPU without spilling to libplacebo on a different device.
+    * ``libplacebo_vaapi``   – VAAPI → Vulkan hwmap (DMA-BUF), libplacebo.
+      Used for AMD Radeon and (historically) Intel before we moved Intel
+      to OpenCL because Mesa ANV's Vulkan interop is broken on DV5.
+    * ``libplacebo_dv5``     – CPU → Vulkan hwupload, libplacebo.  Used
+      for NVIDIA (where CUDA→Vulkan interop is not available in FFmpeg)
+      and for the software-decode + libplacebo retry fallback.
+
+    ``fps`` is placed first across all variants, which is:
+      * required on NVIDIA Turing (fps-inside-libplacebo exhausts the
+        Vulkan image allocator with VK_ERROR_OUT_OF_DEVICE_MEMORY at
+        4K p010 — see commit 70cba4e);
+      * significantly faster on Intel OpenCL (17× vs 2.7× measured); and
+      * RPU-safe because fps only drops frames on timestamps — it never
+        touches pixel data or side-data.
+
+    ``contrast=1.3, saturation=1.3`` on the libplacebo paths restore the
+    punch that the default PQ→SDR curve leaves on the table (details in
+    the callsite history; visually verified across MIB dark/mid/bright).
+
+    Raises:
+        ValueError: if ``path_kind`` is not a recognised DV5 variant.
+    """
+    fps = f"fps=fps={fps_value}:round=up"
+    if path_kind == DV5_PATH_INTEL_OPENCL:
+        return (
+            f"{fps},"
+            "setparams=color_primaries=bt2020:"
+            "color_trc=smpte2084:colorspace=bt2020nc,"
+            "hwmap=derive_device=opencl:mode=read,"
+            f"tonemap_opencl=format=nv12:p=bt709:t=bt709:"
+            f"m=bt709:tonemap={tonemap_algorithm}"
+            f":peak=100:desat=0,"
+            f"hwdownload,format=nv12,format=yuv420p,{base_scale}"
+        )
+    libplacebo_opts = (
+        f"libplacebo=tonemapping={tonemap_algorithm}"
+        f":format=yuv420p"
+        f":contrast=1.3:saturation=1.3"
+    )
+    if path_kind == DV5_PATH_VAAPI_VULKAN:
+        return (
+            f"{fps},"
+            f"hwmap=derive_device=vulkan,"
+            f"{libplacebo_opts},"
+            f"hwdownload,format=yuv420p,{base_scale}"
+        )
+    if path_kind == DV5_PATH_LIBPLACEBO:
+        return (
+            f"{fps},hwupload,{libplacebo_opts},hwdownload,format=yuv420p,{base_scale}"
+        )
+    raise ValueError(f"Unknown DV5 path_kind: {path_kind!r}")
+
+
 def generate_images(
     video_file: str,
     output_folder: str,
@@ -974,83 +1052,35 @@ def generate_images(
                     #
                     # Other / no device path: software decode + libplacebo
                     #   via plain vulkan=vk + hwupload.
+                    # Filter-chain assembly for each vendor's DV5 path lives
+                    # in :func:`build_dv5_vf` at module top.  The reasoning
+                    # about fps-first placement, contrast/saturation, and
+                    # per-vendor hwmap/hwupload choices is documented there.
                     if (
                         gpu == "INTEL"
                         and gpu_device_path is not None
                         and gpu_device_path.startswith("/dev/dri/")
                     ):
                         use_intel_opencl_dv5_path = True
-                        path_kind = "opencl_dv5_intel"
-                        # fps first: drop frames on VAAPI surfaces BEFORE
-                        # the OpenCL tonemap.  Without this, every source
-                        # frame (24 fps × 60s = 1440) would be mapped to
-                        # OpenCL and tonemapped just for us to keep ~20.
-                        # Putting fps first gives 17x vs 2.7x measured.
-                        libplacebo_vf = (
-                            f"fps=fps={fps_value}:round=up,"
-                            "setparams=color_primaries=bt2020:"
-                            "color_trc=smpte2084:colorspace=bt2020nc,"
-                            "hwmap=derive_device=opencl:mode=read,"
-                            f"tonemap_opencl=format=nv12:p=bt709:t=bt709:"
-                            f"m=bt709:tonemap={config.tonemap_algorithm}"
-                            f":peak=100:desat=0,"
-                            f"hwdownload,format=nv12,format=yuv420p,{base_scale}"
-                        )
+                        path_kind = DV5_PATH_INTEL_OPENCL
                     else:
-                        # Non-Intel path (AMD VAAPI, NVIDIA CUDA, SW fallback).
                         use_vaapi_dv5_path = bool(
                             gpu is not None
                             and gpu != "NVIDIA"
                             and gpu_device_path is not None
                             and gpu_device_path.startswith("/dev/dri/")
                         )
-                        # contrast=1.3, saturation=1.3 restore the punch that
-                        # libplacebo's default PQ→SDR curve leaves on the table.
-                        # Default reinhard compresses mids into a narrow band
-                        # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
-                        # which reads as dim and washed-out next to the zscale
-                        # chain used for HDR10/DV P7+8.
-                        #
-                        # A plain brightness offset was rejected: it lifts black
-                        # levels as much as mids, so blacks turn gray and colors
-                        # stay muted.  Scaling contrast and saturation instead
-                        # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
-                        # preserving deep blacks.  Verified across three MIB
-                        # scenes (dark/mid/bright) — no highlight clipping,
-                        # punchy output comparable to the DV P7+8 reference.
-                        # fps BEFORE hwupload/hwmap: mirror the Intel OpenCL
-                        # path ordering (verified there to preserve DV RPU
-                        # side-data and produce correct tonemap output).
-                        # Critical on NVIDIA: with fps inside libplacebo
-                        # the filter chain tries to hwupload every decoded
-                        # frame (24 fps × 4K p010) before libplacebo drops
-                        # them, which exhausts NVIDIA's Vulkan image
-                        # allocator with VK_ERROR_OUT_OF_DEVICE_MEMORY on
-                        # Turing and later.  Also ~50% faster because the
-                        # decode→upload→tonemap pipeline only processes
-                        # the frames we actually keep.
-                        libplacebo_opts = (
-                            f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                            f":format=yuv420p"
-                            f":contrast=1.3:saturation=1.3"
+                        path_kind = (
+                            DV5_PATH_VAAPI_VULKAN
+                            if use_vaapi_dv5_path
+                            else DV5_PATH_LIBPLACEBO
                         )
-                        fps_head = f"fps=fps={fps_value}:round=up"
-                        if use_vaapi_dv5_path:
-                            libplacebo_vf = (
-                                f"{fps_head},"
-                                f"hwmap=derive_device=vulkan,"
-                                f"{libplacebo_opts},"
-                                f"hwdownload,format=yuv420p,{base_scale}"
-                            )
-                            path_kind = "libplacebo_vaapi"
-                        else:
-                            libplacebo_vf = (
-                                f"{fps_head},"
-                                f"hwupload,"
-                                f"{libplacebo_opts},"
-                                f"hwdownload,format=yuv420p,{base_scale}"
-                            )
-                            path_kind = "libplacebo_dv5"
+                    libplacebo_vf = build_dv5_vf(
+                        path_kind=path_kind,
+                        tonemap_algorithm=config.tonemap_algorithm,
+                        fps_value=fps_value,
+                        base_scale=base_scale,
+                    )
             elif _is_dolby_vision(hdr_fmt):
                 # Dolby Vision Profile 7/8 with HDR10 backward-compat
                 # base layer.  FFmpeg reads the HDR10 base layer by
@@ -1130,9 +1160,9 @@ def generate_images(
         just because zscale / RPU parsing failed).
         """
         if effective_kind in {
-            "libplacebo_dv5",
-            "libplacebo_vaapi",
-            "opencl_dv5_intel",
+            DV5_PATH_LIBPLACEBO,
+            DV5_PATH_VAAPI_VULKAN,
+            DV5_PATH_INTEL_OPENCL,
         }:
             assert libplacebo_vf is not None
             return libplacebo_vf
@@ -1701,16 +1731,14 @@ def generate_images(
         )
         logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
         _clean_output_images(output_folder)
-        # fps before hwupload: see the matching comment on the primary
-        # DV5 libplacebo chain (~line 1000) — keeps Vulkan image alloc
-        # from burning through every decoded frame on NVIDIA Turing.
-        sw_libplacebo_vf = (
-            f"fps=fps={fps_value}:round=up,"
-            f"hwupload,"
-            f"libplacebo=tonemapping={config.tonemap_algorithm}"
-            f":format=yuv420p"
-            f":contrast=1.3:saturation=1.3,"
-            f"hwdownload,format=yuv420p,{base_scale}"
+        # Same filter shape as the NVIDIA/software primary DV5 path; run
+        # here without hardware decode so it works on any host with a
+        # hardware Vulkan device.
+        sw_libplacebo_vf = build_dv5_vf(
+            path_kind=DV5_PATH_LIBPLACEBO,
+            tonemap_algorithm=config.tonemap_algorithm,
+            fps_value=fps_value,
+            base_scale=base_scale,
         )
         rc, seconds, speed, stderr_lines = _run_ffmpeg(
             use_skip=False,
