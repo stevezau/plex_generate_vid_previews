@@ -1,9 +1,27 @@
-name: Build and Push Docker Image
+name: CI
 
 on:
-  workflow_run:
-    workflows: [Tests]
-    types: [completed]
+  push:
+    branches: [main, dev]
+    tags: ['*.*.*']
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.github/instructions/**'
+      - '.github/prompts/**'
+      - 'unraid-templates/**'
+      - 'docker-compose.example.yml'
+  pull_request:
+    branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.github/instructions/**'
+      - '.github/prompts/**'
+      - 'unraid-templates/**'
+      - 'docker-compose.example.yml'
   workflow_dispatch:
 
 env:
@@ -12,24 +30,58 @@ env:
   DOCKER_IMAGE: stevezzau/plex_generate_vid_previews
 
 concurrency:
-  # In workflow_run context, github.ref is the default branch, so dev/main/
-  # tag runs would share one group. Key off the upstream run's head_branch
-  # so parallel dev+main+tag builds don't queue behind each other.
-  group: docker-publish-${{ github.event.workflow_run.head_branch || github.ref }}
-  cancel-in-progress: false
+  # Cancel superseded PR runs; never cancel in-flight pushes to main/dev/tags
+  # so a partially-pushed Docker build isn't aborted mid-manifest.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm needs full history
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg mediainfo
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run tests
+        run: pytest -m "not gpu and not e2e"
+
   context:
     runs-on: ubuntu-latest
-    # Gate every downstream job: manual dispatch, or a successful Tests run
-    # triggered by a push (main/dev branches or *.*.* tags — test.yml's
-    # triggers). PR-triggered Tests runs are explicitly excluded so opening
-    # a PR never publishes a Docker image.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    needs: [lint, test]
+    # Only publish on push to main/dev/tags or manual dispatch. PR runs stop
+    # after lint/test so opening a PR never publishes a Docker image.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     outputs:
       head_branch: ${{ steps.ctx.outputs.head_branch }}
       head_sha: ${{ steps.ctx.outputs.head_sha }}
@@ -39,26 +91,22 @@ jobs:
       - name: Compute build context
         id: ctx
         env:
-          # In workflow_run context, github.ref points to the default branch.
-          # Use the upstream run's head_branch/head_sha so dev and tag builds
-          # resolve correctly. Falls back to github.ref_name/github.sha for
-          # workflow_dispatch.
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HEAD_BRANCH: ${{ github.ref_name }}
+          HEAD_SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           echo "head_branch=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          if [[ "$HEAD_BRANCH" == "main" ]]; then
-            echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
-          elif [[ "$HEAD_BRANCH" == "dev" ]]; then
-            echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
-          else
-            # test.yml only triggers on main/dev/*.*.* tags, so any other
-            # head_branch here must be a semver tag from a release.
+          if [[ "$REF_TYPE" == "tag" ]]; then
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
             echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          elif [[ "$HEAD_BRANCH" == "main" ]]; then
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          else
+            # dev branch or manual dispatch from a non-main branch
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
           fi
 
   build:
