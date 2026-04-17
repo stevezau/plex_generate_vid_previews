@@ -1622,12 +1622,22 @@ def generate_images(
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
 
-    # If the hardware DV5 path failed (Intel OpenCL unavailable — e.g.
-    # NVIDIA container runtime shadowing Intel ICD; or AMD VAAPI+Vulkan
-    # interop broken on a given Mesa/driver combo), retry with software
-    # decode + plain hwupload + libplacebo before falling through to the
-    # dim fps+scale DV-safe chain.  Software decode + libplacebo still
-    # hits ~13x with correct colours — much better than fps+scale at ~1.7x.
+    # Hardware DV5 path unavailable — retry with software decode + libplacebo.
+    #
+    # Two known upstream scenarios trigger this:
+    #   * Intel iGPU/dGPU under NVIDIA Container Runtime (before the
+    #     init-dri-by-path s6 fixup lands on the host): NEO enumerates
+    #     GPUs via /dev/dri/by-path/, which the NVIDIA runtime only
+    #     populates for the NVIDIA cards it manages.  tonemap_opencl
+    #     then fails with "No matching devices found" (CL -19).
+    #   * AMD Radeon / Intel Arc DG2 via Mesa ANV: VAAPI→Vulkan DMA-BUF
+    #     import succeeds but libplacebo's vkCreateImage returns
+    #     VK_ERROR_OUT_OF_DEVICE_MEMORY (see libplacebo!117, mpv#8702)
+    #     — generic format/modifier-not-supported, not real OOM.
+    #
+    # Software decode + libplacebo still produces correct DV tonemapping
+    # at ~5-10× (CPU-bound HEVC) — preferable to falling through to the
+    # DV-safe fps+scale chain (~1.7× and dim output).
     did_sw_libplacebo_retry = False
     if (
         rc != 0
@@ -1638,10 +1648,25 @@ def generate_images(
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_sw_libplacebo_retry = True
         hw_name = "Intel OpenCL" if use_intel_opencl_dv5_path else "VAAPI+Vulkan"
+        if use_intel_opencl_dv5_path:
+            reason = (
+                "Intel OpenCL init failed — uncommon, usually a "
+                "container runtime / ICD conflict"
+            )
+        else:
+            reason = (
+                "VAAPI→Vulkan libplacebo interop upstream bug "
+                "(Mesa ANV / amdvlk on some driver+GPU combos)"
+            )
         logger.warning(
-            f"Hardware {hw_name} DV5 path failed for {video_file}; "
-            f"retrying with software decode + libplacebo"
+            f"Hardware {hw_name} DV5 path unavailable for {video_file} "
+            f"({reason}); falling back to software decode + libplacebo "
+            f"(correct DV tonemapping, ~5-10× typical)"
         )
+        stderr_excerpt = (
+            "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
+        )
+        logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
         for img in glob.glob(os.path.join(output_folder, "*.jpg")):
             try:
                 os.remove(img)

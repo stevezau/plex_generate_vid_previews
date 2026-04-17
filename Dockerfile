@@ -101,6 +101,22 @@ RUN pip3 install --no-cache-dir --no-index /tmp/wheels/*.whl \
 COPY docker-init-user.sh /etc/s6-overlay/s6-rc.d/init-adduser/run
 RUN chmod +x /etc/s6-overlay/s6-rc.d/init-adduser/run
 
+# /dev/dri/by-path/ fixup — Intel NEO (OpenCL) enumerates GPUs only via
+# /dev/dri/by-path, and NVIDIA Container Toolkit populates that directory
+# only for NVIDIA cards.  On mixed Intel+NVIDIA containers the Intel GPU
+# is invisible to OpenCL without this (VAAPI still works).  Idempotent /
+# no-op on single-vendor and bare-metal setups.  See the DV5 plan file
+# for root-cause trace inside intel/compute-runtime source.
+COPY docker-init-dri-by-path.sh /etc/s6-overlay/s6-rc.d/init-dri-by-path/run
+RUN chmod +x /etc/s6-overlay/s6-rc.d/init-dri-by-path/run && \
+    echo oneshot > /etc/s6-overlay/s6-rc.d/init-dri-by-path/type && \
+    echo /etc/s6-overlay/s6-rc.d/init-dri-by-path/run \
+        > /etc/s6-overlay/s6-rc.d/init-dri-by-path/up && \
+    mkdir -p /etc/s6-overlay/s6-rc.d/init-dri-by-path/dependencies.d && \
+    touch /etc/s6-overlay/s6-rc.d/init-dri-by-path/dependencies.d/init-adduser && \
+    touch /etc/s6-overlay/s6-rc.d/init-device-perms/dependencies.d/init-dri-by-path && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/init-dri-by-path
+
 # Set working directory
 WORKDIR /app
 
