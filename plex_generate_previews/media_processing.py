@@ -22,7 +22,47 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
+from .filter_chain import (
+    DV5_PATH_INTEL_OPENCL,
+    DV5_PATH_LIBPLACEBO,
+    DV5_PATH_VAAPI_VULKAN,
+    build_dv5_vf,
+)
+from .hdr_detection import (
+    detect_dolby_vision_rpu_error,
+    detect_zscale_colorspace_error,
+    is_dolby_vision,
+    is_dv_no_backward_compat,
+)
 from .utils import sanitize_path
+
+# Backwards-compat re-exports.  The detection helpers used to live in this
+# module under underscore-prefixed names; they moved to :mod:`hdr_detection`
+# as part of the media_processing split, but external tests and callers
+# still import them from here.  The public-name aliases below keep both the
+# old names (``_is_dolby_vision`` etc.) and the new names importable.
+_is_dolby_vision = is_dolby_vision
+_is_dv_no_backward_compat = is_dv_no_backward_compat
+_detect_dolby_vision_rpu_error = detect_dolby_vision_rpu_error
+_detect_zscale_colorspace_error = detect_zscale_colorspace_error
+
+__all__ = [
+    # DV5 filter chain
+    "DV5_PATH_INTEL_OPENCL",
+    "DV5_PATH_LIBPLACEBO",
+    "DV5_PATH_VAAPI_VULKAN",
+    "build_dv5_vf",
+    # HDR / DV detection (public names)
+    "detect_dolby_vision_rpu_error",
+    "detect_zscale_colorspace_error",
+    "is_dolby_vision",
+    "is_dv_no_backward_compat",
+    # HDR / DV detection (backwards-compat aliases)
+    "_detect_dolby_vision_rpu_error",
+    "_detect_zscale_colorspace_error",
+    "_is_dolby_vision",
+    "_is_dv_no_backward_compat",
+]
 
 
 class ProcessingResult(Enum):
@@ -412,34 +452,6 @@ def _save_ffmpeg_failure_log(
         pass
 
 
-def _detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
-    """Detect FFmpeg Dolby Vision RPU parsing failures that can abort processing.
-
-    This is intentionally narrow to avoid false positives. It matches a small
-    allow-list of known fatal signatures from upstream FFmpeg/libdovi output.
-
-    Args:
-        stderr_lines: List of FFmpeg stderr lines
-
-    Returns:
-        bool: True if the Dolby Vision RPU error is detected
-
-    """
-    if not stderr_lines:
-        return False
-
-    # Known fatal Dolby Vision parsing signatures (extend as new cases are reported).
-    # Keep these specific to avoid triggering on benign informational/warning messages.
-    fatal_signatures = [
-        "multiple dolby vision rpus found in one au",
-        # Some FFmpeg builds append additional context after the core message.
-        "multiple dolby vision rpus found in one au. skipping previous.",
-    ]
-
-    stderr_text = " ".join(stderr_lines).lower()
-    return any(sig in stderr_text for sig in fatal_signatures)
-
-
 def _verify_tmp_folder_health(
     path: str, min_free_mb: int = 512
 ) -> Tuple[bool, List[str]]:
@@ -490,119 +502,6 @@ def _verify_tmp_folder_health(
         )
 
     return True, messages
-
-
-def _detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
-    """Detect zscale filter failures caused by unsupported colorspace conversions.
-
-    Dolby Vision Profile 5 (and some other HDR flavours) use IPT-PQ or
-    proprietary transfer characteristics that zscale cannot map to linear.
-    FFmpeg emits ``code 3074: no path between colorspaces`` and then crashes
-    the filter graph, typically producing exit code 187.
-
-    Args:
-        stderr_lines: List of FFmpeg stderr lines
-
-    Returns:
-        bool: True if a zscale colorspace error is detected
-
-    """
-    if not stderr_lines:
-        return False
-
-    stderr_text = " ".join(stderr_lines).lower()
-
-    # Exact substring signatures — the most reliable patterns.
-    fatal_signatures = [
-        "no path between colorspaces",
-        "zscale: generic error in an external library",
-    ]
-    if any(sig in stderr_text for sig in fatal_signatures):
-        return True
-
-    # FFmpeg may log the filter name in brackets with an address, e.g.
-    # [Parsed_zscale_1 @ 0x55eb] Generic error in an external library
-    # [vf#0:0/zscale @ 0x5f3a] Generic error in an external library
-    # Match these even when "zscale:" doesn't appear as a bare prefix.
-    if re.search(
-        r"parsed_zscale_\d+.*generic error in an external library", stderr_text
-    ):
-        return True
-    if re.search(
-        r"zscale\s*@\s*0x[0-9a-f]+\].*generic error in an external library",
-        stderr_text,
-    ):
-        return True
-
-    return False
-
-
-def _is_dolby_vision(hdr_format: Optional[str]) -> bool:
-    """Detect any Dolby Vision content (any profile).
-
-    Used to identify DV content so the caller can choose the correct
-    tone-mapping strategy:
-
-    * DV Profile 5 (no backward-compat HDR10 layer) — requires libplacebo.
-    * DV Profile 7/8 (with HDR10 fallback) — the standard zscale/tonemap
-      chain reads the HDR10 base layer and works correctly.
-
-    Args:
-        hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
-
-    Returns:
-        bool: ``True`` if Dolby Vision metadata is present, ``False`` otherwise.
-
-    """
-    if not hdr_format or hdr_format == "None":
-        return False
-
-    return "dolby vision" in hdr_format.lower()
-
-
-def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
-    """Detect Dolby Vision content without a backward-compatible HDR base layer.
-
-    DV Profile 5 (and similar) uses IPT-PQ transfer characteristics with
-    no HDR10/HLG fallback.  These files **must** be processed via
-    libplacebo because there is no HDR10 base layer for zscale/tonemap.
-
-    DV Profile 7/8 (with HDR10 fallback) returns ``False`` here and can
-    safely use the standard zscale/tonemap chain on the HDR10 base layer.
-
-    Args:
-        hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
-
-    Returns:
-        bool: ``True`` if content is DV without backward compat,
-              ``False`` otherwise.
-
-    """
-    if not hdr_format or hdr_format == "None":
-        return False
-
-    hdr_lower = hdr_format.lower()
-
-    if "dolby vision" not in hdr_lower:
-        return False
-
-    # Profiles that use IPT-PQ transfer — no backward-compat base layer.
-    # Profile 5 (HEVC): dvhe.05  |  Profile 4 (HEVC, non-backward-compat): dvhe.04
-    # AV1 DV Profile 5: dvav.05  |  AV1 DV set/entry: dvav.se
-    dv_unsafe_profiles = ["dvhe.05", "dvhe.04", "dvav.05", "dvav.se"]
-    if any(tag in hdr_lower for tag in dv_unsafe_profiles):
-        return True
-
-    backward_compat_keywords = [
-        "hdr10",
-        "hlg",
-        "pq10",
-        "smpte st 2086",
-        "smpte st 2094",
-        "compatible",
-        "compat",
-    ]
-    return not any(kw in hdr_lower for kw in backward_compat_keywords)
 
 
 def parse_ffmpeg_progress_line(
@@ -798,84 +697,6 @@ def _clean_output_images(output_folder: str) -> None:
             os.remove(img)
         except OSError:
             pass
-
-
-# Recognised DV5 filter-chain kinds.  Each maps to a specific hardware-path
-# produced by :func:`build_dv5_vf`.  Kept as plain strings (not an Enum) so
-# existing callers comparing against `path_kind` continue to work.
-DV5_PATH_INTEL_OPENCL = "opencl_dv5_intel"
-DV5_PATH_VAAPI_VULKAN = "libplacebo_vaapi"
-DV5_PATH_LIBPLACEBO = "libplacebo_dv5"
-
-
-def build_dv5_vf(
-    path_kind: str,
-    tonemap_algorithm: str,
-    fps_value: float,
-    base_scale: str,
-) -> str:
-    """Return the ``-vf`` filter string for a DV Profile 5 thumbnail run.
-
-    Three vendor variants share the same high-level shape:
-
-        fps-drop → upload-to-GPU → tonemap → hwdownload → format → scale
-
-    but differ in the GPU hop and tonemap filter:
-
-    * ``opencl_dv5_intel``   – VAAPI → OpenCL hwmap, ``tonemap_opencl``
-      (Jellyfin's DV-aware patch).  The only path that handles DV5 RPU on
-      an Intel iGPU without spilling to libplacebo on a different device.
-    * ``libplacebo_vaapi``   – VAAPI → Vulkan hwmap (DMA-BUF), libplacebo.
-      Used for AMD Radeon and (historically) Intel before we moved Intel
-      to OpenCL because Mesa ANV's Vulkan interop is broken on DV5.
-    * ``libplacebo_dv5``     – CPU → Vulkan hwupload, libplacebo.  Used
-      for NVIDIA (where CUDA→Vulkan interop is not available in FFmpeg)
-      and for the software-decode + libplacebo retry fallback.
-
-    ``fps`` is placed first across all variants, which is:
-      * required on NVIDIA Turing (fps-inside-libplacebo exhausts the
-        Vulkan image allocator with VK_ERROR_OUT_OF_DEVICE_MEMORY at
-        4K p010 — see commit 70cba4e);
-      * significantly faster on Intel OpenCL (17× vs 2.7× measured); and
-      * RPU-safe because fps only drops frames on timestamps — it never
-        touches pixel data or side-data.
-
-    ``contrast=1.3, saturation=1.3`` on the libplacebo paths restore the
-    punch that the default PQ→SDR curve leaves on the table (details in
-    the callsite history; visually verified across MIB dark/mid/bright).
-
-    Raises:
-        ValueError: if ``path_kind`` is not a recognised DV5 variant.
-    """
-    fps = f"fps=fps={fps_value}:round=up"
-    if path_kind == DV5_PATH_INTEL_OPENCL:
-        return (
-            f"{fps},"
-            "setparams=color_primaries=bt2020:"
-            "color_trc=smpte2084:colorspace=bt2020nc,"
-            "hwmap=derive_device=opencl:mode=read,"
-            f"tonemap_opencl=format=nv12:p=bt709:t=bt709:"
-            f"m=bt709:tonemap={tonemap_algorithm}"
-            f":peak=100:desat=0,"
-            f"hwdownload,format=nv12,format=yuv420p,{base_scale}"
-        )
-    libplacebo_opts = (
-        f"libplacebo=tonemapping={tonemap_algorithm}"
-        f":format=yuv420p"
-        f":contrast=1.3:saturation=1.3"
-    )
-    if path_kind == DV5_PATH_VAAPI_VULKAN:
-        return (
-            f"{fps},"
-            f"hwmap=derive_device=vulkan,"
-            f"{libplacebo_opts},"
-            f"hwdownload,format=yuv420p,{base_scale}"
-        )
-    if path_kind == DV5_PATH_LIBPLACEBO:
-        return (
-            f"{fps},hwupload,{libplacebo_opts},hwdownload,format=yuv420p,{base_scale}"
-        )
-    raise ValueError(f"Unknown DV5 path_kind: {path_kind!r}")
 
 
 def generate_images(
