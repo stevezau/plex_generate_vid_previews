@@ -785,6 +785,21 @@ def _detect_hwaccel_runtime_error(stderr_lines: List[str]) -> bool:
     return any(pattern in stderr_text for pattern in hwaccel_error_patterns)
 
 
+def _clean_output_images(output_folder: str) -> None:
+    """Remove any ``*.jpg`` files in ``output_folder``, silently ignoring
+    files that vanish or are unremovable.
+
+    Used between FFmpeg retry tiers so the next attempt starts with an
+    empty output directory.  Extracted from five identical inline blocks
+    in :func:`generate_images` to keep the retry cascade readable.
+    """
+    for img in glob.glob(os.path.join(output_folder, "*.jpg")):
+        try:
+            os.remove(img)
+        except OSError:
+            pass
+
+
 def generate_images(
     video_file: str,
     output_folder: str,
@@ -1627,11 +1642,7 @@ def generate_images(
             f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame"
         )
         # Clean up any partial files from first attempt (no need to rename if we're retrying)
-        for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-            try:
-                os.remove(img)
-            except OSError:
-                pass
+        _clean_output_images(output_folder)
         retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(
             use_skip=False, init_vulkan=use_libplacebo
         )
@@ -1689,11 +1700,7 @@ def generate_images(
             "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
         )
         logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
-        for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-            try:
-                os.remove(img)
-            except OSError:
-                pass
+        _clean_output_images(output_folder)
         # fps before hwupload: see the matching comment on the primary
         # DV5 libplacebo chain (~line 1000) — keeps Vulkan image alloc
         # from burning through every decoded frame on NVIDIA Turing.
@@ -1753,11 +1760,7 @@ def generate_images(
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
 
             # Clean up any partial files before retrying
-            for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-                try:
-                    os.remove(img)
-                except OSError:
-                    pass
+            _clean_output_images(output_folder)
 
             # DV-safe filter: avoid zscale/tonemap; mirror the known-working
             # workaround in issue #130.  path_kind_override="sdr" lets
@@ -1775,11 +1778,7 @@ def generate_images(
             if rc != 0 and image_count == 0:
                 if gpu is not None:
                     # Still failing on GPU even with DV-safe filter -> hand off to CPU worker.
-                    for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-                        try:
-                            os.remove(img)
-                        except OSError:
-                            pass
+                    _clean_output_images(output_folder)
                     raise CodecNotSupportedError(
                         f"{diag_label} in GPU context for {video_file}"
                     )
@@ -1830,11 +1829,7 @@ def generate_images(
             )
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
             # Clean up any partial files from GPU attempts
-            for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-                try:
-                    os.remove(img)
-                except OSError:
-                    pass
+            _clean_output_images(output_folder)
             # Raise exception to signal worker pool to re-queue for CPU worker
             raise CodecNotSupportedError(
                 f"GPU processing failed ({fallback_reason}) for {video_file} (exit code {rc})"
