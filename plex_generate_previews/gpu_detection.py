@@ -607,6 +607,31 @@ def _is_software_vulkan_device(device: Optional[str]) -> bool:
     return "llvmpipe" in d or "software" in d or "lavapipe" in d
 
 
+# Substrings that identify an NVIDIA GPU in FFmpeg's Vulkan device listing.
+# Older proprietary drivers print just the marketing name ("Quadro P4000",
+# "GeForce RTX 3080"); newer ones include the "NVIDIA" prefix.  We match
+# any of these brand strings so both cases are recognised.  None of these
+# collide with Intel ("Intel(R) Graphics...") or AMD ("AMD Radeon...") or
+# software ("llvmpipe", "lavapipe") device names.
+_NVIDIA_DEVICE_NAME_HINTS = (
+    "nvidia",
+    "geforce",
+    "quadro",
+    "tesla",
+    "titan",
+    "rtx",
+    "gtx",
+)
+
+
+def _is_nvidia_vulkan_device(device: Optional[str]) -> bool:
+    """Return True if ``device`` looks like an NVIDIA GPU name."""
+    if not device:
+        return False
+    d = device.lower()
+    return any(hint in d for hint in _NVIDIA_DEVICE_NAME_HINTS)
+
+
 def _find_nvidia_icd_json() -> Optional[str]:
     """Return the path to ``nvidia_icd.json`` if present at a standard location.
 
@@ -793,13 +818,35 @@ def _probe_vulkan_device() -> Optional[str]:
 
     # Strategy 1: default probe.
     device, _ = _run_vulkan_probe()
-    if device and not _is_software_vulkan_device(device):
-        logger.debug(
-            f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}"
-        )
-        return device
 
-    if device:
+    # Fast-path short-circuit for the overwhelmingly common case:
+    # strategy 1 returned NVIDIA or a non-NVIDIA hardware device and
+    # there's no NVIDIA ICD JSON on the system to even consider.
+    # Only touch the file-discovery helpers when we actually need
+    # them for the dual-GPU fall-through decision below.
+    if device and not _is_software_vulkan_device(device):
+        # On dual-GPU hosts where the Vulkan loader enumerates Intel
+        # ANV first (common under --runtime=nvidia: Mesa's Intel ICD is
+        # cheap to load, NVIDIA's is gated behind a working EGL init),
+        # strategy 1 returns Intel even though NVIDIA Vulkan is fully
+        # functional once VK_DRIVER_FILES + __EGL_VENDOR_LIBRARY_FILENAMES
+        # are set together (strategy 2b below).  Accepting Intel here
+        # routes NVIDIA-worker libplacebo work onto the Intel iGPU,
+        # stealing cycles from Intel workers and dropping NVIDIA DV5
+        # speed ~40% from the cross-GPU frame shuttle.  So when the
+        # NVIDIA ICD is present but strategy 1 didn't select NVIDIA,
+        # fall through to the NVIDIA-specific retries.
+        if _is_nvidia_vulkan_device(device) or _find_nvidia_icd_json() is None:
+            logger.debug(
+                f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}"
+            )
+            return device
+        logger.debug(
+            f"Vulkan probe (strategy 1): selected {device!r} but NVIDIA "
+            f"ICD is also present; falling through to NVIDIA-specific "
+            f"retries to avoid cross-GPU libplacebo on NVIDIA workers."
+        )
+    elif device:
         logger.debug(
             f"Vulkan probe (strategy 1): got software device {device!r}; "
             "will attempt NVIDIA-specific retries"
@@ -813,6 +860,20 @@ def _probe_vulkan_device() -> Optional[str]:
     nvidia_egl_vendor = _find_nvidia_egl_vendor_json()
     nvidia_icd = _find_nvidia_icd_json()
 
+    # When NVIDIA ICD is present, strategies 2 and 2c should only
+    # consider a retry a "success" if it actually returned NVIDIA.  On
+    # dual-GPU hosts the EGL-only retry can still return Intel (Mesa
+    # enumerates first); if we accept it here we miss strategy 2b which
+    # is the combination that actually gets NVIDIA.
+    require_nvidia = nvidia_icd is not None
+
+    def _retry_is_useful(retry_device: Optional[str]) -> bool:
+        if not retry_device or _is_software_vulkan_device(retry_device):
+            return False
+        if require_nvidia and not _is_nvidia_vulkan_device(retry_device):
+            return False
+        return True
+
     # Strategy 2: point GLVND at NVIDIA's EGL vendor via
     # __EGL_VENDOR_LIBRARY_FILENAMES. This is the verified fix for the
     # linuxserver/ffmpeg + NVIDIA case — see the doc comment on
@@ -824,7 +885,7 @@ def _probe_vulkan_device() -> Optional[str]:
         )
         retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": nvidia_egl_vendor}
         retry_device, _ = _run_vulkan_probe(retry_env)
-        if retry_device and not _is_software_vulkan_device(retry_device):
+        if _retry_is_useful(retry_device):
             logger.debug(
                 f"Vulkan probe (strategy 2): success with {retry_device!r} "
                 f"via __EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
@@ -888,7 +949,7 @@ def _probe_vulkan_device() -> Optional[str]:
                 )
                 retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": synth_vendor_path}
                 retry_device, _ = _run_vulkan_probe(retry_env)
-                if retry_device and not _is_software_vulkan_device(retry_device):
+                if _retry_is_useful(retry_device):
                     logger.info(
                         f"Vulkan probe (strategy 2c): success with "
                         f"{retry_device!r} via synthesised GLVND vendor JSON "
@@ -925,7 +986,7 @@ def _probe_vulkan_device() -> Optional[str]:
         if nvidia_egl_vendor:
             retry_env["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
         retry_device, _ = _run_vulkan_probe(retry_env)
-        if retry_device and not _is_software_vulkan_device(retry_device):
+        if _retry_is_useful(retry_device):
             logger.debug(
                 f"Vulkan probe (strategy 2b): success with {retry_device!r} "
                 f"via {retry_env}"

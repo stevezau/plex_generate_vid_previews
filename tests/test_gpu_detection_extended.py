@@ -2286,6 +2286,98 @@ class TestProbeVulkanDevice:
         assert get_vulkan_env_overrides() == {}
         assert get_vulkan_debug_buffer() == ""
 
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_1_intel_with_nvidia_icd_falls_through_to_retries(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Dual-GPU host (Intel iGPU + NVIDIA dGPU) under --runtime=nvidia:
+        strategy 1 picks Intel ANV by default, but NVIDIA ICD is present on
+        disk.  The probe must fall through to strategy 2/2b rather than
+        accepting Intel, otherwise NVIDIA-worker DV5 jobs run libplacebo
+        on the Intel iGPU (cross-GPU shuffle, ~40% speed hit, steals Intel
+        worker cycles).
+        """
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
+        mock_run.side_effect = [
+            # Strategy 1: Intel ANV (hardware, non-NVIDIA)
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device(
+                    "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+                ),
+            ),
+            # Strategy 2: __EGL_VENDOR_LIBRARY_FILENAMES — still Intel
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device(
+                    "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+                ),
+            ),
+            # Strategy 2b: VK_DRIVER_FILES + EGL together → NVIDIA wins
+            MagicMock(
+                returncode=0,
+                stderr=self._stderr_with_device("NVIDIA TITAN RTX (discrete) (0x1e02)"),
+            ),
+        ]
+
+        device = _probe_vulkan_device()
+        assert device == "NVIDIA TITAN RTX (discrete) (0x1e02)"
+        # Strategies 1, 2, and 2b all fired (3 probes).
+        assert mock_run.call_count == 3
+        # Final env overrides must carry BOTH keys — this is the combo
+        # that actually works on the user's container; EGL alone returns
+        # Intel, VK_DRIVER_FILES alone returns VK_ERROR_INCOMPATIBLE_DRIVER.
+        assert get_vulkan_env_overrides() == {
+            "VK_DRIVER_FILES": "/etc/vulkan/icd.d/nvidia_icd.json",
+            "__EGL_VENDOR_LIBRARY_FILENAMES": (
+                "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+            ),
+        }
+
+    @patch(
+        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+    )
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_egl_vendor_json")
+    @patch("plex_generate_previews.gpu_detection._find_nvidia_icd_json")
+    @patch("plex_generate_previews.gpu_detection.subprocess.run")
+    def test_strategy_1_intel_without_nvidia_icd_accepts_intel(
+        self, mock_run, mock_find_icd, mock_find_egl, _mock_vk
+    ):
+        """Intel-only host (no NVIDIA anywhere): strategy 1 returns Intel
+        and short-circuits.  NVIDIA-specific retries must NOT fire — the
+        user has no NVIDIA GPU to route to."""
+        from plex_generate_previews.gpu_detection import (
+            _probe_vulkan_device,
+            get_vulkan_env_overrides,
+        )
+
+        mock_find_icd.return_value = None  # no NVIDIA ICD on this host
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr=self._stderr_with_device(
+                "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+            ),
+        )
+
+        device = _probe_vulkan_device()
+        assert device == "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
+        assert mock_run.call_count == 1
+        # The EGL helper should NOT be called — we short-circuit once we
+        # know there's no NVIDIA ICD to route to.
+        mock_find_egl.assert_not_called()
+        assert get_vulkan_env_overrides() == {}
+
 
 class TestGetVulkanDeviceInfo:
     """Unit tests for get_vulkan_device_info() — the cached info builder."""
