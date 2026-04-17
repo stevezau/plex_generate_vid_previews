@@ -22,13 +22,11 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
-from .filter_chain import (
+from .processing import (
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
     DV5_PATH_VAAPI_VULKAN,
     build_dv5_vf,
-)
-from .hdr_detection import (
     detect_dolby_vision_rpu_error,
     detect_zscale_colorspace_error,
     is_dolby_vision,

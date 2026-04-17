@@ -135,7 +135,7 @@ class TestProcessingModule:
     """Test processing module exists and is importable."""
 
     def test_run_processing_importable(self):
-        """Test that run_processing can be imported from processing module."""
-        from plex_generate_previews.processing import run_processing
+        """Test that run_processing can be imported from job_orchestrator module."""
+        from plex_generate_previews.job_orchestrator import run_processing
 
         assert callable(run_processing)

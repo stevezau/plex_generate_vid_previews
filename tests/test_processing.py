@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from plex_generate_previews.media_processing import ProcessingResult
-from plex_generate_previews.processing import run_processing
+from plex_generate_previews.job_orchestrator import run_processing
 
-MODULE = "plex_generate_previews.processing"
+MODULE = "plex_generate_previews.job_orchestrator"
 
 
 def _make_config(tmp_path, **overrides):
@@ -593,7 +593,7 @@ class TestJobDispatcherPath:
                 return_value=iter([(section, items)]),
             ),
             patch(
-                "plex_generate_previews.processing.get_dispatcher",
+                "plex_generate_previews.job_orchestrator.get_dispatcher",
                 side_effect=[mock_dispatcher, mock_dispatcher],
                 create=True,
             ) as mock_get_disp,

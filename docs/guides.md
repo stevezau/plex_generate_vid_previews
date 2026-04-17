@@ -592,16 +592,28 @@ Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Op
 
 **Why is CPU usage high when I have a GPU configured?**
 
-GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding (via NVDEC, VAAPI, etc.) and tone mapping (via Vulkan/libplacebo for Dolby Vision content). The CPU handles frame selection, pixel format conversion, thumbnail scaling, and JPEG encoding.
+GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding (via NVDEC, VAAPI, etc.), downscaling to thumbnail size (via `scale_cuda` / `scale_vaapi`), and tone mapping for Dolby Vision Profile 5 (via Vulkan/libplacebo). The CPU handles frame selection, the final HDR10 tone-map pass (if applicable), and JPEG encoding.
 
 For **standard (SDR) content**, GPU does nearly all the work and CPU usage is minimal — you'll see speeds of 500x or higher.
 
 For **Dolby Vision content**, CPU usage is noticeably higher because frames must be moved between CPU and GPU memory for the libplacebo tone map. Expected speeds on 4K DV content:
 
-- **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60x+ across all GPU vendors. Uses HW decode + zscale on the HDR10 base layer.
+- **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60x+ across all GPU vendors. Uses HW decode + GPU downscale + zscale tonemap on the 320×240 frame.
 - **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker) — about 12x on NVIDIA (NVDEC decode + libplacebo), about 4x on Intel / AMD / Apple / CPU (software decode + libplacebo).
 
 The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
+
+**How much RAM does each worker use?**
+
+Typical per-worker RSS with hardware decode:
+
+| Content | Per-worker RSS |
+|---|---|
+| SDR 1080p | ~90–200 MB |
+| 4K HDR10 / DV P7+8 | ~250–300 MB |
+| 4K DV Profile 5 (libplacebo) | ~350–500 MB |
+
+Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix (issue #218), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
 
 **What's thumbnail quality 1-10?**
 

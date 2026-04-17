@@ -1137,7 +1137,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.processing.run_processing",
+                "plex_generate_previews.job_orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1200,7 +1200,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.processing.run_processing",
+                "plex_generate_previews.job_orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1261,7 +1261,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.processing.run_processing",
+                "plex_generate_previews.job_orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1315,7 +1315,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.processing.run_processing",
+                "plex_generate_previews.job_orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
@@ -1364,7 +1364,7 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.processing.run_processing",
+                "plex_generate_previews.job_orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
             patch(
