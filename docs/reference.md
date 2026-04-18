@@ -41,7 +41,6 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Value
 ---
 
 ## Processing Options
-<a id="cpu-fallback-workers"></a>
 
 ### Per-GPU Configuration (gpu_config)
 

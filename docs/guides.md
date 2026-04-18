@@ -28,7 +28,7 @@ When you first access the web interface, you'll be guided through a **Setup Wiza
 1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
 2. **Select Server** — choose which Plex server to connect to
 3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, CPU threads, CPU fallback workers, thumbnail quality, etc.
+4. **Processing Options** — configure GPU threads, CPU threads, thumbnail quality, etc.
 5. **Security** — view or customize your access token (optional)
 
 After setup completes, you'll be taken to the dashboard.

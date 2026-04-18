@@ -53,7 +53,7 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 |---------|-------------|
 | **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | Optional fallback-only CPU workers for GPU decode failures |
+| **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
 | **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
 | **Library Filtering** | Process specific Plex libraries |
 | **Quality Control** | Adjustable thumbnail quality (1-10) |
@@ -121,8 +121,8 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
-> Note the extra "z" in Docker Hub: [stevezzau/plex_generate_vid_previews](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews)
-> (stevezau was taken)
+> The Docker Hub image is published as `stevezzau/plex_generate_vid_previews` (double-`z`):
+> [stevezzau/plex_generate_vid_previews](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews).
 
 ---
 
@@ -146,18 +146,13 @@ For complete GPU setup, tuning, and troubleshooting:
 
 **Check detected GPUs:** Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup** — detected GPUs are shown there.
 
-### GPU + CPU Fallback Mode
+### GPU + CPU Fallback
 
-If you want GPU-only main processing but still want CPU recovery for unsupported files:
+CPU fallback is automatic and built into every GPU worker — there is no separate "fallback" pool to configure. If FFmpeg fails on the GPU (unsupported codec, hardware-accelerator error, driver crash), the same worker retries the file on CPU in-place and the dashboard shows a yellow **CPU fallback** badge.
 
-- Set **CPU Workers** to `0`
-- Set **CPU Fallback Workers** to `1` (or higher)
+If you have a lot of content that never decodes on the GPU, raise **CPU Workers** above `0` so that those files route straight to dedicated CPU workers instead of blocking a GPU worker each time.
 
-This keeps normal jobs on GPU workers and only uses CPU when a GPU worker reports an unsupported codec/runtime decode failure.
-
-> [!NOTE]
-> `CPU Fallback Workers` is only used when `CPU Workers=0`.
-> If `CPU Workers>0`, regular CPU workers already handle fallback work.
+See [Automatic GPU → CPU Fallback](docs/guides.md#automatic-gpu--cpu-fallback) for details.
 
 ---
 

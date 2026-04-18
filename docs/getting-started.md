@@ -68,7 +68,7 @@ Find your token using the [Authentication Token](#authentication-token) section 
 
 In **Plex Settings → Library**, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation with GPU-accelerated processing. If Plex's option is left on, Plex may use CPU to generate thumbnails for new media, which can conflict with or duplicate this app's work.
 
-This tool generates **video preview thumbnails only** (BIF files — the images shown when scrubbing through a video timeline). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
+This tool generates **video preview thumbnails only** — the small frames Plex shows when you drag the scrub bar (stored as BIF files). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
 
 ## Recommended Workflow
 
