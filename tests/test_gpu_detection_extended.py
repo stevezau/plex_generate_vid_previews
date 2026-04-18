@@ -662,7 +662,7 @@ class TestLogSystemInfo:
 
     @patch("platform.system")
     @patch("platform.release")
-    @patch("plex_generate_previews.gpu_detection.logger")
+    @patch("plex_generate_previews.gpu.enumeration.logger")
     def test_log_system_info(self, mock_logger, mock_release, mock_system):
         """Test logging system information."""
         from plex_generate_previews.gpu_detection import _log_system_info
@@ -792,15 +792,15 @@ class TestGPUVendorFromDriver:
         from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
 
         with patch(
-            "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+            "plex_generate_previews.gpu.enumeration._detect_gpu_type_from_lspci",
             return_value="UNKNOWN",
         ):
             assert _get_gpu_vendor_from_driver("nvidia") == "NVIDIA"
             assert _get_gpu_vendor_from_driver("amdgpu") == "AMD"
             assert _get_gpu_vendor_from_driver("i915") == "INTEL"
 
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
-    @patch("plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci")
+    @patch("plex_generate_previews.gpu.enumeration._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.enumeration._detect_gpu_type_from_lspci")
     def test_unknown_driver_uses_lspci(self, mock_lspci, _mock_wsl):
         from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
 
