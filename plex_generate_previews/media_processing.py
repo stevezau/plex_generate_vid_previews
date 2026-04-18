@@ -30,6 +30,10 @@ from .processing import (
     is_dolby_vision,
     is_dv_no_backward_compat,
 )
+from .processing.retry_cascade import (
+    classify_cpu_fallback_reason,
+    classify_dv_safe_retry_reason,
+)
 from .utils import sanitize_path
 
 # Backwards-compat re-exports.  The detection helpers used to live in this
@@ -1063,20 +1067,11 @@ def generate_images(
     if rc != 0 and image_count == 0:
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
-        is_dv_rpu = _detect_dolby_vision_rpu_error(stderr_lines_all)
-        is_zscale = _detect_zscale_colorspace_error(stderr_lines_all)
-        # libplacebo failure: if the libplacebo chain was active and FFmpeg
-        # failed, fall back to the basic fps+scale chain regardless of the
-        # specific error message (Vulkan not available, driver issue, etc.).
-        is_libplacebo_fail = use_libplacebo and not is_dv_rpu and not is_zscale
-        if is_dv_rpu or is_zscale or is_libplacebo_fail:
+        diag_label = classify_dv_safe_retry_reason(
+            stderr_lines_all, use_libplacebo=use_libplacebo
+        )
+        if diag_label is not None:
             did_dv_safe_retry = True
-            if is_dv_rpu:
-                diag_label = "Dolby Vision RPU parsing error"
-            elif is_zscale:
-                diag_label = "zscale colorspace conversion error"
-            else:
-                diag_label = "libplacebo tone mapping error"
             stderr_excerpt_source = (
                 stderr_lines_all if stderr_lines_all else stderr_lines
             )
@@ -1131,22 +1126,14 @@ def generate_images(
     if rc != 0 and image_count == 0 and gpu is not None:
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
-        should_fallback = _detect_codec_error(rc, stderr_lines)
-        fallback_reason = "codec error"
-
-        # Detect GPU hardware accelerator runtime errors (surface sync, transfer
-        # failures, CUDA errors etc.) — these are driver-level issues that almost
-        # always succeed on CPU.
-        if not should_fallback and _detect_hwaccel_runtime_error(stderr_lines_all):
-            should_fallback = True
-            fallback_reason = "hardware accelerator runtime error"
-
-        # Also fall back to CPU if FFmpeg was killed by a signal (crash, OOM, segfault).
-        # GPU decode paths can trigger driver bugs or OOM that don't occur on CPU.
-        if not should_fallback and _is_signal_killed(rc):
-            should_fallback = True
-            signal_num = rc - 128 if rc > 128 else rc
-            fallback_reason = f"signal kill (signal {signal_num})"
+        should_fallback, fallback_reason = classify_cpu_fallback_reason(
+            rc,
+            stderr_lines,
+            stderr_lines_all,
+            detect_codec_error=_detect_codec_error,
+            detect_hwaccel_runtime_error=_detect_hwaccel_runtime_error,
+            is_signal_killed=_is_signal_killed,
+        )
 
         if should_fallback:
             # Log relevant stderr excerpt for debugging

@@ -13,9 +13,10 @@ Sub-modules:
 * :mod:`.filter_chain`   — builders for the ``-vf`` filter string for
   each vendor / content-format combination.  The ``path_kind`` string
   is the single source of truth for which pipeline shape runs.
-* (future) :mod:`.ffmpeg_runner`  — subprocess invocation, progress
-  parsing, timeout handling.
-* (future) :mod:`.retry_cascade`  — tier-by-tier fallback logic.
+* :mod:`.ffmpeg_runner`   — subprocess invocation, progress parsing,
+  timeout handling.
+* :mod:`.retry_cascade`   — tier-by-tier classifier helpers for the
+  4-tier FFmpeg retry cascade.
 * (future) :mod:`.bif_writer`     — pack JPEGs into the Plex BIF index.
 """
 
@@ -31,6 +32,11 @@ from .hdr_detection import (
     is_dolby_vision,
     is_dv_no_backward_compat,
 )
+from .retry_cascade import (
+    RetryTier,
+    classify_cpu_fallback_reason,
+    classify_dv_safe_retry_reason,
+)
 
 __all__ = [
     # DV5 filter chain
@@ -43,4 +49,8 @@ __all__ = [
     "detect_zscale_colorspace_error",
     "is_dolby_vision",
     "is_dv_no_backward_compat",
+    # Retry cascade
+    "RetryTier",
+    "classify_cpu_fallback_reason",
+    "classify_dv_safe_retry_reason",
 ]
