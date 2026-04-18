@@ -122,7 +122,7 @@ class TestGPUDetection:
 
         # Test version checking
         with patch(
-            "plex_generate_previews.gpu_detection._get_ffmpeg_version"
+            "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version"
         ) as mock_get_version:
             mock_get_version.return_value = (7, 1, 0)
             assert _check_ffmpeg_version() is True

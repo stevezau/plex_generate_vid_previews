@@ -18,6 +18,11 @@ from loguru import logger
 # ``from plex_generate_previews.gpu_detection import get_vulkan_device_info``
 # keep working.  New code should import from :mod:`.gpu` or
 # :mod:`.gpu.vulkan_probe` directly.
+from .gpu.ffmpeg_capabilities import _check_ffmpeg_version as _check_ffmpeg_version
+from .gpu.ffmpeg_capabilities import _get_ffmpeg_hwaccels as _get_ffmpeg_hwaccels
+from .gpu.ffmpeg_capabilities import _get_ffmpeg_version as _get_ffmpeg_version
+from .gpu.ffmpeg_capabilities import _is_hwaccel_available as _is_hwaccel_available
+from .gpu.ffmpeg_capabilities import MIN_FFMPEG_VERSION as MIN_FFMPEG_VERSION
 from .gpu.vaapi_probe import _format_driver_label as _format_driver_label
 from .gpu.vaapi_probe import _INTEL_KERNEL_DRIVERS as _INTEL_KERNEL_DRIVERS
 from .gpu.vaapi_probe import _probe_vaapi_driver as _probe_vaapi_driver
@@ -37,8 +42,7 @@ from .gpu.vulkan_probe import get_vulkan_device_info as get_vulkan_device_info
 from .gpu.vulkan_probe import get_vulkan_env_overrides as get_vulkan_env_overrides
 from .utils import is_macos, is_windows
 
-# Minimum required FFmpeg version
-MIN_FFMPEG_VERSION = (7, 0, 0)  # FFmpeg 7.0.0+ for better hardware acceleration support
+# MIN_FFMPEG_VERSION is re-exported from gpu/ffmpeg_capabilities.py above.
 
 # GPU vendor to acceleration method mapping
 # This defines which acceleration methods to use for each GPU vendor
@@ -106,158 +110,8 @@ DRIVER_VENDOR_MAP = {
 # re-exported from this module's top-of-file imports.
 
 
-def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
-    """Get FFmpeg version as a tuple of integers.
-
-    Returns:
-        Optional[Tuple[int, int, int]]: Version tuple (major, minor, patch) or None if failed
-
-    """
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-        if result.returncode != 0:
-            logger.debug(f"Failed to get FFmpeg version: {result.stderr}")
-            return None
-
-        # Extract version from first line: "ffmpeg version 7.1.1-1ubuntu1.2 Copyright..."
-        version_line = result.stdout.split("\n")[0] if result.stdout else ""
-        logger.debug(f"FFmpeg version string: '{version_line}'")
-
-        # Special-case date-based git builds (e.g., "ffmpeg version 2025-10-12-git-...")
-        # These are not semantic versions; treat as "unknown version" so we don't
-        # incorrectly parse the year as the major version.
-        if re.search(r"ffmpeg version \d{4}-\d{2}-\d{2}-", version_line):
-            logger.debug(
-                "Detected date-based FFmpeg git build; skipping semantic version parsing"
-            )
-            return None
-
-        # Try multiple patterns to handle different FFmpeg version formats
-        # Patterns ordered from most specific to least specific
-        patterns = [
-            (
-                r"ffmpeg version (\d+)\.(\d+)\.(\d+)",
-                3,
-            ),  # Standard: ffmpeg version 7.1.1
-            (r"version (\d+)\.(\d+)\.(\d+)", 3),  # Alternate: version 7.1.1
-            (
-                r"ffmpeg[^\d]*(\d+)\.(\d+)\.(\d+)",
-                3,
-            ),  # Flexible: any text between ffmpeg and version
-            (r"ffmpeg version (\d+)\.(\d+)", 2),  # Two-part version: ffmpeg version 8.0
-            (r"version (\d+)\.(\d+)", 2),  # Alternate: version 8.0
-            (
-                r"ffmpeg[^\d]*(\d+)\.(\d+)",
-                2,
-            ),  # Flexible: any text between ffmpeg and version
-            (r"ffmpeg version (\d+)", 1),  # Single version: ffmpeg version 8
-            (r"version (\d+)", 1),  # Alternate: version 8
-        ]
-
-        for pattern, num_groups in patterns:
-            version_match = re.search(pattern, version_line)
-            if version_match:
-                groups = version_match.groups()
-                # Pad with zeros if fewer than 3 components
-                major = int(groups[0])
-                minor = int(groups[1]) if num_groups >= 2 else 0
-                patch = int(groups[2]) if num_groups >= 3 else 0
-                logger.debug(f"FFmpeg version detected: {major}.{minor}.{patch}")
-                return (major, minor, patch)
-
-        logger.debug(f"Could not parse FFmpeg version from: '{version_line}'")
-        return None
-
-    except Exception as e:
-        logger.debug(f"Error getting FFmpeg version: {e}")
-        return None
-
-
-def _check_ffmpeg_version() -> bool:
-    """Check if FFmpeg version meets minimum requirements.
-
-    Returns:
-        bool: True if version is sufficient, False otherwise
-
-    """
-    version = _get_ffmpeg_version()
-    if version is None:
-        logger.warning("Could not determine FFmpeg version - proceeding with caution")
-        return True  # Don't fail if we can't determine version
-
-    if version >= MIN_FFMPEG_VERSION:
-        logger.debug(
-            f"✓ FFmpeg version {version[0]}.{version[1]}.{version[2]} meets minimum requirement {MIN_FFMPEG_VERSION[0]}.{MIN_FFMPEG_VERSION[1]}.{MIN_FFMPEG_VERSION[2]}"
-        )
-        return True
-    else:
-        logger.warning(
-            f"⚠ FFmpeg version {version[0]}.{version[1]}.{version[2]} is below minimum requirement {MIN_FFMPEG_VERSION[0]}.{MIN_FFMPEG_VERSION[1]}.{MIN_FFMPEG_VERSION[2]}"
-        )
-        logger.warning(
-            "Hardware acceleration may not work properly. Please upgrade FFmpeg."
-        )
-        return False
-
-
-def _get_ffmpeg_hwaccels() -> List[str]:
-    """Get list of available FFmpeg hardware accelerators.
-
-    Returns:
-        List[str]: Available hardware accelerators
-
-    """
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hwaccels"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-        if result.returncode != 0:
-            logger.debug(f"Failed to get FFmpeg hardware accelerators: {result.stderr}")
-            return []
-
-        hwaccels = []
-        for line in result.stdout.split("\n"):
-            line = line.strip()
-            if line and not line.startswith("Hardware acceleration methods:"):
-                hwaccels.append(line)
-
-        return hwaccels
-    except Exception as e:
-        logger.debug(f"Error getting FFmpeg hardware accelerators: {e}")
-        return []
-
-
-def _is_hwaccel_available(hwaccel: str) -> bool:
-    """Check if a specific hardware acceleration is available.
-
-    Args:
-        hwaccel: Hardware acceleration type to check
-
-    Returns:
-        bool: True if available, False otherwise
-
-    """
-    available_hwaccels = _get_ffmpeg_hwaccels()
-    is_available = hwaccel in available_hwaccels
-
-    if is_available:
-        logger.debug(f"✓ {hwaccel} hardware acceleration is available")
-    else:
-        logger.debug(f"✗ {hwaccel} hardware acceleration is not available")
-
-    return is_available
+# FFmpeg capability probing moved to plex_generate_previews/gpu/ffmpeg_capabilities.py;
+# re-exported from this module's top-of-file imports.
 
 
 def _check_device_access(device_path: str) -> Tuple[bool, str]:

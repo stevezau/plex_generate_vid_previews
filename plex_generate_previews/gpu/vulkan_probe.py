@@ -36,6 +36,8 @@ from typing import Optional, Tuple
 
 from loguru import logger
 
+from .ffmpeg_capabilities import _is_hwaccel_available
+
 _VULKAN_DEVICE_CACHE: Optional[str] = None
 _VULKAN_DEVICE_PROBED: bool = False
 _VULKAN_ENV_OVERRIDES: dict = {}
@@ -215,12 +217,6 @@ def _run_vulkan_probe(
             environment. Used by the Layer-3 retry strategy to force
             ``VK_DRIVER_FILES`` and/or enable ``VK_LOADER_DEBUG=all``.
     """
-    # Lazy import to avoid a circular dependency during module load — the
-    # parent `gpu_detection` shim currently imports from this module.  Once
-    # FFmpeg-capability detection itself moves into :mod:`gpu.ffmpeg_capabilities`
-    # this can be a normal top-of-file import.
-    from ..gpu_detection import _is_hwaccel_available
-
     if not _is_hwaccel_available("vulkan"):
         # DEBUG only: get_vulkan_device_info() will log a single
         # user-facing INFO line summarising the final outcome. Logging

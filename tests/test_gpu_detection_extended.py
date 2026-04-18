@@ -101,8 +101,12 @@ class TestDetectAllGPUs:
                 "plex_generate_previews.gpu_detection.is_windows", return_value=False
             ),
             patch(
-                "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+                "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
                 return_value=[],
+            ),
+            patch(
+                "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+                return_value="",
             ),
         ):
             gpus = detect_all_gpus()
@@ -114,7 +118,7 @@ class TestDetectAllGPUs:
 class TestHwaccelAvailability:
     """Test hardware acceleration availability checking."""
 
-    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels")
+    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels")
     def test_is_hwaccel_available_cuda(self, mock_hwaccels):
         """Test CUDA availability check."""
         mock_hwaccels.return_value = ["cuda", "vaapi"]
@@ -122,7 +126,7 @@ class TestHwaccelAvailability:
         assert _is_hwaccel_available("cuda") is True
         assert _is_hwaccel_available("d3d11va") is False
 
-    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels")
+    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels")
     def test_is_hwaccel_available_none(self, mock_hwaccels):
         """Test when no hwaccels are available."""
         mock_hwaccels.return_value = []
@@ -505,7 +509,7 @@ class TestFFmpegVersion:
         result = _get_ffmpeg_version()
         assert result is None
 
-    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_version")
+    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_check_ffmpeg_version_none(self, mock_get_version):
         """Test check FFmpeg version when version is None."""
         from plex_generate_previews.gpu_detection import _check_ffmpeg_version
@@ -936,14 +940,14 @@ class TestLspciEdgeCases:
 class TestCheckFFmpegVersion:
     """Test FFmpeg version validation."""
 
-    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_version")
+    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_version_meets_minimum(self, mock_version):
         from plex_generate_previews.gpu_detection import _check_ffmpeg_version
 
         mock_version.return_value = (7, 1, 1)
         assert _check_ffmpeg_version() is True
 
-    @patch("plex_generate_previews.gpu_detection._get_ffmpeg_version")
+    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_version_below_minimum(self, mock_version):
         from plex_generate_previews.gpu_detection import _check_ffmpeg_version
 
@@ -1068,7 +1072,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda", "vaapi"],
     )
     @patch(
@@ -1113,7 +1117,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=[],
     )
     @patch(
@@ -1140,7 +1144,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
@@ -1172,7 +1176,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
@@ -1219,7 +1223,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
@@ -1261,7 +1265,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
@@ -1302,7 +1306,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
@@ -1348,7 +1352,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
@@ -1380,7 +1384,7 @@ class TestWSL2NoDRMDevices:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
@@ -1427,7 +1431,7 @@ class TestLinuxContainerNvidiaFallback:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda", "vaapi"],
     )
     @patch(
@@ -1479,7 +1483,7 @@ class TestLinuxContainerNvidiaFallback:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
@@ -1511,7 +1515,7 @@ class TestLinuxContainerNvidiaFallback:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
@@ -1543,7 +1547,7 @@ class TestLinuxContainerNvidiaFallback:
     @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
     @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
@@ -1721,7 +1725,8 @@ class TestProbeVulkanDevice:
         _reset_vulkan_device_cache()
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_parses_intel_hardware_device(self, mock_run, _mock_vk):
@@ -1742,7 +1747,8 @@ class TestProbeVulkanDevice:
         )
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_parses_llvmpipe_software_device(self, mock_run, _mock_vk):
@@ -1762,7 +1768,8 @@ class TestProbeVulkanDevice:
         )
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=False
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=False,
     )
     def test_no_vulkan_support_returns_none(self, _mock_vk):
         from plex_generate_previews.gpu_detection import _probe_vulkan_device
@@ -1775,7 +1782,8 @@ class TestProbeVulkanDevice:
             mock_run.assert_not_called()
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_subprocess_timeout_returns_none(self, mock_run, _mock_vk):
@@ -1787,7 +1795,8 @@ class TestProbeVulkanDevice:
         assert _probe_vulkan_device() is None
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_stderr_without_device_line_returns_none(self, mock_run, _mock_vk):
@@ -1806,7 +1815,8 @@ class TestProbeVulkanDevice:
         return f"[Vulkan @ 0x7f00] Device 0 selected: {device_name}\n"
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
@@ -1861,7 +1871,8 @@ class TestProbeVulkanDevice:
         }
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
@@ -1915,7 +1926,8 @@ class TestProbeVulkanDevice:
         }
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_libegl_nvidia")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
@@ -2007,7 +2019,8 @@ class TestProbeVulkanDevice:
         }
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_libegl_nvidia")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
@@ -2053,7 +2066,8 @@ class TestProbeVulkanDevice:
         assert mock_run.call_count == 3
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_libegl_nvidia")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
@@ -2091,7 +2105,8 @@ class TestProbeVulkanDevice:
         mock_find_libegl.assert_not_called()
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_libegl_nvidia")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
@@ -2137,7 +2152,8 @@ class TestProbeVulkanDevice:
         assert get_vulkan_env_overrides() == {}
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
@@ -2201,7 +2217,8 @@ class TestProbeVulkanDevice:
         assert "VK_LOADER_DEBUG=all" in buf
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
@@ -2254,7 +2271,8 @@ class TestProbeVulkanDevice:
         assert mock_run.call_count == 2  # unchanged
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
@@ -2287,7 +2305,8 @@ class TestProbeVulkanDevice:
         assert get_vulkan_debug_buffer() == ""
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
@@ -2346,7 +2365,8 @@ class TestProbeVulkanDevice:
         }
 
     @patch(
-        "plex_generate_previews.gpu_detection._is_hwaccel_available", return_value=True
+        "plex_generate_previews.gpu.vulkan_probe._is_hwaccel_available",
+        return_value=True,
     )
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_egl_vendor_json")
     @patch("plex_generate_previews.gpu.vulkan_probe._find_nvidia_icd_json")
