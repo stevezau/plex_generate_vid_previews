@@ -12,6 +12,9 @@ let processingPaused = false;
 const expandedJobFileRows = new Set();
 const expandedActiveJobFiles = new Set();
 let cachedWorkerConfigCounts = null;
+// Tracks previous fallback state per worker_id so we show a toast exactly
+// once when a worker switches from GPU to CPU (not on every poll tick).
+const _fallbackStateByWorker = new Map();
 let cachedGpuConfig = null;
 let cachedDetectedGpus = null;
 let _elapsedTimerInterval = null;
@@ -147,6 +150,7 @@ function initDashboard() {
     setInterval(loadJobs, 5000);
     setInterval(loadWorkerStatuses, 1000);
     setInterval(loadPendingWebhooks, 3000);
+    setInterval(tickPendingWebhookCountdowns, 1000);
 
     // Flush deferred job-queue updates when a priority dropdown closes
     document.addEventListener('hidden.bs.dropdown', function () {
@@ -261,6 +265,7 @@ function connectSocket() {
         renderGlobalPauseResume();
         loadJobs();
     });
+
 }
 
 // API Helpers
@@ -381,8 +386,7 @@ function normalizeWorkerConfigCounts(config) {
     // gpu_threads is the total across all enabled GPUs (computed from gpu_config)
     return {
         gpu_threads: Number(config?.gpu_threads ?? 0),
-        cpu_threads: Number(config?.cpu_threads ?? 1),
-        cpu_fallback_threads: Number(config?.cpu_fallback_threads ?? 0)
+        cpu_threads: Number(config?.cpu_threads ?? 1)
     };
 }
 
@@ -616,18 +620,32 @@ async function loadPendingWebhooks() {
             return;
         }
         row.classList.remove('d-none');
+        const now = Date.now();
         const parts = pending.map(function (p) {
-            const remaining = Math.max(0, Math.ceil(p.remaining_seconds));
+            const remainingSec = Math.max(0, Number(p.remaining_seconds) || 0);
+            const deadline = now + remainingSec * 1000;
+            const initial = Math.max(0, Math.ceil(remainingSec));
             const source = escapeHtml(p.source || 'webhook');
             const label = p.file_count === 1 && p.first_title
                 ? escapeHtml(p.first_title)
                 : `${p.file_count} file(s)`;
-            return `<strong>${source}</strong>: ${label} — starting in <strong>${remaining}s</strong>`;
+            return `<strong>${source}</strong>: ${label} — starting in <strong class="pending-webhook-countdown" data-deadline="${deadline}">${initial}s</strong>`;
         });
         content.innerHTML = parts.join(' &middot; ');
     } catch (error) {
         row.classList.add('d-none');
     }
+}
+
+function tickPendingWebhookCountdowns() {
+    const now = Date.now();
+    document.querySelectorAll('.pending-webhook-countdown[data-deadline]').forEach(function (el) {
+        const deadline = Number(el.getAttribute('data-deadline'));
+        if (!Number.isFinite(deadline)) return;
+        const remaining = Math.max(0, Math.ceil((deadline - now) / 1000));
+        const text = remaining + 's';
+        if (el.textContent !== text) el.textContent = text;
+    });
 }
 
 function renderGlobalPauseResume() {
@@ -1645,7 +1663,6 @@ function updateWorkerStatuses(workers, options = {}) {
     } = options;
     const container = document.getElementById('workerStatusContainer');
     const cpuWorkersEl = document.getElementById('cpuWorkers');
-    const cpuFallbackWorkersEl = document.getElementById('cpuFallbackWorkers');
 
     if (!workers || workers.length === 0) {
         container.innerHTML = `
@@ -1659,38 +1676,61 @@ function updateWorkerStatuses(workers, options = {}) {
         const counts = fallbackCounts || cachedWorkerConfigCounts;
         if (counts) {
             if (cpuWorkersEl) cpuWorkersEl.textContent = String(counts.cpu_threads);
-            if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(counts.cpu_fallback_threads);
         }
         refreshWorkerScaleButtons();
         return;
     }
 
     const cpuCount = workers.filter(w => w.worker_type === 'CPU').length;
-    const cpuFallbackCount = workers.filter(w => w.worker_type === 'CPU_FALLBACK').length;
     if (cpuWorkersEl) cpuWorkersEl.textContent = String(cpuCount);
-    if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(cpuFallbackCount);
+
+    // Surface GPU→CPU fallback transitions as a warning toast (once per switch).
+    for (const w of workers) {
+        const prev = _fallbackStateByWorker.get(w.worker_id) || false;
+        const now = !!w.fallback_active;
+        if (now && !prev) {
+            const title = w.current_title || 'this file';
+            const reason = w.fallback_reason || 'GPU processing failed';
+            showToast(
+                'Switched to CPU',
+                `${w.worker_name} fell back to CPU for "${title}" — ${reason}`,
+                'warning'
+            );
+        }
+        _fallbackStateByWorker.set(w.worker_id, now);
+    }
 
     let html = '<div class="row g-3">';
 
     for (const worker of workers) {
-        const icon = worker.worker_type === 'GPU' ? 'bi-gpu-card' : 'bi-cpu';
+        const fallbackActive = !!worker.fallback_active;
+        const icon = fallbackActive
+            ? 'bi-cpu'
+            : (worker.worker_type === 'GPU' ? 'bi-gpu-card' : 'bi-cpu');
         const statusColor = worker.status === 'processing' ? 'primary' : 'secondary';
         const progressPercent = (worker.progress_percent || 0).toFixed(1);
+        const fallbackBadge = fallbackActive
+            ? `<span class="badge bg-warning text-dark ms-1" title="${escapeHtml(worker.fallback_reason || 'CPU fallback')}"><i class="bi bi-arrow-down-circle me-1"></i>CPU fallback</span>`
+            : '';
+        const fallbackNote = fallbackActive && worker.fallback_reason
+            ? `<div class="small text-warning text-truncate mb-1" title="${escapeHtml(worker.fallback_reason)}"><i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(worker.fallback_reason)}</div>`
+            : '';
 
         html += `
             <div class="col-md-6">
-                <div class="card bg-body-tertiary">
+                <div class="card bg-body-tertiary${fallbackActive ? ' border-warning' : ''}">
                     <div class="card-body py-2">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}</span>
+                            <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}${fallbackBadge}</span>
                             <span class="badge bg-${statusColor}">${escapeHtml(worker.status)}</span>
                         </div>
+                        ${fallbackNote}
                         ${worker.status === 'processing' ? `
                             <div class="small text-truncate mb-1" title="${escapeHtml(worker.current_title)}">
                                 ${worker.library_name ? `<span class="text-muted">${escapeHtml(worker.library_name)}</span> <i class="bi bi-chevron-right small text-muted"></i> ` : ''}${escapeHtml(worker.current_title) || 'Processing...'}
                             </div>
                             <div class="progress" style="height: 6px;">
-                                <div class="progress-bar" style="width: ${progressPercent}%"></div>
+                                <div class="progress-bar${fallbackActive ? ' bg-warning' : ''}" style="width: ${progressPercent}%"></div>
                             </div>
                             <div class="d-flex justify-content-between small text-muted mt-1">
                                 <span>${progressPercent}%</span>
@@ -2846,8 +2886,8 @@ function refreshWorkerScaleButtons() {
 }
 
 function getWorkerCountForType(workerType) {
-    const id = workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers';
-    const el = document.getElementById(id);
+    if (workerType !== 'CPU') return 0;
+    const el = document.getElementById('cpuWorkers');
     if (!el) return 0;
     const n = parseInt(el.textContent, 10);
     return Number.isNaN(n) ? 0 : n;
@@ -2855,7 +2895,7 @@ function getWorkerCountForType(workerType) {
 
 function settingsKeyForWorkerType(workerType) {
     if (workerType === 'CPU') return 'cpu_threads';
-    return 'cpu_fallback_threads';
+    return null;
 }
 
 async function scaleWorkersGlobal(workerType, direction) {
@@ -2870,9 +2910,7 @@ async function scaleWorkersGlobal(workerType, direction) {
         cachedWorkerConfigCounts = null;
         await loadWorkerConfigCounts(true);
 
-        const badgeEl = document.getElementById(
-            workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
-        );
+        const badgeEl = workerType === 'CPU' ? document.getElementById('cpuWorkers') : null;
         if (badgeEl) badgeEl.textContent = String(newCount);
         refreshWorkerScaleButtons();
 
@@ -2903,9 +2941,7 @@ async function scaleWorkersGlobal(workerType, direction) {
             }
         }
     } catch (error) {
-        const badgeEl = document.getElementById(
-            workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
-        );
+        const badgeEl = workerType === 'CPU' ? document.getElementById('cpuWorkers') : null;
         if (badgeEl) badgeEl.textContent = String(currentCount);
         refreshWorkerScaleButtons();
         showToast('Error', `Failed to update ${workerType} workers: ${error.message}`, 'danger');

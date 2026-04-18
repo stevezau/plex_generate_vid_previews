@@ -65,7 +65,6 @@ def _set_test_env(monkeypatch_or_patch_dict, args_ns):
         "ffmpeg_threads": "FFMPEG_THREADS",
         "tmp_folder": "TMP_FOLDER",
         "log_level": "LOG_LEVEL",
-        "fallback_cpu_threads": "FALLBACK_CPU_THREADS",
     }
     env = {}
     for field, env_key in _field_to_env.items():
@@ -1660,7 +1659,7 @@ class TestValidateProcessingThreadTotals:
         assert msg == ""
 
     def test_thread_totals_match_gpu_config_sum(self):
-        gpu_t, cpu_t, fb = thread_totals_from_ui_settings(
+        gpu_t, cpu_t = thread_totals_from_ui_settings(
             {
                 "cpu_threads": 2,
                 "gpu_config": [
@@ -1671,7 +1670,50 @@ class TestValidateProcessingThreadTotals:
         )
         assert gpu_t == 2
         assert cpu_t == 2
-        assert fb == 0
+
+
+class TestResolveFfmpegPath:
+    """Tests for _resolve_ffmpeg_path() binary-selection precedence."""
+
+    @pytest.mark.parametrize(
+        "jellyfin_exists, jellyfin_executable, which_returns, expected",
+        [
+            # Jellyfin FFmpeg present and executable — always wins.
+            (True, True, "/usr/bin/ffmpeg", "/usr/lib/jellyfin-ffmpeg/ffmpeg"),
+            # Jellyfin path exists but is not executable — fall through to PATH.
+            (True, False, "/usr/bin/ffmpeg", "/usr/bin/ffmpeg"),
+            # Jellyfin missing — fall through to PATH.
+            (False, False, "/usr/bin/ffmpeg", "/usr/bin/ffmpeg"),
+            # Nothing found — return None for the caller to error on.
+            (False, False, None, None),
+        ],
+    )
+    def test_resolve_ffmpeg_path_precedence(
+        self,
+        monkeypatch,
+        jellyfin_exists,
+        jellyfin_executable,
+        which_returns,
+        expected,
+    ):
+        from plex_generate_previews.config import (
+            _JELLYFIN_FFMPEG_PATH,
+            _resolve_ffmpeg_path,
+        )
+
+        def fake_isfile(p):
+            return p == _JELLYFIN_FFMPEG_PATH and jellyfin_exists
+
+        def fake_access(p, mode):
+            return p == _JELLYFIN_FFMPEG_PATH and jellyfin_executable
+
+        monkeypatch.setattr("plex_generate_previews.config.os.path.isfile", fake_isfile)
+        monkeypatch.setattr("plex_generate_previews.config.os.access", fake_access)
+        monkeypatch.setattr(
+            "plex_generate_previews.config.shutil.which", lambda name: which_returns
+        )
+
+        assert _resolve_ffmpeg_path() == expected
 
 
 class TestDockerHelp:

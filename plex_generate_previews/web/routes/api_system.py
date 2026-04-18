@@ -859,7 +859,6 @@ def get_config():
                     "gpu_config": settings.gpu_config,
                     "gpu_threads": settings.gpu_threads,
                     "cpu_threads": settings.cpu_threads,
-                    "cpu_fallback_threads": settings.cpu_fallback_threads,
                     "ffmpeg_threads": settings.get("ffmpeg_threads", 2),
                 }
             )
@@ -878,7 +877,6 @@ def get_config():
             "gpu_config": config.gpu_config,
             "gpu_threads": config.gpu_threads,
             "cpu_threads": config.cpu_threads,
-            "cpu_fallback_threads": config.fallback_cpu_threads,
             "ffmpeg_threads": config.ffmpeg_threads,
             "log_level": config.log_level,
         }

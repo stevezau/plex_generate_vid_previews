@@ -366,7 +366,6 @@ class TestOutcomeInWorkerPoolResult:
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         config.cpu_threads = 1
-        config.fallback_cpu_threads = 0
         plex = MagicMock()
 
         items = [("/library/metadata/1", "Movie 1", "movie")]
@@ -399,7 +398,6 @@ class TestOutcomeInWorkerPoolResult:
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         config.cpu_threads = 1
-        config.fallback_cpu_threads = 0
         plex = MagicMock()
 
         items = [

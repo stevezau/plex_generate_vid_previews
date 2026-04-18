@@ -6,7 +6,6 @@ scheduling: workers focus on the highest-priority active job and only spill
 over to the next job when the current job's queue is empty.
 """
 
-import queue
 import threading
 import time
 from collections import deque
@@ -319,10 +318,7 @@ class JobDispatcher:
             # 5. Emit periodic progress updates for active jobs
             self._emit_progress_updates()
 
-            # 6. Drain fallback queue if no CPU workers remain
-            self._drain_orphaned_fallback_items()
-
-            # 7. Periodic progress logging
+            # 6. Periodic progress logging
             now = time.time()
             if now - last_progress_log >= 5.0:
                 self._log_progress()
@@ -371,10 +367,6 @@ class JobDispatcher:
             title = worker.media_title or "(unknown)"
             job_id = worker.current_job_id
 
-            # GPU->CPU re-queue: the CPU worker will record completion later
-            if worker.requeued_to_cpu:
-                continue
-
             with self._trackers_lock:
                 tracker = self._trackers.get(job_id) if job_id else None
 
@@ -412,18 +404,9 @@ class JobDispatcher:
         self.worker_pool._apply_deferred_removals()
 
         while True:
-            has_main_items = self._has_dispatchable_items()
-            cpu_only = not has_main_items
-            worker = self.worker_pool._find_available_worker(cpu_only=cpu_only)
+            worker = self.worker_pool._find_available_worker()
             if not worker:
                 break
-
-            # CPU/CPU_FALLBACK workers: try fallback queue first
-            if worker.worker_type in ("CPU", "CPU_FALLBACK"):
-                if self._assign_fallback_to_worker(worker):
-                    continue
-                if worker.worker_type == "CPU_FALLBACK" or not has_main_items:
-                    break
 
             # Pull next item (highest priority, then oldest submission)
             item = self._get_next_item()
@@ -439,11 +422,6 @@ class JobDispatcher:
             progress_callback = partial(
                 self.worker_pool._update_worker_progress, worker
             )
-            cpu_fallback_queue = (
-                self.worker_pool.cpu_fallback_queue
-                if worker.worker_type == "GPU"
-                else None
-            )
             worker.assign_task(
                 item_key,
                 tracker.config,
@@ -452,7 +430,6 @@ class JobDispatcher:
                 media_title=media_title,
                 media_type=media_type,
                 title_max_width=tracker.title_max_width,
-                cpu_fallback_queue=cpu_fallback_queue,
                 job_id=job_id,
                 library_name=library_name,
                 cancel_check=tracker.cancel_check,
@@ -461,88 +438,6 @@ class JobDispatcher:
                 f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) "
                 f"to {worker.display_name}"
             )
-
-    def _assign_fallback_to_worker(self, worker: Worker) -> bool:
-        """Try to assign a fallback-queue item to a CPU worker.
-
-        The fallback queue holds items from ALL jobs (tagged with job_id),
-        so we look up the correct tracker to get config/plex.
-
-        Returns:
-            True if a task was assigned.
-
-        """
-        try:
-            fallback_item = self.worker_pool.cpu_fallback_queue.get_nowait()
-        except queue.Empty:
-            return False
-
-        job_id = fallback_item[0] if len(fallback_item) >= 1 else None
-        item_key = fallback_item[1] if len(fallback_item) >= 2 else fallback_item
-        media_title = fallback_item[2] if len(fallback_item) >= 3 else None
-        media_type = fallback_item[3] if len(fallback_item) >= 4 else None
-        library_name = fallback_item[4] if len(fallback_item) >= 5 else ""
-
-        with self._trackers_lock:
-            tracker = self._trackers.get(job_id) if job_id else None
-
-        # Don't assign fallback items for cancelled jobs
-        if tracker and (tracker.cancelled or tracker.is_cancelled()):
-            tracker.record_completion(
-                success=False,
-                worker_display_name="(cancelled)",
-                title=str(media_title or item_key),
-            )
-            logger.info(
-                f"Dispatcher: skipped cancelled fallback item {media_title!r} "
-                f"(job {job_id[:8] if job_id else 'unknown'})"
-            )
-            return True
-
-        if tracker:
-            config = tracker.config
-            plex = tracker.plex
-            title_max_width = tracker.title_max_width
-        else:
-            config, plex, title_max_width = self._fallback_config()
-            if config is None:
-                logger.warning(
-                    f"Dispatcher: no config available for fallback item {item_key}"
-                )
-                return False
-
-        if media_title is None or media_type is None:
-            media_title, media_type = self.worker_pool._get_plex_media_info(
-                plex, item_key
-            )
-
-        progress_callback = partial(self.worker_pool._update_worker_progress, worker)
-        cancel_check = tracker.cancel_check if tracker else None
-        worker.assign_task(
-            item_key,
-            config,
-            plex,
-            progress_callback=progress_callback,
-            media_title=media_title,
-            media_type=media_type,
-            title_max_width=title_max_width,
-            cpu_fallback_queue=None,
-            job_id=job_id,
-            library_name=library_name,
-            cancel_check=cancel_check,
-        )
-        logger.info(
-            f"Dispatch: assigned fallback item {media_title!r} to {worker.display_name}"
-        )
-        return True
-
-    def _fallback_config(self) -> Tuple[Optional[Config], Any, int]:
-        """Return (config, plex, title_max_width) from any active tracker."""
-        with self._trackers_lock:
-            for tracker in self._trackers.values():
-                if not tracker.done_event.is_set():
-                    return tracker.config, tracker.plex, tracker.title_max_width
-        return None, None, 20
 
     def _has_dispatchable_items(self) -> bool:
         """Check if any active (non-paused, non-cancelled) tracker has items."""
@@ -594,53 +489,6 @@ class JobDispatcher:
                 library_name = item[3] if len(item) > 3 else ""
                 return (tracker.job_id, item_key, media_title, media_type, library_name)
         return None
-
-    def _drain_orphaned_fallback_items(self) -> None:
-        """Drain fallback items when no CPU-capable workers exist.
-
-        Unlike the WorkerPool's generic drain, this version extracts the
-        job_id from each 4-tuple and attributes the failure to the correct
-        JobTracker so per-job counts remain accurate.
-        """
-        if (
-            not self.worker_pool._check_fallback_queue_empty()
-            and not self.worker_pool._has_cpu_capable_workers()
-            and not self.worker_pool.has_busy_workers()
-        ):
-            drained = 0
-            while not self.worker_pool.cpu_fallback_queue.empty():
-                try:
-                    item = self.worker_pool.cpu_fallback_queue.get_nowait()
-                except queue.Empty:
-                    break
-                job_id = (
-                    item[0]
-                    if isinstance(item, (list, tuple)) and len(item) >= 1
-                    else None
-                )
-                item_key = (
-                    item[1]
-                    if isinstance(item, (list, tuple)) and len(item) >= 2
-                    else item
-                )
-                with self._trackers_lock:
-                    tracker = self._trackers.get(job_id) if job_id else None
-                if tracker and not tracker.done_event.is_set():
-                    tracker.record_completion(
-                        success=False,
-                        worker_display_name="(drain)",
-                        title=str(item_key),
-                    )
-                logger.warning(
-                    f"Drained unreachable fallback item {item_key} as failed "
-                    f"(no CPU workers available, job={job_id[:8] if job_id else 'unknown'})"
-                )
-                drained += 1
-            if drained:
-                logger.warning(
-                    f"Dispatcher: drained {drained} orphaned fallback item(s) — "
-                    "add CPU or CPU_FALLBACK workers to process codec-fallback items"
-                )
 
     def _emit_worker_updates(self) -> None:
         """Emit worker status updates for all active trackers (throttled)."""
@@ -725,8 +573,6 @@ class JobDispatcher:
 
             if worker.worker_type == "GPU":
                 display_name = f"{gpu_base_name} #{idx}"
-            elif worker.worker_type == "CPU_FALLBACK":
-                display_name = f"CPU Fallback - Worker {idx}"
             else:
                 display_name = f"CPU - Worker {idx}"
 
@@ -745,6 +591,8 @@ class JobDispatcher:
                     "remaining_time": (
                         progress_data["remaining_time"] if is_busy else 0.0
                     ),
+                    "fallback_active": bool(getattr(worker, "fallback_active", False)),
+                    "fallback_reason": getattr(worker, "fallback_reason", None),
                 }
             )
         return statuses
@@ -774,8 +622,6 @@ class JobDispatcher:
     def _all_idle(self) -> bool:
         """Check if there is no work left (no items, no busy workers)."""
         if self.worker_pool.has_busy_workers():
-            return False
-        if not self.worker_pool._check_fallback_queue_empty():
             return False
         with self._trackers_lock:
             for tracker in self._trackers.values():

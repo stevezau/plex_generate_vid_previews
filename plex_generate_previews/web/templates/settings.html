@@ -280,25 +280,12 @@
                                min="0" max="32" value="1">
                         <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
                     </div>
-                    <div class="col-md-6 mb-3">
-                        <label for="cpuFallbackThreads" class="form-label">
-                            CPU Fallback Workers
-                        </label>
-                        <input type="number" class="form-control" id="cpuFallbackThreads"
-                               min="0" max="32" value="0">
-                        <div class="form-text">
-                            Retries on the CPU if the GPU can&rsquo;t handle a file (e.g. unsupported codec). Only used when CPU Workers is 0.
-                        </div>
-                    </div>
                 </div>
                 <div class="alert alert-secondary py-2 mb-4">
                     <small>
-                        <strong>CPU Fallback Workers</strong> &mdash; Set <em>CPU Workers = 0</em>
-                        and <em>CPU Fallback Workers &gt; 0</em> to process everything on GPU
-                        while still handling unsupported files on CPU.
-                        Ignored when CPU Workers is greater than 0.
-                        <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md#cpu-fallback-workers"
-                           target="_blank" rel="noopener noreferrer">Learn more</a>.
+                        If a GPU worker can&rsquo;t process a file (e.g. unsupported codec, hardware-accelerator error),
+                        it automatically retries the same item on CPU in-place &mdash; no separate fallback pool is needed.
+                        The reason appears in logs and the worker card.
                     </small>
                 </div>
 
@@ -624,7 +611,6 @@ async function loadSettings() {
         // Store gpu_config for the GPU panel
         window._gpuConfig = settings.gpu_config || [];
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
-        document.getElementById('cpuFallbackThreads').value = settings.cpu_fallback_threads ?? 0;
         document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
@@ -1120,7 +1106,6 @@ async function saveAllSettings() {
         exclude_paths: collectExcludePathRows(),
         gpu_config: collectGpuConfig(),
         cpu_threads: parseInt(document.getElementById('cpuThreads').value),
-        cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
         thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
         thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
         tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,

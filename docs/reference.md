@@ -61,15 +61,16 @@ GPU settings are configured per-GPU in **Settings** → **Processing Options**. 
 | Setting | Web UI | Default | Description |
 |---------|--------|---------|-------------|
 | `cpu_threads` | Yes | `1` | Number of CPU worker threads (0–32) |
-| `cpu_fallback_threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `cpu_threads=0`) |
 | `thumbnail_quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
 | `thumbnail_interval` | Yes | `5` | Interval between preview images (1–60 s) |
 | `selected_libraries` | Yes | All | Library IDs to process |
 
-> [!TIP]
-> For GPU-first processing with CPU safety net:
-> set `cpu_threads=0` and `cpu_fallback_threads>0`.
-> This prevents regular CPU main-queue work while still allowing GPU-failed items to be retried on CPU.
+> [!NOTE]
+> When a GPU worker can't process a file (unsupported codec,
+> hardware-accelerator error, driver crash), the same worker retries
+> on CPU in-place and the UI shows a warning badge with the reason.
+> No separate fallback pool is needed — increase `cpu_threads` if you
+> want more dedicated CPU concurrency for files that never hit the GPU.
 
 ---
 
@@ -126,7 +127,7 @@ These env vars are deprecated. Configure via **Settings** instead:
 On first run, these env vars are migrated into settings.json. After that, settings.json is the source of truth:
 
 - `PLEX_URL`, `PLEX_TOKEN`, `PLEX_CONFIG_FOLDER`, `PLEX_VERIFY_SSL`, `PLEX_TIMEOUT`
-- `PLEX_BIF_FRAME_INTERVAL`, `THUMBNAIL_QUALITY`, `CPU_THREADS`, `FALLBACK_CPU_THREADS`
+- `PLEX_BIF_FRAME_INTERVAL`, `THUMBNAIL_QUALITY`, `CPU_THREADS`
 - `MEDIA_PATH`, `TMP_FOLDER`, `LOG_LEVEL`
 
 ---
@@ -354,7 +355,6 @@ Get current settings.
     {"device": "/dev/dri/renderD128", "name": "Intel UHD 630", "type": "intel", "enabled": true, "workers": 4, "ffmpeg_threads": 2}
   ],
   "cpu_threads": 2,
-  "cpu_fallback_threads": 0,
   "thumbnail_interval": 5,
   "thumbnail_quality": 4
 }
@@ -367,7 +367,7 @@ Update settings. Send only the fields to change.
 ```json
 {
   "gpu_config": [{"device": "/dev/dri/renderD128", "enabled": true, "workers": 4, "ffmpeg_threads": 2}],
-  "cpu_fallback_threads": 1,
+  "cpu_threads": 2,
   "thumbnail_interval": 5,
   "plex_url": "http://192.168.1.100:32400"
 }

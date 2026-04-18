@@ -66,18 +66,11 @@ def run_processing(
 
         title_max_width = 200
 
-        fallback_cpu_workers = (
-            config.fallback_cpu_threads
-            if config.cpu_threads == 0 and config.fallback_cpu_threads > 0
-            else 0
-        )
-
         def _create_worker_pool():
             pool = WorkerPool(
                 gpu_workers=config.gpu_threads,
                 cpu_workers=config.cpu_threads,
                 selected_gpus=selected_gpus,
-                fallback_cpu_workers=fallback_cpu_workers,
             )
             if worker_pool_callback:
                 worker_pool_callback(pool)

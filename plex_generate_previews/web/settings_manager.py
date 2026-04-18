@@ -311,16 +311,6 @@ class SettingsManager:
         self.set("cpu_threads", value)
 
     @property
-    def cpu_fallback_threads(self) -> int:
-        """Number of CPU fallback worker threads."""
-        val = self.get("cpu_fallback_threads")
-        return int(val) if val is not None else 0
-
-    @cpu_fallback_threads.setter
-    def cpu_fallback_threads(self, value: int) -> None:
-        self.set("cpu_fallback_threads", value)
-
-    @property
     def thumbnail_quality(self) -> int:
         """Thumbnail quality (1-10, default 4)."""
         return int(self.get("thumbnail_quality") or 4)

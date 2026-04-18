@@ -38,6 +38,27 @@ if "ROCM_PATH" not in os.environ:
     os.environ["ROCM_PATH"] = "/opt/rocm"
 
 
+# Jellyfin-FFmpeg ships a patched tonemap_opencl that handles Dolby Vision
+# Profile 5 RPU metadata correctly; upstream FFmpeg's tonemap_opencl treats
+# the base layer as plain HDR10 and produces wrong colours on DV5 content.
+# When both are installed we always prefer the Jellyfin build.
+_JELLYFIN_FFMPEG_PATH = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
+
+
+def _resolve_ffmpeg_path() -> Optional[str]:
+    """Pick the FFmpeg binary to use.
+
+    Returns the path to jellyfin-ffmpeg when installed and executable,
+    otherwise whatever ``ffmpeg`` resolves to via ``PATH``.  ``None``
+    means no working FFmpeg was found.
+    """
+    if os.path.isfile(_JELLYFIN_FFMPEG_PATH) and os.access(
+        _JELLYFIN_FFMPEG_PATH, os.X_OK
+    ):
+        return _JELLYFIN_FFMPEG_PATH
+    return shutil.which("ffmpeg")
+
+
 def get_config_value(
     cli_args, field_name: str, env_key: str, default, value_type: type = str
 ):
@@ -501,9 +522,6 @@ class Config:
     # Valid values: reinhard, mobius, hable, clip, gamma, linear
     tonemap_algorithm: str = "hable"
 
-    # Optional GPU->CPU fallback worker count (used when cpu_threads=0)
-    fallback_cpu_threads: int = 0
-
     # Per-GPU configuration: list of dicts with keys
     # device, name, type, enabled, workers, ffmpeg_threads
     gpu_config: List[Dict[str, Any]] = field(default_factory=list)
@@ -846,7 +864,6 @@ def _validate_processing_config(
 def _validate_thread_config(
     gpu_threads: int,
     cpu_threads: int,
-    fallback_cpu_threads: int,
     ffmpeg_threads: int,
     validation_errors: list,
 ) -> tuple[bool, str]:
@@ -855,7 +872,6 @@ def _validate_thread_config(
     Args:
         gpu_threads: Total GPU worker threads (sum across enabled GPUs).
         cpu_threads: Number of CPU worker threads.
-        fallback_cpu_threads: Number of CPU fallback worker threads.
         ffmpeg_threads: Default CPU usage limit per FFmpeg process for
             GPU jobs (0 = no limit).
         validation_errors: List to append validation errors.
@@ -875,11 +891,6 @@ def _validate_thread_config(
             f"cpu_threads must be between 0-32 (got: {cpu_threads})"
         )
 
-    if fallback_cpu_threads < 0 or fallback_cpu_threads > 32:
-        validation_errors.append(
-            f"fallback_cpu_threads must be between 0-32 (got: {fallback_cpu_threads})"
-        )
-
     if ffmpeg_threads < 0 or ffmpeg_threads > 32:
         validation_errors.append(
             f"ffmpeg_threads must be between 0-32 (got: {ffmpeg_threads})"
@@ -894,8 +905,8 @@ def _validate_thread_config(
     return False, ""
 
 
-def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, int, int]:
-    """Compute ``gpu_threads``, ``cpu_threads``, and ``fallback_cpu_threads`` like ``load_config``.
+def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, int]:
+    """Compute ``gpu_threads`` and ``cpu_threads`` like ``load_config``.
 
     Uses the same precedence as ``load_config`` (settings.json, then env, then defaults).
 
@@ -903,7 +914,7 @@ def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, in
         ui_settings: Settings dict (e.g. merged ``settings.json`` content).
 
     Returns:
-        Tuple of ``(gpu_threads, cpu_threads, cpu_fallback_threads)``.
+        Tuple of ``(gpu_threads, cpu_threads)``.
 
     """
 
@@ -952,10 +963,7 @@ def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, in
         gpu_threads = get_value("gpu_threads", "GPU_THREADS", 1, int)
 
     cpu_threads = get_value("cpu_threads", "CPU_THREADS", 1, int)
-    fallback_cpu_threads = get_value(
-        "cpu_fallback_threads", "FALLBACK_CPU_THREADS", 0, int
-    )
-    return gpu_threads, cpu_threads, fallback_cpu_threads
+    return gpu_threads, cpu_threads
 
 
 def validate_processing_thread_totals(ui_settings: Dict[str, Any]) -> Tuple[bool, str]:
@@ -969,7 +977,7 @@ def validate_processing_thread_totals(ui_settings: Dict[str, Any]) -> Tuple[bool
         ``(False, warning_message)`` when both CPU and GPU totals are 0.
 
     """
-    gpu_t, cpu_t, _ = thread_totals_from_ui_settings(ui_settings)
+    gpu_t, cpu_t = thread_totals_from_ui_settings(ui_settings)
     if cpu_t == 0 and gpu_t == 0:
         return (
             False,
@@ -1218,9 +1226,6 @@ def load_config() -> Config:
         ffmpeg_threads = get_value("ffmpeg_threads", "FFMPEG_THREADS", 2, int)
 
     cpu_threads = get_value("cpu_threads", "CPU_THREADS", 1, int)
-    fallback_cpu_threads = get_value(
-        "cpu_fallback_threads", "FALLBACK_CPU_THREADS", 0, int
-    )
 
     tmp_folder = get_value("tmp_folder", "TMP_FOLDER", tempfile.gettempdir(), str)
 
@@ -1244,17 +1249,7 @@ def load_config() -> Config:
             f"SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})"
         )
 
-    # Find FFmpeg path.  Prefer jellyfin-ffmpeg at /usr/lib/jellyfin-ffmpeg/ffmpeg
-    # when present: it's a patched build that handles Dolby Vision Profile 5
-    # RPU metadata inside tonemap_opencl (upstream FFmpeg's tonemap_opencl
-    # treats the base layer as plain HDR10 and produces wrong colours on DV5).
-    # Fall back to whatever's in PATH for dev/native installs without the
-    # Jellyfin build.
-    jellyfin_ffmpeg = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
-    if os.path.isfile(jellyfin_ffmpeg) and os.access(jellyfin_ffmpeg, os.X_OK):
-        ffmpeg_path = jellyfin_ffmpeg
-    else:
-        ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path = _resolve_ffmpeg_path()
     if not ffmpeg_path:
         logger.error(
             "FFmpeg not found. FFmpeg must be installed and available in PATH."
@@ -1312,7 +1307,6 @@ def load_config() -> Config:
     no_workers, _thread_note = _validate_thread_config(
         gpu_threads,
         cpu_threads,
-        fallback_cpu_threads,
         ffmpeg_threads,
         validation_errors,
     )
@@ -1371,7 +1365,6 @@ def load_config() -> Config:
         sort_by=sort_by,
         gpu_threads=gpu_threads,
         cpu_threads=cpu_threads,
-        fallback_cpu_threads=fallback_cpu_threads,
         ffmpeg_threads=ffmpeg_threads,
         gpu_config=gpu_config,
         tmp_folder=tmp_folder,
@@ -1401,7 +1394,6 @@ def load_config() -> Config:
     logger.debug(f"path_mappings = {len(config.path_mappings)} row(s)")
     logger.debug(f"gpu_threads = {config.gpu_threads}")
     logger.debug(f"cpu_threads = {config.cpu_threads}")
-    logger.debug(f"fallback_cpu_threads = {config.fallback_cpu_threads}")
     logger.debug(f"ffmpeg_threads = {config.ffmpeg_threads}")
     logger.debug(f"gpu_config = {len(config.gpu_config)} GPU(s) configured")
     logger.debug(f"regenerate_thumbnails = {config.regenerate_thumbnails}")

@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 4
+_CURRENT_SCHEMA_VERSION = 5
 
 # -------------------------------------------------------------------------
 # Env-var-to-settings migration map
@@ -35,7 +35,6 @@ _ENV_MIGRATION_MAP = [
     ("THUMBNAIL_QUALITY", "thumbnail_quality", int, None),
     ("TONEMAP_ALGORITHM", "tonemap_algorithm", str, None),
     ("CPU_THREADS", "cpu_threads", int, None),
-    ("FALLBACK_CPU_THREADS", "cpu_fallback_threads", int, None),
     ("MEDIA_PATH", "media_path", str, None),
     ("TMP_FOLDER", "tmp_folder", str, None),
     ("LOG_LEVEL", "log_level", str, None),
@@ -50,6 +49,7 @@ _DEPRECATED_ENV_VARS = [
     "REGENERATE_THUMBNAILS",
     "SORT_BY",
     "NICE_LEVEL",
+    "FALLBACK_CPU_THREADS",
 ]
 
 
@@ -179,6 +179,12 @@ def _migrate_schema(sm) -> None:
               real schedule entries and deletes the legacy keys.  Also
               removes the obsolete ``system_recently_added_scan``
               APScheduler job if it exists.
+        v5 -- Removes the obsolete ``cpu_fallback_threads`` key.  The
+              dedicated CPU-fallback worker pool has been replaced by
+              in-place CPU retry inside the GPU worker.  If a legacy
+              setting was larger than ``cpu_threads``, fold the value
+              into ``cpu_threads`` so existing deployments keep the same
+              CPU concurrency after the upgrade.
     """
     current = sm.get("_schema_version", 1)
     if current >= _CURRENT_SCHEMA_VERSION:
@@ -194,6 +200,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 4:
         all_notes += _migrate_to_v4(sm)
+
+    if current < 5:
+        all_notes += _migrate_to_v5(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -392,6 +401,46 @@ def _migrate_to_v4(sm) -> list:
 
     sm.apply_changes(deletes=legacy_keys)
     notes.append(f"v4: removed {len(legacy_keys)} legacy recently_added_* keys")
+    return notes
+
+
+def _migrate_to_v5(sm) -> list:
+    """Remove obsolete cpu_fallback_threads key; preserve concurrency intent.
+
+    The dedicated CPU-fallback worker pool has been replaced by in-place
+    CPU retry inside the GPU worker — when a GPU hits
+    ``CodecNotSupportedError``, the same worker now runs a CPU pass on
+    the same item rather than re-queuing to a separate pool.  To avoid
+    silently reducing CPU capacity on upgrade, fold any legacy
+    ``cpu_fallback_threads`` value into ``cpu_threads`` (using the
+    larger of the two) before deleting the key.
+    """
+    notes: list[str] = []
+    legacy_val = sm.get("cpu_fallback_threads")
+    if legacy_val is None:
+        return notes
+
+    try:
+        legacy_int = int(legacy_val)
+    except (ValueError, TypeError):
+        legacy_int = 0
+
+    updates: Dict[str, Any] = {}
+    if legacy_int > 0:
+        current_cpu = sm.get("cpu_threads")
+        try:
+            current_cpu_int = int(current_cpu) if current_cpu is not None else 1
+        except (ValueError, TypeError):
+            current_cpu_int = 1
+        if legacy_int > current_cpu_int:
+            updates["cpu_threads"] = legacy_int
+            notes.append(
+                f"v5: folded cpu_fallback_threads={legacy_int} into cpu_threads "
+                f"(was {current_cpu_int})"
+            )
+
+    sm.apply_changes(updates=updates or None, deletes=["cpu_fallback_threads"])
+    notes.append("v5: removed obsolete cpu_fallback_threads key")
     return notes
 
 

@@ -673,7 +673,7 @@ class TestJobsAPI:
         remove_resp = client.post(
             f"/api/jobs/{job_id}/workers/remove",
             headers=_api_headers(),
-            json={"worker_type": "CPU_FALLBACK", "count": 2},
+            json={"worker_type": "CPU", "count": 2},
         )
         assert remove_resp.status_code == 200
         data = remove_resp.get_json()
@@ -890,7 +890,6 @@ class TestSettingsAPI:
         data = resp.get_json()
         assert "gpu_threads" in data
         assert "cpu_threads" in data
-        assert "cpu_fallback_threads" in data
         assert data["plex_verify_ssl"] is True
 
     def test_get_settings_returns_path_mappings(self, client):
@@ -950,7 +949,6 @@ class TestSettingsAPI:
             json={
                 "gpu_threads": 2,
                 "cpu_threads": 4,
-                "cpu_fallback_threads": 1,
                 "plex_verify_ssl": False,
             },
         )
@@ -962,7 +960,6 @@ class TestSettingsAPI:
         data = resp2.get_json()
         assert data["gpu_threads"] == 2
         assert data["cpu_threads"] == 4
-        assert data["cpu_fallback_threads"] == 1
         assert data["plex_verify_ssl"] is False
 
     def test_save_settings_ignores_unknown_fields(self, client):
@@ -1530,7 +1527,6 @@ class TestSystemAPI:
         data = resp.get_json()
         assert "gpu_threads" in data
         assert "cpu_threads" in data
-        assert "cpu_fallback_threads" in data
 
 
 # ---------------------------------------------------------------------------

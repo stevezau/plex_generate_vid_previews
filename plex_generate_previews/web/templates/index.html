@@ -53,14 +53,6 @@
                             <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU" data-direction="1" onclick="scaleWorkersGlobal('CPU', 1)" title="Add one CPU worker"><i class="bi bi-plus-lg"></i></button>
                         </span>
                     </div>
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>CPU Fallback Workers: <i class="bi bi-info-circle text-muted" style="cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" title="Only used when CPU Workers is 0. If GPU encoding fails (e.g. unsupported codec), fallback workers retry the item using software encoding."></i></span>
-                        <span class="d-flex align-items-center gap-1">
-                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="-1" onclick="scaleWorkersGlobal('CPU_FALLBACK', -1)" title="Remove one CPU fallback worker"><i class="bi bi-dash-lg"></i></button>
-                            <span id="cpuFallbackWorkers" class="badge bg-info" style="min-width: 1.5rem;">-</span>
-                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="1" onclick="scaleWorkersGlobal('CPU_FALLBACK', 1)" title="Add one CPU fallback worker"><i class="bi bi-plus-lg"></i></button>
-                        </span>
-                    </div>
                 </div>
                 <div class="small text-muted">Changes save automatically and apply to the running job.</div>
 

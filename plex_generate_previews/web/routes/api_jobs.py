@@ -383,7 +383,7 @@ def add_workers_global():
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = _get_shared_worker_pool()
@@ -414,7 +414,7 @@ def remove_workers_global():
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = _get_shared_worker_pool()
@@ -472,7 +472,7 @@ def add_job_workers(job_id):
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = job_manager.get_active_worker_pool()
@@ -508,7 +508,7 @@ def remove_job_workers(job_id):
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = job_manager.get_active_worker_pool()
@@ -705,7 +705,6 @@ def _build_idle_workers_from_config():
         settings = get_settings_manager()
         gpu_config = settings.gpu_config
         cpu_count = settings.cpu_threads
-        cpu_fb_count = settings.cpu_fallback_threads
     except Exception:
         logger.debug("Could not read worker counts from settings", exc_info=True)
         return []
@@ -763,17 +762,6 @@ def _build_idle_workers_from_config():
                 "worker_id": worker_id,
                 "worker_type": "CPU",
                 "worker_name": f"CPU - Worker {i + 1}",
-                **idle_entry,
-            }
-        )
-
-    for i in range(cpu_fb_count):
-        worker_id += 1
-        statuses.append(
-            {
-                "worker_id": worker_id,
-                "worker_type": "CPU_FALLBACK",
-                "worker_name": f"CPU Fallback - Worker {i + 1}",
                 **idle_entry,
             }
         )

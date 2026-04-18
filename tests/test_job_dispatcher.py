@@ -31,7 +31,6 @@ def _make_config(cpu_threads=1, gpu_threads=0):
     config = MagicMock()
     config.cpu_threads = cpu_threads
     config.gpu_threads = gpu_threads
-    config.fallback_cpu_threads = 0
     config.worker_pool_timeout = 5
     return config
 
@@ -498,7 +497,6 @@ class TestJobDispatcher:
 
         gpus = _make_gpu_list(1)
         config = _make_config(cpu_threads=0, gpu_threads=1)
-        config.fallback_cpu_threads = 0
         pool = WorkerPool(gpu_workers=1, cpu_workers=0, selected_gpus=gpus)
         dispatcher = JobDispatcher(pool)
 

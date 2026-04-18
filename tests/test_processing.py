@@ -21,7 +21,6 @@ def _make_config(tmp_path, **overrides):
     defaults = {
         "gpu_threads": 0,
         "cpu_threads": 1,
-        "fallback_cpu_threads": 0,
         "working_tmp_folder": str(tmp_path / "work"),
         "webhook_paths": None,
     }
@@ -511,57 +510,6 @@ class TestCleanup:
             run_processing(config, selected_gpus=[], job_id="job-123")
 
         MockPool.return_value.shutdown.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Fallback CPU workers
-# ---------------------------------------------------------------------------
-
-
-class TestFallbackWorkers:
-    """Tests for fallback_cpu_workers logic."""
-
-    def test_fallback_workers_when_cpu_zero(self, tmp_path):
-        """fallback_cpu_workers is set when cpu_threads=0."""
-        config = _make_config(tmp_path, cpu_threads=0, fallback_cpu_threads=2)
-        section = _make_section("Movies")
-        items = [("k1", "M1", "movie")]
-
-        with (
-            patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section, items)]),
-            ),
-            patch(f"{MODULE}.WorkerPool") as MockPool,
-        ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(
-                completed=1
-            )
-            run_processing(config, selected_gpus=[])
-
-        _, kwargs = MockPool.call_args
-        assert kwargs["fallback_cpu_workers"] == 2
-
-    def test_no_fallback_when_cpu_nonzero(self, tmp_path):
-        """fallback_cpu_workers is 0 when cpu_threads > 0."""
-        config = _make_config(tmp_path, cpu_threads=2, fallback_cpu_threads=3)
-        section = _make_section("Movies")
-        items = [("k1", "M1", "movie")]
-
-        with (
-            patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section, items)]),
-            ),
-            patch(f"{MODULE}.WorkerPool") as MockPool,
-        ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(
-                completed=1
-            )
-            run_processing(config, selected_gpus=[])
-
-        _, kwargs = MockPool.call_args
-        assert kwargs["fallback_cpu_workers"] == 0
 
 
 # ---------------------------------------------------------------------------

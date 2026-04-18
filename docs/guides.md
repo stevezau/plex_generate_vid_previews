@@ -81,22 +81,28 @@ Access settings at `/settings` to manage:
 - **Plex Connection** — re-authenticate, test connection
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
-- **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, CPU fallback workers, thumbnail interval and quality
+- **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, thumbnail interval and quality
 
 The Settings page and the Automation page's **Triggers** tab **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
 
-### CPU Fallback Workers (GPU Safety Net)
+### Automatic GPU → CPU Fallback
 
-Use this when you want GPU-only main processing but still want CPU recovery for unsupported GPU files.
+Every GPU worker includes automatic CPU fallback — no extra configuration
+is needed. If FFmpeg fails on the GPU for any of the common reasons:
 
-- Set **CPU Workers** to `0`
-- Set **CPU Fallback Workers** to `1` or more
+- Unsupported codec on the HW decoder
+- Hardware-accelerator runtime error (CUDA sync/transfer failure, VAAPI surface exhaustion)
+- Driver crash or FFmpeg signal kill (segfault, OOM)
 
-Behavior:
+…the same worker retries the file on CPU in-place.  The job log records
+the specific reason ("Dolby Vision Profile 5 rejected by Intel VAAPI",
+"signal kill (signal 11)", etc.) and the dashboard shows a yellow
+"CPU fallback" badge on the affected worker card along with a toast.
 
-- Main queue runs on GPU workers only
-- If a GPU worker hits an unsupported codec/runtime decode failure, the item is queued to CPU fallback workers
-- If **CPU Workers > 0**, fallback-only workers are not used (regular CPU workers already handle fallback work)
+The worker is busy on CPU while the retry runs.  If you have a lot of
+content that never decodes on the GPU, set **CPU Workers > 0** so that
+content routes directly to dedicated CPU workers from the main queue
+instead of blocking a GPU worker each time.
 
 Settings are saved to `/config/settings.json` and persist across restarts.
 

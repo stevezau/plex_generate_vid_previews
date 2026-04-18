@@ -175,13 +175,6 @@ class TestSettingsManagerProperties:
         monkeypatch.delenv("GPU_THREADS", raising=False)
         assert settings_manager.gpu_threads == 0
 
-    def test_cpu_fallback_threads_default_when_missing(
-        self, settings_manager, monkeypatch
-    ):
-        """Test cpu_fallback_threads defaults to 0 when key is not set."""
-        monkeypatch.delenv("FALLBACK_CPU_THREADS", raising=False)
-        assert settings_manager.cpu_fallback_threads == 0
-
     def test_cpu_threads_zero_preserved(self, settings_manager):
         """Test cpu_threads=0 is preserved (issue #142)."""
         settings_manager.cpu_threads = 0
@@ -195,15 +188,6 @@ class TestSettingsManagerProperties:
         """Test gpu_threads=0 is preserved."""
         settings_manager.gpu_threads = 0
         assert settings_manager.gpu_threads == 0
-
-    def test_cpu_fallback_threads_zero_preserved(self, settings_manager):
-        """Test cpu_fallback_threads=0 is preserved."""
-        settings_manager.cpu_fallback_threads = 0
-        assert settings_manager.cpu_fallback_threads == 0
-        from plex_generate_previews.web.settings_manager import SettingsManager
-
-        sm2 = SettingsManager(config_dir=str(settings_manager.config_dir))
-        assert sm2.cpu_fallback_threads == 0
 
     def test_thumbnail_interval_property(self, settings_manager):
         """Test thumbnail_interval property."""

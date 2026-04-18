@@ -2,8 +2,8 @@
 Concurrency tests for the worker pool.
 
 Covers: WorkerPool startup/shutdown, task assignment under load,
-CPU fallback queue, graceful cancellation, and thread safety of
-progress updates.
+in-place GPU→CPU fallback on codec errors, graceful cancellation,
+and thread safety of progress updates.
 """
 
 import threading
@@ -335,20 +335,27 @@ class TestWorkerPoolProcessing:
 
 
 # ---------------------------------------------------------------------------
-# CPU Fallback Queue
+# In-place CPU fallback
 # ---------------------------------------------------------------------------
 
 
-class TestCPUFallbackQueue:
-    """Test GPU→CPU fallback via the codec-error path."""
+class TestInPlaceCpuFallback:
+    """Test GPU→CPU fallback via the codec-error path.
 
-    def test_codec_error_falls_back_to_cpu(self, mock_config, mock_plex):
-        """When a GPU worker hits a codec error, the item should be re-queued for CPU."""
-        mock_config.cpu_threads = 1
+    The GPU worker retries the same item on CPU in-place — there is no
+    longer a separate fallback queue or dedicated fallback pool.
+    """
 
-        pool = WorkerPool(gpu_workers=1, cpu_workers=1, selected_gpus=_make_gpu_list(1))
+    def test_codec_error_retries_on_cpu_in_place(self, mock_config, mock_plex):
+        """GPU worker catches CodecNotSupportedError, retries with gpu=None, succeeds."""
+        mock_config.cpu_threads = (
+            0  # No dedicated CPU workers — retry stays in GPU worker.
+        )
 
-        gpu_call_count = {"n": 0}
+        pool = WorkerPool(gpu_workers=1, cpu_workers=0, selected_gpus=_make_gpu_list(1))
+        gpu_worker = [w for w in pool.workers if w.worker_type == "GPU"][0]
+
+        call_log = []
 
         def gpu_then_cpu(
             item_key,
@@ -361,15 +368,13 @@ class TestCPUFallbackQueue:
             cancel_check=None,
             worker_name=None,
         ):
-            gpu_call_count["n"] += 1
+            call_log.append(gpu)
             if gpu is not None:
-                # GPU worker -> codec error
                 from plex_generate_previews.media_processing import (
                     CodecNotSupportedError,
                 )
 
                 raise CodecNotSupportedError("HEVC not supported")
-            # CPU worker -> success
             time.sleep(0.01)
             return ProcessingResult.GENERATED
 
@@ -378,18 +383,12 @@ class TestCPUFallbackQueue:
         with patch("plex_generate_previews.worker.process_item", gpu_then_cpu):
             pool.process_items_headless(items, mock_config, mock_plex)
 
-        # GPU worker should have failed but not counted as completed
-        _ = [w for w in pool.workers if w.worker_type == "GPU"][0]
-        cpu_worker = [w for w in pool.workers if w.worker_type == "CPU"][0]
-        # CPU should have handled the fallback
-        assert cpu_worker.completed == 1
-
-    def test_fallback_queue_empty_check(self):
-        """_check_fallback_queue_empty should report correctly."""
-        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
-        assert pool._check_fallback_queue_empty() is True
-        pool.cpu_fallback_queue.put((None, "/key/1", "Test", "movie"))
-        assert pool._check_fallback_queue_empty() is False
+        # Two calls on the same GPU worker: first GPU, then CPU retry.
+        assert call_log == ["nvidia", None]
+        assert gpu_worker.completed == 1
+        assert gpu_worker.failed == 0
+        assert gpu_worker.fallback_active is True
+        assert "HEVC not supported" in (gpu_worker.fallback_reason or "")
 
 
 # ---------------------------------------------------------------------------

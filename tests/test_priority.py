@@ -43,7 +43,6 @@ def _make_config():
     config = MagicMock()
     config.cpu_threads = 1
     config.gpu_threads = 0
-    config.fallback_cpu_threads = 0
     config.worker_pool_timeout = 5
     return config
 

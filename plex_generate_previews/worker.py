@@ -4,7 +4,6 @@ Provides Worker and WorkerPool classes that use threading instead of
 multiprocessing for better simplicity and performance with FFmpeg tasks.
 """
 
-import queue
 import re
 import threading
 import time
@@ -75,7 +74,7 @@ class Worker:
 
         Args:
             worker_id: Unique identifier for this worker.
-            worker_type: 'GPU', 'CPU', or 'CPU_FALLBACK'.
+            worker_type: 'GPU' or 'CPU'.
             gpu: GPU type for acceleration (e.g. 'nvidia', 'amd').
             gpu_device: GPU device path (e.g. '/dev/dri/renderD128').
             gpu_index: Index of the assigned GPU in the pool.
@@ -142,8 +141,13 @@ class Worker:
         # Statistics
         self.completed = 0
         self.failed = 0
-        self.requeued_to_cpu = False  # Set when GPU re-queues item to CPU fallback
         self.outcome_counts = {r.value: 0 for r in ProcessingResult}
+
+        # In-place GPU→CPU fallback state (set during a retry, cleared on next
+        # task assignment). Surfaced to the UI so users see why the switch
+        # happened.
+        self.fallback_active = False
+        self.fallback_reason: Optional[str] = None
 
         # Per-worker removal flag set by reconcile_gpu_workers for busy
         # workers that should be retired after completing their current task.
@@ -205,8 +209,6 @@ class Worker:
         if self.worker_type == "GPU":
             gpu_display = self._format_gpu_name_for_display()
             return f"[{gpu_display}]: Idle - Waiting for task..."
-        if self.worker_type == "CPU_FALLBACK":
-            return "[CPU FB   ]: Idle - Waiting for fallback task..."
         return "[CPU      ]: Idle - Waiting for task..."
 
     def assign_task(
@@ -218,7 +220,6 @@ class Worker:
         media_title: str = "",
         media_type: str = "",
         title_max_width: int = 20,
-        cpu_fallback_queue=None,
         job_id: Optional[str] = None,
         library_name: str = "",
         cancel_check=None,
@@ -233,7 +234,6 @@ class Worker:
             media_title: Media title for display
             media_type: Media type ('episode' or 'movie')
             title_max_width: Maximum width for title display
-            cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
             job_id: Optional job identifier for multi-job dispatch routing
             library_name: Library name the item belongs to
             cancel_check: Optional callable returning True when job is cancelled
@@ -272,7 +272,9 @@ class Worker:
         self.remaining_time = 0.0
         self.ffmpeg_started = False
         self.task_start_time = time.time()
-        self.requeued_to_cpu = False  # Reset per-task GPU→CPU handoff flag
+        # Clear any lingering fallback state from the previous task.
+        self.fallback_active = False
+        self.fallback_reason = None
         self.cancel_check = cancel_check
 
         # Reset FFmpeg data fields
@@ -292,7 +294,7 @@ class Worker:
         # Start processing in background thread
         self.current_thread = threading.Thread(
             target=self._process_item,
-            args=(item_key, config, plex, progress_callback, cpu_fallback_queue),
+            args=(item_key, config, plex, progress_callback),
             daemon=True,
         )
         self.current_thread.start()
@@ -303,7 +305,6 @@ class Worker:
         config: Config,
         plex,
         progress_callback=None,
-        cpu_fallback_queue=None,
     ) -> None:
         """Process a media item in the background thread.
 
@@ -312,7 +313,6 @@ class Worker:
             config: Configuration object
             plex: Plex server instance
             progress_callback: Callback function for progress updates
-            cpu_fallback_queue: Optional queue to add task to if codec error occurs (GPU workers only)
 
         """
         register_job_thread()
@@ -364,57 +364,57 @@ class Worker:
                 self.outcome_counts["failed"] += 1
                 self.failed += 1
             except CodecNotSupportedError as e:
-                # Codec not supported by GPU - re-queue for CPU worker
                 if self.worker_type == "GPU":
-                    ctx_logger.warning(
-                        f"{self.display_name} detected unsupported codec for {display_name}; handing off to CPU worker"
-                    )
-                    # Add to fallback queue for CPU worker processing (multiple CPU workers can compete for items)
-                    fallback_threads = getattr(config, "fallback_cpu_threads", 0)
-                    if isinstance(fallback_threads, bool):
-                        fallback_threads = int(fallback_threads)
-                    elif isinstance(fallback_threads, str):
+                    # In-place GPU→CPU fallback.  The GPU path couldn't
+                    # finish this item (unsupported codec on HW decoder,
+                    # HW-accel runtime failure, or signal-killed FFmpeg);
+                    # retry on CPU using this same worker and surface the
+                    # reason to the UI + logs.
+                    reason = str(e) or "GPU processing failed"
+                    if self.cancel_check and self.cancel_check():
+                        ctx_logger.info(
+                            f"{self.display_name} cancelled before CPU fallback for {display_name}"
+                        )
+                        self.outcome_counts["failed"] += 1
+                        self.failed += 1
+                    else:
+                        self.fallback_active = True
+                        self.fallback_reason = reason
+                        ctx_logger.warning(
+                            f"{self.display_name} switching to CPU for {display_name}: {reason}"
+                        )
                         try:
-                            fallback_threads = int(fallback_threads)
-                        except ValueError:
-                            fallback_threads = 0
-                    elif not isinstance(fallback_threads, int):
-                        fallback_threads = 0
-                    can_use_cpu_fallback = (
-                        config.cpu_threads > 0 or fallback_threads > 0
-                    )
-                    if cpu_fallback_queue is not None and can_use_cpu_fallback:
-                        # Preserve media info and job_id (set during assign_task)
-                        try:
-                            cpu_fallback_queue.put(
-                                (
-                                    self.current_job_id,
-                                    item_key,
-                                    self.media_title,
-                                    self.media_type,
-                                    self.library_name,
-                                )
+                            result = process_item(
+                                item_key,
+                                None,
+                                None,
+                                config,
+                                plex,
+                                progress_callback,
+                                ffmpeg_threads_override=None,
+                                cancel_check=self.cancel_check,
+                                worker_name=self.display_name,
                             )
-                            self.requeued_to_cpu = True
+                            self.outcome_counts[result.value] += 1
+                            if result == ProcessingResult.FAILED:
+                                self.failed += 1
+                            else:
+                                self.completed += 1
                             ctx_logger.info(
-                                f"Added {display_name} to CPU fallback queue (unsupported codec on GPU)"
+                                f"{self.display_name} completed CPU fallback for {display_name} ({result.value})"
                             )
-                        except Exception as queue_error:
-                            ctx_logger.error(
-                                f"Failed to add {item_key} to fallback queue: {queue_error}"
+                        except CancellationError:
+                            ctx_logger.info(
+                                f"{self.display_name} cancelled during CPU fallback for {display_name}"
                             )
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
-                    else:
-                        if config.cpu_threads == 0 and fallback_threads == 0:
-                            ctx_logger.warning(
-                                "Codec not supported by GPU, but CPU fallback is disabled "
-                                "(CPU_THREADS=0 and FALLBACK_CPU_THREADS=0); "
-                                f"skipping {display_name}"
+                        except Exception as retry_exc:
+                            ctx_logger.error(
+                                f"{self.display_name} CPU fallback failed for {display_name}: {retry_exc}"
                             )
-                        self.outcome_counts["failed"] += 1
-                        self.failed += 1
-                    # Do NOT mark as completed here - CPU worker will mark it when actually processed
+                            self.outcome_counts["failed"] += 1
+                            self.failed += 1
                 else:
                     # CPU worker received codec error - this is unexpected, treat as failure
                     ctx_logger.error(
@@ -537,7 +537,6 @@ class WorkerPool:
         gpu_workers: int,
         cpu_workers: int,
         selected_gpus: List[Tuple[str, str, dict]],
-        fallback_cpu_workers: int = 0,
     ):
         """Initialize worker pool.
 
@@ -545,7 +544,6 @@ class WorkerPool:
             gpu_workers: Number of GPU workers to create
             cpu_workers: Number of CPU workers to create
             selected_gpus: List of (gpu_type, gpu_device, gpu_info) tuples for GPU workers
-            fallback_cpu_workers: Number of fallback-only CPU workers to create
 
         """
         self.workers = []
@@ -555,9 +553,6 @@ class WorkerPool:
         self._next_gpu_assignment_index = 0
         self._next_worker_id = 0
         self._next_type_index: dict[str, int] = defaultdict(lambda: 1)
-        self.cpu_fallback_queue = (
-            queue.Queue()
-        )  # Thread-safe queue for CPU-only tasks (codec fallback)
         # Deferred scale-down requests by worker type; busy workers are retired
         # when they finish their current task.
         self._pending_removals = defaultdict(int)
@@ -566,16 +561,9 @@ class WorkerPool:
         self._worker_done_event: Optional[threading.Event] = None
         self.add_workers("GPU", gpu_workers)
         self.add_workers("CPU", cpu_workers)
-        self.add_workers("CPU_FALLBACK", fallback_cpu_workers)
 
         logger.info(
-            "Initialized "
-            f"{len(self.workers)} workers: {gpu_workers} GPU + {cpu_workers} CPU"
-            + (
-                f" + {fallback_cpu_workers} CPU_FALLBACK"
-                if fallback_cpu_workers > 0
-                else ""
-            )
+            f"Initialized {len(self.workers)} workers: {gpu_workers} GPU + {cpu_workers} CPU"
         )
 
     def has_busy_workers(self) -> bool:
@@ -625,10 +613,6 @@ class WorkerPool:
             worker = Worker(worker_id, "CPU")
             worker.display_name = f"CPU Worker {type_idx}"
             return worker
-        if normalized_type == "CPU_FALLBACK":
-            worker = Worker(worker_id, "CPU_FALLBACK")
-            worker.display_name = f"CPU Fallback Worker {type_idx}"
-            return worker
         raise ValueError(f"Unsupported worker type: {worker_type}")
 
     def add_workers(self, worker_type: str, count: int) -> int:
@@ -661,7 +645,7 @@ class WorkerPool:
             return {"removed": 0, "scheduled": 0, "unavailable": 0}
 
         normalized_type = worker_type.upper()
-        if normalized_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+        if normalized_type not in {"GPU", "CPU"}:
             raise ValueError(f"Unsupported worker type: {worker_type}")
 
         removed = 0
@@ -845,19 +829,11 @@ class WorkerPool:
         with self._workers_lock:
             if cpu_only:
                 for worker in self.workers:
-                    if (
-                        worker.worker_type
-                        in (
-                            "CPU",
-                            "CPU_FALLBACK",
-                        )
-                        and worker.is_available()
-                    ):
+                    if worker.worker_type == "CPU" and worker.is_available():
                         return worker
                 return None
-            # Fallback-only workers should never consume main-queue tasks.
             for worker in self.workers:
-                if worker.worker_type != "CPU_FALLBACK" and worker.is_available():
+                if worker.is_available():
                     return worker
             return None
 
@@ -883,52 +859,6 @@ class WorkerPool:
             logger.debug(f"Could not re-query Plex for {item_key}: {e}")
         return ("Unknown (fallback)", "unknown")
 
-    def _assign_fallback_task(
-        self,
-        worker: "Worker",
-        config: Config,
-        plex,
-        title_max_width: int,
-        cancel_check=None,
-    ) -> bool:
-        """Assign a task from fallback queue to a CPU worker.
-
-        The fallback queue contains 5-tuples: (job_id, item_key, title, type, library_name).
-
-        Returns:
-            True if task was assigned, False if queue was empty
-
-        """
-        try:
-            fallback_item = self.cpu_fallback_queue.get_nowait()
-            job_id = fallback_item[0]
-            item_key = fallback_item[1]
-            media_title = fallback_item[2] if len(fallback_item) > 2 else None
-            media_type = fallback_item[3] if len(fallback_item) > 3 else None
-            library_name = fallback_item[4] if len(fallback_item) > 4 else ""
-
-            if media_title is None or media_type is None:
-                media_title, media_type = self._get_plex_media_info(plex, item_key)
-
-            progress_callback = partial(self._update_worker_progress, worker)
-            worker.assign_task(
-                item_key,
-                config,
-                plex,
-                progress_callback=progress_callback,
-                media_title=media_title,
-                media_type=media_type,
-                title_max_width=title_max_width,
-                cpu_fallback_queue=None,
-                job_id=job_id,
-                library_name=library_name,
-                cancel_check=cancel_check,
-            )
-            logger.info(f"Dispatch: assigned fallback item to {worker.display_name}")
-            return True
-        except queue.Empty:
-            return False
-
     def _assign_main_queue_task(
         self,
         worker: "Worker",
@@ -951,9 +881,6 @@ class WorkerPool:
         item_key, media_title, media_type = item[0], item[1], item[2]
         library_name = item[3] if len(item) > 3 else ""
         progress_callback = partial(self._update_worker_progress, worker)
-        cpu_fallback_queue = (
-            self.cpu_fallback_queue if worker.worker_type == "GPU" else None
-        )
 
         worker.assign_task(
             item_key,
@@ -963,7 +890,6 @@ class WorkerPool:
             media_title=media_title,
             media_type=media_type,
             title_max_width=title_max_width,
-            cpu_fallback_queue=cpu_fallback_queue,
             library_name=library_name,
             cancel_check=cancel_check,
         )
@@ -972,58 +898,10 @@ class WorkerPool:
         )
         return True
 
-    def _check_fallback_queue_empty(self) -> bool:
-        """Check if fallback queue is empty without consuming items.
-
-        Uses qsize() for advisory check — acceptable since this is only
-        used for exit-condition heuristics, not synchronization.
-
-        Returns:
-            True if queue is empty, False if it has items
-
-        """
-        return self.cpu_fallback_queue.qsize() == 0
-
     def _has_cpu_capable_workers(self) -> bool:
-        """Check if any CPU or CPU_FALLBACK workers exist in the pool."""
+        """Check if any CPU workers exist in the pool."""
         with self._workers_lock:
-            return any(w.worker_type in ("CPU", "CPU_FALLBACK") for w in self.workers)
-
-    def _drain_fallback_queue_as_failed(self) -> int:
-        """Drain unreachable fallback items, counting them as failures.
-
-        Called when the fallback queue has items but no CPU-capable workers
-        remain to process them, preventing the dispatch loop from hanging.
-
-        Fallback items are 4-tuples: (job_id, item_key, title, type).
-
-        Returns:
-            Number of items drained.
-
-        """
-        drained = 0
-        while not self.cpu_fallback_queue.empty():
-            try:
-                item = self.cpu_fallback_queue.get_nowait()
-                # 4-tuple: (job_id, item_key, title, type) — item_key is at index 1
-                item_key = (
-                    item[1]
-                    if isinstance(item, (list, tuple)) and len(item) >= 2
-                    else item
-                )
-                logger.warning(
-                    f"Draining unreachable fallback item {item_key} as failed "
-                    "(no CPU workers available)"
-                )
-                drained += 1
-            except queue.Empty:
-                break
-        if drained:
-            logger.warning(
-                f"Drained {drained} fallback item(s) as failed — "
-                "add CPU or CPU_FALLBACK workers to process codec-fallback items"
-            )
-        return drained
+            return any(w.worker_type == "CPU" for w in self.workers)
 
     def process_items(
         self,
@@ -1226,8 +1104,6 @@ class WorkerPool:
 
                     if worker.worker_type == "GPU":
                         display_name = f"{gpu_base_name} #{idx}"
-                    elif worker.worker_type == "CPU_FALLBACK":
-                        display_name = f"CPU Fallback - Worker {idx}"
                     else:
                         display_name = f"CPU - Worker {idx}"
 
@@ -1246,6 +1122,10 @@ class WorkerPool:
                             "remaining_time": progress_data["remaining_time"]
                             if is_busy
                             else 0.0,
+                            "fallback_active": bool(
+                                getattr(worker, "fallback_active", False)
+                            ),
+                            "fallback_reason": getattr(worker, "fallback_reason", None),
                         }
                     )
                 worker_callback(worker_statuses)
@@ -1350,19 +1230,16 @@ class WorkerPool:
                 completed_delta = max(0, worker.completed - prev_completed)
                 failed_delta = max(0, worker.failed - prev_failed)
                 _record_worker_delta(worker)
-                # Don't count GPU→CPU re-queued items — the CPU worker
-                # will increment completed_tasks when it actually finishes.
-                if not worker.requeued_to_cpu:
-                    completed_tasks += 1
-                    if on_task_complete:
-                        on_task_complete(completed_tasks, total_items)
-                    if on_item_complete:
-                        success = completed_delta == 1 and failed_delta == 0
-                        on_item_complete(
-                            worker.display_name,
-                            title,
-                            success,
-                        )
+                completed_tasks += 1
+                if on_task_complete:
+                    on_task_complete(completed_tasks, total_items)
+                if on_item_complete:
+                    success = completed_delta == 1 and failed_delta == 0
+                    on_item_complete(
+                        worker.display_name,
+                        title,
+                        success,
+                    )
                 self._retire_idle_worker_if_scheduled(worker)
 
         # Initialize per-worker accounting baseline.
@@ -1426,28 +1303,13 @@ class WorkerPool:
             # Assign new tasks to available workers
             while True:
                 self._apply_deferred_removals()
-                cpu_only = not media_queue
-                available_worker = self._find_available_worker(cpu_only=cpu_only)
-                if not available_worker:
+                available_worker = self._find_available_worker()
+                if not available_worker or not media_queue:
                     logger.debug(
-                        f"{library_prefix}Dispatch: no worker available (cpu_only={cpu_only})"
+                        f"{library_prefix}Dispatch: nothing to assign "
+                        f"(worker={bool(available_worker)}, queue={len(media_queue)})"
                     )
                     break
-
-                if available_worker.worker_type in ("CPU", "CPU_FALLBACK"):
-                    if self._assign_fallback_task(
-                        available_worker,
-                        config,
-                        plex,
-                        title_max_width,
-                        cancel_check=cancel_check,
-                    ):
-                        continue
-                    if (
-                        available_worker.worker_type == "CPU_FALLBACK"
-                        or not media_queue
-                    ):
-                        break
 
                 if not self._assign_main_queue_task(
                     available_worker,
@@ -1481,25 +1343,10 @@ class WorkerPool:
                     actual_failed = run_failed
                     actual_processed = actual_completed + actual_failed
 
-                    if (
-                        not self.has_busy_workers()
-                        and self._check_fallback_queue_empty()
-                        and actual_processed >= total_items
-                    ):
+                    if not self.has_busy_workers() and actual_processed >= total_items:
                         logger.debug(
                             f"All items processed ({actual_processed}/{total_items}), exiting"
                         )
-                        break
-
-                    # Fallback queue has items but no CPU-capable workers
-                    # can drain it — fail them to avoid spinning forever.
-                    if (
-                        not self.has_busy_workers()
-                        and not self._check_fallback_queue_empty()
-                        and not self._has_cpu_capable_workers()
-                    ):
-                        drained = self._drain_fallback_queue_as_failed()
-                        run_failed += drained
                         break
 
             # Adaptive sleep
