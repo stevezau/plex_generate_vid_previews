@@ -23,6 +23,7 @@ def _make_config(tmp_path, **overrides):
         "cpu_threads": 1,
         "working_tmp_folder": str(tmp_path / "work"),
         "webhook_paths": None,
+        "sort_by": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -125,6 +126,53 @@ class TestLibraryScanFlow:
 
         assert result is not None
         assert "outcome" in result
+
+    def test_sort_by_random_shuffles_combined_items(self, tmp_path):
+        """sort_by='random' reorders the combined cross-library list before dispatch."""
+        config = _make_config(tmp_path, sort_by="random")
+        section_a = _make_section("Movies")
+        section_b = _make_section("TV Shows")
+        items_a = [(f"k{i}", f"Movie {i}", "movie") for i in range(5)]
+        items_b = [(f"kt{i}", f"Show {i}", "episode") for i in range(5)]
+        original_order = items_a + items_b
+
+        # Deterministic stand-in for random.Random(): shuffle reverses the list
+        class _RevShuffler:
+            def shuffle(self, lst):
+                lst.reverse()
+
+        with (
+            patch(
+                f"{MODULE}.get_library_sections",
+                return_value=iter([(section_a, items_a), (section_b, items_b)]),
+            ),
+            patch(f"{MODULE}.random.Random", return_value=_RevShuffler()),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=10)
+            run_processing(config, selected_gpus=[])
+
+        dispatched = MockPool.return_value.process_items_headless.call_args[0][0]
+        assert dispatched == list(reversed(original_order))
+
+    def test_sort_by_non_random_preserves_order(self, tmp_path):
+        """Without sort_by='random', item order is preserved as yielded."""
+        config = _make_config(tmp_path, sort_by="newest")
+        section = _make_section("Movies")
+        items = [("k1", "Movie A", "movie"), ("k2", "Movie B", "movie"), ("k3", "Movie C", "movie")]
+
+        with (
+            patch(
+                f"{MODULE}.get_library_sections",
+                return_value=iter([(section, items)]),
+            ),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=3)
+            run_processing(config, selected_gpus=[])
+
+        dispatched = MockPool.return_value.process_items_headless.call_args[0][0]
+        assert dispatched == items
 
     def test_progress_callback_invoked(self, tmp_path):
         """progress_callback reports pre-dispatch stages + the dispatch tick."""

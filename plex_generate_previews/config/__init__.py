@@ -391,7 +391,7 @@ def load_config() -> Config:
         validation_errors.append(f"LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})")
 
     # Validate sort_by
-    valid_sort_by = ["newest", "oldest"]
+    valid_sort_by = ["newest", "oldest", "random"]
     if sort_by is not None and sort_by not in valid_sort_by:
         validation_errors.append(f"SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})")
 

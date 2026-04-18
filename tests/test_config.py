@@ -826,6 +826,118 @@ class TestLoadConfig:
         assert config.cpu_threads == 0
 
     @patch("shutil.which")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    @patch("os.access")
+    @patch("os.statvfs", create=True)
+    @patch("plex_generate_previews.logging_config.setup_logging")
+    def test_load_config_accepts_sort_by_random(
+        self,
+        mock_logging,
+        mock_statvfs,
+        mock_access,
+        mock_listdir,
+        mock_isdir,
+        mock_exists,
+        mock_run,
+        mock_which,
+    ):
+        """sort_by='random' must load without a validation error."""
+        from plex_generate_previews.config import clear_config_cache
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
+        mock_exists.return_value = True
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = lambda path: (
+            []
+            if "tmp" in path or path.startswith("/tmp")
+            else list("0123456789abcdef")
+            if path.endswith("/localhost")
+            else ["localhost"]
+            if path.endswith("/Media")
+            else ["Cache", "Media", "Metadata", "Plug-ins", "Logs"]
+        )
+        mock_access.return_value = True
+        statvfs_result = MagicMock()
+        statvfs_result.f_frsize = 4096
+        statvfs_result.f_bavail = 1024 * 1024 * 250
+        mock_statvfs.return_value = statvfs_result
+
+        sm = get_settings_manager()
+        sm.apply_changes(
+            {
+                "plex_url": "http://localhost:32400",
+                "plex_token": "test_token",
+                "plex_config_folder": "/config/plex/Library/Application Support/Plex Media Server",
+                "sort_by": "random",
+            }
+        )
+        clear_config_cache()
+
+        config = load_config()
+        assert config.sort_by == "random"
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    @patch("os.access")
+    @patch("os.statvfs", create=True)
+    @patch("plex_generate_previews.logging_config.setup_logging")
+    def test_load_config_rejects_invalid_sort_by(
+        self,
+        mock_logging,
+        mock_statvfs,
+        mock_access,
+        mock_listdir,
+        mock_isdir,
+        mock_exists,
+        mock_run,
+        mock_which,
+    ):
+        """sort_by values outside the enum must raise ConfigValidationError."""
+        from plex_generate_previews.config import clear_config_cache
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
+        mock_exists.return_value = True
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = lambda path: (
+            []
+            if "tmp" in path or path.startswith("/tmp")
+            else list("0123456789abcdef")
+            if path.endswith("/localhost")
+            else ["localhost"]
+            if path.endswith("/Media")
+            else ["Cache", "Media", "Metadata", "Plug-ins", "Logs"]
+        )
+        mock_access.return_value = True
+        statvfs_result = MagicMock()
+        statvfs_result.f_frsize = 4096
+        statvfs_result.f_bavail = 1024 * 1024 * 250
+        mock_statvfs.return_value = statvfs_result
+
+        sm = get_settings_manager()
+        sm.apply_changes(
+            {
+                "plex_url": "http://localhost:32400",
+                "plex_token": "test_token",
+                "plex_config_folder": "/config/plex/Library/Application Support/Plex Media Server",
+                "sort_by": "bogus",
+            }
+        )
+        clear_config_cache()
+
+        with pytest.raises(ConfigValidationError):
+            load_config()
+
+    @patch("shutil.which")
     @patch("plex_generate_previews.logging_config.setup_logging")
     def test_load_config_missing_plex_url(self, mock_logging, mock_which):
         """Test error when PLEX_URL is missing."""

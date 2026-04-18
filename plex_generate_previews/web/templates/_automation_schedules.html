@@ -203,6 +203,16 @@
                         </select>
                         <div class="form-text">Priority assigned to jobs created by this schedule</div>
                     </div>
+                    <div class="mb-3" id="scheduleSortByGroup">
+                        <label for="scheduleSortBy" class="form-label">Processing Order</label>
+                        <select class="form-select" id="scheduleSortBy">
+                            <option value="" selected>Default (Plex order)</option>
+                            <option value="newest">Newest first</option>
+                            <option value="oldest">Oldest first</option>
+                            <option value="random">Random</option>
+                        </select>
+                        <div class="form-text">Pick <strong>Random</strong> if your library spans multiple physical disks (e.g. unraid shfs, mergerfs) — parallel workers will read from different disks at once instead of hammering one.</div>
+                    </div>
                     <div class="mb-3">
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" id="scheduleEnabled" checked>

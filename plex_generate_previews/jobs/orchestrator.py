@@ -6,6 +6,7 @@ by the web layer (job_runner.py).
 """
 
 import os
+import random
 import shutil
 
 from loguru import logger
@@ -219,6 +220,13 @@ def run_processing(
             elif not all_media_items:
                 logger.info("No media items found across selected libraries")
             else:
+                # When sort_by is "random", shuffle the combined cross-library list
+                # so parallel workers statistically pull from multiple physical disks
+                # at once (big win on unraid shfs / mergerfs / JBOD setups).
+                if config.sort_by == "random":
+                    random.Random().shuffle(all_media_items)
+                    logger.info(f"Shuffled {len(all_media_items)} items for random processing order")
+
                 total_items = len(all_media_items)
                 logger.info(
                     f"Processing {total_items} items across {len(library_item_counts)} libraries in a shared queue"

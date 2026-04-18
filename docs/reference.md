@@ -77,6 +77,10 @@ GPU settings are configured per-GPU in **Settings** → **Processing Options**. 
 | `thumbnail_quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
 | `thumbnail_interval` | Yes | `5` | Interval between preview images (1–60 s) |
 | `selected_libraries` | Yes | All | Library IDs to process |
+| `sort_by` (per-run) | Yes | `newest` | Order items are processed: `newest`, `oldest`, `random`, or empty for Plex's natural order. Set per manual run (New Job modal) or per schedule — not a global setting. |
+
+> [!TIP]
+> **Multi-disk libraries (unraid shfs, mergerfs, JBOD):** pick **Random** as the Processing Order on the New Job modal or on a scheduled full-library scan. With alphabetical order, parallel workers tend to read sequential files from the same physical disk; shuffling spreads reads across disks so disk I/O stops being the bottleneck. Webhook jobs and Recently Added scans are unaffected — they touch too few files for ordering to matter.
 
 > [!NOTE]
 > When a GPU worker can't process a file (unsupported codec,

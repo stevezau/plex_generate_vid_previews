@@ -131,6 +131,10 @@ Lower numbers = higher quality but larger file sizes.
 - Quality 4 = default (good balance)
 - Quality 10 = lowest quality
 
+**Generation feels disk-bound on my multi-disk setup (unraid/mergerfs/JBOD) — how do I speed it up?**
+
+On setups where one share is backed by multiple physical disks (unraid's `shfs`, mergerfs, JBOD), parallel workers processing files in alphabetical order tend to pile onto one disk at a time. Open the **New Job** modal (or edit a full-library schedule) and set **Processing Order** to **Random**. Workers will pull items from different disks in parallel, so disk read throughput — not GPU — sets the ceiling. Webhook jobs and Recently Added scans don't expose this setting because they only touch a handful of files where ordering doesn't matter. See [Issue #219](https://github.com/stevezau/plex_generate_vid_previews/issues/219) for background.
+
 ---
 
 ## Docker

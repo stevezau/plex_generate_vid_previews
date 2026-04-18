@@ -454,6 +454,47 @@ class TestGetLibrarySections:
         assert media[0][1] == "Test Movie"
         assert media[0][2] == "movie"
 
+    def test_get_library_sections_random_skips_plex_sort_param(self, mock_config):
+        """With sort_by='random', no Plex-side sort kwarg is passed — the orchestrator shuffles instead."""
+        mock_config.sort_by = "random"
+        mock_plex = MagicMock()
+
+        mock_section = MagicMock()
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/1"
+        mock_movie.title = "Test Movie"
+        mock_section.search.return_value = [mock_movie]
+        mock_plex.library.sections.return_value = [mock_section]
+
+        list(get_library_sections(mock_plex, mock_config))
+
+        mock_section.search.assert_called_once()
+        _, kwargs = mock_section.search.call_args
+        assert "sort" not in kwargs
+
+    def test_get_library_sections_newest_passes_plex_sort_param(self, mock_config):
+        """sort_by='newest' still asks Plex to sort by addedAt desc (unchanged behaviour)."""
+        mock_config.sort_by = "newest"
+        mock_plex = MagicMock()
+
+        mock_section = MagicMock()
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        mock_movie.key = "/library/metadata/1"
+        mock_movie.title = "Test Movie"
+        mock_section.search.return_value = [mock_movie]
+        mock_plex.library.sections.return_value = [mock_section]
+
+        list(get_library_sections(mock_plex, mock_config))
+
+        _, kwargs = mock_section.search.call_args
+        assert kwargs.get("sort") == "addedAt:desc"
+
 
 class TestPathMapping:
     """Test path mapping/translation for Docker/Unraid deployments.

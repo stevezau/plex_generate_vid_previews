@@ -2758,6 +2758,10 @@ function showNewJobModal() {
     // Reset "All Libraries" checkbox to checked
     document.getElementById('jobLibraryAll').checked = true;
 
+    // Reset processing-order dropdown to default
+    const sortByEl = document.getElementById('jobSortBy');
+    if (sortByEl) sortByEl.value = '';
+
     const modal = new bootstrap.Modal(document.getElementById('newJobModal'));
     modal.show();
 }
@@ -2804,14 +2808,19 @@ async function startNewJob() {
     }
 
     const priority = parseInt(document.getElementById('jobPriority').value, 10) || 2;
+    const sortByEl = document.getElementById('jobSortBy');
+    const sortBy = sortByEl ? sortByEl.value : '';
+
+    const jobConfig = { force_generate: forceRegenerate };
+    if (sortBy) {
+        jobConfig.sort_by = sortBy;
+    }
 
     const jobPayload = {
         library_names: selectedLibraryNames.length > 0 ? selectedLibraryNames : null,
         library_name: libraryName,
         priority: priority,
-        config: {
-            force_generate: forceRegenerate
-        }
+        config: jobConfig
     };
 
     // Retry once on transient network errors ("Failed to fetch" from
@@ -3092,6 +3101,12 @@ function onScanModeChange() {
     if (lookbackGroup) {
         lookbackGroup.style.display = selected === 'recently_added' ? '' : 'none';
     }
+    // Processing order only affects full-library scans — recently-added scans
+    // touch a small, time-bounded set where shuffle is essentially a no-op.
+    const sortByGroup = document.getElementById('scheduleSortByGroup');
+    if (sortByGroup) {
+        sortByGroup.style.display = selected === 'recently_added' ? 'none' : '';
+    }
     // When flipping to recently-added in "Add" mode with untouched defaults,
     // nudge the trigger type to Interval and pre-fill 15 minutes — that's
     // the canonical shape of a Recently Added scanner.
@@ -3122,6 +3137,8 @@ function _resetScheduleForm() {
     // Reset scan mode to Full library and hide lookback group
     document.getElementById('scanModeFull').checked = true;
     document.getElementById('scheduleLookback').value = '1';
+    const sortByEl = document.getElementById('scheduleSortBy');
+    if (sortByEl) sortByEl.value = '';
     onScanModeChange();
 
     // Reset schedule type to Specific Time
@@ -3180,6 +3197,15 @@ function showEditScheduleModal(scheduleId) {
         }
     } else {
         document.getElementById('scanModeFull').checked = true;
+    }
+    const sortBySelect = document.getElementById('scheduleSortBy');
+    if (sortBySelect) {
+        const savedSortBy = cfg.sort_by || '';
+        if (Array.from(sortBySelect.options).some(o => o.value === savedSortBy)) {
+            sortBySelect.value = savedSortBy;
+        } else {
+            sortBySelect.value = '';
+        }
     }
     onScanModeChange();
 
@@ -3249,6 +3275,13 @@ async function saveSchedule() {
     const scheduleConfig = { job_type: scanMode };
     if (scanMode === 'recently_added') {
         scheduleConfig.lookback_hours = parseFloat(document.getElementById('scheduleLookback').value) || 1;
+    } else {
+        // Processing order only applies to full-library scans
+        const sortByEl = document.getElementById('scheduleSortBy');
+        const sortBy = sortByEl ? sortByEl.value : '';
+        if (sortBy) {
+            scheduleConfig.sort_by = sortBy;
+        }
     }
 
     const payload = {

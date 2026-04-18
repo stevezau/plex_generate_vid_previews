@@ -277,7 +277,8 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
             )
         library_start_time = time.time()
 
-        # Determine sort parameter if sort_by is configured
+        # Determine sort parameter if sort_by is configured.
+        # "random" is handled post-fetch by the orchestrator, so no Plex-side sort.
         sort_param = None
         if config.sort_by:
             if config.sort_by == "newest":
