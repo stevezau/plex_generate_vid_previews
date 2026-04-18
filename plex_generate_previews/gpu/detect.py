@@ -183,11 +183,16 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: str | None = None) ->
                         )
                 # If device doesn't exist, just skip silently (expected for wrong GPU type)
                 return False
-        # Get test video fixture - all GPU tests use real H.264 video for accurate testing
+        # Probe video — the hwaccel-functionality test decodes a real H.264
+        # sample so "ffmpeg lists the hwaccel" isn't confused with "hwaccel
+        # actually works on this host." Ships with the package.
         test_video = None
+        # ``gpu/detect.py`` sits one level inside the package, so the
+        # packaged asset is ../assets/test_video.mp4.
+        pkg_root = os.path.dirname(os.path.dirname(__file__))
         possible_paths = [
-            os.path.join(os.path.dirname(__file__), "fixtures", "test_video.mp4"),
-            os.path.join(os.getcwd(), "plex_generate_previews", "fixtures", "test_video.mp4"),
+            os.path.join(pkg_root, "assets", "test_video.mp4"),
+            os.path.join(os.getcwd(), "plex_generate_previews", "assets", "test_video.mp4"),
         ]
 
         for path in possible_paths:
