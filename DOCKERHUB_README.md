@@ -57,7 +57,6 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 |---|---|---|
 | `:latest` | Latest release (e.g. `3.7.2`) | **Recommended.** Stable. |
 | `:3.7.2` (version) | A specific release | Pinning to a known-good version |
-| `:main` | Every push to `main` | Early access to merged, unreleased changes |
 | `:dev` | Every push to `dev` | Bleeding edge — may break |
 
 ## Volume Mounts

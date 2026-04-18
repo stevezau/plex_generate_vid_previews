@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
     tags: ['*.*.*']
     paths-ignore:
       - 'docs/**'
@@ -113,11 +113,8 @@ jobs:
           if [[ "$REF_TYPE" == "tag" ]]; then
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
             echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
-          elif [[ "$HEAD_BRANCH" == "main" ]]; then
-            echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:main" >> "$GITHUB_OUTPUT"
           else
-            # dev branch or manual dispatch from a non-main branch
+            # dev branch push or manual workflow_dispatch
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
             echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
           fi

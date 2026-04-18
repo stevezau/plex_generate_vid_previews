@@ -493,12 +493,11 @@ Your `/config/settings.json` persists between upgrades, so Plex auth, GPU config
 |---|---|---|
 | `:latest` | Latest release (e.g. `3.7.2`) | **Recommended.** Stable. |
 | `:3.7.2` (version) | A specific release | Pinning to a known-good version |
-| `:main` | Every push to `main` | Early access to merged, unreleased changes |
 | `:dev` | Every push to `dev` | Bleeding edge — may break |
 
-The web UI's version banner behaves accordingly: `:latest` / `:3.7.2` compare
-against the latest GitHub release; `:main` and `:dev` compare the baked
-commit SHA against the branch HEAD on GitHub.
+The web UI's version banner behaves accordingly: `:latest` / `:3.7.2`
+compare against the latest GitHub release; `:dev` compares the baked
+commit SHA against the `dev` branch HEAD on GitHub.
 
 ---
 
