@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "plex-generate-previews"
 dynamic = ["version"]
 authors = [
-    {name = "stevezau", email = "stevezau@example.com"},
+    {name = "Steve Adams", email = "stevezau@gmail.com"},
 ]
 description = "Generate video preview thumbnails for Plex Media Server"
 readme = "README.md"
@@ -123,3 +123,37 @@ skip_covered = false
 write_to = "plex_generate_previews/_version.py"
 local_scheme = "no-local-version"
 fallback_version = "0.0.0+unknown"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "plex_generate_previews/_version.py",
+    ".venv",
+    ".venv-test",
+    "htmlcov",
+    "tmp_migration_test",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade (modernizes typing, f-strings, etc.)
+]
+ignore = [
+    "E501",  # line-too-long handled by formatter
+    "B008",  # function calls in argument defaults (Flask/Depends idiom)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # assert False is fine in tests
+"plex_generate_previews/gpu_detection.py" = ["F401"]  # legacy re-export shim
+"plex_generate_previews/media_processing.py" = ["F401"]  # legacy re-export shim
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
