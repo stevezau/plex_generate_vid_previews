@@ -422,6 +422,11 @@ def _build_gpu_error_detail(
                     f"Check host device permissions: ls -l {check_path}",
                 )
             except Exception:
+                logger.debug(
+                    "VAAPI diagnostic: could not inspect {} gid/groups; falling back to generic permission-denied message.",
+                    check_path,
+                    exc_info=True,
+                )
                 return (
                     f"VAAPI device {check_path} permission denied",
                     "Verify --device /dev/dri:/dev/dri is passed and the device is readable on the host.",
