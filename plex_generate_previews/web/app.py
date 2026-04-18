@@ -64,25 +64,25 @@ def run_scheduled_job(library_id=None, library_name="", config=None, priority=No
     _start_job_async(job.id, job_config)
 
 
-def get_cors_origins() -> str:
+def get_cors_origins() -> tuple[str, bool]:
     """Get CORS allowed origins from environment.
 
     Defaults to ``"*"`` (allow all) because this tool is typically accessed
     over a LAN via IP address, Docker bridge, or hostname — not just
-    ``localhost``.  Restricting to ``localhost`` breaks WebSocket upgrades
+    ``localhost``. Restricting to ``localhost`` breaks WebSocket upgrades
     from any other origin and causes SocketIO 400 errors.
 
     Set ``CORS_ORIGINS`` to a comma-separated list to lock it down, e.g.
     ``CORS_ORIGINS=http://192.168.1.10:8080,http://mynas:8080``.
 
     Returns:
-        CORS origins string or ``"*"``
-
+        Tuple of ``(origins, is_default_wildcard)``. The second field is
+        ``True`` when the wide-open default is in use; callers should warn.
     """
     explicit = os.environ.get("CORS_ORIGINS")
     if explicit:
-        return explicit
-    return "*"
+        return explicit, False
+    return "*", True
 
 
 def _derive_secret(seed: bytes, config_dir: str) -> str:
@@ -272,7 +272,12 @@ def create_app(config_dir: str = None) -> Flask:
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
     # SESSION_COOKIE_SECURE is set dynamically via ProxyFix + Talisman or per-request.
     # ProxyFix below trusts X-Forwarded-Proto so request.scheme == 'https' works.
-    app.config["SESSION_COOKIE_SECURE"] = os.environ.get("HTTPS", "false").lower() == "true"
+    # SESSION_COOKIE_SECURE marks the cookie with the Secure flag so the
+    # browser only sends it over HTTPS. Set HTTPS=true when deploying
+    # behind a TLS-terminating proxy (nginx, traefik, Caddy, Cloudflare).
+    # Defaults to False to keep plain-HTTP LAN deployments working.
+    https_secure = os.environ.get("HTTPS", "false").lower() in ("true", "1", "yes", "on")
+    app.config["SESSION_COOKIE_SECURE"] = https_secure
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["CONFIG_DIR"] = config_dir
@@ -283,7 +288,13 @@ def create_app(config_dir: str = None) -> Flask:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
     # Get CORS configuration
-    cors_origins = get_cors_origins()
+    cors_origins, cors_is_default_wildcard = get_cors_origins()
+    if cors_is_default_wildcard:
+        logger.warning(
+            "CORS is allowing all origins ('*') — fine for LAN-only deployments, "
+            "but set CORS_ORIGINS=http://your-host:8080 (comma-separated for "
+            "multiple) when the web UI is reachable from the public internet."
+        )
 
     # Allow cross-origin requests on all routes (token-auth, not cookie-based)
     CORS(app, origins=cors_origins)

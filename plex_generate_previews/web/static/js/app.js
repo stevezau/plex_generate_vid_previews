@@ -39,6 +39,74 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+/**
+ * Sanitize a small fragment of server-rendered HTML before it hits innerHTML.
+ * Allows the formatting tags the server uses in notifications (<br>, <strong>,
+ * <em>, <code>, <span>, <div>, <ul>/<li>, <a>) and strips everything else —
+ * including every event handler attribute (`onclick="..."`), inline-script
+ * tags, <iframe>, and any `javascript:` URI. Defence in depth: the server
+ * already escapes interpolated values via html.escape(), but a client-side
+ * whitelist keeps the notification channel safe even if a future caller
+ * forgets to escape something.
+ * @param {string} html - HTML fragment
+ * @returns {string} - Sanitized HTML fragment
+ */
+function sanitizeNotificationHtml(html) {
+    if (!html) return '';
+    var ALLOWED_TAGS = {
+        'BR': [],
+        'STRONG': [],
+        'EM': [],
+        'B': [],
+        'I': [],
+        'U': [],
+        'CODE': [],
+        'PRE': [],
+        'UL': ['class'],
+        'OL': ['class'],
+        'LI': ['class'],
+        'SPAN': ['class'],
+        'DIV': ['class'],
+        'P': ['class'],
+        'SMALL': ['class'],
+        'A': ['href', 'class', 'target', 'rel']
+    };
+    var template = document.createElement('template');
+    template.innerHTML = html;
+    var walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+    var toRemove = [];
+    while (walker.nextNode()) {
+        var el = walker.currentNode;
+        var allowed = ALLOWED_TAGS[el.tagName];
+        if (!allowed) {
+            toRemove.push(el);
+            continue;
+        }
+        // Strip attributes not on the whitelist; always strip anything that
+        // looks like javascript:/data: URIs on href.
+        for (var i = el.attributes.length - 1; i >= 0; i--) {
+            var attr = el.attributes[i];
+            if (allowed.indexOf(attr.name) === -1) {
+                el.removeAttribute(attr.name);
+                continue;
+            }
+            if (attr.name === 'href') {
+                var v = attr.value.trim().toLowerCase();
+                if (v.indexOf('javascript:') === 0 || v.indexOf('data:') === 0) {
+                    el.removeAttribute('href');
+                }
+            }
+        }
+    }
+    toRemove.forEach(function (el) {
+        // Unwrap: replace the disallowed element with its text content to
+        // avoid silently dropping user-visible text.
+        var text = document.createTextNode(el.textContent || '');
+        el.parentNode.replaceChild(text, el);
+    });
+    return template.innerHTML;
+}
+
 var _libraryTypeLabels = {movie: 'Movies', show: 'TV Shows', sports: 'Sports', other_videos: 'Other Videos'};
 var _libraryTypeIcons = {movie: 'bi-film', show: 'bi-tv', sports: 'bi-trophy', other_videos: 'bi-camera-video'};
 
@@ -837,7 +905,7 @@ function renderNotifications(notifications) {
 
         var details = document.createElement('div');
         details.className = 'notification-details small mt-2 d-none';
-        details.innerHTML = notif.body_html || '';
+        details.innerHTML = sanitizeNotificationHtml(notif.body_html);
 
         var copyRow = document.createElement('div');
         copyRow.className = 'mt-2 d-none notification-copy-row';

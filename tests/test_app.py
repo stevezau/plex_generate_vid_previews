@@ -52,11 +52,15 @@ class TestGetCorsOrigins:
 
     def test_default_returns_wildcard(self, monkeypatch):
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
-        assert get_cors_origins() == "*"
+        origins, is_default = get_cors_origins()
+        assert origins == "*"
+        assert is_default is True
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
-        assert get_cors_origins() == "http://localhost:3000"
+        origins, is_default = get_cors_origins()
+        assert origins == "http://localhost:3000"
+        assert is_default is False
 
 
 class TestDeriveSecret:
