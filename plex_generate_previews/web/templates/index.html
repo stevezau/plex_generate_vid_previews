@@ -566,7 +566,7 @@
             const el = document.getElementById('dashboardVersion');
             el.textContent = data.current_version || 'unknown';
 
-            if (data.install_type === 'local_docker') {
+            if (data.install_type === 'local_docker' || data.install_type === 'pr_build') {
                 const badge = document.getElementById('dashboardUpdateBadge');
                 if (data.latest_version) {
                     badge.textContent = `Latest: ${data.latest_version}`;

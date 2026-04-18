@@ -913,6 +913,13 @@ def _get_version_info() -> dict:
         current_version = "local build"
         latest_version = get_latest_github_release()
 
+    elif git_branch.lower().startswith("pr-") and git_sha:
+        # PR CI build -- show "PR-123", reference the latest release, no update banner
+        install_type = "pr_build"
+        pr_num = git_branch.split("-", 1)[1]
+        current_version = f"PR-{pr_num}"
+        latest_version = get_latest_github_release()
+
     elif git_branch and git_sha:
         # CI Docker build -- distinguish release tags from dev branches
         try:

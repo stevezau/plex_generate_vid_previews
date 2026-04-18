@@ -990,7 +990,7 @@ async function loadVersionInfo() {
                 '<span class="text-muted">unavailable</span>';
         }
 
-        if (data.install_type === 'local_docker') {
+        if (data.install_type === 'local_docker' || data.install_type === 'pr_build') {
             if (data.latest_version) {
                 document.getElementById('updateMessage').textContent =
                     `Latest release: ${data.latest_version}`;

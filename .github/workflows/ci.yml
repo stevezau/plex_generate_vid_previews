@@ -115,7 +115,7 @@ jobs:
             echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
           elif [[ "$HEAD_BRANCH" == "main" ]]; then
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:main" >> "$GITHUB_OUTPUT"
           else
             # dev branch or manual dispatch from a non-main branch
             echo "is_tag=false" >> "$GITHUB_OUTPUT"

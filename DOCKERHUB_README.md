@@ -51,6 +51,15 @@ Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with
 
 Then open `http://YOUR_IP:8080`, retrieve the authentication token from container logs, and complete the setup wizard. All settings (Plex connection, GPU config, processing options) are configured in the web UI Settings page.
 
+## Image Tags
+
+| Tag | Source | Use for |
+|---|---|---|
+| `:latest` | Latest release (e.g. `3.7.2`) | **Recommended.** Stable. |
+| `:3.7.2` (version) | A specific release | Pinning to a known-good version |
+| `:main` | Every push to `main` | Early access to merged, unreleased changes |
+| `:dev` | Every push to `dev` | Bleeding edge — may break |
+
 ## Volume Mounts
 
 | Container Path | Purpose | Mode |

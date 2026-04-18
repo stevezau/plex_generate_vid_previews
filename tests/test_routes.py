@@ -2803,6 +2803,54 @@ class TestGetVersionInfo:
         assert result["install_type"] == "dev_docker"
         assert result["update_available"] is False
 
+    def test_dev_docker_when_branch_is_main(self, monkeypatch):
+        """GIT_BRANCH=main routes through dev_docker, same as other non-version branches."""
+        monkeypatch.setenv("GIT_BRANCH", "main")
+        monkeypatch.setenv("GIT_SHA", "4078c5d")
+        monkeypatch.setattr(
+            "plex_generate_previews.version_check.get_branch_head_sha",
+            lambda _branch: "ed07876fedcba",
+        )
+
+        from plex_generate_previews.web.routes.api_system import _get_version_info
+
+        result = _get_version_info()
+
+        assert result["install_type"] == "dev_docker"
+        assert result["current_version"] == "main@4078c5d"
+        assert result["latest_version"] == "main@ed07876"
+        assert result["update_available"] is True
+
+    def test_pr_build_when_branch_starts_with_pr(self, monkeypatch):
+        """GIT_BRANCH=pr-123 routes through pr_build: PR-123 vs latest release, no update banner."""
+        monkeypatch.setenv("GIT_BRANCH", "pr-123")
+        monkeypatch.setenv("GIT_SHA", "abc1234")
+        monkeypatch.setattr(
+            "plex_generate_previews.version_check.get_latest_github_release",
+            lambda: "3.7.2",
+        )
+
+        branch_head_calls: list[str] = []
+
+        def _unexpected_branch_head(branch: str) -> str | None:
+            branch_head_calls.append(branch)
+            return None
+
+        monkeypatch.setattr(
+            "plex_generate_previews.version_check.get_branch_head_sha",
+            _unexpected_branch_head,
+        )
+
+        from plex_generate_previews.web.routes.api_system import _get_version_info
+
+        result = _get_version_info()
+
+        assert result["install_type"] == "pr_build"
+        assert result["current_version"] == "PR-123"
+        assert result["latest_version"] == "3.7.2"
+        assert result["update_available"] is False
+        assert branch_head_calls == []
+
     def test_source_install_when_no_git_env(self, monkeypatch):
         """No GIT_BRANCH/GIT_SHA + not a docker env → source install_type."""
         monkeypatch.delenv("GIT_BRANCH", raising=False)
