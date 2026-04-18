@@ -161,7 +161,7 @@ See [Automatic GPU → CPU Fallback](docs/guides.md#automatic-gpu--cpu-fallback)
 | Document | Description |
 |----------|-------------|
 | [Documentation Hub](docs/README.md) | Start here — architecture diagrams |
-| [Getting Started](docs/getting-started.md) | Docker, GPU, Unraid, devcontainer |
+| [Getting Started](docs/getting-started.md) | Docker, GPU, Unraid |
 | [Reference](docs/reference.md) | Configuration options & REST API |
 | [Guides](docs/guides.md) | Web interface, webhooks, FAQ, troubleshooting |
 

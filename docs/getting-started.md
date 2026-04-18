@@ -476,45 +476,6 @@ docker rm plex-generate-previews
 
 ---
 
-## Development Environment
-
-The project includes a [devcontainer](https://containers.dev/) configuration for a consistent development environment.
-
-### What It Provides
-
-- Python 3.12 with FFmpeg and mediainfo
-- Docker-in-Docker for container builds
-- Pre-commit hooks (ruff check + format)
-- Playwright with Chromium for e2e testing
-
-### How to Use
-
-- **VS Code**: Reopen in Container (Ctrl+Shift+P → "Dev Containers: Reopen in Container")
-- **GitHub Codespaces**: Open the repository in a Codespace
-
-### Installed Extensions
-
-Python, Debugpy, Ruff, Pylance, TOML, Copilot, Playwright, Coverage Gutters, Docker, REST Client
-
-### Port Forwarding
-
-| Port | Service |
-|------|---------|
-| 8080 | Web UI |
-| 8089 | Locust (load testing) |
-
-### Post-Create Setup
-
-The devcontainer automatically:
-
-1. Installs the package with dev dependencies
-2. Installs Playwright Chromium browser
-3. Sets up pre-commit hooks
-
-See `.devcontainer/` for the full configuration.
-
----
-
 ## Important Notes
 
 **Don't Use `init: true`**

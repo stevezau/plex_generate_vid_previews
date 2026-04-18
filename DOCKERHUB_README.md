@@ -204,7 +204,7 @@ Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 Full documentation is available on GitHub:
 
-- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) -- Docker, GPU, Unraid, devcontainer
+- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) -- Docker, GPU, Unraid
 - [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md) -- All settings and REST API
 - [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md) -- Web interface, webhooks, FAQ
 

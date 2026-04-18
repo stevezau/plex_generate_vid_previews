@@ -217,14 +217,6 @@ Works as-is for any fork — no changes needed.
 
 ---
 
-## Development Container
-
-The project includes a devcontainer configuration for VS Code and GitHub Codespaces with Python 3.12, FFmpeg, Docker-in-Docker, pre-commit hooks, and Playwright.
-
-See [Development Environment](docs/getting-started.md#development-environment) for full details.
-
----
-
 ## Debugging
 
 ```bash
