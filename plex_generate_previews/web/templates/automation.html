@@ -3,63 +3,7 @@
 {% block title %}Automation - Plex Preview Generator{% endblock %}
 
 {% block head %}
-<style>
-    html {
-        scroll-behavior: smooth;
-        scroll-padding-top: 6rem;
-    }
-    .section-card {
-        margin-bottom: 1.5rem;
-    }
-
-    /* Sidebar — matches settings.html */
-    .automation-sidebar {
-        top: 5rem;
-        max-height: calc(100vh - 6rem);
-        overflow-y: auto;
-        padding-top: 0.5rem;
-    }
-    .automation-sidebar .nav-link {
-        color: var(--bs-secondary-color);
-        font-size: 0.875rem;
-        padding: 0.5rem 0.75rem;
-        border-radius: 0.375rem;
-        border-left: 3px solid transparent;
-        margin-bottom: 0.125rem;
-    }
-    .automation-sidebar .nav-link:hover {
-        color: var(--bs-body-color);
-        background-color: var(--bs-tertiary-bg);
-    }
-    .automation-sidebar .nav-link.active {
-        color: var(--plex-orange);
-        background-color: rgba(229, 160, 13, 0.1);
-        border-left-color: var(--plex-orange);
-        font-weight: 500;
-    }
-    .automation-sidebar .sidebar-group {
-        font-size: 0.8rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--bs-body-color);
-        padding: 0.6rem 0.75rem 0.3rem;
-        cursor: pointer;
-        user-select: none;
-    }
-    .automation-sidebar .sidebar-group:not(:first-child) {
-        margin-top: 0.75rem;
-        padding-top: 0.75rem;
-        border-top: 1px solid var(--bs-border-color);
-    }
-    .automation-sidebar .sidebar-group:hover {
-        color: var(--plex-orange);
-    }
-    .automation-sidebar .sidebar-group.active {
-        color: var(--plex-orange);
-    }
-    .automation-content { padding-bottom: 40vh; }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/automation.css') }}">
 {% endblock %}
 
 {% block content %}
