@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.media_processing import ProcessingResult
-from plex_generate_previews.worker import Worker, WorkerPool
+from plex_generate_previews.jobs.worker import Worker, WorkerPool
+from plex_generate_previews.processing import ProcessingResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -122,7 +122,7 @@ def _codec_error_process_item(
     worker_name=None,
 ):
     """Simulate a GPU codec error that should fall back to CPU."""
-    from plex_generate_previews.media_processing import CodecNotSupportedError
+    from plex_generate_previews.processing import CodecNotSupportedError
 
     raise CodecNotSupportedError("HEVC not supported on this GPU")
 
@@ -361,7 +361,7 @@ class TestInPlaceCpuFallback:
         ):
             call_log.append(gpu)
             if gpu is not None:
-                from plex_generate_previews.media_processing import (
+                from plex_generate_previews.processing import (
                     CodecNotSupportedError,
                 )
 

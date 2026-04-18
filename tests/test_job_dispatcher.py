@@ -11,16 +11,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.job_dispatcher import (
+from plex_generate_previews.jobs.dispatcher import (
     JobDispatcher,
     JobTracker,
     reset_dispatcher,
 )
-from plex_generate_previews.media_processing import (
+from plex_generate_previews.jobs.worker import WorkerPool
+from plex_generate_previews.processing import (
     CodecNotSupportedError,
     ProcessingResult,
 )
-from plex_generate_previews.worker import WorkerPool
 
 # ---------------------------------------------------------------------------
 # Helpers

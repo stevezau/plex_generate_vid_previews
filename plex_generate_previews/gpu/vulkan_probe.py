@@ -16,12 +16,10 @@ in :mod:`gpu_detection`:
 * Cached probe result + env overrides the FFmpeg subprocess needs to
   inherit when it runs libplacebo.
 
-Back-compat: :mod:`gpu_detection` re-exports everything public here so
-external callers that did ``from plex_generate_previews.gpu_detection
-import get_vulkan_device_info`` keep working.  Private helpers
-(underscore-prefixed names) remain module-private here; tests that
-monkey-patch them now target ``plex_generate_previews.gpu.vulkan_probe``
-instead of the old module path.
+Public helpers are re-exported from :mod:`plex_generate_previews.gpu`;
+``from plex_generate_previews.gpu import get_vulkan_device_info`` is the
+canonical entry point.  Private helpers (underscore-prefixed names) stay
+module-private here; tests monkey-patch them on this module directly.
 """
 
 from __future__ import annotations

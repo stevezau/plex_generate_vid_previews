@@ -301,7 +301,7 @@ def set_job_priority(job_id):
 
     if job.status == JobStatus.RUNNING:
         try:
-            from ...job_dispatcher import get_dispatcher
+            from ...jobs.dispatcher import get_dispatcher
 
             dispatcher = get_dispatcher()
             if dispatcher is not None:
@@ -434,7 +434,7 @@ def _get_shared_worker_pool():
     if pool is not None:
         return pool
     try:
-        from ...job_dispatcher import get_dispatcher
+        from ...jobs.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         if dispatcher is not None:
@@ -656,7 +656,7 @@ def _get_dispatcher_worker_statuses():
 
     """
     try:
-        from ...job_dispatcher import get_dispatcher
+        from ...jobs.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         if dispatcher is not None:

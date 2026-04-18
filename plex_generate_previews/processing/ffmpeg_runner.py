@@ -70,10 +70,9 @@ def create_ffmpeg_runner(
     invoke the returned callable through the full retry cascade.
     """
     # Import at factory-call time to avoid a circular dependency at module
-    # load (media_processing imports create_ffmpeg_runner from here; these
-    # helpers still live in media_processing).  Runs once per media file,
-    # not once per FFmpeg invocation.
-    from ..media_processing import (
+    # load (orchestrator imports create_ffmpeg_runner from here). Runs
+    # once per media file, not once per FFmpeg invocation.
+    from .orchestrator import (
         FFMPEG_STALL_TIMEOUT_SEC,
         CancellationError,
         _diagnose_ffmpeg_exit_code,
@@ -395,7 +394,7 @@ def create_ffmpeg_runner(
         # the child process inherits the parent environment unchanged.
         ffmpeg_env: dict | None = None
         if init_vulkan:
-            from ..gpu_detection import get_vulkan_env_overrides
+            from ..gpu.vulkan_probe import get_vulkan_env_overrides
 
             vulkan_overrides = get_vulkan_env_overrides()
             if vulkan_overrides:

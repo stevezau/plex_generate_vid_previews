@@ -155,8 +155,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]  # assert False is fine in tests
-"plex_generate_previews/gpu_detection.py" = ["F401"]  # legacy re-export shim
-"plex_generate_previews/media_processing.py" = ["F401"]  # legacy re-export shim
+"plex_generate_previews/gpu/__init__.py" = ["F401"]  # public-API re-export
+"plex_generate_previews/processing/__init__.py" = ["F401"]  # public-API re-export
 
 [tool.ruff.format]
 quote-style = "double"

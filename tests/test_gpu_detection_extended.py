@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.gpu_detection import (
+from plex_generate_previews.gpu import (
     _build_gpu_error_detail,
     _detect_windows_gpus,
     _format_driver_label,
@@ -460,7 +460,7 @@ class TestFFmpegVersion:
     @patch("subprocess.run")
     def test_get_ffmpeg_version_parse_error(self, mock_run):
         """Test FFmpeg version parsing with invalid output."""
-        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        from plex_generate_previews.gpu import _get_ffmpeg_version
 
         mock_run.return_value = MagicMock(returncode=0, stdout="Invalid version output")
 
@@ -470,7 +470,7 @@ class TestFFmpegVersion:
     @patch("subprocess.run")
     def test_get_ffmpeg_version_error(self, mock_run):
         """Test FFmpeg version with subprocess error."""
-        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        from plex_generate_previews.gpu import _get_ffmpeg_version
 
         mock_run.side_effect = Exception("Command failed")
 
@@ -480,7 +480,7 @@ class TestFFmpegVersion:
     @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_check_ffmpeg_version_none(self, mock_get_version):
         """Test check FFmpeg version when version is None."""
-        from plex_generate_previews.gpu_detection import _check_ffmpeg_version
+        from plex_generate_previews.gpu import _check_ffmpeg_version
 
         mock_get_version.return_value = None
 
@@ -495,7 +495,7 @@ class TestAppleGPU:
     @patch("subprocess.run")
     def test_get_apple_gpu_name_success(self, mock_run):
         """Test getting Apple GPU name successfully."""
-        from plex_generate_previews.gpu_detection import _get_apple_gpu_name
+        from plex_generate_previews.gpu import _get_apple_gpu_name
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -508,7 +508,7 @@ class TestAppleGPU:
     @patch("subprocess.run")
     def test_get_apple_gpu_name_error(self, mock_run):
         """Test getting Apple GPU name with error."""
-        from plex_generate_previews.gpu_detection import _get_apple_gpu_name
+        from plex_generate_previews.gpu import _get_apple_gpu_name
 
         mock_run.side_effect = Exception("Command failed")
 
@@ -519,7 +519,7 @@ class TestAppleGPU:
     @patch("subprocess.run")
     def test_get_apple_gpu_name_arm64_fallback(self, mock_run, mock_machine):
         """Test getting Apple GPU name with ARM64 fallback."""
-        from plex_generate_previews.gpu_detection import _get_apple_gpu_name
+        from plex_generate_previews.gpu import _get_apple_gpu_name
 
         mock_run.return_value = MagicMock(returncode=0, stdout="No chipset info")
         mock_machine.return_value = "arm64"
@@ -534,7 +534,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_failure(self, mock_run):
         """Test lspci GPU detection with command failure."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(returncode=1)
 
@@ -544,7 +544,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_amd(self, mock_run):
         """Test lspci detecting AMD GPU."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -557,7 +557,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_intel(self, mock_run):
         """Test lspci detecting Intel GPU."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -570,7 +570,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_nvidia(self, mock_run):
         """Test lspci detecting NVIDIA GPU."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -583,7 +583,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_arm(self, mock_run):
         """Test lspci detecting ARM GPU."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(returncode=0, stdout="00:02.0 Display controller: ARM Mali GPU")
 
@@ -593,7 +593,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_not_found(self, mock_run):
         """Test lspci when lspci is not installed."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.side_effect = FileNotFoundError()
 
@@ -603,7 +603,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_exception(self, mock_run):
         """Test lspci with exception."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.side_effect = Exception("Unexpected error")
 
@@ -613,7 +613,7 @@ class TestLspciGPUDetection:
     @patch("subprocess.run")
     def test_detect_gpu_type_from_lspci_no_match(self, mock_run):
         """Test lspci with no GPU match."""
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(returncode=0, stdout="00:1f.3 Audio device: Intel Corporation")
 
@@ -629,7 +629,7 @@ class TestLogSystemInfo:
     @patch("plex_generate_previews.gpu.enumeration.logger")
     def test_log_system_info(self, mock_logger, mock_release, mock_system):
         """Test logging system information."""
-        from plex_generate_previews.gpu_detection import _log_system_info
+        from plex_generate_previews.gpu import _log_system_info
 
         mock_system.return_value = "Linux"
         mock_release.return_value = "5.15.0"
@@ -646,7 +646,7 @@ class TestParseLspciGPUName:
     @patch("subprocess.run")
     def test_parse_lspci_gpu_name_nvidia(self, mock_run):
         """Test parsing NVIDIA GPU name."""
-        from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
+        from plex_generate_previews.gpu import _parse_lspci_gpu_name
 
         # Mock lspci failure - should return fallback
         mock_run.return_value = MagicMock(returncode=1)
@@ -657,7 +657,7 @@ class TestParseLspciGPUName:
     @patch("subprocess.run")
     def test_parse_lspci_gpu_name_amd(self, mock_run):
         """Test parsing AMD GPU name."""
-        from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
+        from plex_generate_previews.gpu import _parse_lspci_gpu_name
 
         # Mock lspci failure - should return fallback
         mock_run.return_value = MagicMock(returncode=1)
@@ -668,7 +668,7 @@ class TestParseLspciGPUName:
     @patch("subprocess.run")
     def test_parse_lspci_gpu_name_intel(self, mock_run):
         """Test parsing Intel GPU name."""
-        from plex_generate_previews.gpu_detection import _parse_lspci_gpu_name
+        from plex_generate_previews.gpu import _parse_lspci_gpu_name
 
         # Mock lspci failure - should return fallback
         mock_run.return_value = MagicMock(returncode=1)
@@ -704,28 +704,28 @@ class TestNvidiaSmiDetection:
 
     @patch("subprocess.run")
     def test_detect_nvidia_via_nvidia_smi_success(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
         mock_run.return_value = MagicMock(returncode=0, stdout="NVIDIA GeForce RTX 3080\n")
         assert _detect_nvidia_via_nvidia_smi() == "NVIDIA"
 
     @patch("subprocess.run")
     def test_detect_nvidia_via_nvidia_smi_not_installed(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
         mock_run.side_effect = FileNotFoundError()
         assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
 
     @patch("subprocess.run")
     def test_detect_nvidia_via_nvidia_smi_failure(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
         mock_run.return_value = MagicMock(returncode=1, stderr="error")
         assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
 
     @patch("subprocess.run")
     def test_detect_nvidia_via_nvidia_smi_empty_output(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
@@ -734,14 +734,14 @@ class TestNvidiaSmiDetection:
     def test_detect_nvidia_via_nvidia_smi_timeout(self, mock_run):
         from subprocess import TimeoutExpired
 
-        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
         mock_run.side_effect = TimeoutExpired("nvidia-smi", 5)
         assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
 
     @patch("subprocess.run")
     def test_detect_nvidia_via_nvidia_smi_exception(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_nvidia_via_nvidia_smi
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
         mock_run.side_effect = RuntimeError("unexpected")
         assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
@@ -751,7 +751,7 @@ class TestGPUVendorFromDriver:
     """Test driver-to-vendor mapping."""
 
     def test_known_drivers(self):
-        from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
+        from plex_generate_previews.gpu import _get_gpu_vendor_from_driver
 
         with patch(
             "plex_generate_previews.gpu.enumeration._detect_gpu_type_from_lspci",
@@ -764,7 +764,7 @@ class TestGPUVendorFromDriver:
     @patch("plex_generate_previews.gpu.enumeration._is_wsl2", return_value=False)
     @patch("plex_generate_previews.gpu.enumeration._detect_gpu_type_from_lspci")
     def test_unknown_driver_uses_lspci(self, mock_lspci, _mock_wsl):
-        from plex_generate_previews.gpu_detection import _get_gpu_vendor_from_driver
+        from plex_generate_previews.gpu import _get_gpu_vendor_from_driver
 
         mock_lspci.return_value = "AMD"
         assert _get_gpu_vendor_from_driver("somedriver") == "AMD"
@@ -776,7 +776,7 @@ class TestCheckDeviceAccess:
     @patch("os.access", return_value=True)
     @patch("os.path.exists", return_value=True)
     def test_accessible_device(self, _mock_exists, _mock_access):
-        from plex_generate_previews.gpu_detection import _check_device_access
+        from plex_generate_previews.gpu import _check_device_access
 
         ok, reason = _check_device_access("/dev/dri/renderD128")
         assert ok is True
@@ -784,7 +784,7 @@ class TestCheckDeviceAccess:
 
     @patch("os.path.exists", return_value=False)
     def test_nonexistent_device(self, _mock_exists):
-        from plex_generate_previews.gpu_detection import _check_device_access
+        from plex_generate_previews.gpu import _check_device_access
 
         ok, reason = _check_device_access("/dev/dri/renderD999")
         assert ok is False
@@ -852,7 +852,7 @@ class TestLspciEdgeCases:
 
     @patch("subprocess.run")
     def test_lspci_empty_output(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         assert _detect_gpu_type_from_lspci() == "UNKNOWN"
@@ -861,14 +861,14 @@ class TestLspciEdgeCases:
     def test_lspci_timeout(self, mock_run):
         from subprocess import TimeoutExpired
 
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.side_effect = TimeoutExpired("lspci", 5)
         assert _detect_gpu_type_from_lspci() == "UNKNOWN"
 
     @patch("subprocess.run")
     def test_lspci_no_vga_devices(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -878,14 +878,14 @@ class TestLspciEdgeCases:
 
     @patch("subprocess.run")
     def test_lspci_unrecognized_gpu_vendor(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(returncode=0, stdout="00:02.0 VGA compatible controller: Matrox Corporation")
         assert _detect_gpu_type_from_lspci() == "UNKNOWN"
 
     @patch("subprocess.run")
     def test_lspci_with_stderr(self, mock_run):
-        from plex_generate_previews.gpu_detection import _detect_gpu_type_from_lspci
+        from plex_generate_previews.gpu import _detect_gpu_type_from_lspci
 
         mock_run.return_value = MagicMock(returncode=1, stderr="pcilib: Cannot open /proc/bus/pci", stdout="")
         assert _detect_gpu_type_from_lspci() == "UNKNOWN"
@@ -896,14 +896,14 @@ class TestCheckFFmpegVersion:
 
     @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_version_meets_minimum(self, mock_version):
-        from plex_generate_previews.gpu_detection import _check_ffmpeg_version
+        from plex_generate_previews.gpu import _check_ffmpeg_version
 
         mock_version.return_value = (7, 1, 1)
         assert _check_ffmpeg_version() is True
 
     @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_version_below_minimum(self, mock_version):
-        from plex_generate_previews.gpu_detection import _check_ffmpeg_version
+        from plex_generate_previews.gpu import _check_ffmpeg_version
 
         mock_version.return_value = (4, 0, 0)
         assert _check_ffmpeg_version() is False
@@ -914,28 +914,28 @@ class TestGetFFmpegVersionParsing:
 
     @patch("subprocess.run")
     def test_date_based_git_build(self, mock_run):
-        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        from plex_generate_previews.gpu import _get_ffmpeg_version
 
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 2025-10-12-git-abcdef")
         assert _get_ffmpeg_version() is None
 
     @patch("subprocess.run")
     def test_two_part_version(self, mock_run):
-        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        from plex_generate_previews.gpu import _get_ffmpeg_version
 
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 8.0 Copyright")
         assert _get_ffmpeg_version() == (8, 0, 0)
 
     @patch("subprocess.run")
     def test_version_with_suffix(self, mock_run):
-        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        from plex_generate_previews.gpu import _get_ffmpeg_version
 
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.1.1-1ubuntu1.2 Copyright")
         assert _get_ffmpeg_version() == (7, 1, 1)
 
     @patch("subprocess.run")
     def test_ffmpeg_not_found(self, mock_run):
-        from plex_generate_previews.gpu_detection import _get_ffmpeg_version
+        from plex_generate_previews.gpu import _get_ffmpeg_version
 
         mock_run.return_value = MagicMock(returncode=1, stderr="command not found")
         assert _get_ffmpeg_version() is None
@@ -1660,7 +1660,7 @@ class TestProbeVulkanDevice:
     """Unit tests for the libplacebo Vulkan device probe (DV5 green-bug detector)."""
 
     def setup_method(self):
-        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+        from plex_generate_previews.gpu import _reset_vulkan_device_cache
 
         _reset_vulkan_device_cache()
 
@@ -1670,7 +1670,7 @@ class TestProbeVulkanDevice:
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_parses_intel_hardware_device(self, mock_run, _mock_vk):
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -1690,7 +1690,7 @@ class TestProbeVulkanDevice:
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_parses_llvmpipe_software_device(self, mock_run, _mock_vk):
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -1707,7 +1707,7 @@ class TestProbeVulkanDevice:
         return_value=False,
     )
     def test_no_vulkan_support_returns_none(self, _mock_vk):
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         # Must not invoke subprocess when Vulkan hwaccel is absent.
         with patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run") as mock_run:
@@ -1722,7 +1722,7 @@ class TestProbeVulkanDevice:
     def test_subprocess_timeout_returns_none(self, mock_run, _mock_vk):
         import subprocess as _sp
 
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         mock_run.side_effect = _sp.TimeoutExpired(cmd=["ffmpeg"], timeout=10)
         assert _probe_vulkan_device() is None
@@ -1733,7 +1733,7 @@ class TestProbeVulkanDevice:
     )
     @patch("plex_generate_previews.gpu.vulkan_probe.subprocess.run")
     def test_stderr_without_device_line_returns_none(self, mock_run, _mock_vk):
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         mock_run.return_value = MagicMock(
             returncode=1,
@@ -1760,7 +1760,7 @@ class TestProbeVulkanDevice:
         env override is cached and the NVIDIA device is returned. The
         VK_DRIVER_FILES fallback (Strategy 2b) does NOT fire.
         """
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
@@ -1807,7 +1807,7 @@ class TestProbeVulkanDevice:
         """Strategy 1 fails, Strategy 2 (EGL vendor override) also
         fails, Strategy 2b (VK_DRIVER_FILES + EGL) succeeds → cached
         env override carries BOTH keys."""
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
@@ -1873,7 +1873,7 @@ class TestProbeVulkanDevice:
         guidance (forums.developer.nvidia.com thread 242883), a bare
         ``libEGL_nvidia.so.0`` ``library_path`` is sufficient.
         """
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
@@ -1950,7 +1950,7 @@ class TestProbeVulkanDevice:
         ``libEGL_nvidia.so.0`` is absent — the synthesised file would
         point at a non-existent library.  Falls through to Strategy 2b.
         """
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         mock_find_egl.return_value = None
         mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
@@ -1995,7 +1995,7 @@ class TestProbeVulkanDevice:
         """Strategy 2c must not synthesise a file when the real GLVND
         vendor JSON is already on disk — Strategy 2 handles that case.
         """
-        from plex_generate_previews.gpu_detection import _probe_vulkan_device
+        from plex_generate_previews.gpu import _probe_vulkan_device
 
         mock_find_egl.return_value = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
         mock_find_icd.return_value = "/etc/vulkan/icd.d/nvidia_icd.json"
@@ -2036,7 +2036,7 @@ class TestProbeVulkanDevice:
         VK_LOADER_DEBUG=all capture → only two subprocess calls
         (Strategy 1 + Strategy 3).
         """
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
@@ -2083,7 +2083,7 @@ class TestProbeVulkanDevice:
         # Use the public entry point `get_vulkan_device_info` so the
         # cache flag is set correctly and the auto-trigger in
         # `get_vulkan_debug_buffer` does not re-probe.
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             get_vulkan_debug_buffer,
             get_vulkan_device_info,
         )
@@ -2144,8 +2144,8 @@ class TestProbeVulkanDevice:
         the Plex scheduler revived a pending job before the first
         /api/system/vulkan poll fired.
         """
+        from plex_generate_previews.gpu import get_vulkan_env_overrides
         from plex_generate_previews.gpu.vulkan_probe import _VULKAN_DEVICE_PROBED
-        from plex_generate_previews.gpu_detection import get_vulkan_env_overrides
 
         # Sanity: the setup_method reset made _VULKAN_DEVICE_PROBED False.
         assert _VULKAN_DEVICE_PROBED is False
@@ -2187,7 +2187,7 @@ class TestProbeVulkanDevice:
     ):
         """Happy path: Strategy 1 returns a real hardware device → no
         retries, no diagnostic capture, no env override."""
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_debug_buffer,
             get_vulkan_env_overrides,
@@ -2224,7 +2224,7 @@ class TestProbeVulkanDevice:
         on the Intel iGPU (cross-GPU shuffle, ~40% speed hit, steals Intel
         worker cycles).
         """
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
@@ -2272,7 +2272,7 @@ class TestProbeVulkanDevice:
         """Intel-only host (no NVIDIA anywhere): strategy 1 returns Intel
         and short-circuits.  NVIDIA-specific retries must NOT fire — the
         user has no NVIDIA GPU to route to."""
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _probe_vulkan_device,
             get_vulkan_env_overrides,
         )
@@ -2296,13 +2296,13 @@ class TestGetVulkanDeviceInfo:
     """Unit tests for get_vulkan_device_info() — the cached info builder."""
 
     def setup_method(self):
-        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+        from plex_generate_previews.gpu import _reset_vulkan_device_cache
 
         _reset_vulkan_device_cache()
 
     @patch("plex_generate_previews.gpu.vulkan_probe._probe_vulkan_device")
     def test_intel_hardware_is_not_software(self, mock_probe):
-        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+        from plex_generate_previews.gpu import get_vulkan_device_info
 
         mock_probe.return_value = "Intel(R) Graphics (RPL-S) (integrated) (0xa780)"
         info = get_vulkan_device_info()
@@ -2311,7 +2311,7 @@ class TestGetVulkanDeviceInfo:
 
     @patch("plex_generate_previews.gpu.vulkan_probe._probe_vulkan_device")
     def test_llvmpipe_is_software(self, mock_probe):
-        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+        from plex_generate_previews.gpu import get_vulkan_device_info
 
         mock_probe.return_value = "llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)"
         info = get_vulkan_device_info()
@@ -2320,7 +2320,7 @@ class TestGetVulkanDeviceInfo:
 
     @patch("plex_generate_previews.gpu.vulkan_probe._probe_vulkan_device")
     def test_lavapipe_is_software(self, mock_probe):
-        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+        from plex_generate_previews.gpu import get_vulkan_device_info
 
         mock_probe.return_value = "lavapipe (whatever) (software)"
         info = get_vulkan_device_info()
@@ -2328,7 +2328,7 @@ class TestGetVulkanDeviceInfo:
 
     @patch("plex_generate_previews.gpu.vulkan_probe._probe_vulkan_device")
     def test_none_device_not_software(self, mock_probe):
-        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+        from plex_generate_previews.gpu import get_vulkan_device_info
 
         mock_probe.return_value = None
         info = get_vulkan_device_info()
@@ -2337,7 +2337,7 @@ class TestGetVulkanDeviceInfo:
 
     @patch("plex_generate_previews.gpu.vulkan_probe._probe_vulkan_device")
     def test_probe_is_called_once_and_cached(self, mock_probe):
-        from plex_generate_previews.gpu_detection import get_vulkan_device_info
+        from plex_generate_previews.gpu import get_vulkan_device_info
 
         mock_probe.return_value = "Intel(R) Graphics"
         get_vulkan_device_info()
@@ -2350,7 +2350,7 @@ class TestGetVulkanInfoAPI:
     """Unit tests for _get_vulkan_info() in api_system (the HTML warning builder)."""
 
     def setup_method(self):
-        from plex_generate_previews.gpu_detection import _reset_vulkan_device_cache
+        from plex_generate_previews.gpu import _reset_vulkan_device_cache
         from plex_generate_previews.web.routes._helpers import _gpu_cache
 
         _reset_vulkan_device_cache()

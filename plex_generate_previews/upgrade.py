@@ -222,7 +222,7 @@ def _migrate_to_v2(sm) -> list:
             old_ffmpeg = 2
 
         try:
-            from .gpu_detection import detect_all_gpus
+            from .gpu.detect import detect_all_gpus
 
             detected = detect_all_gpus()
         except Exception:
@@ -453,7 +453,7 @@ def _build_gpu_config_from_env() -> list[dict[str, Any]] | None:
         ffmpeg_threads = 2
 
     try:
-        from .gpu_detection import detect_all_gpus
+        from .gpu.detect import detect_all_gpus
 
         detected = detect_all_gpus()
     except Exception:

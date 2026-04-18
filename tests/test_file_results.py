@@ -224,7 +224,7 @@ class TestFileResultCallback:
     """set_file_result_callback and _notify_file_result wiring."""
 
     def test_callback_invoked_for_each_outcome(self):
-        from plex_generate_previews.media_processing import (
+        from plex_generate_previews.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -247,7 +247,7 @@ class TestFileResultCallback:
         assert captured[1]["outcome"] == "failed"
 
     def test_callback_cleared(self):
-        from plex_generate_previews.media_processing import (
+        from plex_generate_previews.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -261,7 +261,7 @@ class TestFileResultCallback:
 
     def test_callback_exception_does_not_propagate(self):
         """A failing callback must not crash the caller."""
-        from plex_generate_previews.media_processing import (
+        from plex_generate_previews.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,

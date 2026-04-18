@@ -619,7 +619,7 @@ def get_vulkan_debug():
     No authentication required — the bundle contains environment facts
     and loader traces but no secrets.
     """
-    from ...gpu_detection import (
+    from ...gpu.vulkan_probe import (
         get_vulkan_debug_buffer,
         get_vulkan_device_info,
         get_vulkan_env_overrides,

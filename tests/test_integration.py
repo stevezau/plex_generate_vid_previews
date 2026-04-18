@@ -8,7 +8,7 @@ to BIF generation with all components working together.
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.media_processing import ProcessingResult
+from plex_generate_previews.processing import ProcessingResult
 
 
 class TestFullPipeline:
@@ -32,7 +32,7 @@ class TestFullPipeline:
         plex_xml_movie_tree,
     ):
         """Test processing a single video through the full pipeline."""
-        from plex_generate_previews.media_processing import process_item
+        from plex_generate_previews.processing import process_item
 
         # Mock Plex
         mock_plex = MagicMock()
@@ -66,7 +66,7 @@ class TestFullPipeline:
         """Test processing multiple videos with worker pool."""
         import time
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Mock process_item to simulate some processing time
         def mock_process_fn(*args, **kwargs):
@@ -107,7 +107,7 @@ class TestFullPipeline:
         """Test pipeline with some items failing."""
         import time
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Make some items fail
         call_count = [0]
@@ -170,7 +170,7 @@ class TestWorkerPoolIntegration:
         plex_xml_movie_tree,
     ):
         """Test worker pool coordinating multiple workers."""
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Mock Plex
         mock_plex = MagicMock()
@@ -222,7 +222,7 @@ class TestWorkerPoolIntegration:
         """Test that work is distributed across workers."""
         import time
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Simulate variable processing times
         def variable_process(*args, **kwargs):

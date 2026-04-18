@@ -96,7 +96,8 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             from ...config import ConfigValidationError, load_config
             from ...jobs.orchestrator import run_processing
-            from ...media_processing import (
+            from ...jobs.worker import is_job_thread, register_job_thread
+            from ...processing.orchestrator import (
                 _verify_tmp_folder_health,
                 clear_failures,
                 failure_scope,
@@ -104,7 +105,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 set_file_result_callback,
             )
             from ...utils import setup_working_directory as create_working_directory
-            from ...worker import is_job_thread, register_job_thread
             from ..settings_manager import get_settings_manager
 
             register_job_thread()
@@ -703,7 +703,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job_manager.complete_job(job_id, error=str(e))
         finally:
             set_file_result_callback(None)
-            from ...worker import unregister_job_thread
+            from ...jobs.worker import unregister_job_thread
 
             unregister_job_thread()
             with _inflight_lock:

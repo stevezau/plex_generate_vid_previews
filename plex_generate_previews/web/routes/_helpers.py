@@ -94,7 +94,7 @@ def _ensure_gpu_cache() -> None:
             return
 
     try:
-        from ...gpu_detection import detect_all_gpus
+        from ...gpu.detect import detect_all_gpus
 
         raw_gpus = detect_all_gpus()
         gpus = []

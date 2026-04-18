@@ -5,7 +5,7 @@ These tests use mocking to verify GPU detection logic without requiring actual h
 
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.gpu_detection import (
+from plex_generate_previews.gpu import (
     _check_ffmpeg_version,
     _get_ffmpeg_version,
     format_gpu_info,

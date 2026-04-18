@@ -89,7 +89,7 @@ class TestGPUDetection:
 
     def test_format_gpu_info(self):
         """Test GPU info formatting."""
-        from plex_generate_previews.gpu_detection import format_gpu_info
+        from plex_generate_previews.gpu import format_gpu_info
 
         # Test NVIDIA formatting
         nvidia_info = format_gpu_info("cuda", 0, "NVIDIA GeForce RTX 3080")
@@ -105,7 +105,7 @@ class TestGPUDetection:
 
     def test_ffmpeg_version_check(self):
         """Test FFmpeg version checking."""
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _check_ffmpeg_version,
             _get_ffmpeg_version,
         )
@@ -130,6 +130,6 @@ class TestProcessingModule:
 
     def test_run_processing_importable(self):
         """Test that run_processing can be imported from job_orchestrator module."""
-        from plex_generate_previews.job_orchestrator import run_processing
+        from plex_generate_previews.jobs.orchestrator import run_processing
 
         assert callable(run_processing)

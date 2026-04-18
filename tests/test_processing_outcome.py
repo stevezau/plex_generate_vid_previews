@@ -12,9 +12,9 @@ Covers:
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.media_processing import ProcessingResult, process_item
+from plex_generate_previews.jobs.worker import Worker
+from plex_generate_previews.processing import ProcessingResult, process_item
 from plex_generate_previews.web.jobs import JobManager, JobProgress
-from plex_generate_previews.worker import Worker
 
 
 class TestProcessingResultEnum:
@@ -303,7 +303,7 @@ class TestMisconfigurationDetection:
 
     def test_warning_logged_when_all_not_found(self):
         """When all items are skipped_file_not_found, a warning is logged."""
-        from plex_generate_previews.media_processing import ProcessingResult
+        from plex_generate_previews.processing import ProcessingResult
 
         outcome = {r.value: 0 for r in ProcessingResult}
         outcome["skipped_file_not_found"] = 100
@@ -318,7 +318,7 @@ class TestMisconfigurationDetection:
 
     def test_no_warning_when_items_generated(self):
         """When items are generated, no misconfiguration warning."""
-        from plex_generate_previews.media_processing import ProcessingResult
+        from plex_generate_previews.processing import ProcessingResult
 
         outcome = {r.value: 0 for r in ProcessingResult}
         outcome["generated"] = 50
@@ -330,7 +330,7 @@ class TestMisconfigurationDetection:
 
     def test_no_warning_when_all_exist(self):
         """When all items already have BIF files, no warning."""
-        from plex_generate_previews.media_processing import ProcessingResult
+        from plex_generate_previews.processing import ProcessingResult
 
         outcome = {r.value: 0 for r in ProcessingResult}
         outcome["skipped_bif_exists"] = 500
@@ -347,7 +347,7 @@ class TestOutcomeInWorkerPoolResult:
         """process_items_headless result dict contains an 'outcome' key."""
         mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
@@ -379,7 +379,7 @@ class TestOutcomeInWorkerPoolResult:
         )
         mock_process.side_effect = lambda *args, **kwargs: next(results_iter)
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()

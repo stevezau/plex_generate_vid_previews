@@ -409,7 +409,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
         # read, which sends ``_ensure_gpu_cache`` back to the real ffmpeg
         # subprocess probes.
         try:
-            import plex_generate_previews.gpu_detection as gd_mod
+            import plex_generate_previews.gpu.detect as gd_mod
 
             monkeypatch.setattr(gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True)
         except ImportError:

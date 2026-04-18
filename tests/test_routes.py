@@ -1123,7 +1123,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post("/api/jobs", headers=_api_headers(), json={})
             assert resp.status_code == 201
@@ -1182,7 +1182,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1237,7 +1237,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1283,7 +1283,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1328,7 +1328,7 @@ class TestJobConfigPathMappings:
                 "plex_generate_previews.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]),
+            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1461,7 +1461,7 @@ class TestSystemAPI:
     """Test /api/system/* endpoints."""
 
     def test_get_system_status(self, client):
-        with patch("plex_generate_previews.gpu_detection.detect_all_gpus", return_value=[]):
+        with patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]):
             resp = client.get("/api/system/status", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()

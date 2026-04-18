@@ -10,8 +10,8 @@ import shutil
 
 from loguru import logger
 
-from ..media_processing import ProcessingResult, clear_failures, log_failure_summary
 from ..plex_client import get_library_sections, get_media_items_by_paths, plex_server
+from ..processing.orchestrator import ProcessingResult, clear_failures, log_failure_summary
 from .worker import WorkerPool
 
 

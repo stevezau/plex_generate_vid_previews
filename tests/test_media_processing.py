@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from plex_generate_previews.gpu_detection import VulkanProbeResult
-from plex_generate_previews.media_processing import (
+from plex_generate_previews.gpu import VulkanProbeResult
+from plex_generate_previews.processing import (
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
     DV5_PATH_VAAPI_VULKAN,

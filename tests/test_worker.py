@@ -10,12 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.media_processing import (
+from plex_generate_previews.jobs.worker import Worker, WorkerPool
+from plex_generate_previews.processing import (
     CancellationError,
     CodecNotSupportedError,
     ProcessingResult,
 )
-from plex_generate_previews.worker import Worker, WorkerPool
 
 
 class TestWorker:

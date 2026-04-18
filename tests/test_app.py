@@ -270,7 +270,7 @@ class TestPrewarmCaches:
 
     @pytest.mark.real_prewarm
     @patch(
-        "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
         return_value=None,
     )
     @patch(

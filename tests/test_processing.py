@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.job_orchestrator import run_processing
-from plex_generate_previews.media_processing import ProcessingResult
+from plex_generate_previews.jobs.orchestrator import run_processing
+from plex_generate_previews.processing import ProcessingResult
 
 MODULE = "plex_generate_previews.jobs.orchestrator"
 

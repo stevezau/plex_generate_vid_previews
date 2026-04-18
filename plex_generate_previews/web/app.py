@@ -198,7 +198,7 @@ def _prewarm_caches() -> None:
     # Synchronous: must complete before worker threads start processing
     # jobs on the libplacebo path (see docstring).
     try:
-        from ..gpu_detection import get_vulkan_device_info
+        from ..gpu.vulkan_probe import get_vulkan_device_info
 
         get_vulkan_device_info()
     except Exception as exc:

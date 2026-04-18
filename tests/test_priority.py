@@ -10,7 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.job_dispatcher import JobDispatcher, JobTracker
+from plex_generate_previews.jobs.dispatcher import JobDispatcher, JobTracker
+from plex_generate_previews.jobs.worker import WorkerPool
 from plex_generate_previews.web.jobs import (
     PRIORITY_HIGH,
     PRIORITY_LOW,
@@ -19,7 +20,6 @@ from plex_generate_previews.web.jobs import (
     JobManager,
     parse_priority,
 )
-from plex_generate_previews.worker import WorkerPool
 
 
 @pytest.fixture(autouse=True)

@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.gpu_detection import VulkanProbeResult
+from plex_generate_previews.gpu import VulkanProbeResult
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.notifications import (
     VULKAN_SOFTWARE_FALLBACK_ID,

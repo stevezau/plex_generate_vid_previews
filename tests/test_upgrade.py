@@ -117,7 +117,7 @@ class TestEnvVarMigrationExtended:
         monkeypatch.setenv("GPU_THREADS", "2")
         detected = [("nvidia", "cuda", {"name": "RTX 4090"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             _migrate_env_vars(settings_manager)
@@ -169,7 +169,7 @@ class TestBuildGpuConfigFromEnv:
             ("vaapi", "/dev/dri/renderD129", {"name": "AMD GPU"}),
         ]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -189,7 +189,7 @@ class TestBuildGpuConfigFromEnv:
             ("vaapi", "/dev/dri/renderD129", {"name": "AMD GPU"}),
         ]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -204,7 +204,7 @@ class TestBuildGpuConfigFromEnv:
         monkeypatch.setenv("FFMPEG_THREADS", "4")
         detected = [("nvidia", "/dev/nvidia0", {"name": "RTX 4090"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -215,7 +215,7 @@ class TestBuildGpuConfigFromEnv:
 
         monkeypatch.setenv("GPU_THREADS", "2")
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=[],
         ):
             result = _build_gpu_config_from_env()
@@ -246,7 +246,7 @@ class TestMigrateSchema:
             ("nvidia", "/dev/nvidia1", {"name": "RTX 3090"}),
         ]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             _migrate_schema(settings_manager)
@@ -271,7 +271,7 @@ class TestMigrateSchema:
         settings_manager.set("ffmpeg_threads", 3)
 
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=[],
         ):
             _migrate_schema(settings_manager)
@@ -322,7 +322,7 @@ class TestMigrateSchema:
         detected = [("nvidia", "/dev/nvidia0", {"name": "GPU"})]
 
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             _migrate_schema(settings_manager)
@@ -385,7 +385,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
         monkeypatch.setenv("GPU_THREADS", "not_a_number")
         detected = [("nvidia", "cuda", {"name": "GPU"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -399,7 +399,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
         monkeypatch.setenv("FFMPEG_THREADS", "xyz")
         detected = [("nvidia", "cuda", {"name": "GPU"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -414,7 +414,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
         monkeypatch.setenv("GPU_SELECTION", "0,999")
         detected = [("nvidia", "cuda", {"name": "GPU"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -427,7 +427,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
 
         monkeypatch.setenv("GPU_THREADS", "1")
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             side_effect=RuntimeError("detection failed"),
         ):
             result = _build_gpu_config_from_env()
@@ -440,7 +440,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
         monkeypatch.setenv("GPU_THREADS", "0")
         detected = [("nvidia", "cuda", {"name": "GPU"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -458,7 +458,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
             ("nvidia", "cuda:1", {"name": "GPU B"}),
         ]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -472,7 +472,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
         monkeypatch.setenv("GPU_SELECTION", "99,100")
         detected = [("nvidia", "cuda", {"name": "GPU"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -489,7 +489,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
             ("nvidia", "cuda:1", {"name": "GPU B"}),
         ]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -506,7 +506,7 @@ class TestBuildGpuConfigFromEnvEdgeCases:
         monkeypatch.setenv("FFMPEG_THREADS", "4")
         detected = [("nvidia", "cuda", {"name": "GPU"})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             result = _build_gpu_config_from_env()
@@ -583,7 +583,7 @@ class TestMigrateToV2Extended:
         settings_manager.set("gpu_threads", 4)
         settings_manager.set("ffmpeg_threads", 2)
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             side_effect=RuntimeError("no driver"),
         ):
             notes = _migrate_to_v2(settings_manager)
@@ -603,7 +603,7 @@ class TestMigrateToV2Extended:
             ("nvidia", "/dev/nvidia2", {"name": "GPU C"}),
         ]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             _migrate_to_v2(settings_manager)
@@ -619,7 +619,7 @@ class TestMigrateToV2Extended:
         settings_manager.set("gpu_threads", 1)
         detected = [("vaapi", "/dev/dri/renderD128", {})]
         with patch(
-            "plex_generate_previews.gpu_detection.detect_all_gpus",
+            "plex_generate_previews.gpu.detect.detect_all_gpus",
             return_value=detected,
         ):
             _migrate_to_v2(settings_manager)
