@@ -130,7 +130,9 @@ def _resolve_bif_for_item(
             verify=verify_ssl,
         )
         tree_resp.raise_for_status()
-        tree_data = ET.fromstring(tree_resp.content)
+        # XML content comes from the user's own Plex server authenticated with
+        # their own token — trusted origin, not untrusted upload.
+        tree_data = ET.fromstring(tree_resp.content)  # nosec B314
 
         for media_part in tree_data.findall(".//MediaPart"):
             bundle_hash = media_part.attrib.get("hash", "")

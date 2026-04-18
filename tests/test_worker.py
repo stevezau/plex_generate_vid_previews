@@ -1172,3 +1172,124 @@ class TestWorkerCancellation:
         assert mock_process.called
         call_kwargs = mock_process.call_args[1]
         assert call_kwargs.get("cancel_check") is cancel_fn
+
+
+class TestBuildSelectedGpus:
+    """Test _build_selected_gpus() — merges gpu_config with detected GPU cache."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_gpu_cache(self, monkeypatch):
+        """Control the GPU cache directly and bypass live detection."""
+        from plex_generate_previews.web.routes import _helpers
+
+        _helpers._gpu_cache["result"] = []
+        monkeypatch.setattr(_helpers, "_ensure_gpu_cache", lambda: None)
+        yield
+        _helpers._gpu_cache["result"] = None
+
+    def _set_cache(self, gpus):
+        from plex_generate_previews.web.routes import _helpers
+
+        _helpers._gpu_cache["result"] = gpus
+
+    def _make_settings(self, gpu_config):
+        sm = MagicMock()
+        sm.gpu_config = gpu_config
+        return sm
+
+    def test_enabled_gpu_returned_with_config_values(self):
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache([{"type": "NVIDIA", "device": "cuda:0", "name": "RTX 3080"}])
+        settings = self._make_settings([{"device": "cuda:0", "enabled": True, "workers": 3, "ffmpeg_threads": 4}])
+
+        result = _build_selected_gpus(settings)
+
+        assert len(result) == 1
+        gpu_type, device, info = result[0]
+        assert gpu_type == "NVIDIA"
+        assert device == "cuda:0"
+        assert info["workers"] == 3
+        assert info["ffmpeg_threads"] == 4
+
+    def test_disabled_gpu_is_skipped(self):
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache([{"type": "AMD", "device": "vaapi:/dev/dri/renderD128", "name": "RX 6800"}])
+        settings = self._make_settings([{"device": "vaapi:/dev/dri/renderD128", "enabled": False, "workers": 2}])
+
+        assert _build_selected_gpus(settings) == []
+
+    def test_zero_workers_is_skipped(self):
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache([{"type": "NVIDIA", "device": "cuda:0", "name": "RTX"}])
+        settings = self._make_settings([{"device": "cuda:0", "enabled": True, "workers": 0}])
+
+        assert _build_selected_gpus(settings) == []
+
+    def test_failed_gpu_is_skipped(self):
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache(
+            [
+                {"type": "NVIDIA", "device": "cuda:0", "name": "Working", "status": "ok"},
+                {"type": "NVIDIA", "device": "cuda:1", "name": "Broken", "status": "failed"},
+            ]
+        )
+        settings = self._make_settings(
+            [
+                {"device": "cuda:0", "enabled": True, "workers": 1},
+                {"device": "cuda:1", "enabled": True, "workers": 1},
+            ]
+        )
+
+        result = _build_selected_gpus(settings)
+        devices = [r[1] for r in result]
+        assert "cuda:0" in devices
+        assert "cuda:1" not in devices
+
+    def test_undetected_gpu_gets_default_config(self):
+        """GPU in cache but not in gpu_config → defaults (workers=1, ffmpeg_threads=2)."""
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache([{"type": "INTEL", "device": "qsv", "name": "Arc"}])
+        settings = self._make_settings([])
+
+        result = _build_selected_gpus(settings)
+
+        assert len(result) == 1
+        _, device, info = result[0]
+        assert device == "qsv"
+        assert info["workers"] == 1
+        assert info["ffmpeg_threads"] == 2
+
+    def test_empty_cache_returns_empty_list(self):
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache([])
+        settings = self._make_settings([])
+
+        assert _build_selected_gpus(settings) == []
+
+    def test_mixed_enabled_and_disabled(self):
+        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+
+        self._set_cache(
+            [
+                {"type": "NVIDIA", "device": "cuda:0", "name": "A"},
+                {"type": "NVIDIA", "device": "cuda:1", "name": "B"},
+                {"type": "AMD", "device": "vaapi:/dev/dri/renderD128", "name": "C"},
+            ]
+        )
+        settings = self._make_settings(
+            [
+                {"device": "cuda:0", "enabled": True, "workers": 2, "ffmpeg_threads": 3},
+                {"device": "cuda:1", "enabled": False, "workers": 2},
+                {"device": "vaapi:/dev/dri/renderD128", "enabled": True, "workers": 1},
+            ]
+        )
+
+        result = _build_selected_gpus(settings)
+        devices = [r[1] for r in result]
+        assert set(devices) == {"cuda:0", "vaapi:/dev/dri/renderD128"}

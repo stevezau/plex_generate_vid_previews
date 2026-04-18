@@ -35,6 +35,11 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Least-privilege defaults. The build job opts into packages:write below
+# when it needs to push to GHCR / Docker Hub.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest

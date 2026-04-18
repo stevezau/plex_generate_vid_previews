@@ -578,11 +578,15 @@ def plex_webhook_test_reachability():
     multipart = {"payload": (None, _json.dumps(payload), "application/json")}
 
     try:
+        # verify=False: this is a webhook self-test POST back to the user's
+        # own public_url. Home-lab users commonly front the app with
+        # self-signed TLS, so strict verification would fail the test for
+        # exactly the valid deployments it's meant to check.
         response = requests.post(
             test_url,
             files=multipart,
             timeout=10,
-            verify=False,
+            verify=False,  # nosec B501
         )
     except requests.exceptions.RequestException as exc:
         return (

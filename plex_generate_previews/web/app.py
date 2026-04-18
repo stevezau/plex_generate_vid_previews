@@ -531,7 +531,9 @@ def create_app(config_dir: str = None) -> Flask:
     return app
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
+# Dev helper binds to all interfaces so Docker / LAN access works;
+# production uses gunicorn via wrapper.sh.
+def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):  # nosec B104
     """Run the web server with SocketIO.
 
     In production (Docker), use gunicorn via ``wrapper.sh`` instead.

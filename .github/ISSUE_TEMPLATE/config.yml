@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions — questions, config help, show-and-tell
+    url: https://github.com/stevezau/plex_generate_vid_previews/discussions
+    about: For setup/config questions and non-bug conversations.
