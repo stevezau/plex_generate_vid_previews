@@ -1101,6 +1101,7 @@ class TestSettingsAPI:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_job_async
 class TestJobConfigPathMappings:
     """Test _start_job_async applies settings path_mappings and config_overrides correctly."""
 
@@ -1821,6 +1822,7 @@ class TestSchedulesCRUD:
         resp = client.post("/api/schedules/nonexistent/disable", headers=_api_headers())
         assert resp.status_code == 404
 
+    @pytest.mark.real_job_async
     def test_run_now(self, client):
         create_resp = client.post(
             "/api/schedules",

@@ -282,11 +282,15 @@ class TestPrewarmCaches:
 
     @pytest.mark.real_prewarm
     @patch(
+        "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+        return_value=None,
+    )
+    @patch(
         "plex_generate_previews.web.routes.api_system._get_version_info",
         return_value={"current_version": "1.0.0"},
     )
     @patch("plex_generate_previews.web.routes._helpers._ensure_gpu_cache")
-    def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version):
+    def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version, mock_vulkan):
         """_prewarm_caches starts threads for GPU and version caches."""
         import threading
 

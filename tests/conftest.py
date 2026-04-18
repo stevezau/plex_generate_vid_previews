@@ -385,6 +385,123 @@ def _neutralize_setup_logging(request, monkeypatch):
     monkeypatch.setattr(app_mod, "setup_logging", noop, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_real_world_calls(request, monkeypatch):
+    """Stub out the network / hardware calls that ``run_job`` would
+    otherwise make on a developer's laptop or on an unsandboxed CI runner.
+
+    With the sync shim below, ``POST /api/jobs`` route handlers run
+    ``run_job`` inline. That path calls ``plex_server(config)`` and
+    ``_ensure_gpu_cache()`` *before* the mocked ``run_processing``. On a
+    developer box with ``PLEX_URL`` set this would connect to the user's
+    real Plex library (we observed ``Retrieved 9949 media files from
+    library 'Movies'`` in a 34 s test run). On CI it would hang on the
+    default ``requests`` timeout until ``pytest-timeout`` killed the
+    worker — taking the worker's coverage data with it.
+
+    Tests that want the real call (GPU detection integration, for
+    example) can opt out by marking themselves ``real_gpu_detection`` or
+    ``real_plex_server`` — neither marker is wired up yet because no
+    existing test needs it.
+    """
+    if request.node.get_closest_marker("real_plex_server") is None:
+        try:
+            import plex_generate_previews.plex_client as pc_mod
+
+            mock_server = MagicMock()
+            mock_server.library.sections.return_value = []
+            monkeypatch.setattr(
+                pc_mod, "plex_server", lambda *a, **kw: mock_server, raising=True
+            )
+        except ImportError:
+            pass
+
+    if request.node.get_closest_marker("real_gpu_detection") is None:
+        # Replace ``detect_all_gpus`` at its source so every lazy import
+        # site (``_ensure_gpu_cache``, ``gpu_detection_extended`` tests)
+        # picks up the stub. Patching the cache isn't enough: module-
+        # scoped reset fixtures (e.g. ``test_routes.py::_reset_singletons``
+        # → ``clear_gpu_cache``) wipe the cache before our value can be
+        # read, which sends ``_ensure_gpu_cache`` back to the real ffmpeg
+        # subprocess probes.
+        try:
+            import plex_generate_previews.gpu_detection as gd_mod
+
+            monkeypatch.setattr(
+                gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True
+            )
+        except ImportError:
+            pass
+
+
+@pytest.fixture(autouse=True)
+def _sync_start_job_async(request, monkeypatch):
+    """Run ``_start_job_async`` synchronously (no daemon thread) by default.
+
+    Route handlers (``POST /api/jobs``, webhook endpoints, settings resume, …)
+    normally spawn a daemon ``run_job`` thread via
+    ``plex_generate_previews.web.routes.job_runner._start_job_async``. That
+    thread escapes the test's ``with patch(...)`` scope and keeps running
+    after teardown — enumerating the real Plex library (if ``PLEX_URL`` is
+    set), probing real GPUs, and flooding stderr with ``I/O operation on
+    closed file`` once the per-job loguru handler is removed. On CI the
+    surviving threads pile up in a single xdist worker and stall progress
+    for ~10 minutes before the last batch drains.
+
+    Replacing ``threading.Thread`` (only inside the ``job_runner`` module)
+    with a synchronous shim means ``run_job`` runs to completion *before*
+    the route handler returns. Patches on ``run_processing`` /
+    ``load_config`` / etc. are still in effect, coverage of ``run_job`` /
+    ``worker.py`` is preserved, and no daemon thread survives teardown.
+
+    Tests that genuinely need asynchronous dispatch (e.g.
+    ``test_routes.py::TestJobConfigPathMappings`` which asserts that
+    ``run_processing`` is invoked on a separate thread within 2 s, or
+    ``test_job_dispatcher.py::TestInflightJobGuard`` which spies on
+    ``threading.Thread`` directly) opt out with
+    ``@pytest.mark.real_job_async``.
+    """
+    if request.node.get_closest_marker("real_job_async"):
+        return
+    try:
+        import plex_generate_previews.web.routes.job_runner as jr_mod
+    except ImportError:
+        return
+
+    import threading as _real_threading
+
+    class _SyncThread:
+        """Drop-in for ``threading.Thread`` that runs ``target`` inline."""
+
+        def __init__(self, *args, target=None, **kwargs):
+            self._target = target
+            self._args = kwargs.get("args", ())
+            self._kwargs = kwargs.get("kwargs", {})
+            self.daemon = kwargs.get("daemon", False)
+            self.name = kwargs.get("name", "SyncThread")
+
+        def start(self):
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            return
+
+    # Shim: only the ``Thread`` attribute is overridden; everything else
+    # (Lock, Event, current_thread, …) delegates to the real threading
+    # module so worker-pool code keeps working.
+    class _ThreadingShim:
+        Thread = _SyncThread
+
+        def __getattr__(self, name):
+            return getattr(_real_threading, name)
+
+    monkeypatch.setattr(jr_mod, "threading", _ThreadingShim(), raising=True)
+
+
 # Export helper functions so tests can use them
 __all__ = [
     "create_mock_ffmpeg_process",

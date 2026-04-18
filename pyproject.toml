@@ -53,6 +53,7 @@ test = [
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
     "pytest-xdist>=3.0.0",
+    "pytest-timeout>=2.3.0",
     "pytest-playwright>=0.4.0",
     "playwright>=1.40.0",
     "flask-cors>=4.0.0",
@@ -86,6 +87,8 @@ addopts = [
     "-n", "auto",
     "--dist", "load",
     "-m", "not gpu and not e2e",
+    "--timeout=30",
+    "--timeout-method=thread",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
@@ -99,6 +102,7 @@ markers = [
     "e2e: marks tests as end-to-end browser tests",
     "real_prewarm: opt out of the autouse _prewarm_caches no-op in conftest",
     "real_logging: opt out of the autouse setup_logging no-op in conftest",
+    "real_job_async: opt out of the autouse _start_job_async no-op in conftest",
 ]
 
 [tool.coverage.run]

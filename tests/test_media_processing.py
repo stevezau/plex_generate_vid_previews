@@ -505,6 +505,7 @@ class TestGenerateImages:
         assert "/test/video.mp4" in args
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
+    @patch("plex_generate_previews.processing.ffmpeg_runner.time")
     @patch("plex_generate_previews.media_processing.time")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
@@ -519,6 +520,7 @@ class TestGenerateImages:
         mock_run,
         mock_popen,
         mock_time,
+        mock_runner_time,
         mock_mediainfo,
         temp_dir,
         mock_config,
@@ -542,11 +544,17 @@ class TestGenerateImages:
 
         # time.time() is called per _run_ffmpeg: start_local, last_progress_time, stall check, end_local.
         # generate_images retries without skip_frame after first failure, so we need values for 2 runs.
+        # The stall check lives in ``ffmpeg_runner._run_ffmpeg``; the
+        # wrapper timing uses ``media_processing.time``.  Both modules
+        # get the same monotonically-advancing mock so the stall branch
+        # fires on the third ``time.time()`` call of each run.
         stall_time = 0 + FFMPEG_STALL_TIMEOUT_SEC + 1
         one_run = [0, 0, stall_time, stall_time + 1]
         mock_time.time.side_effect = one_run + one_run
         mock_time.sleep.return_value = None
         mock_time.time_ns.return_value = 0  # for temp output filename
+        mock_runner_time.time.side_effect = one_run + one_run
+        mock_runner_time.sleep.return_value = None
 
         success, image_count, hw_used, seconds, speed, *_ = generate_images(
             "/test/video.mp4", temp_dir, None, None, mock_config
