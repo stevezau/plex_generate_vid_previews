@@ -25,13 +25,9 @@ def test_register_adds_url_when_not_present(fake_account):
     ]
 
     with patch("plexapi.myplex.MyPlexAccount", return_value=fake_account):
-        result = pwh.register(
-            "token", "http://host:8080/api/webhooks/plex", auth_token="secret"
-        )
+        result = pwh.register("token", "http://host:8080/api/webhooks/plex", auth_token="secret")
 
-    fake_account.addWebhook.assert_called_once_with(
-        "http://host:8080/api/webhooks/plex?token=secret"
-    )
+    fake_account.addWebhook.assert_called_once_with("http://host:8080/api/webhooks/plex?token=secret")
     assert "http://host:8080/api/webhooks/plex?token=secret" in result
 
 
@@ -55,20 +51,14 @@ def test_register_replaces_stale_url_with_old_token():
     fake.subscriptionActive = True
     with patch("plexapi.myplex.MyPlexAccount", return_value=fake):
         pwh.register("token", "http://host/api/webhooks/plex", auth_token="NEW")
-    fake.deleteWebhook.assert_called_once_with(
-        "http://host/api/webhooks/plex?token=OLD"
-    )
+    fake.deleteWebhook.assert_called_once_with("http://host/api/webhooks/plex?token=OLD")
     fake.addWebhook.assert_called_once_with("http://host/api/webhooks/plex?token=NEW")
 
 
 def test_register_is_idempotent_when_url_already_present(fake_account):
-    fake_account.webhooks.return_value = [
-        "http://host:8080/api/webhooks/plex?token=secret"
-    ]
+    fake_account.webhooks.return_value = ["http://host:8080/api/webhooks/plex?token=secret"]
     with patch("plexapi.myplex.MyPlexAccount", return_value=fake_account):
-        result = pwh.register(
-            "token", "http://host:8080/api/webhooks/plex", auth_token="secret"
-        )
+        result = pwh.register("token", "http://host:8080/api/webhooks/plex", auth_token="secret")
     fake_account.addWebhook.assert_not_called()
     assert "http://host:8080/api/webhooks/plex?token=secret" in result
 
@@ -111,9 +101,7 @@ def test_unregister_removes_existing_webhook_with_token():
     fake.subscriptionActive = True
     with patch("plexapi.myplex.MyPlexAccount", return_value=fake):
         pwh.unregister("token", "http://host/api/webhooks/plex")
-    fake.deleteWebhook.assert_called_once_with(
-        "http://host/api/webhooks/plex?token=abc"
-    )
+    fake.deleteWebhook.assert_called_once_with("http://host/api/webhooks/plex?token=abc")
 
 
 def test_unregister_url_not_present_is_noop():

@@ -202,9 +202,7 @@ class TestIsDockerEnvironment:
         """Test detection via hostname containing 'docker'."""
         mock_exists.return_value = False
 
-        with patch.dict(
-            "os.environ", {"HOSTNAME": "my-docker-container-123"}, clear=True
-        ):
+        with patch.dict("os.environ", {"HOSTNAME": "my-docker-container-123"}, clear=True):
             result = is_docker_environment()
             assert result is True
 

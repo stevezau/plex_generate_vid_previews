@@ -43,12 +43,8 @@ class TestFileResultRecording:
         job = jm.create_job(library_name="Test")
 
         jm.record_file_result(job.id, "/media/video1.mkv", "generated", "", "GPU 1")
-        jm.record_file_result(
-            job.id, "/media/video2.mkv", "failed", "FFmpeg exit 183", "GPU 2"
-        )
-        jm.record_file_result(
-            job.id, "/media/video3.mkv", "skipped_bif_exists", "BIF exists", ""
-        )
+        jm.record_file_result(job.id, "/media/video2.mkv", "failed", "FFmpeg exit 183", "GPU 2")
+        jm.record_file_result(job.id, "/media/video3.mkv", "skipped_bif_exists", "BIF exists", "")
 
         results = jm.get_file_results(job.id)
         assert len(results) == 3
@@ -99,9 +95,7 @@ class TestFileResultRecording:
         with open(path, "a") as f:
             f.write("NOT VALID JSON\n")
             f.write("\n")
-            f.write(
-                '{"file":"/media/also_good.mkv","outcome":"failed","reason":"","worker":"","ts":"00:00:00"}\n'
-            )
+            f.write('{"file":"/media/also_good.mkv","outcome":"failed","reason":"","worker":"","ts":"00:00:00"}\n')
 
         results = jm.get_file_results(job.id)
         assert len(results) == 2
@@ -115,9 +109,7 @@ class TestFileResultFiltering:
     def _seed(self, jm, job_id):
         jm.record_file_result(job_id, "/media/MovieA.mkv", "generated", "", "GPU 1")
         jm.record_file_result(job_id, "/media/MovieB.mkv", "failed", "exit 1", "GPU 2")
-        jm.record_file_result(
-            job_id, "/media/ShowC.mkv", "skipped_bif_exists", "exists", ""
-        )
+        jm.record_file_result(job_id, "/media/ShowC.mkv", "skipped_bif_exists", "exists", "")
         jm.record_file_result(job_id, "/media/ShowD.mkv", "failed", "exit 183", "CPU 1")
 
     def test_filter_by_outcome(self, config_dir):
@@ -179,9 +171,7 @@ class TestFileResultRetention:
         jm._jobs[job.id].completed_at = old_time
         jm._save_jobs()
 
-        with patch(
-            "plex_generate_previews.web.settings_manager.get_settings_manager"
-        ) as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -218,16 +208,12 @@ class TestFileResultRetention:
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
 
-        orphan_path = os.path.join(
-            config_dir, "logs", "job_file_results", "orphan-id.jsonl"
-        )
+        orphan_path = os.path.join(config_dir, "logs", "job_file_results", "orphan-id.jsonl")
         os.makedirs(os.path.dirname(orphan_path), exist_ok=True)
         with open(orphan_path, "w") as f:
             f.write('{"file":"x","outcome":"generated"}\n')
 
-        with patch(
-            "plex_generate_previews.web.settings_manager.get_settings_manager"
-        ) as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -238,7 +224,7 @@ class TestFileResultCallback:
     """set_file_result_callback and _notify_file_result wiring."""
 
     def test_callback_invoked_for_each_outcome(self):
-        from plex_generate_previews.media_processing import (
+        from plex_generate_previews.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -247,9 +233,7 @@ class TestFileResultCallback:
         captured = []
 
         def cb(file_path, outcome_str, reason, worker):
-            captured.append(
-                {"file": file_path, "outcome": outcome_str, "reason": reason}
-            )
+            captured.append({"file": file_path, "outcome": outcome_str, "reason": reason})
 
         set_file_result_callback(cb)
         try:
@@ -263,7 +247,7 @@ class TestFileResultCallback:
         assert captured[1]["outcome"] == "failed"
 
     def test_callback_cleared(self):
-        from plex_generate_previews.media_processing import (
+        from plex_generate_previews.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -277,7 +261,7 @@ class TestFileResultCallback:
 
     def test_callback_exception_does_not_propagate(self):
         """A failing callback must not crash the caller."""
-        from plex_generate_previews.media_processing import (
+        from plex_generate_previews.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -362,9 +346,7 @@ class TestFileResultsAPI:
         jm.record_file_result(job.id, "/media/b.mkv", "failed", "exit 1")
         jm.record_file_result(job.id, "/media/c.mkv", "failed", "exit 2")
 
-        resp = client.get(
-            f"/api/jobs/{job.id}/files?outcome=failed", headers=self._headers()
-        )
+        resp = client.get(f"/api/jobs/{job.id}/files?outcome=failed", headers=self._headers())
         data = resp.get_json()
         assert data["count"] == 2
         assert data["total"] == 3
@@ -381,9 +363,7 @@ class TestFileResultsAPI:
         jm.record_file_result(job.id, "/media/NBA/game1.mkv", "generated")
         jm.record_file_result(job.id, "/media/UFC/fight1.mkv", "generated")
 
-        resp = client.get(
-            f"/api/jobs/{job.id}/files?search=NBA", headers=self._headers()
-        )
+        resp = client.get(f"/api/jobs/{job.id}/files?search=NBA", headers=self._headers())
         data = resp.get_json()
         assert data["count"] == 1
         assert "NBA" in data["files"][0]["file"]

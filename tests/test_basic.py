@@ -89,7 +89,7 @@ class TestGPUDetection:
 
     def test_format_gpu_info(self):
         """Test GPU info formatting."""
-        from plex_generate_previews.gpu_detection import format_gpu_info
+        from plex_generate_previews.gpu import format_gpu_info
 
         # Test NVIDIA formatting
         nvidia_info = format_gpu_info("cuda", 0, "NVIDIA GeForce RTX 3080")
@@ -98,32 +98,26 @@ class TestGPUDetection:
         assert "cuda" in nvidia_info.lower()
 
         # Test AMD formatting
-        amd_info = format_gpu_info(
-            "vaapi", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT"
-        )
+        amd_info = format_gpu_info("vaapi", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT")
         assert "AMD" in amd_info
         assert "RX 6800 XT" in amd_info
         assert "vaapi" in amd_info.lower()
 
     def test_ffmpeg_version_check(self):
         """Test FFmpeg version checking."""
-        from plex_generate_previews.gpu_detection import (
+        from plex_generate_previews.gpu import (
             _check_ffmpeg_version,
             _get_ffmpeg_version,
         )
 
         # Test version parsing
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="ffmpeg version 7.1.1-1ubuntu1.2 Copyright..."
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.1.1-1ubuntu1.2 Copyright...")
             version = _get_ffmpeg_version()
             assert version == (7, 1, 1)
 
         # Test version checking
-        with patch(
-            "plex_generate_previews.gpu_detection._get_ffmpeg_version"
-        ) as mock_get_version:
+        with patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version") as mock_get_version:
             mock_get_version.return_value = (7, 1, 0)
             assert _check_ffmpeg_version() is True
 
@@ -135,7 +129,7 @@ class TestProcessingModule:
     """Test processing module exists and is importable."""
 
     def test_run_processing_importable(self):
-        """Test that run_processing can be imported from processing module."""
-        from plex_generate_previews.processing import run_processing
+        """Test that run_processing can be imported from job_orchestrator module."""
+        from plex_generate_previews.jobs.orchestrator import run_processing
 
         assert callable(run_processing)

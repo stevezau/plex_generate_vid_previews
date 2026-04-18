@@ -15,9 +15,8 @@ GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web 
 | Feature | Description |
 |---------|-------------|
 | **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
-| **Per-GPU Config** | Configure each GPU individually in Settings |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | Optional fallback-only CPU workers for GPU decode failures |
+| **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
 | **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
 | **Library Filtering** | Process specific Plex libraries |
 | **Quality Control** | Adjustable thumbnail quality (1-10) |
@@ -26,6 +25,8 @@ GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web 
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
 | **Radarr/Sonarr** | Webhook integration for auto-processing on import |
+| **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ## Quick Start
 
@@ -150,9 +151,9 @@ docker run -d \
   stevezzau/plex_generate_vid_previews:latest
 ```
 
-### GPU + CPU Fallback Mode
+### GPU + CPU Fallback
 
-Set **CPU Workers** to `0` and **CPU Fallback Workers** to `1` (or higher) in Settings to keep main processing on GPU while allowing CPU retry for unsupported codecs.
+CPU fallback is automatic. If FFmpeg fails on a GPU worker (unsupported codec, driver crash, etc.), the same worker retries the file on CPU in-place and the dashboard shows a yellow "CPU fallback" badge. No separate worker pool to configure — increase **CPU Workers** above `0` only if you have a lot of content that never decodes on the GPU and you want those files to route straight to dedicated CPU workers.
 
 ## Environment Variables
 
@@ -204,9 +205,10 @@ Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 Full documentation is available on GitHub:
 
-- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) -- Docker, GPU, Unraid, devcontainer
-- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md) -- All settings and REST API
-- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md) -- Web interface, webhooks, FAQ
+- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
+- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
+- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md) — All settings, env vars, and REST API
+- [FAQ](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
 
 ## Support
 

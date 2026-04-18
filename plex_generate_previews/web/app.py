@@ -6,7 +6,7 @@ Creates and configures the Flask application with SocketIO support.
 import atexit
 import hashlib
 import hmac
-import logging
+import logging  # stdlib logging only — required to mute werkzeug's own logger; app code must use loguru
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -64,25 +64,25 @@ def run_scheduled_job(library_id=None, library_name="", config=None, priority=No
     _start_job_async(job.id, job_config)
 
 
-def get_cors_origins() -> str:
+def get_cors_origins() -> tuple[str, bool]:
     """Get CORS allowed origins from environment.
 
     Defaults to ``"*"`` (allow all) because this tool is typically accessed
     over a LAN via IP address, Docker bridge, or hostname — not just
-    ``localhost``.  Restricting to ``localhost`` breaks WebSocket upgrades
+    ``localhost``. Restricting to ``localhost`` breaks WebSocket upgrades
     from any other origin and causes SocketIO 400 errors.
 
     Set ``CORS_ORIGINS`` to a comma-separated list to lock it down, e.g.
     ``CORS_ORIGINS=http://192.168.1.10:8080,http://mynas:8080``.
 
     Returns:
-        CORS origins string or ``"*"``
-
+        Tuple of ``(origins, is_default_wildcard)``. The second field is
+        ``True`` when the wide-open default is in use; callers should warn.
     """
     explicit = os.environ.get("CORS_ORIGINS")
     if explicit:
-        return explicit
-    return "*"
+        return explicit, False
+    return "*", True
 
 
 def _derive_secret(seed: bytes, config_dir: str) -> str:
@@ -135,7 +135,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
             if seed:
                 logger.debug(f"Using Flask secret derived from seed in {seed_file}")
                 return _derive_secret(seed, config_dir)
-        except IOError as e:
+        except OSError as e:
             logger.warning(f"Failed to read Flask secret seed file: {e}")
 
     # Generate new random seed and persist it with restrictive permissions.
@@ -150,7 +150,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
         finally:
             os.close(fd)
         logger.info(f"Generated new Flask secret seed and saved to {seed_file}")
-    except IOError as e:
+    except OSError as e:
         logger.warning(f"Failed to save Flask secret seed to file: {e}")
 
     return _derive_secret(random_seed, config_dir)
@@ -198,7 +198,7 @@ def _prewarm_caches() -> None:
     # Synchronous: must complete before worker threads start processing
     # jobs on the libplacebo path (see docstring).
     try:
-        from ..gpu_detection import get_vulkan_device_info
+        from ..gpu.vulkan_probe import get_vulkan_device_info
 
         get_vulkan_device_info()
     except Exception as exc:
@@ -222,9 +222,7 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         settings = get_settings_manager(config_dir)
         raw_enabled = settings.get("auto_requeue_on_restart", True)
         auto_requeue_enabled = (
-            raw_enabled
-            if isinstance(raw_enabled, bool)
-            else str(raw_enabled).strip().lower() in ("true", "1", "yes")
+            raw_enabled if isinstance(raw_enabled, bool) else str(raw_enabled).strip().lower() in ("true", "1", "yes")
         )
         if not auto_requeue_enabled:
             logger.info("Auto-requeue on restart is disabled")
@@ -234,10 +232,7 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         # jobs — the restart itself signals intent to resume work.
         if settings.processing_paused:
             settings.processing_paused = False
-            logger.info(
-                "Cleared processing_paused on startup — "
-                "pausing does not survive restarts"
-            )
+            logger.info("Cleared processing_paused on startup — pausing does not survive restarts")
 
         max_age = int(settings.get("requeue_max_age_minutes", 720))
         job_manager = get_job_manager()
@@ -277,9 +272,12 @@ def create_app(config_dir: str = None) -> Flask:
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
     # SESSION_COOKIE_SECURE is set dynamically via ProxyFix + Talisman or per-request.
     # ProxyFix below trusts X-Forwarded-Proto so request.scheme == 'https' works.
-    app.config["SESSION_COOKIE_SECURE"] = (
-        os.environ.get("HTTPS", "false").lower() == "true"
-    )
+    # SESSION_COOKIE_SECURE marks the cookie with the Secure flag so the
+    # browser only sends it over HTTPS. Set HTTPS=true when deploying
+    # behind a TLS-terminating proxy (nginx, traefik, Caddy, Cloudflare).
+    # Defaults to False to keep plain-HTTP LAN deployments working.
+    https_secure = os.environ.get("HTTPS", "false").lower() in ("true", "1", "yes", "on")
+    app.config["SESSION_COOKIE_SECURE"] = https_secure
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["CONFIG_DIR"] = config_dir
@@ -290,7 +288,13 @@ def create_app(config_dir: str = None) -> Flask:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
     # Get CORS configuration
-    cors_origins = get_cors_origins()
+    cors_origins, cors_is_default_wildcard = get_cors_origins()
+    if cors_is_default_wildcard:
+        logger.warning(
+            "CORS is allowing all origins ('*') — fine for LAN-only deployments, "
+            "but set CORS_ORIGINS=http://your-host:8080 (comma-separated for "
+            "multiple) when the web UI is reachable from the public internet."
+        )
 
     # Allow cross-origin requests on all routes (token-auth, not cookie-based)
     CORS(app, origins=cors_origins)
@@ -481,10 +485,7 @@ def create_app(config_dir: str = None) -> Flask:
             settings = get_settings_manager()
             if not settings.is_setup_complete() and not settings.is_configured():
                 # Not configured and setup not complete - redirect to setup
-                if (
-                    request.endpoint not in ["main.login", "main.setup_wizard"]
-                    and is_authenticated()
-                ):
+                if request.endpoint not in ["main.login", "main.setup_wizard"] and is_authenticated():
                     return redirect(url_for("main.setup_wizard"))
         except Exception as e:
             logger.debug(f"Setup check error: {e}")
@@ -496,9 +497,7 @@ def create_app(config_dir: str = None) -> Flask:
         """Add standard security headers to every response."""
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault(
-            "Referrer-Policy", "strict-origin-when-cross-origin"
-        )
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         return response
 
     # Start scheduler
@@ -532,7 +531,9 @@ def create_app(config_dir: str = None) -> Flask:
     return app
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
+# Dev helper binds to all interfaces so Docker / LAN access works;
+# production uses gunicorn via wrapper.sh.
+def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):  # nosec B104
     """Run the web server with SocketIO.
 
     In production (Docker), use gunicorn via ``wrapper.sh`` instead.

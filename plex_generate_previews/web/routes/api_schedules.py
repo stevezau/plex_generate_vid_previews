@@ -39,9 +39,7 @@ def create_schedule():
         return jsonify({"error": "Name is required"}), 400
 
     if not data.get("cron_expression") and not data.get("interval_minutes"):
-        return jsonify(
-            {"error": "Either cron_expression or interval_minutes is required"}
-        ), 400
+        return jsonify({"error": "Either cron_expression or interval_minutes is required"}), 400
 
     try:
         schedule_manager = get_schedule_manager()

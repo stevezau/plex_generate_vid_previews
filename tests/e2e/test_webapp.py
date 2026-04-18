@@ -40,9 +40,7 @@ class TestLoginPage:
 class TestAuthentication:
     """Test authentication flow."""
 
-    def test_valid_token_redirects_away_from_login(
-        self, page: Page, app_url: str, auth_token: str
-    ):
+    def test_valid_token_redirects_away_from_login(self, page: Page, app_url: str, auth_token: str):
         """Verify valid token grants access and redirects."""
         page.goto(f"{app_url}/login")
 
@@ -57,13 +55,9 @@ class TestAuthentication:
         # Should redirect away from login (may go to setup or dashboard)
         page.wait_for_timeout(2000)
         current_url = page.url
-        assert "/login" not in current_url, (
-            f"Should redirect away from login, got: {current_url}"
-        )
+        assert "/login" not in current_url, f"Should redirect away from login, got: {current_url}"
 
-    def test_authenticated_user_can_access_protected_pages(
-        self, page: Page, app_url: str, auth_token: str
-    ):
+    def test_authenticated_user_can_access_protected_pages(self, page: Page, app_url: str, auth_token: str):
         """Verify authenticated user can access the app."""
         # Login first
         page.goto(f"{app_url}/login")
@@ -78,18 +72,14 @@ class TestAuthentication:
 
         # Should be on settings page (not redirected to login)
         current_url = page.url
-        assert "/login" not in current_url, (
-            f"Should access settings, got: {current_url}"
-        )
+        assert "/login" not in current_url, f"Should access settings, got: {current_url}"
 
 
 @pytest.mark.e2e
 class TestSetupWizard:
     """Test setup wizard accessibility."""
 
-    def test_setup_page_accessible_after_login(
-        self, page: Page, app_url: str, auth_token: str
-    ):
+    def test_setup_page_accessible_after_login(self, page: Page, app_url: str, auth_token: str):
         """Verify setup page is accessible after authentication."""
         # Login first
         page.goto(f"{app_url}/login")
@@ -104,9 +94,7 @@ class TestSetupWizard:
 
         # Should load setup page (not error)
         current_url = page.url
-        assert "/login" not in current_url or "/setup" in current_url, (
-            f"Should access setup, got: {current_url}"
-        )
+        assert "/login" not in current_url or "/setup" in current_url, f"Should access setup, got: {current_url}"
 
 
 @pytest.mark.e2e
@@ -170,9 +158,7 @@ class TestSetupWizardStep5:
         # Element should exist in the DOM (even if not visible yet)
         assert current_token_input.count() == 1
 
-    def test_step5_has_custom_token_checkbox(
-        self, page: Page, app_url: str, auth_token: str
-    ):
+    def test_step5_has_custom_token_checkbox(self, page: Page, app_url: str, auth_token: str):
         """Verify Step 5 has the custom token checkbox."""
         # Setup page is accessible without login and avoids auth/session state
         # leakage from prior E2E tests.

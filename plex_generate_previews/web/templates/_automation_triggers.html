@@ -1,145 +1,4 @@
-{% extends "base.html" %}
-
-{% block title %}Webhooks - Plex Preview Generator{% endblock %}
-
-{% block head %}
-<style>
-    html { scroll-behavior: smooth; }
-
-    /* Section cards — the precise scroll-to position is handled in JS
-       (see scrollToSection) because CSS scroll-margin-top doesn't always
-       behave consistently with Bootstrap's sticky navbar + smooth scroll.
-       This value is just a sensible fallback for direct anchor navigation
-       (e.g. page load with a #hash in the URL). */
-    .section-card {
-        margin-bottom: 1.5rem;
-        scroll-margin-top: 6rem;
-    }
-
-    /* Sidebar navigation (mirrors settings.html) */
-    .webhooks-sidebar {
-        top: 5rem;
-        max-height: calc(100vh - 6rem);
-        overflow-y: auto;
-        padding-top: 0.5rem;
-    }
-    .webhooks-sidebar .nav-link {
-        color: var(--bs-secondary-color);
-        font-size: 0.875rem;
-        padding: 0.5rem 0.75rem;
-        border-radius: 0.375rem;
-        border-left: 3px solid transparent;
-        margin-bottom: 0.125rem;
-    }
-    .webhooks-sidebar .nav-link:hover {
-        color: var(--bs-body-color);
-        background-color: var(--bs-tertiary-bg);
-    }
-    .webhooks-sidebar .nav-link.active {
-        color: var(--plex-orange);
-        background-color: rgba(229, 160, 13, 0.1);
-        border-left-color: var(--plex-orange);
-        font-weight: 500;
-    }
-    .webhooks-content { padding-bottom: 40vh; }
-
-    /* Webhook URL input */
-    .webhook-url {
-        font-family: monospace;
-        background: var(--bs-tertiary-bg);
-        padding: 0.5rem 1rem;
-        border-radius: 0.375rem;
-        border: 1px solid var(--bs-border-color);
-    }
-
-    /* Badges */
-    .badge-status { font-size: 0.75rem; padding: 0.35em 0.6em; }
-    .status-badge.queued { background-color: rgba(255,193,7,0.2); color: var(--bs-warning); }
-    .status-badge.triggered { background-color: rgba(25,135,84,0.2); color: var(--bs-success); }
-    .status-badge.ignored { background-color: rgba(108,117,125,0.2); color: var(--bs-secondary); }
-    .status-badge.ignored_no_path, .status-badge.ignored_no_paths { background-color: rgba(220,53,69,0.2); color: var(--bs-danger); }
-    .status-badge.error { background-color: rgba(220,53,69,0.2); color: var(--bs-danger); }
-    .status-badge.test { background-color: rgba(13,202,240,0.2); color: var(--bs-info); }
-    .status-badge.disabled { background-color: rgba(108,117,125,0.2); color: var(--bs-secondary); }
-    .source-badge.radarr { background-color: rgba(255,165,0,0.2); color: #ffa500; }
-    .source-badge.sonarr { background-color: rgba(25,135,84,0.2); color: var(--bs-success); }
-    .source-badge.sportarr { background-color: rgba(13,202,240,0.2); color: #0dcaf0; }
-    .source-badge.custom { background-color: rgba(111,66,193,0.2); color: #8b5cf6; }
-    .source-badge.plex { background-color: rgba(229,160,13,0.2); color: #e5a00d; }
-    .source-badge.recently_added { background-color: rgba(13,110,253,0.2); color: var(--bs-primary); }
-
-    /* Overview decision list */
-    .decision-list { display: flex; flex-direction: column; gap: 0.5rem; }
-    .decision-list .decision-row {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 0.65rem 0.85rem;
-        border: 1px solid var(--bs-border-color);
-        border-radius: 0.375rem;
-        background: var(--bs-tertiary-bg);
-    }
-    .decision-list .decision-scenario { flex: 1 1 50%; min-width: 0; }
-    .decision-list .decision-arrow { color: var(--bs-secondary); font-weight: 700; }
-    .decision-list .decision-recommendation { flex: 1 1 40%; min-width: 0; }
-    .decision-list .decision-recommendation a { text-decoration: none; }
-    .decision-list .decision-recommendation a:hover { text-decoration: underline; }
-
-    /* Overview status grid */
-    .overview-status-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 0.75rem;
-    }
-    .overview-status-card {
-        padding: 0.85rem 1rem;
-        border: 1px solid var(--bs-border-color);
-        border-radius: 0.5rem;
-        background: var(--bs-tertiary-bg);
-        cursor: pointer;
-        transition: background 0.15s;
-    }
-    .overview-status-card:hover { background: var(--bs-secondary-bg); }
-    .overview-status-card .status-label { font-size: 0.75rem; color: var(--bs-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
-    .overview-status-card .status-value { margin-top: 0.35rem; font-weight: 500; }
-
-    /* Upgrade caveat callout */
-    .upgrade-caveat {
-        border-left: 3px solid var(--bs-warning);
-        padding: 0.75rem 1rem;
-        background: rgba(255,193,7,0.06);
-        border-radius: 0.25rem;
-        font-size: 0.9rem;
-    }
-
-    /* History table */
-    .history-table { font-size: 0.875rem; }
-</style>
-{% endblock %}
-
-{% block content %}
-<div class="row">
-    <!-- Sidebar Navigation -->
-    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
-        <nav id="webhooks-sidebar" class="webhooks-sidebar sticky-top">
-            <div class="nav flex-column nav-pills">
-                <a class="nav-link" href="#section-webhooks-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
-                <a class="nav-link" href="#section-webhooks-plex-direct"><i class="bi bi-lightning-charge me-2"></i>Plex Direct</a>
-                <a class="nav-link" href="#section-webhooks-recently-added"><i class="bi bi-arrow-repeat me-2"></i>Recently Added Scanner</a>
-                <a class="nav-link" href="#section-webhooks-sonarr-radarr"><i class="bi bi-download me-2"></i>*arr apps</a>
-                <a class="nav-link" href="#section-webhooks-custom"><i class="bi bi-plug me-2"></i>Custom (Tdarr / scripts)</a>
-                <a class="nav-link" href="#section-webhooks-settings"><i class="bi bi-sliders me-2"></i>Settings</a>
-                <a class="nav-link" href="#section-webhooks-activity"><i class="bi bi-clock-history me-2"></i>Activity Log</a>
-            </div>
-        </nav>
-    </div>
-
-    <!-- Main Content -->
-    <div class="col-lg-9 col-xl-8 webhooks-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2><i class="bi bi-broadcast me-2"></i>Webhooks</h2>
-            <span id="saveStatusIndicator" class="autosave-indicator"></span>
-        </div>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/automation_triggers.css') }}">
 
         <!-- Section 1: Overview -->
         <div class="card section-card" id="section-webhooks-overview">
@@ -321,9 +180,10 @@
                     <button class="btn btn-sm btn-outline-primary d-none" type="button" id="recentlyAddedScanNowBtn">
                         <i class="bi bi-play-circle me-1"></i>Scan all now
                     </button>
-                    <a href="/schedules" class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-sliders me-1"></i>Manage on Schedules page
-                    </a>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            data-bs-toggle="tab" data-bs-target="#pane-schedules">
+                        <i class="bi bi-sliders me-1"></i>Manage in Schedules tab
+                    </button>
                 </div>
                 <div id="recentlyAddedScanResult" class="small mt-2"></div>
             </div>
@@ -593,7 +453,7 @@
         <div class="card section-card" id="section-webhooks-activity">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-clock-history me-2"></i>Activity Log</span>
-                <button class="btn btn-sm btn-outline-light" onclick="clearHistory()">
+                <button class="btn btn-sm btn-outline-secondary" onclick="clearHistory()">
                     <i class="bi bi-trash me-1"></i>Clear
                 </button>
             </div>
@@ -637,11 +497,7 @@
                 </div>
             </div>
         </div>
-    </div>
-</div>
-{% endblock %}
 
-{% block scripts %}
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
 // Format a minute count as a short human-readable string for slider labels.
@@ -701,48 +557,16 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('recentlyAddedCreateDefaultBtn').addEventListener('click', createDefaultRecentlyAddedScanner);
     document.getElementById('recentlyAddedScanNowBtn').addEventListener('click', scanAllRecentlyAddedNow);
 
+    // Initial data load — polling is managed by automation.html's coordinator
+    // to avoid duplicate /api/schedules requests from both tabs.
     loadRecentlyAddedScanners();
-    // Keep the scanner status fresh — the user might be editing schedules
-    // in another tab.  10s is enough to feel responsive without hammering.
-    setInterval(loadRecentlyAddedScanners, 10000);
+    loadHistory();
 
-    setInterval(loadHistory, 10000);
-
-    // Activate ScrollSpy so the sidebar tracks the scrolled section.
-    // The mirror target is the body; a 60% bottom margin means a
-    // section is "active" when its top half is in view.
-    new bootstrap.ScrollSpy(document.body, {
-        target: '#webhooks-sidebar',
-        rootMargin: '0px 0px -60%',
-        smoothScroll: true,
-    });
-
-    // Intercept every anchor link targeting a #section-webhooks-* id and
-    // scroll manually, measuring the navbar height at click time.  CSS
-    // scroll-margin-top is finicky with Bootstrap's sticky navbar + smooth
-    // scroll, so this guarantees the section header lands clearly below
-    // the navbar whether the click originated in the sidebar, the Overview
-    // decision list, or an inline callout link.
-    document.querySelectorAll('a[href^="#section-webhooks-"]').forEach(function(link) {
-        link.addEventListener('click', function(e) {
-            var href = link.getAttribute('href') || '';
-            if (!href.startsWith('#')) return;
-            e.preventDefault();
-            scrollToSection(href.substring(1));
-            if (history.pushState) history.pushState(null, '', href);
-        });
-    });
-
-    // Honour an initial #section-... in the URL too, with the same offset.
-    if (window.location.hash && window.location.hash.startsWith('#section-')) {
-        setTimeout(function() { scrollToSection(window.location.hash.substring(1)); }, 50);
-    }
-
-    // Auto-save: any stateful control inside .webhooks-content that isn't
+    // Auto-save: any stateful control inside #pane-triggers that isn't
     // explicitly skipped kicks a debounced save through saveWebhookSettings.
     if (typeof window.bindAutoSave === 'function') {
         window.bindAutoSave({
-            containerSelector: '.webhooks-content',
+            containerSelector: '#pane-triggers',
             saveFn: saveWebhookSettings,
             indicatorId: 'saveStatusIndicator',
             skipSelectors: [
@@ -757,19 +581,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-function scrollToSection(id) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    var navbar = document.querySelector('.navbar.sticky-top');
-    var navbarHeight = navbar ? navbar.offsetHeight : 56;
-    var breathingRoom = 16; // 1rem padding between navbar and section top
-    var top = el.getBoundingClientRect().top + window.scrollY - navbarHeight - breathingRoom;
-    window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
-}
-
 // Used by the Overview status cards that visually look clickable.
 function jumpToSection(id) {
-    scrollToSection(id);
+    var el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 let allHistoryEvents = [];
@@ -852,9 +667,11 @@ async function loadRecentlyAddedScanners() {
                     (lookback ? ' · ' + escapeHtml(lookback) : '') +
                     '</div>' +
                     '</div>' +
-                    '<a href="/schedules?editSchedule=' + encodeURIComponent(s.id) + '" class="btn btn-sm btn-outline-secondary">' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary" ' +
+                    'data-schedule-id="' + escapeHtml(s.id) + '" ' +
+                    'onclick="switchToSchedulesAndEdit(this.dataset.scheduleId)">' +
                     '<i class="bi bi-sliders me-1"></i>Edit' +
-                    '</a>' +
+                    '</button>' +
                     '</div>';
             });
             html += '</div>';
@@ -961,8 +778,7 @@ async function loadWebhookSettings() {
 
 function refreshScrollSpy() {
     try {
-        var spy = bootstrap.ScrollSpy.getInstance(document.body);
-        if (spy) spy.refresh();
+        if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
     } catch (e) { /* no-op */ }
 }
 
@@ -1372,4 +1188,3 @@ function timeAgo(date) {
     return days + 'd ago';
 }
 </script>
-{% endblock %}

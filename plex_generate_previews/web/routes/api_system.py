@@ -107,6 +107,30 @@ _LIBNVIDIA_GLVKSPIRV_GLOBS = (
     "/usr/lib64/libnvidia-glvkspirv.so*",
 )
 
+# Glob patterns for libEGL_nvidia.so, the library GLVND routes to when
+# NVIDIA's vendor config is present.  Strategy 2c in gpu_detection.py only
+# runs when this library is present (otherwise synthesising a vendor JSON
+# would be pointing at a non-existent target).  Exposed in the diagnostic
+# bundle so users / upstream issue readers can see whether Strategy 2c
+# could have helped.
+_LIBEGL_NVIDIA_GLOBS = (
+    "/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so*",
+    "/usr/lib/aarch64-linux-gnu/libEGL_nvidia.so*",
+    "/usr/lib/libEGL_nvidia.so*",
+    "/usr/lib64/libEGL_nvidia.so*",
+)
+
+# Standard locations the GLVND libEGL dispatcher searches for vendor
+# configs.  nvidia-container-toolkit injects its NVIDIA config at
+# /usr/share/glvnd/egl_vendor.d/10_nvidia.json when the ``graphics``
+# capability is set; some setups instead drop it under /etc/glvnd.  Both
+# are checked so the diagnostic bundle can show whether the file is
+# present before Strategy 2c synthesises a replacement.
+_NVIDIA_EGL_VENDOR_JSON_SEARCH_PATHS = (
+    "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+    "/etc/glvnd/egl_vendor.d/10_nvidia.json",
+)
+
 
 def _diagnose_vulkan_environment() -> dict:
     """Gather facts about the container's Vulkan configuration.
@@ -159,6 +183,18 @@ def _diagnose_vulkan_environment() -> dict:
             libnvidia_glvkspirv_found = True
             break
 
+    libegl_nvidia_found = False
+    for pattern in _LIBEGL_NVIDIA_GLOBS:
+        if glob.glob(pattern):
+            libegl_nvidia_found = True
+            break
+
+    nvidia_egl_vendor_json_path: str | None = None
+    for path in _NVIDIA_EGL_VENDOR_JSON_SEARCH_PATHS:
+        if os.path.exists(path):
+            nvidia_egl_vendor_json_path = path
+            break
+
     nvidia_drm_loaded = os.path.exists("/proc/driver/nvidia")
     nvidia_driver_version: str | None = None
     version_path = "/proc/driver/nvidia/version"
@@ -185,6 +221,8 @@ def _diagnose_vulkan_environment() -> dict:
         "nvidia_capabilities_has_graphics": caps_has_graphics,
         "nvidia_icd_json_path": nvidia_icd_json_path,
         "libnvidia_glvkspirv_found": libnvidia_glvkspirv_found,
+        "libegl_nvidia_found": libegl_nvidia_found,
+        "nvidia_egl_vendor_json_path": nvidia_egl_vendor_json_path,
         "nvidia_drm_loaded": nvidia_drm_loaded,
         "nvidia_driver_version": nvidia_driver_version,
     }
@@ -218,18 +256,15 @@ def _get_vulkan_info() -> dict:
     live in a muted footer so curious users can google them without
     cluttering the main message.
     """
-    from ...gpu_detection import get_vulkan_device_info
+    from ...gpu.vulkan_probe import get_vulkan_device_info
 
     info = get_vulkan_device_info()
-    device = info.get("device")
-    is_software = info.get("is_software", False)
+    device = info.device
+    is_software = info.is_software
 
     result: dict = {"device": device}
     if not is_software:
-        logger.debug(
-            f"Vulkan warning: device={device!r} is_software=False; "
-            "no DV5 warning will be shown."
-        )
+        logger.debug(f"Vulkan warning: device={device!r} is_software=False; no DV5 warning will be shown.")
         return result
 
     try:
@@ -238,8 +273,7 @@ def _get_vulkan_info() -> dict:
             gpus = list(_gpu_cache["result"] or [])
     except Exception as exc:
         logger.warning(
-            f"Vulkan warning: GPU cache lookup raised {exc!r}; "
-            "proceeding with an empty GPU list for the warning body."
+            f"Vulkan warning: GPU cache lookup raised {exc!r}; proceeding with an empty GPU list for the warning body."
         )
         gpus = []
 
@@ -265,9 +299,7 @@ def _get_vulkan_info() -> dict:
     mesa_name = _vendor_display_name(gpus, mesa_vendor_code) if mesa_vendor_code else ""
     mesa_vendor_label = {"INTEL": "Intel", "AMD": "AMD"}.get(mesa_vendor_code, "Mesa")
     all_names_escaped = ", ".join(
-        html_escape.escape(g.get("name") or g.get("type") or "GPU")
-        for g in gpus
-        if g.get("name") or g.get("type")
+        html_escape.escape(g.get("name") or g.get("type") or "GPU") for g in gpus if g.get("name") or g.get("type")
     )
 
     header = (
@@ -494,10 +526,7 @@ def _get_vulkan_info() -> dict:
         )
     elif has_mesa_vendor and not has_nvidia and not dri_mapped:
         # Intel/AMD only, no render node: straight mount fix.
-        logger.info(
-            f"Vulkan warning: selected Case C (Mesa only, /dev/dri "
-            f"not mapped) for {mesa_name!r}"
-        )
+        logger.info(f"Vulkan warning: selected Case C (Mesa only, /dev/dri not mapped) for {mesa_name!r}")
         body = (
             f"<strong>Your GPU:</strong> {html_escape.escape(mesa_name)}"
             "<br><br>"
@@ -590,7 +619,7 @@ def get_vulkan_debug():
     No authentication required — the bundle contains environment facts
     and loader traces but no secrets.
     """
-    from ...gpu_detection import (
+    from ...gpu.vulkan_probe import (
         get_vulkan_debug_buffer,
         get_vulkan_device_info,
         get_vulkan_env_overrides,
@@ -605,9 +634,7 @@ def get_vulkan_debug():
         gpus = list(_gpu_cache["result"] or [])
 
     gpu_lines = [
-        f"  - type={g.get('type', '?')} name={g.get('name', '?')} "
-        f"device={g.get('device', '?')}"
-        for g in gpus
+        f"  - type={g.get('type', '?')} name={g.get('name', '?')} device={g.get('device', '?')}" for g in gpus
     ] or ["  (none detected)"]
 
     bundle_lines = [
@@ -618,8 +645,8 @@ def get_vulkan_debug():
         "plus the full VK_LOADER_DEBUG=all trace (if one was captured).",
         "",
         "--- Probe result ---",
-        f"device:      {device_info.get('device')}",
-        f"is_software: {device_info.get('is_software')}",
+        f"device:      {device_info.device}",
+        f"is_software: {device_info.is_software}",
         "",
         "--- Detected GPUs (from gpu_detection cache) ---",
         *gpu_lines,
@@ -629,6 +656,8 @@ def get_vulkan_debug():
         f"  has 'graphics':            {diag['nvidia_capabilities_has_graphics']}",
         f"nvidia_icd_json_path:        {diag['nvidia_icd_json_path']!r}",
         f"libnvidia_glvkspirv_found:   {diag['libnvidia_glvkspirv_found']}",
+        f"libegl_nvidia_found:         {diag['libegl_nvidia_found']}",
+        f"nvidia_egl_vendor_json_path: {diag['nvidia_egl_vendor_json_path']!r}",
         f"nvidia_drm_loaded:           {diag['nvidia_drm_loaded']}",
         f"nvidia_driver_version:       {diag['nvidia_driver_version']!r}",
         "",
@@ -645,18 +674,12 @@ def get_vulkan_debug():
         for k, v in env_overrides.items():
             bundle_lines.append(f"  {k}={v}")
     else:
-        bundle_lines.append(
-            "  (none — the default probe found a working Vulkan device,"
-            " or the retry did not succeed)"
-        )
+        bundle_lines.append("  (none — the default probe found a working Vulkan device, or the retry did not succeed)")
     bundle_lines.append("")
 
     bundle_lines.append("--- VK_LOADER_DEBUG=all capture ---")
     if debug_buffer:
-        bundle_lines.append(
-            f"(last {len(debug_buffer)} bytes of ffmpeg stderr from the"
-            " Strategy-3 diagnostic probe)"
-        )
+        bundle_lines.append(f"(last {len(debug_buffer)} bytes of ffmpeg stderr from the Strategy-3 diagnostic probe)")
         bundle_lines.append("")
         bundle_lines.append(debug_buffer)
     else:
@@ -671,6 +694,80 @@ def get_vulkan_debug():
 
     response_body = "\n".join(bundle_lines)
     return response_body, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@api.route("/system/notifications")
+def list_notifications():
+    """Return active system notifications for the bell-icon dropdown.
+
+    Filters out notifications the user has permanently dismissed (stored
+    in ``settings.json``) and those dismissed for this process session.
+    No authentication required — notifications contain environment
+    diagnostics, not secrets.
+    """
+    from ..notifications import build_active_notifications
+    from ..settings_manager import get_settings_manager
+
+    try:
+        dismissed = get_settings_manager().dismissed_notifications
+    except Exception as exc:
+        logger.warning(f"Notifications: settings lookup failed ({exc!r}); treating dismissal list as empty.")
+        dismissed = []
+
+    notifications = build_active_notifications(dismissed_permanent=dismissed)
+    return jsonify({"notifications": notifications})
+
+
+@api.route("/system/notifications/<notification_id>/dismiss", methods=["POST"])
+def dismiss_notification_session(notification_id: str):
+    """Dismiss a notification for the current process session only.
+
+    Cleared on container restart.  No authentication required.
+    """
+    from ..notifications import dismiss_session
+
+    dismiss_session(notification_id)
+    return jsonify({"ok": True, "id": notification_id, "persisted": False})
+
+
+@api.route("/system/notifications/<notification_id>/dismiss-permanent", methods=["POST"])
+def dismiss_notification_permanent(notification_id: str):
+    """Dismiss a notification permanently (persist to ``settings.json``).
+
+    Survives container restarts.  No authentication required.
+    """
+    from ..settings_manager import get_settings_manager
+
+    try:
+        get_settings_manager().dismiss_notification_permanent(notification_id)
+    except Exception as exc:
+        logger.error(f"Notifications: failed to persist dismissal for {notification_id}: {exc}")
+        return (
+            jsonify({"ok": False, "error": "Failed to persist dismissal"}),
+            500,
+        )
+    return jsonify({"ok": True, "id": notification_id, "persisted": True})
+
+
+@api.route("/system/notifications/reset-dismissed", methods=["POST"])
+@setup_or_auth_required
+def reset_dismissed_notifications():
+    """Clear all permanently-dismissed notifications.
+
+    Exposed as a settings-page action so users who accidentally
+    dismissed a notification can bring them back.  Requires auth because
+    it modifies persistent settings state.
+    """
+    from ..notifications import reset_session
+    from ..settings_manager import get_settings_manager
+
+    try:
+        get_settings_manager().reset_dismissed_notifications()
+    except Exception as exc:
+        logger.error(f"Notifications: failed to reset dismissed list: {exc}")
+        return jsonify({"ok": False, "error": "Failed to reset"}), 500
+    reset_session()
+    return jsonify({"ok": True})
 
 
 @api.route("/system/rescan-gpus", methods=["POST"])
@@ -705,19 +802,12 @@ def get_system_status():
         job_manager = get_job_manager()
         running_job = job_manager.get_running_job()
 
-        tz_info = _get_timezone_info()
-        vk_info = _get_vulkan_info()
         resp = {
             "gpus": gpus,
             "gpu_stats": [],
             "running_job": running_job.to_dict() if running_job else None,
             "pending_jobs": len(job_manager.get_pending_jobs()),
         }
-        if "warning" in tz_info:
-            resp["timezone_warning"] = tz_info["warning"]
-        if "warning" in vk_info:
-            resp["vulkan_warning"] = vk_info["warning"]
-
         return jsonify(resp)
     except Exception as e:
         logger.error(f"Failed to get system status: {e}")
@@ -745,7 +835,6 @@ def get_config():
                     "gpu_config": settings.gpu_config,
                     "gpu_threads": settings.gpu_threads,
                     "cpu_threads": settings.cpu_threads,
-                    "cpu_fallback_threads": settings.cpu_fallback_threads,
                     "ffmpeg_threads": settings.get("ffmpeg_threads", 2),
                 }
             )
@@ -755,8 +844,7 @@ def get_config():
             "plex_token": "****" if config.plex_token else "",
             "plex_config_folder": config.plex_config_folder or "",
             "plex_verify_ssl": config.plex_verify_ssl,
-            "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping
-            or "",
+            "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping or "",
             "plex_videos_path_mapping": config.plex_videos_path_mapping or "",
             "thumbnail_interval": config.plex_bif_frame_interval,
             "thumbnail_quality": config.thumbnail_quality,
@@ -764,14 +852,12 @@ def get_config():
             "gpu_config": config.gpu_config,
             "gpu_threads": config.gpu_threads,
             "cpu_threads": config.cpu_threads,
-            "cpu_fallback_threads": config.fallback_cpu_threads,
             "ffmpeg_threads": config.ffmpeg_threads,
             "log_level": config.log_level,
         }
         if config.gpu_threads == 0 and config.cpu_threads == 0:
             resp["config_warning"] = (
-                "No workers configured — jobs will remain pending "
-                "until GPU or CPU workers are added."
+                "No workers configured — jobs will remain pending until GPU or CPU workers are added."
             )
         return jsonify(resp)
     except Exception as e:
@@ -837,9 +923,7 @@ def _get_version_info() -> dict:
             latest_version = get_latest_github_release()
             if latest_version:
                 try:
-                    update_available = parse_version(latest_version) > parse_version(
-                        current_version
-                    )
+                    update_available = parse_version(latest_version) > parse_version(current_version)
                 except ValueError:
                     logger.debug("Could not compare versions for update check")
         except ValueError:
@@ -858,9 +942,7 @@ def _get_version_info() -> dict:
         latest_version = get_latest_github_release()
         if latest_version:
             try:
-                update_available = parse_version(latest_version) > parse_version(
-                    current_version
-                )
+                update_available = parse_version(latest_version) > parse_version(current_version)
             except ValueError:
                 logger.debug("Could not compare versions for update check")
 
@@ -1016,9 +1098,7 @@ def get_log_history():
     )
 
 
-_GITHUB_RELEASES_URL = (
-    "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases"
-)
+_GITHUB_RELEASES_URL = "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases"
 _RELEASES_CACHE: dict = {"result": None, "fetched_at": 0.0}
 _RELEASES_CACHE_TTL = 3600
 
@@ -1033,10 +1113,7 @@ def _fetch_github_releases(limit: int = 10) -> list:
         List of dicts with version, date, and body (markdown).
     """
     now = time.monotonic()
-    if (
-        _RELEASES_CACHE["result"] is not None
-        and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL
-    ):
+    if _RELEASES_CACHE["result"] is not None and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL:
         return _RELEASES_CACHE["result"][:limit]
 
     import requests as req
@@ -1236,9 +1313,7 @@ def get_libraries():
 
         plex_url = request.args.get("url")
         plex_token = request.args.get("token")
-        verify_ssl = _param_to_bool(
-            request.args.get("verify_ssl"), settings.plex_verify_ssl
-        )
+        verify_ssl = _param_to_bool(request.args.get("verify_ssl"), settings.plex_verify_ssl)
 
         # Track whether explicit overrides were provided (setup wizard)
         has_overrides = bool(plex_url or plex_token)
@@ -1273,9 +1348,7 @@ def get_libraries():
                                 "name": section.title,
                                 "type": section.type,
                                 "agent": agent,
-                                "display_type": classify_library_type(
-                                    section.type, agent
-                                ),
+                                "display_type": classify_library_type(section.type, agent),
                             }
                         )
 
@@ -1344,6 +1417,4 @@ def get_libraries():
         return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except Exception as e:
         logger.error(f"Failed to get libraries: {e}")
-        return jsonify(
-            {"error": f"Failed to retrieve libraries: {e}", "libraries": []}
-        ), 500
+        return jsonify({"error": f"Failed to retrieve libraries: {e}", "libraries": []}), 500

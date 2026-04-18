@@ -9,7 +9,7 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 
@@ -63,8 +63,7 @@ def app_url(tmp_path_factory) -> Generator[str, None, None]:
         stdout, stderr = proc.communicate(timeout=5)
         proc.kill()
         raise RuntimeError(
-            f"App server failed to start on port {app_port}.\n"
-            f"stdout: {stdout.decode()}\nstderr: {stderr.decode()}"
+            f"App server failed to start on port {app_port}.\nstdout: {stdout.decode()}\nstderr: {stderr.decode()}"
         )
 
     yield f"http://localhost:{app_port}"

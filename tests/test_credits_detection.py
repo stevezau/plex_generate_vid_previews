@@ -14,7 +14,6 @@ from plex_generate_previews.credits_detection import (
     detect_credits,
 )
 
-
 # ---------------------------------------------------------------------------
 # blackdetect parsing
 # ---------------------------------------------------------------------------
@@ -123,9 +122,7 @@ class TestCombineDetections:
         black = [BlackFrame(start=1800.0, end=1801.0, duration=1.0)]
         silence = [SilenceRegion(start=1799.5, end=1802.0, duration=2.5)]
 
-        result = _combine_detections(
-            black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections(black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is not None
         assert result.method == "black+silence"
         assert result.confidence == 0.8  # single black + silence
@@ -140,9 +137,7 @@ class TestCombineDetections:
         ]
         silence = [SilenceRegion(start=1799.5, end=1802.0, duration=2.5)]
 
-        result = _combine_detections(
-            black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections(black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is not None
         assert result.method == "black+silence"
         assert result.confidence == 0.9
@@ -154,9 +149,7 @@ class TestCombineDetections:
             BlackFrame(start=1810.0, end=1811.0, duration=1.0),
         ]
 
-        result = _combine_detections(
-            black, [], total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections(black, [], total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is not None
         assert result.method == "black_cluster"
         assert result.confidence == 0.6
@@ -165,18 +158,14 @@ class TestCombineDetections:
         """Single black frame without silence → no match (avoids scene transition false positive)."""
         black = [BlackFrame(start=1800.0, end=1801.0, duration=1.0)]
 
-        result = _combine_detections(
-            black, [], total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections(black, [], total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is None  # single black frame rejected — need cluster or silence
 
     def test_silence_only_fallback(self):
         """Silence without black frames → lower confidence."""
         silence = [SilenceRegion(start=1800.0, end=1805.0, duration=5.0)]
 
-        result = _combine_detections(
-            [], silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections([], silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is not None
         assert result.method == "silence_only"
         assert result.confidence == 0.4
@@ -186,9 +175,7 @@ class TestCombineDetections:
         black = [BlackFrame(start=500.0, end=501.0, duration=1.0)]
         silence = [SilenceRegion(start=500.0, end=505.0, duration=5.0)]
 
-        result = _combine_detections(
-            black, silence, total_duration_sec=2000.0, max_credits_start_pct=75.0
-        )
+        result = _combine_detections(black, silence, total_duration_sec=2000.0, max_credits_start_pct=75.0)
         assert result is None
 
     def test_rejects_credits_too_short(self):
@@ -196,9 +183,7 @@ class TestCombineDetections:
         black = [BlackFrame(start=1995.0, end=1996.0, duration=1.0)]
         silence = [SilenceRegion(start=1995.0, end=1998.0, duration=3.0)]
 
-        result = _combine_detections(
-            black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections(black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is None
 
     def test_no_detections_returns_none(self):
@@ -231,9 +216,7 @@ class TestCombineDetections:
         black = [BlackFrame(start=1800.0, end=1801.0, duration=1.0)]
         silence = [SilenceRegion(start=1803.0, end=1807.0, duration=4.0)]
 
-        result = _combine_detections(
-            black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0
-        )
+        result = _combine_detections(black, silence, total_duration_sec=2000.0, min_credits_duration_sec=15.0)
         assert result is not None
         assert result.method == "black+silence"
         # Credits start at the earlier of the two

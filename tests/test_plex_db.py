@@ -22,7 +22,6 @@ from plex_generate_previews.plex_db import (
     write_marker,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -106,14 +105,7 @@ class TestGetPlexDbPath:
 
     def test_finds_database_nested_layout(self, tmp_path):
         """Find DB in Library/Application Support/Plex Media Server layout."""
-        nested = (
-            tmp_path
-            / "Library"
-            / "Application Support"
-            / "Plex Media Server"
-            / "Plug-in Support"
-            / "Databases"
-        )
+        nested = tmp_path / "Library" / "Application Support" / "Plex Media Server" / "Plug-in Support" / "Databases"
         nested.mkdir(parents=True)
         db_path = nested / "com.plexapp.plugins.library.db"
         _create_mock_plex_db(str(db_path))
@@ -206,9 +198,7 @@ class TestWriteMarker:
         # Verify the written data
         conn = sqlite3.connect(plex_db)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM taggings WHERE metadata_item_id = 12345"
-        ).fetchone()
+        row = conn.execute("SELECT * FROM taggings WHERE metadata_item_id = 12345").fetchone()
         conn.close()
 
         assert row["text"] == "credits"
@@ -232,9 +222,7 @@ class TestWriteMarker:
 
         conn = sqlite3.connect(plex_db)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM taggings WHERE metadata_item_id = 12345"
-        ).fetchone()
+        row = conn.execute("SELECT * FROM taggings WHERE metadata_item_id = 12345").fetchone()
         conn.close()
 
         assert row["text"] == "intro"
@@ -246,9 +234,7 @@ class TestWriteMarker:
         write_marker(plex_db, 100, 30569, "credits", 60000, 70000)
 
         conn = sqlite3.connect(plex_db)
-        rows = conn.execute(
-            'SELECT "index" FROM taggings WHERE metadata_item_id = 100 ORDER BY "index"'
-        ).fetchall()
+        rows = conn.execute('SELECT "index" FROM taggings WHERE metadata_item_id = 100 ORDER BY "index"').fetchall()
         conn.close()
 
         assert [r[0] for r in rows] == [0, 1]
@@ -262,9 +248,7 @@ class TestWriteMarker:
 
         conn = sqlite3.connect(plex_db)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT extra_data FROM taggings WHERE metadata_item_id = 100"
-        ).fetchone()
+        row = conn.execute("SELECT extra_data FROM taggings WHERE metadata_item_id = 100").fetchone()
         conn.close()
 
         assert "pv:final" not in row["extra_data"]

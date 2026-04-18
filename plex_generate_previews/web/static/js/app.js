@@ -12,6 +12,9 @@ let processingPaused = false;
 const expandedJobFileRows = new Set();
 const expandedActiveJobFiles = new Set();
 let cachedWorkerConfigCounts = null;
+// Tracks previous fallback state per worker_id so we show a toast exactly
+// once when a worker switches from GPU to CPU (not on every poll tick).
+const _fallbackStateByWorker = new Map();
 let cachedGpuConfig = null;
 let cachedDetectedGpus = null;
 let _elapsedTimerInterval = null;
@@ -34,6 +37,74 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = String(str);
     return div.innerHTML;
+}
+
+/**
+ * Sanitize a small fragment of server-rendered HTML before it hits innerHTML.
+ * Allows the formatting tags the server uses in notifications (<br>, <strong>,
+ * <em>, <code>, <span>, <div>, <ul>/<li>, <a>) and strips everything else —
+ * including every event handler attribute (`onclick="..."`), inline-script
+ * tags, <iframe>, and any `javascript:` URI. Defence in depth: the server
+ * already escapes interpolated values via html.escape(), but a client-side
+ * whitelist keeps the notification channel safe even if a future caller
+ * forgets to escape something.
+ * @param {string} html - HTML fragment
+ * @returns {string} - Sanitized HTML fragment
+ */
+function sanitizeNotificationHtml(html) {
+    if (!html) return '';
+    var ALLOWED_TAGS = {
+        'BR': [],
+        'STRONG': [],
+        'EM': [],
+        'B': [],
+        'I': [],
+        'U': [],
+        'CODE': [],
+        'PRE': [],
+        'UL': ['class'],
+        'OL': ['class'],
+        'LI': ['class'],
+        'SPAN': ['class'],
+        'DIV': ['class'],
+        'P': ['class'],
+        'SMALL': ['class'],
+        'A': ['href', 'class', 'target', 'rel']
+    };
+    var template = document.createElement('template');
+    template.innerHTML = html;
+    var walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+    var toRemove = [];
+    while (walker.nextNode()) {
+        var el = walker.currentNode;
+        var allowed = ALLOWED_TAGS[el.tagName];
+        if (!allowed) {
+            toRemove.push(el);
+            continue;
+        }
+        // Strip attributes not on the whitelist; always strip anything that
+        // looks like javascript:/data: URIs on href.
+        for (var i = el.attributes.length - 1; i >= 0; i--) {
+            var attr = el.attributes[i];
+            if (allowed.indexOf(attr.name) === -1) {
+                el.removeAttribute(attr.name);
+                continue;
+            }
+            if (attr.name === 'href') {
+                var v = attr.value.trim().toLowerCase();
+                if (v.indexOf('javascript:') === 0 || v.indexOf('data:') === 0) {
+                    el.removeAttribute('href');
+                }
+            }
+        }
+    }
+    toRemove.forEach(function (el) {
+        // Unwrap: replace the disallowed element with its text content to
+        // avoid silently dropping user-visible text.
+        var text = document.createTextNode(el.textContent || '');
+        el.parentNode.replaceChild(text, el);
+    });
+    return template.innerHTML;
 }
 
 var _libraryTypeLabels = {movie: 'Movies', show: 'TV Shows', sports: 'Sports', other_videos: 'Other Videos'};
@@ -147,6 +218,7 @@ function initDashboard() {
     setInterval(loadJobs, 5000);
     setInterval(loadWorkerStatuses, 1000);
     setInterval(loadPendingWebhooks, 3000);
+    setInterval(tickPendingWebhookCountdowns, 1000);
 
     // Flush deferred job-queue updates when a priority dropdown closes
     document.addEventListener('hidden.bs.dropdown', function () {
@@ -261,6 +333,7 @@ function connectSocket() {
         renderGlobalPauseResume();
         loadJobs();
     });
+
 }
 
 // API Helpers
@@ -381,8 +454,7 @@ function normalizeWorkerConfigCounts(config) {
     // gpu_threads is the total across all enabled GPUs (computed from gpu_config)
     return {
         gpu_threads: Number(config?.gpu_threads ?? 0),
-        cpu_threads: Number(config?.cpu_threads ?? 1),
-        cpu_fallback_threads: Number(config?.cpu_fallback_threads ?? 0)
+        cpu_threads: Number(config?.cpu_threads ?? 1)
     };
 }
 
@@ -529,10 +601,10 @@ async function loadSchedules() {
 }
 
 // Check for ?editSchedule=<id> in the URL on page load — when a user
-// clicked "Edit" on a scanner from the Webhooks page we want to scroll
+// clicked "Edit" on a scanner from the Triggers tab we want to scroll
 // to the schedules table and open the edit modal for that specific
 // schedule.  Only does work when the full schedule table is on the
-// page (the Schedules page); on the Dashboard it redirects to /schedules
+// page (the Automation page); on the Dashboard it redirects to /automation
 // so stale links still land in the right place.
 function maybeAutoOpenScheduleEdit() {
     try {
@@ -543,8 +615,10 @@ function maybeAutoOpenScheduleEdit() {
         const scheduleTable = document.getElementById('scheduleList');
         if (!scheduleTable) {
             // Dashboard or any page without the full table — redirect to
-            // the Schedules page and let it handle the edit.
-            window.location.replace('/schedules?editSchedule=' + encodeURIComponent(editId));
+            // the Automation page (Schedules tab) and let it handle the edit.
+            window.location.replace(
+                '/automation?tab=schedules&editSchedule=' + encodeURIComponent(editId) + '#schedules'
+            );
             return;
         }
 
@@ -614,18 +688,32 @@ async function loadPendingWebhooks() {
             return;
         }
         row.classList.remove('d-none');
+        const now = Date.now();
         const parts = pending.map(function (p) {
-            const remaining = Math.max(0, Math.ceil(p.remaining_seconds));
+            const remainingSec = Math.max(0, Number(p.remaining_seconds) || 0);
+            const deadline = now + remainingSec * 1000;
+            const initial = Math.max(0, Math.ceil(remainingSec));
             const source = escapeHtml(p.source || 'webhook');
             const label = p.file_count === 1 && p.first_title
                 ? escapeHtml(p.first_title)
                 : `${p.file_count} file(s)`;
-            return `<strong>${source}</strong>: ${label} — starting in <strong>${remaining}s</strong>`;
+            return `<strong>${source}</strong>: ${label} — starting in <strong class="pending-webhook-countdown" data-deadline="${deadline}">${initial}s</strong>`;
         });
         content.innerHTML = parts.join(' &middot; ');
     } catch (error) {
         row.classList.add('d-none');
     }
+}
+
+function tickPendingWebhookCountdowns() {
+    const now = Date.now();
+    document.querySelectorAll('.pending-webhook-countdown[data-deadline]').forEach(function (el) {
+        const deadline = Number(el.getAttribute('data-deadline'));
+        if (!Number.isFinite(deadline)) return;
+        const remaining = Math.max(0, Math.ceil((deadline - now) / 1000));
+        const text = remaining + 's';
+        if (el.textContent !== text) el.textContent = text;
+    });
 }
 
 function renderGlobalPauseResume() {
@@ -693,65 +781,8 @@ function updateSystemStatus(status) {
 
     document.getElementById('systemStatus').innerHTML = html;
 
-    // Timezone warning
-    var tzBanner = document.getElementById('timezoneWarningBanner');
-    if (status.timezone_warning && !sessionStorage.getItem('tz_warning_dismissed')) {
-        if (!tzBanner) {
-            var tzRow = document.createElement('div');
-            tzRow.id = 'timezoneWarningRow';
-            tzRow.className = 'row';
-            tzRow.innerHTML = '<div class="col-12 mb-3">' +
-                '<div class="alert alert-warning alert-dismissible mb-0" id="timezoneWarningBanner">' +
-                '<div class="d-flex align-items-start">' +
-                '<i class="bi bi-clock-history me-2 mt-1"></i>' +
-                '<div>' +
-                '<strong>Timezone not configured.</strong><br>' +
-                status.timezone_warning +
-                '</div>' +
-                '</div>' +
-                '<button type="button" class="btn-close" aria-label="Close" ' +
-                'onclick="sessionStorage.setItem(\'tz_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
-                '</div></div>';
-            var statusEl = document.getElementById('systemStatus');
-            if (statusEl) statusEl.closest('.row').before(tzRow);
-        }
-    } else if (tzBanner) {
-        var tzRowEl = document.getElementById('timezoneWarningRow');
-        if (tzRowEl) tzRowEl.remove();
-    }
-
-    // Vulkan / libplacebo warning (DV Profile 5 green overlay bug)
-    var vkBanner = document.getElementById('vulkanWarningBanner');
-    if (status.vulkan_warning && !sessionStorage.getItem('vk_warning_dismissed')) {
-        if (!vkBanner) {
-            var vkRow = document.createElement('div');
-            vkRow.id = 'vulkanWarningRow';
-            vkRow.className = 'row';
-            vkRow.innerHTML = '<div class="col-12 mb-3">' +
-                '<div class="alert alert-warning alert-dismissible mb-0" id="vulkanWarningBanner">' +
-                '<div class="d-flex align-items-start">' +
-                '<i class="bi bi-gpu-card me-2 mt-1"></i>' +
-                '<div>' +
-                '<strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong><br>' +
-                status.vulkan_warning +
-                '<div class="mt-2">' +
-                '<button type="button" class="btn btn-sm btn-outline-secondary" ' +
-                'onclick="copyVulkanDiagnosticBundle(this)">' +
-                '<i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle' +
-                '</button>' +
-                '</div>' +
-                '</div>' +
-                '</div>' +
-                '<button type="button" class="btn-close" aria-label="Close" ' +
-                'onclick="sessionStorage.setItem(\'vk_warning_dismissed\',\'1\');this.closest(\'.row\').remove()"></button>' +
-                '</div></div>';
-            var statusEl2 = document.getElementById('systemStatus');
-            if (statusEl2) statusEl2.closest('.row').before(vkRow);
-        }
-    } else if (vkBanner) {
-        var vkRowEl = document.getElementById('vulkanWarningRow');
-        if (vkRowEl) vkRowEl.remove();
-    }
+    // Timezone + Vulkan warnings live in the bell-icon notification
+    // center (see loadNotifications()), not as dashboard banners.
 
     renderDashboardGpuConfig();
 }
@@ -795,6 +826,221 @@ function copyVulkanDiagnosticBundle(btn) {
             restore('<i class="bi bi-x-circle me-1"></i>Copy failed — see console', 4000);
         });
 }
+
+// =========================================================================
+// Notification center (bell icon dropdown)
+//
+// Fetches active system notifications from /api/system/notifications,
+// renders them into the bell dropdown, and wires dismiss / dismiss-permanent
+// buttons.  Notifications a user dismissed permanently are stored in
+// settings.json and stay dismissed across container restarts.
+// =========================================================================
+
+function loadNotifications() {
+    var list = document.getElementById('notificationList');
+    var empty = document.getElementById('notificationEmpty');
+    var badge = document.getElementById('notificationBellBadge');
+    if (!list || !badge) return;
+
+    fetch('/api/system/notifications')
+        .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(function (data) {
+            var notifications = (data && data.notifications) || [];
+            renderNotifications(notifications);
+        })
+        .catch(function (err) {
+            console.error('loadNotifications failed:', err);
+            // Leave the list in its previous state; failure should not
+            // clobber any currently-visible notifications.
+        });
+}
+
+function renderNotifications(notifications) {
+    var list = document.getElementById('notificationList');
+    var empty = document.getElementById('notificationEmpty');
+    var badge = document.getElementById('notificationBellBadge');
+    if (!list) return;
+
+    // Wipe previous entries but keep the 'empty' placeholder at the top.
+    list.querySelectorAll('.notification-entry').forEach(function (el) { el.remove(); });
+
+    if (!notifications || notifications.length === 0) {
+        if (empty) empty.classList.remove('d-none');
+        if (badge) {
+            badge.textContent = '0';
+            badge.classList.add('d-none');
+        }
+        return;
+    }
+
+    if (empty) empty.classList.add('d-none');
+    if (badge) {
+        badge.textContent = notifications.length.toString();
+        badge.classList.remove('d-none');
+    }
+
+    notifications.forEach(function (notif) {
+        var entry = document.createElement('div');
+        entry.className = 'notification-entry border-bottom p-3';
+        entry.dataset.notificationId = notif.id;
+
+        var severity = notif.severity || 'info';
+        var iconClass = severity === 'warning'
+            ? 'bi-exclamation-triangle-fill text-warning'
+            : severity === 'error'
+                ? 'bi-x-octagon-fill text-danger'
+                : 'bi-info-circle-fill text-info';
+
+        var header = document.createElement('div');
+        header.className = 'd-flex align-items-start';
+        header.innerHTML =
+            '<i class="bi ' + iconClass + ' me-2 mt-1 flex-shrink-0"></i>' +
+            '<div class="flex-grow-1">' +
+            '<strong class="d-block notification-title">' + escapeHtml(notif.title || 'Notification') + '</strong>' +
+            '<a href="#" class="small notification-toggle-details">Show details</a>' +
+            '</div>';
+
+        var details = document.createElement('div');
+        details.className = 'notification-details small mt-2 d-none';
+        details.innerHTML = sanitizeNotificationHtml(notif.body_html);
+
+        var copyRow = document.createElement('div');
+        copyRow.className = 'mt-2 d-none notification-copy-row';
+        if (notif.source === 'vulkan_probe') {
+            var copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'btn btn-sm btn-outline-secondary';
+            copyBtn.innerHTML = '<i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle';
+            copyBtn.onclick = function () { copyVulkanDiagnosticBundle(copyBtn); };
+            copyRow.appendChild(copyBtn);
+            copyRow.classList.remove('d-none');
+        }
+
+        var actions = document.createElement('div');
+        actions.className = 'd-flex gap-2 mt-2';
+        if (notif.dismissable !== false) {
+            var dismiss = document.createElement('button');
+            dismiss.type = 'button';
+            dismiss.className = 'btn btn-sm btn-outline-secondary';
+            dismiss.textContent = 'Dismiss';
+            dismiss.title = 'Hide until next restart';
+            dismiss.onclick = function () { dismissNotificationSession(notif.id); };
+            actions.appendChild(dismiss);
+
+            var dismissPerm = document.createElement('button');
+            dismissPerm.type = 'button';
+            dismissPerm.className = 'btn btn-sm btn-outline-danger';
+            dismissPerm.textContent = 'Dismiss permanently';
+            dismissPerm.title = 'Never show this notification again';
+            dismissPerm.onclick = function () { dismissNotificationPermanent(notif.id); };
+            actions.appendChild(dismissPerm);
+        }
+
+        entry.appendChild(header);
+        entry.appendChild(details);
+        entry.appendChild(copyRow);
+        entry.appendChild(actions);
+        list.appendChild(entry);
+
+        // Wire "Show details" toggle.
+        var toggle = entry.querySelector('.notification-toggle-details');
+        if (toggle) {
+            toggle.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                var hidden = details.classList.toggle('d-none');
+                toggle.textContent = hidden ? 'Show details' : 'Hide details';
+            });
+        }
+    });
+}
+
+function dismissNotificationSession(notificationId) {
+    fetch('/api/system/notifications/' + encodeURIComponent(notificationId) + '/dismiss', {
+        method: 'POST',
+    })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+            if (typeof showToast === 'function') {
+                showToast('Dismissed', 'Notification hidden for this session', 'info');
+            }
+            loadNotifications();
+        })
+        .catch(function (err) {
+            console.error('dismissNotificationSession failed:', err);
+            if (typeof showToast === 'function') {
+                showToast('Error', 'Could not dismiss notification', 'danger');
+            }
+        });
+}
+
+function dismissNotificationPermanent(notificationId) {
+    fetch('/api/system/notifications/' + encodeURIComponent(notificationId) + '/dismiss-permanent', {
+        method: 'POST',
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data && data.ok) {
+                if (typeof showToast === 'function') {
+                    showToast('Dismissed permanently', 'This notification will not appear again', 'info');
+                }
+                loadNotifications();
+            } else {
+                throw new Error((data && data.error) || 'Unknown error');
+            }
+        })
+        .catch(function (err) {
+            console.error('dismissNotificationPermanent failed:', err);
+            if (typeof showToast === 'function') {
+                showToast('Error', 'Could not permanently dismiss notification', 'danger');
+            }
+        });
+}
+
+function resetDismissedNotifications() {
+    fetch('/api/system/notifications/reset-dismissed', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data && data.ok) {
+                if (typeof showToast === 'function') {
+                    showToast('Reset', 'Dismissed notifications cleared', 'info');
+                }
+                loadNotifications();
+            }
+        })
+        .catch(function (err) {
+            console.error('resetDismissedNotifications failed:', err);
+        });
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Bind reset button and initial load once DOM is ready.  loadNotifications()
+// is safe to call on any page because the bell dropdown lives in the shared
+// navbar (base.html).
+document.addEventListener('DOMContentLoaded', function () {
+    var resetBtn = document.getElementById('notificationResetBtn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            resetDismissedNotifications();
+        });
+    }
+    loadNotifications();
+    // Refresh every 60s so a Vulkan state change (e.g. after a container
+    // restart with fixed env) shows up without a manual page reload.
+    setInterval(loadNotifications, 60000);
+});
 
 function renderNoWorkersWarning(message) {
     let banner = document.getElementById('noWorkersWarningBanner');
@@ -1485,7 +1731,6 @@ function updateWorkerStatuses(workers, options = {}) {
     } = options;
     const container = document.getElementById('workerStatusContainer');
     const cpuWorkersEl = document.getElementById('cpuWorkers');
-    const cpuFallbackWorkersEl = document.getElementById('cpuFallbackWorkers');
 
     if (!workers || workers.length === 0) {
         container.innerHTML = `
@@ -1499,38 +1744,61 @@ function updateWorkerStatuses(workers, options = {}) {
         const counts = fallbackCounts || cachedWorkerConfigCounts;
         if (counts) {
             if (cpuWorkersEl) cpuWorkersEl.textContent = String(counts.cpu_threads);
-            if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(counts.cpu_fallback_threads);
         }
         refreshWorkerScaleButtons();
         return;
     }
 
     const cpuCount = workers.filter(w => w.worker_type === 'CPU').length;
-    const cpuFallbackCount = workers.filter(w => w.worker_type === 'CPU_FALLBACK').length;
     if (cpuWorkersEl) cpuWorkersEl.textContent = String(cpuCount);
-    if (cpuFallbackWorkersEl) cpuFallbackWorkersEl.textContent = String(cpuFallbackCount);
+
+    // Surface GPU→CPU fallback transitions as a warning toast (once per switch).
+    for (const w of workers) {
+        const prev = _fallbackStateByWorker.get(w.worker_id) || false;
+        const now = !!w.fallback_active;
+        if (now && !prev) {
+            const title = w.current_title || 'this file';
+            const reason = w.fallback_reason || 'GPU processing failed';
+            showToast(
+                'Switched to CPU',
+                `${w.worker_name} fell back to CPU for "${title}" — ${reason}`,
+                'warning'
+            );
+        }
+        _fallbackStateByWorker.set(w.worker_id, now);
+    }
 
     let html = '<div class="row g-3">';
 
     for (const worker of workers) {
-        const icon = worker.worker_type === 'GPU' ? 'bi-gpu-card' : 'bi-cpu';
+        const fallbackActive = !!worker.fallback_active;
+        const icon = fallbackActive
+            ? 'bi-cpu'
+            : (worker.worker_type === 'GPU' ? 'bi-gpu-card' : 'bi-cpu');
         const statusColor = worker.status === 'processing' ? 'primary' : 'secondary';
         const progressPercent = (worker.progress_percent || 0).toFixed(1);
+        const fallbackBadge = fallbackActive
+            ? `<span class="badge bg-warning text-dark ms-1" title="${escapeHtml(worker.fallback_reason || 'CPU fallback')}"><i class="bi bi-arrow-down-circle me-1"></i>CPU fallback</span>`
+            : '';
+        const fallbackNote = fallbackActive && worker.fallback_reason
+            ? `<div class="small text-warning text-truncate mb-1" title="${escapeHtml(worker.fallback_reason)}"><i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(worker.fallback_reason)}</div>`
+            : '';
 
         html += `
             <div class="col-md-6">
-                <div class="card bg-body-tertiary">
+                <div class="card bg-body-tertiary${fallbackActive ? ' border-warning' : ''}">
                     <div class="card-body py-2">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}</span>
+                            <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}${fallbackBadge}</span>
                             <span class="badge bg-${statusColor}">${escapeHtml(worker.status)}</span>
                         </div>
+                        ${fallbackNote}
                         ${worker.status === 'processing' ? `
                             <div class="small text-truncate mb-1" title="${escapeHtml(worker.current_title)}">
                                 ${worker.library_name ? `<span class="text-muted">${escapeHtml(worker.library_name)}</span> <i class="bi bi-chevron-right small text-muted"></i> ` : ''}${escapeHtml(worker.current_title) || 'Processing...'}
                             </div>
                             <div class="progress" style="height: 6px;">
-                                <div class="progress-bar" style="width: ${progressPercent}%"></div>
+                                <div class="progress-bar${fallbackActive ? ' bg-warning' : ''}" style="width: ${progressPercent}%"></div>
                             </div>
                             <div class="d-flex justify-content-between small text-muted mt-1">
                                 <span>${progressPercent}%</span>
@@ -2257,8 +2525,8 @@ function describeSchedule(triggerType, triggerValue) {
 
 // Compact schedule summary rendered inside the Job Statistics card on the
 // Dashboard.  Shows next upcoming run + a small configured/enabled count.
-// The Schedules page is the authoritative place for CRUD — this is just
-// an at-a-glance pointer.
+// The Automation page (Schedules tab) is the authoritative place for CRUD —
+// this is just an at-a-glance pointer.
 function updateScheduleTeaser() {
     const body = document.getElementById('scheduleTeaserBody');
     if (!body) return;
@@ -2268,7 +2536,7 @@ function updateScheduleTeaser() {
             '<div class="d-flex align-items-center gap-2 text-muted small">' +
             '<i class="bi bi-calendar-x"></i>' +
             '<span>No schedules configured.</span>' +
-            '<a href="/schedules" class="ms-auto">Create one →</a>' +
+            '<a href="/automation#schedules" class="ms-auto">Create one →</a>' +
             '</div>';
         return;
     }
@@ -2686,8 +2954,8 @@ function refreshWorkerScaleButtons() {
 }
 
 function getWorkerCountForType(workerType) {
-    const id = workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers';
-    const el = document.getElementById(id);
+    if (workerType !== 'CPU') return 0;
+    const el = document.getElementById('cpuWorkers');
     if (!el) return 0;
     const n = parseInt(el.textContent, 10);
     return Number.isNaN(n) ? 0 : n;
@@ -2695,7 +2963,7 @@ function getWorkerCountForType(workerType) {
 
 function settingsKeyForWorkerType(workerType) {
     if (workerType === 'CPU') return 'cpu_threads';
-    return 'cpu_fallback_threads';
+    return null;
 }
 
 async function scaleWorkersGlobal(workerType, direction) {
@@ -2710,9 +2978,7 @@ async function scaleWorkersGlobal(workerType, direction) {
         cachedWorkerConfigCounts = null;
         await loadWorkerConfigCounts(true);
 
-        const badgeEl = document.getElementById(
-            workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
-        );
+        const badgeEl = workerType === 'CPU' ? document.getElementById('cpuWorkers') : null;
         if (badgeEl) badgeEl.textContent = String(newCount);
         refreshWorkerScaleButtons();
 
@@ -2743,9 +3009,7 @@ async function scaleWorkersGlobal(workerType, direction) {
             }
         }
     } catch (error) {
-        const badgeEl = document.getElementById(
-            workerType === 'CPU' ? 'cpuWorkers' : 'cpuFallbackWorkers'
-        );
+        const badgeEl = workerType === 'CPU' ? document.getElementById('cpuWorkers') : null;
         if (badgeEl) badgeEl.textContent = String(currentCount);
         refreshWorkerScaleButtons();
         showToast('Error', `Failed to update ${workerType} workers: ${error.message}`, 'danger');

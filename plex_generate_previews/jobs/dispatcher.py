@@ -6,18 +6,18 @@ scheduling: workers focus on the highest-priority active job and only spill
 over to the next job when the current job's queue is empty.
 """
 
-import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 from loguru import logger
 
-from .config import Config
-from .media_processing import ProcessingResult
-from .web.jobs import PRIORITY_NORMAL
+from ..config import Config
+from ..processing.orchestrator import ProcessingResult
+from ..web.jobs import PRIORITY_NORMAL
 from .worker import Worker, WorkerPool
 
 _submission_counter_lock = threading.Lock()
@@ -53,12 +53,12 @@ class JobTracker:
     def __init__(
         self,
         job_id: str,
-        items: List[tuple],
+        items: list[tuple],
         config: Config,
         plex,
         title_max_width: int = 20,
         library_name: str = "",
-        callbacks: Optional[Dict[str, Any]] = None,
+        callbacks: dict[str, Any] | None = None,
         priority: int = PRIORITY_NORMAL,
     ):
         """Initialize tracker for a single job."""
@@ -76,22 +76,22 @@ class JobTracker:
         self.successful = 0
         self.failed = 0
         self.cancelled = False
-        self.outcome_counts: Dict[str, int] = {r.value: 0 for r in ProcessingResult}
+        self.outcome_counts: dict[str, int] = {r.value: 0 for r in ProcessingResult}
         self.done_event = threading.Event()
 
         cbs = callbacks or {}
-        self.progress_callback: Optional[Callable] = cbs.get("progress_callback")
-        self.worker_callback: Optional[Callable] = cbs.get("worker_callback")
-        self.on_item_complete: Optional[Callable] = cbs.get("on_item_complete")
-        self.cancel_check: Optional[Callable] = cbs.get("cancel_check")
-        self.pause_check: Optional[Callable] = cbs.get("pause_check")
+        self.progress_callback: Callable | None = cbs.get("progress_callback")
+        self.worker_callback: Callable | None = cbs.get("worker_callback")
+        self.on_item_complete: Callable | None = cbs.get("on_item_complete")
+        self.cancel_check: Callable | None = cbs.get("cancel_check")
+        self.pause_check: Callable | None = cbs.get("pause_check")
         self.fingerprint_store = cbs.get("fingerprint_store")
 
         # Throttle timestamps for callbacks
         self._last_progress_update = 0.0
         self._last_worker_update = 0.0
         # Set when all items are done; used by _cleanup_done_trackers
-        self._done_at: Optional[float] = None
+        self._done_at: float | None = None
 
     @property
     def completed(self) -> int:
@@ -155,7 +155,7 @@ class JobTracker:
             self.failed += remaining
         self.done_event.set()
 
-    def wait(self, timeout: Optional[float] = None) -> bool:
+    def wait(self, timeout: float | None = None) -> bool:
         """Block until all items are processed.
 
         Returns:
@@ -190,9 +190,9 @@ class JobDispatcher:
     def __init__(self, worker_pool: WorkerPool):
         """Initialize dispatcher with shared worker pool."""
         self.worker_pool = worker_pool
-        self._trackers: Dict[str, JobTracker] = {}
+        self._trackers: dict[str, JobTracker] = {}
         self._trackers_lock = threading.RLock()
-        self._dispatch_thread: Optional[threading.Thread] = None
+        self._dispatch_thread: threading.Thread | None = None
         self._has_work = threading.Event()
         self._shutdown = False
         # Signalled by worker threads on completion so the dispatch loop
@@ -206,12 +206,12 @@ class JobDispatcher:
     def submit_items(
         self,
         job_id: str,
-        items: List[tuple],
+        items: list[tuple],
         config: Config,
         plex,
         title_max_width: int = 20,
         library_name: str = "",
-        callbacks: Optional[Dict[str, Any]] = None,
+        callbacks: dict[str, Any] | None = None,
         priority: int = PRIORITY_NORMAL,
     ) -> JobTracker:
         """Submit items for a job to the shared dispatch queue.
@@ -243,10 +243,7 @@ class JobDispatcher:
         )
         with self._trackers_lock:
             self._trackers[job_id] = tracker
-        logger.info(
-            f"Dispatcher: submitted {len(items)} items for job {job_id[:8]} "
-            f"({library_name or 'no library'})"
-        )
+        logger.info(f"Dispatcher: submitted {len(items)} items for job {job_id[:8]} ({library_name or 'no library'})")
         self._has_work.set()
         self._ensure_dispatch_running()
         return tracker
@@ -259,7 +256,7 @@ class JobDispatcher:
             tracker.cancel()
             logger.info(f"Dispatcher: cancelled job {job_id[:8]}")
 
-    def get_tracker(self, job_id: str) -> Optional[JobTracker]:
+    def get_tracker(self, job_id: str) -> JobTracker | None:
         """Get the tracker for a job, if it exists."""
         with self._trackers_lock:
             return self._trackers.get(job_id)
@@ -280,9 +277,7 @@ class JobDispatcher:
         """Start the background dispatch thread if not already running."""
         if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
             return
-        self._dispatch_thread = threading.Thread(
-            target=self._dispatch_loop, daemon=True, name="job-dispatcher"
-        )
+        self._dispatch_thread = threading.Thread(target=self._dispatch_loop, daemon=True, name="job-dispatcher")
         self._dispatch_thread.start()
 
     def _dispatch_loop(self) -> None:
@@ -320,10 +315,7 @@ class JobDispatcher:
             # 5. Emit periodic progress updates for active jobs
             self._emit_progress_updates()
 
-            # 6. Drain fallback queue if no CPU workers remain
-            self._drain_orphaned_fallback_items()
-
-            # 7. Periodic progress logging
+            # 6. Periodic progress logging
             now = time.time()
             if now - last_progress_log >= 5.0:
                 self._log_progress()
@@ -353,8 +345,7 @@ class JobDispatcher:
             if tracker.is_cancelled() and not tracker.cancelled:
                 tracker.cancel()
                 logger.info(
-                    f"Dispatcher: job {tracker.job_id[:8]} cancelled "
-                    f"({tracker.completed}/{tracker.total_items} done)"
+                    f"Dispatcher: job {tracker.job_id[:8]} cancelled ({tracker.completed}/{tracker.total_items} done)"
                 )
 
     def _check_completions(self) -> int:
@@ -371,10 +362,6 @@ class JobDispatcher:
             reaped += 1
             title = worker.media_title or "(unknown)"
             job_id = worker.current_job_id
-
-            # GPU->CPU re-queue: the CPU worker will record completion later
-            if worker.requeued_to_cpu:
-                continue
 
             with self._trackers_lock:
                 tracker = self._trackers.get(job_id) if job_id else None
@@ -413,18 +400,9 @@ class JobDispatcher:
         self.worker_pool._apply_deferred_removals()
 
         while True:
-            has_main_items = self._has_dispatchable_items()
-            cpu_only = not has_main_items
-            worker = self.worker_pool._find_available_worker(cpu_only=cpu_only)
+            worker = self.worker_pool._find_available_worker()
             if not worker:
                 break
-
-            # CPU/CPU_FALLBACK workers: try fallback queue first
-            if worker.worker_type in ("CPU", "CPU_FALLBACK"):
-                if self._assign_fallback_to_worker(worker):
-                    continue
-                if worker.worker_type == "CPU_FALLBACK" or not has_main_items:
-                    break
 
             # Pull next item (highest priority, then oldest submission)
             item = self._get_next_item()
@@ -437,14 +415,7 @@ class JobDispatcher:
             if not tracker:
                 continue
 
-            progress_callback = partial(
-                self.worker_pool._update_worker_progress, worker
-            )
-            cpu_fallback_queue = (
-                self.worker_pool.cpu_fallback_queue
-                if worker.worker_type == "GPU"
-                else None
-            )
+            progress_callback = partial(self.worker_pool._update_worker_progress, worker)
             worker.assign_task(
                 item_key,
                 tracker.config,
@@ -453,98 +424,12 @@ class JobDispatcher:
                 media_title=media_title,
                 media_type=media_type,
                 title_max_width=tracker.title_max_width,
-                cpu_fallback_queue=cpu_fallback_queue,
                 job_id=job_id,
                 library_name=library_name,
                 cancel_check=tracker.cancel_check,
                 fingerprint_store=tracker.fingerprint_store,
             )
-            logger.info(
-                f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) "
-                f"to {worker.display_name}"
-            )
-
-    def _assign_fallback_to_worker(self, worker: Worker) -> bool:
-        """Try to assign a fallback-queue item to a CPU worker.
-
-        The fallback queue holds items from ALL jobs (tagged with job_id),
-        so we look up the correct tracker to get config/plex.
-
-        Returns:
-            True if a task was assigned.
-
-        """
-        try:
-            fallback_item = self.worker_pool.cpu_fallback_queue.get_nowait()
-        except queue.Empty:
-            return False
-
-        job_id = fallback_item[0] if len(fallback_item) >= 1 else None
-        item_key = fallback_item[1] if len(fallback_item) >= 2 else fallback_item
-        media_title = fallback_item[2] if len(fallback_item) >= 3 else None
-        media_type = fallback_item[3] if len(fallback_item) >= 4 else None
-        library_name = fallback_item[4] if len(fallback_item) >= 5 else ""
-
-        with self._trackers_lock:
-            tracker = self._trackers.get(job_id) if job_id else None
-
-        # Don't assign fallback items for cancelled jobs
-        if tracker and (tracker.cancelled or tracker.is_cancelled()):
-            tracker.record_completion(
-                success=False,
-                worker_display_name="(cancelled)",
-                title=str(media_title or item_key),
-            )
-            logger.info(
-                f"Dispatcher: skipped cancelled fallback item {media_title!r} "
-                f"(job {job_id[:8] if job_id else 'unknown'})"
-            )
-            return True
-
-        if tracker:
-            config = tracker.config
-            plex = tracker.plex
-            title_max_width = tracker.title_max_width
-        else:
-            config, plex, title_max_width = self._fallback_config()
-            if config is None:
-                logger.warning(
-                    f"Dispatcher: no config available for fallback item {item_key}"
-                )
-                return False
-
-        if media_title is None or media_type is None:
-            media_title, media_type = self.worker_pool._get_plex_media_info(
-                plex, item_key
-            )
-
-        progress_callback = partial(self.worker_pool._update_worker_progress, worker)
-        cancel_check = tracker.cancel_check if tracker else None
-        worker.assign_task(
-            item_key,
-            config,
-            plex,
-            progress_callback=progress_callback,
-            media_title=media_title,
-            media_type=media_type,
-            title_max_width=title_max_width,
-            cpu_fallback_queue=None,
-            job_id=job_id,
-            library_name=library_name,
-            cancel_check=cancel_check,
-        )
-        logger.info(
-            f"Dispatch: assigned fallback item {media_title!r} to {worker.display_name}"
-        )
-        return True
-
-    def _fallback_config(self) -> Tuple[Optional[Config], Any, int]:
-        """Return (config, plex, title_max_width) from any active tracker."""
-        with self._trackers_lock:
-            for tracker in self._trackers.values():
-                if not tracker.done_event.is_set():
-                    return tracker.config, tracker.plex, tracker.title_max_width
-        return None, None, 20
+            logger.info(f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) to {worker.display_name}")
 
     def _has_dispatchable_items(self) -> bool:
         """Check if any active (non-paused, non-cancelled) tracker has items."""
@@ -570,7 +455,7 @@ class JobDispatcher:
             if tracker:
                 tracker.priority = priority
 
-    def _get_next_item(self) -> Optional[Tuple[str, str, str, str, str]]:
+    def _get_next_item(self) -> tuple[str, str, str, str, str] | None:
         """Get the next item using priority-aware drain-first scheduling.
 
         Picks from the highest-priority active job first (lowest number).
@@ -584,10 +469,7 @@ class JobDispatcher:
             eligible = [
                 t
                 for t in self._trackers.values()
-                if not t.done_event.is_set()
-                and not t.is_paused()
-                and not t.is_cancelled()
-                and t.item_queue
+                if not t.done_event.is_set() and not t.is_paused() and not t.is_cancelled() and t.item_queue
             ]
             eligible.sort(key=lambda t: (t.priority, t.submission_order))
             for tracker in eligible:
@@ -596,53 +478,6 @@ class JobDispatcher:
                 library_name = item[3] if len(item) > 3 else ""
                 return (tracker.job_id, item_key, media_title, media_type, library_name)
         return None
-
-    def _drain_orphaned_fallback_items(self) -> None:
-        """Drain fallback items when no CPU-capable workers exist.
-
-        Unlike the WorkerPool's generic drain, this version extracts the
-        job_id from each 4-tuple and attributes the failure to the correct
-        JobTracker so per-job counts remain accurate.
-        """
-        if (
-            not self.worker_pool._check_fallback_queue_empty()
-            and not self.worker_pool._has_cpu_capable_workers()
-            and not self.worker_pool.has_busy_workers()
-        ):
-            drained = 0
-            while not self.worker_pool.cpu_fallback_queue.empty():
-                try:
-                    item = self.worker_pool.cpu_fallback_queue.get_nowait()
-                except queue.Empty:
-                    break
-                job_id = (
-                    item[0]
-                    if isinstance(item, (list, tuple)) and len(item) >= 1
-                    else None
-                )
-                item_key = (
-                    item[1]
-                    if isinstance(item, (list, tuple)) and len(item) >= 2
-                    else item
-                )
-                with self._trackers_lock:
-                    tracker = self._trackers.get(job_id) if job_id else None
-                if tracker and not tracker.done_event.is_set():
-                    tracker.record_completion(
-                        success=False,
-                        worker_display_name="(drain)",
-                        title=str(item_key),
-                    )
-                logger.warning(
-                    f"Drained unreachable fallback item {item_key} as failed "
-                    f"(no CPU workers available, job={job_id[:8] if job_id else 'unknown'})"
-                )
-                drained += 1
-            if drained:
-                logger.warning(
-                    f"Dispatcher: drained {drained} orphaned fallback item(s) — "
-                    "add CPU or CPU_FALLBACK workers to process codec-fallback items"
-                )
 
     def _emit_worker_updates(self) -> None:
         """Emit worker status updates for all active trackers (throttled)."""
@@ -671,11 +506,7 @@ class JobDispatcher:
                 # processing items for this job.
                 in_progress_fraction = self._get_in_progress_fraction(tracker.job_id)
                 effective = tracker.completed + in_progress_fraction
-                percent = (
-                    (effective / tracker.total_items * 100)
-                    if tracker.total_items > 0
-                    else 0
-                )
+                percent = (effective / tracker.total_items * 100) if tracker.total_items > 0 else 0
                 tracker.progress_callback(
                     tracker.completed,
                     tracker.total_items,
@@ -706,12 +537,12 @@ class JobDispatcher:
                 fraction += pct / 100.0
         return fraction
 
-    def _build_worker_statuses(self) -> List[dict]:
+    def _build_worker_statuses(self) -> list[dict]:
         """Build the worker status list for the worker_callback."""
         all_workers = self.worker_pool._snapshot_workers()
 
-        type_counters: Dict[str, int] = {}
-        worker_type_index: Dict[int, int] = {}
+        type_counters: dict[str, int] = {}
+        worker_type_index: dict[int, int] = {}
         for w in all_workers:
             type_counters[w.worker_type] = type_counters.get(w.worker_type, 0) + 1
             worker_type_index[w.worker_id] = type_counters[w.worker_type]
@@ -727,8 +558,6 @@ class JobDispatcher:
 
             if worker.worker_type == "GPU":
                 display_name = f"{gpu_base_name} #{idx}"
-            elif worker.worker_type == "CPU_FALLBACK":
-                display_name = f"CPU Fallback - Worker {idx}"
             else:
                 display_name = f"CPU - Worker {idx}"
 
@@ -740,13 +569,11 @@ class JobDispatcher:
                     "status": "processing" if is_busy else "idle",
                     "current_title": worker.media_title if is_busy else "",
                     "library_name": worker.library_name if is_busy else "",
-                    "progress_percent": (
-                        progress_data["progress_percent"] if is_busy else 0
-                    ),
+                    "progress_percent": (progress_data["progress_percent"] if is_busy else 0),
                     "speed": progress_data["speed"] if is_busy else "0.0x",
-                    "remaining_time": (
-                        progress_data["remaining_time"] if is_busy else 0.0
-                    ),
+                    "remaining_time": (progress_data["remaining_time"] if is_busy else 0.0),
+                    "fallback_active": bool(getattr(worker, "fallback_active", False)),
+                    "fallback_reason": getattr(worker, "fallback_reason", None),
                 }
             )
         return statuses
@@ -758,13 +585,10 @@ class JobDispatcher:
         results via ``get_result()`` before they are garbage-collected.
         """
         with self._trackers_lock:
-            done_ids = [
-                jid for jid, t in self._trackers.items() if t.done_event.is_set()
-            ]
+            done_ids = [jid for jid, t in self._trackers.items() if t.done_event.is_set()]
             for jid in done_ids:
                 still_referenced = any(
-                    w.current_job_id == jid and w.is_busy
-                    for w in self.worker_pool._snapshot_workers()
+                    w.current_job_id == jid and w.is_busy for w in self.worker_pool._snapshot_workers()
                 )
                 if not still_referenced:
                     tracker = self._trackers[jid]
@@ -776,8 +600,6 @@ class JobDispatcher:
     def _all_idle(self) -> bool:
         """Check if there is no work left (no items, no busy workers)."""
         if self.worker_pool.has_busy_workers():
-            return False
-        if not self.worker_pool._check_fallback_queue_empty():
             return False
         with self._trackers_lock:
             for tracker in self._trackers.values():
@@ -792,14 +614,9 @@ class JobDispatcher:
         if not active:
             return
         for tracker in active:
-            pct = (
-                int(tracker.completed / tracker.total_items * 100)
-                if tracker.total_items > 0
-                else 0
-            )
+            pct = int(tracker.completed / tracker.total_items * 100) if tracker.total_items > 0 else 0
             logger.info(
-                f"Dispatcher progress: job {tracker.job_id[:8]} "
-                f"{tracker.completed}/{tracker.total_items} ({pct}%)"
+                f"Dispatcher progress: job {tracker.job_id[:8]} {tracker.completed}/{tracker.total_items} ({pct}%)"
             )
 
 
@@ -807,11 +624,11 @@ class JobDispatcher:
 # Singleton management
 # ---------------------------------------------------------------------------
 
-_dispatcher: Optional[JobDispatcher] = None
+_dispatcher: JobDispatcher | None = None
 _dispatcher_lock = threading.Lock()
 
 
-def get_dispatcher(worker_pool: Optional[WorkerPool] = None) -> Optional[JobDispatcher]:
+def get_dispatcher(worker_pool: WorkerPool | None = None) -> JobDispatcher | None:
     """Get or create the global JobDispatcher singleton.
 
     Args:

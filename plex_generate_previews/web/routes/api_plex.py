@@ -147,9 +147,7 @@ def get_plex_servers():
                 uri = c.get("uri") or ""
                 host = c.get("address") or ""
                 port = c.get("port", 32400)
-                protocol = c.get("protocol") or (
-                    "https" if str(uri).startswith("https") else "http"
-                )
+                protocol = c.get("protocol") or ("https" if str(uri).startswith("https") else "http")
                 if not uri and host:
                     uri = f"{protocol}://{host}:{port}"
                 connection_list.append(
@@ -197,9 +195,7 @@ def get_plex_libraries():
 
     plex_url = request.args.get("url") or settings.plex_url
     plex_token = request.args.get("token") or settings.plex_token
-    verify_ssl = _param_to_bool(
-        request.args.get("verify_ssl"), settings.plex_verify_ssl
-    )
+    verify_ssl = _param_to_bool(request.args.get("verify_ssl"), settings.plex_verify_ssl)
 
     if not plex_url or not plex_token:
         return jsonify({"error": "Plex URL and token required", "libraries": []}), 400
@@ -277,9 +273,7 @@ def test_plex_connection():
         response.raise_for_status()
         data = response.json()
 
-        server_name = data.get("MediaContainer", {}).get(
-            "friendlyName", "Unknown Server"
-        )
+        server_name = data.get("MediaContainer", {}).get("friendlyName", "Unknown Server")
 
         return jsonify(
             {

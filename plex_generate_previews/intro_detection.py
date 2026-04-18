@@ -15,8 +15,8 @@ Two-phase design:
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -76,14 +76,14 @@ class IntroFingerprintStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         # Key: (show_title, season_number) → [(rating_key, fingerprint)]
-        self._data: Dict[Tuple[str, int], List[Tuple[int, List[int]]]] = {}
+        self._data: dict[tuple[str, int], list[tuple[int, list[int]]]] = {}
 
     def add(
         self,
         show_title: str,
         season_number: int,
         rating_key: int,
-        fingerprint: List[int],
+        fingerprint: list[int],
     ) -> None:
         """Add a fingerprint for an episode."""
         key = (show_title, season_number)
@@ -92,7 +92,7 @@ class IntroFingerprintStore:
                 self._data[key] = []
             self._data[key].append((rating_key, fingerprint))
 
-    def get_seasons(self) -> List[Tuple[str, int, List[Tuple[int, List[int]]]]]:
+    def get_seasons(self) -> list[tuple[str, int, list[tuple[int, list[int]]]]]:
         """Return all seasons with 2+ fingerprinted episodes.
 
         Returns:
@@ -129,7 +129,7 @@ def check_fpcalc_available() -> bool:
 def _run_fpcalc(
     media_file: str,
     length_sec: float,
-) -> Optional[List[int]]:
+) -> list[int] | None:
     """Run ``fpcalc -raw`` and parse the integer fingerprint array.
 
     Args:
@@ -155,9 +155,7 @@ def _run_fpcalc(
             timeout=120,
         )
         if result.returncode != 0:
-            logger.debug(
-                f"fpcalc returned {result.returncode}: {result.stderr.strip()}"
-            )
+            logger.debug(f"fpcalc returned {result.returncode}: {result.stderr.strip()}")
             return None
 
         for line in result.stdout.splitlines():
@@ -181,8 +179,8 @@ def _run_fpcalc(
 def fingerprint_episode(
     media_file: str,
     duration_limit_sec: float = 600.0,
-    cancel_check: Optional[Callable] = None,
-) -> Optional[List[int]]:
+    cancel_check: Callable | None = None,
+) -> list[int] | None:
     """Generate a chromaprint fingerprint for the first N seconds.
 
     Args:
@@ -211,12 +209,12 @@ def _popcount(x: int) -> int:
 
 
 def _compare_fingerprints(
-    fp1: List[int],
-    fp2: List[int],
+    fp1: list[int],
+    fp2: list[int],
     max_offset: int = 200,
     match_threshold: int = 8,
     min_run_length: int = 50,
-) -> List[MatchRegion]:
+) -> list[MatchRegion]:
     """Compare two fingerprints using sliding window Hamming distance.
 
     Slides fp2 over fp1 at various offsets and finds runs of matching
@@ -237,7 +235,7 @@ def _compare_fingerprints(
         List of MatchRegion objects.
 
     """
-    regions: List[MatchRegion] = []
+    regions: list[MatchRegion] = []
 
     for offset in range(-max_offset, max_offset + 1):
         # Determine the overlapping range
@@ -252,7 +250,7 @@ def _compare_fingerprints(
 
         # Count consecutive matches
         run_start = None
-        run_scores: List[float] = []
+        run_scores: list[float] = []
 
         for i in range(overlap_len):
             hamming = _popcount(fp1[start_a + i] ^ fp2[start_b + i])
@@ -289,10 +287,10 @@ def _compare_fingerprints(
 
 
 def _find_best_common_segment(
-    all_matches: List[MatchRegion],
+    all_matches: list[MatchRegion],
     min_duration_sec: float = 15.0,
     max_duration_sec: float = 120.0,
-) -> Optional[IntroSegment]:
+) -> IntroSegment | None:
     """Find the best intro segment from pairwise match results.
 
     Picks the longest high-scoring match that falls within the
@@ -335,10 +333,10 @@ def _find_best_common_segment(
 
 
 def find_common_intro(
-    fingerprints: List[Tuple[int, List[int]]],
+    fingerprints: list[tuple[int, list[int]]],
     min_duration_sec: float = 15.0,
     max_duration_sec: float = 120.0,
-) -> Optional[IntroSegment]:
+) -> IntroSegment | None:
     """Compare fingerprints across episodes to find the common intro.
 
     Performs pairwise comparison of all fingerprints and identifies
@@ -371,7 +369,7 @@ def find_common_intro(
     for j in range(3, min(n, 6)):
         pairs.append((0, j))
 
-    all_matches: List[MatchRegion] = []
+    all_matches: list[MatchRegion] = []
     for i, j in pairs:
         _, fp_i = fingerprints[i]
         _, fp_j = fingerprints[j]
@@ -384,8 +382,5 @@ def find_common_intro(
 
     result = _find_best_common_segment(all_matches, min_duration_sec, max_duration_sec)
     if result:
-        logger.info(
-            f"Found common intro: {result.start_ms}ms–{result.end_ms}ms "
-            f"(confidence: {result.confidence:.0%})"
-        )
+        logger.info(f"Found common intro: {result.start_ms}ms–{result.end_ms}ms (confidence: {result.confidence:.0%})")
     return result

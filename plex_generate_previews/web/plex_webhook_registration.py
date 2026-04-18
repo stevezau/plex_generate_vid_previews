@@ -12,7 +12,6 @@ human-readable message when registration fails for any reason
 
 from __future__ import annotations
 
-from typing import List, Optional
 from urllib.parse import urlencode, urlparse, urlunparse
 
 from loguru import logger
@@ -52,26 +51,19 @@ def _account(token: str):
         from plexapi.exceptions import BadRequest, Unauthorized
         from plexapi.myplex import MyPlexAccount
     except ImportError as exc:
-        raise PlexWebhookError(
-            f"plexapi is not available: {exc}", reason="unknown"
-        ) from exc
+        raise PlexWebhookError(f"plexapi is not available: {exc}", reason="unknown") from exc
 
     try:
         return MyPlexAccount(token=str(token).strip())
     except Unauthorized as exc:
         raise PlexWebhookError(
-            "Plex token was rejected by plex.tv. "
-            "Re-authenticate via the Setup Wizard and try again.",
+            "Plex token was rejected by plex.tv. Re-authenticate via the Setup Wizard and try again.",
             reason="unauthorized",
         ) from exc
     except BadRequest as exc:
-        raise PlexWebhookError(
-            f"plex.tv rejected the account request: {exc}", reason="unknown"
-        ) from exc
+        raise PlexWebhookError(f"plex.tv rejected the account request: {exc}", reason="unknown") from exc
     except Exception as exc:  # network / TLS / timeout
-        raise PlexWebhookError(
-            f"Could not reach plex.tv: {exc}", reason="network_error"
-        ) from exc
+        raise PlexWebhookError(f"Could not reach plex.tv: {exc}", reason="network_error") from exc
 
 
 def _normalize_url(url: str) -> str:
@@ -92,13 +84,11 @@ def _base_url(url: str) -> str:
     if not url:
         return ""
     parsed = urlparse(str(url).strip())
-    base = urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", "")
-    )
+    base = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", ""))
     return base.rstrip("/")
 
 
-def _build_authenticated_url(url: str, auth_token: Optional[str]) -> str:
+def _build_authenticated_url(url: str, auth_token: str | None) -> str:
     """Append ``?token=<auth_token>`` to ``url`` so Plex can authenticate.
 
     Plex's webhook UI does not allow custom headers, so the only way to
@@ -114,16 +104,12 @@ def _build_authenticated_url(url: str, auth_token: Optional[str]) -> str:
     new_query = urlencode({"token": auth_token})
     if existing_query:
         # Preserve any pre-existing query, but overwrite an existing token.
-        existing_pairs = [
-            kv for kv in existing_query.split("&") if kv and not kv.startswith("token=")
-        ]
+        existing_pairs = [kv for kv in existing_query.split("&") if kv and not kv.startswith("token=")]
         existing_pairs.append(new_query)
         combined = "&".join(existing_pairs)
     else:
         combined = new_query
-    return urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, combined, "")
-    )
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, combined, ""))
 
 
 def has_plex_pass(token: str) -> bool:
@@ -162,7 +148,7 @@ def has_plex_pass(token: str) -> bool:
         return False
 
 
-def list_webhooks(token: str) -> List[str]:
+def list_webhooks(token: str) -> list[str]:
     """Return all webhook URLs currently registered on the account.
 
     Raises:
@@ -176,13 +162,10 @@ def list_webhooks(token: str) -> List[str]:
         message = str(exc).lower()
         if "401" in message or "unauthor" in message or "forbidden" in message:
             raise PlexWebhookError(
-                "Webhooks require an active Plex Pass subscription on the "
-                "server-owner account.",
+                "Webhooks require an active Plex Pass subscription on the server-owner account.",
                 reason="plex_pass_required",
             ) from exc
-        raise PlexWebhookError(
-            f"Failed to list Plex webhooks: {exc}", reason="unknown"
-        ) from exc
+        raise PlexWebhookError(f"Failed to list Plex webhooks: {exc}", reason="unknown") from exc
     return [_normalize_url(u) for u in (urls or []) if u]
 
 
@@ -206,7 +189,7 @@ def is_registered(token: str, url: str) -> bool:
         return False
 
 
-def register(token: str, url: str, auth_token: Optional[str] = None) -> List[str]:
+def register(token: str, url: str, auth_token: str | None = None) -> list[str]:
     """Register ``url`` as a Plex webhook (idempotent).
 
     Args:
@@ -239,21 +222,16 @@ def register(token: str, url: str, auth_token: Optional[str] = None) -> List[str
         message = str(exc).lower()
         if "401" in message or "unauthor" in message or "forbidden" in message:
             raise PlexWebhookError(
-                "Webhooks require an active Plex Pass subscription on the "
-                "server-owner account.",
+                "Webhooks require an active Plex Pass subscription on the server-owner account.",
                 reason="plex_pass_required",
             ) from exc
-        raise PlexWebhookError(
-            f"Failed to read existing Plex webhooks: {exc}", reason="unknown"
-        ) from exc
+        raise PlexWebhookError(f"Failed to read existing Plex webhooks: {exc}", reason="unknown") from exc
 
     # Remove any stale registrations matching the same base URL — they
     # may have a different (or missing) token query param.  This makes
     # "Re-register with Plex" idempotent and safe after rotating the
     # webhook secret.
-    stale = [
-        u for u in current if _base_url(u) == target_base and u != target_with_auth
-    ]
+    stale = [u for u in current if _base_url(u) == target_base and u != target_with_auth]
     for stale_url in stale:
         try:
             account.deleteWebhook(stale_url)
@@ -271,13 +249,10 @@ def register(token: str, url: str, auth_token: Optional[str] = None) -> List[str
         message = str(exc).lower()
         if "401" in message or "unauthor" in message or "forbidden" in message:
             raise PlexWebhookError(
-                "Webhooks require an active Plex Pass subscription on the "
-                "server-owner account.",
+                "Webhooks require an active Plex Pass subscription on the server-owner account.",
                 reason="plex_pass_required",
             ) from exc
-        raise PlexWebhookError(
-            f"Failed to register Plex webhook: {exc}", reason="unknown"
-        ) from exc
+        raise PlexWebhookError(f"Failed to register Plex webhook: {exc}", reason="unknown") from exc
 
     logger.info("Registered Plex webhook (token embedded in URL): {}", target_base)
     try:
@@ -286,7 +261,7 @@ def register(token: str, url: str, auth_token: Optional[str] = None) -> List[str
         return current + [target_with_auth]
 
 
-def unregister(token: str, url: str) -> List[str]:
+def unregister(token: str, url: str) -> list[str]:
     """Remove the webhook for ``url`` from the account.
 
     Matches by base URL so that any registered variants — with or
@@ -313,9 +288,7 @@ def unregister(token: str, url: str) -> List[str]:
     try:
         current = [_normalize_url(u) for u in (account.webhooks() or []) if u]
     except Exception as exc:
-        raise PlexWebhookError(
-            f"Failed to read existing Plex webhooks: {exc}", reason="unknown"
-        ) from exc
+        raise PlexWebhookError(f"Failed to read existing Plex webhooks: {exc}", reason="unknown") from exc
 
     matches = [u for u in current if _base_url(u) == target_base]
     if not matches:
@@ -326,9 +299,7 @@ def unregister(token: str, url: str) -> List[str]:
         try:
             account.deleteWebhook(match)
         except Exception as exc:
-            raise PlexWebhookError(
-                f"Failed to remove Plex webhook: {exc}", reason="unknown"
-            ) from exc
+            raise PlexWebhookError(f"Failed to remove Plex webhook: {exc}", reason="unknown") from exc
         logger.info("Removed Plex webhook: {}", match)
 
     try:

@@ -19,9 +19,7 @@ def scheduler_manager(tmp_path, monkeypatch):
 
     manager = ScheduleManager(config_dir=config_dir, run_job_callback=None)
     # Make this the global singleton so execute_scheduled_job uses it
-    monkeypatch.setattr(
-        "plex_generate_previews.web.scheduler._schedule_manager", manager
-    )
+    monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager)
     manager.start()
 
     yield manager
@@ -170,9 +168,7 @@ class TestScheduleCRUD:
             cron_expression="0 2 * * *",
         )
 
-        updated = scheduler_manager.update_schedule(
-            schedule["id"], interval_minutes=120
-        )
+        updated = scheduler_manager.update_schedule(schedule["id"], interval_minutes=120)
 
         assert updated["trigger_type"] == "interval"
         assert updated["trigger_value"] == "120"
@@ -186,9 +182,7 @@ class TestScheduleCRUD:
             interval_minutes=60,
         )
 
-        updated = scheduler_manager.update_schedule(
-            schedule["id"], cron_expression="0 3 * * *"
-        )
+        updated = scheduler_manager.update_schedule(schedule["id"], cron_expression="0 3 * * *")
 
         assert updated["trigger_type"] == "cron"
         assert updated["trigger_value"] == "0 3 * * *"
@@ -284,9 +278,7 @@ class TestScheduleRunNow:
         result = scheduler_manager.run_now(schedule["id"])
 
         assert result is True
-        mock_callback.assert_called_once_with(
-            library_id="123", library_name="Movies", config={}
-        )
+        mock_callback.assert_called_once_with(library_id="123", library_name="Movies", config={})
 
     def test_run_now_nonexistent(self, scheduler_manager):
         """Test that run_now on a nonexistent schedule returns False."""
@@ -325,9 +317,7 @@ class TestSchedulePersistence:
         os.makedirs(config_dir, exist_ok=True)
 
         manager1 = ScheduleManager(config_dir=config_dir)
-        monkeypatch.setattr(
-            "plex_generate_previews.web.scheduler._schedule_manager", manager1
-        )
+        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager1)
         manager1.start()
         schedule = manager1.create_schedule(
             name="Persistent",
@@ -339,9 +329,7 @@ class TestSchedulePersistence:
         manager1.stop()
 
         manager2 = ScheduleManager(config_dir=config_dir)
-        monkeypatch.setattr(
-            "plex_generate_previews.web.scheduler._schedule_manager", manager2
-        )
+        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager2)
         manager2.start()
 
         retrieved = manager2.get_schedule(sid)
@@ -389,9 +377,7 @@ class TestGetScheduleManager:
 
     def test_returns_singleton(self, tmp_path, monkeypatch):
         """Test that get_schedule_manager returns the same instance."""
-        monkeypatch.setattr(
-            "plex_generate_previews.web.scheduler._schedule_manager", None
-        )
+        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", None)
 
         config_dir = str(tmp_path / "config")
         os.makedirs(config_dir, exist_ok=True)
@@ -404,9 +390,7 @@ class TestGetScheduleManager:
 
     def test_sets_callback_on_existing(self, tmp_path, monkeypatch):
         """Test that a callback can be set on an existing singleton."""
-        monkeypatch.setattr(
-            "plex_generate_previews.web.scheduler._schedule_manager", None
-        )
+        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", None)
 
         config_dir = str(tmp_path / "config")
         os.makedirs(config_dir, exist_ok=True)
@@ -453,9 +437,7 @@ class TestExecuteScheduledJobDispatch:
         assert kwargs["library_id"] == "123"
         assert kwargs["library_name"] == "Movies"
 
-    def test_dispatches_recently_added_calls_scanner(
-        self, scheduler_manager, monkeypatch
-    ):
+    def test_dispatches_recently_added_calls_scanner(self, scheduler_manager, monkeypatch):
         """A schedule with job_type='recently_added' calls scan_recently_added."""
         from plex_generate_previews.web import scheduler as sched_mod
 
@@ -482,9 +464,7 @@ class TestExecuteScheduledJobDispatch:
 
         mock_scanner.assert_called_once_with(2.0, library_ids=["2"])
 
-    def test_dispatches_recently_added_with_no_library_passes_none(
-        self, scheduler_manager, monkeypatch
-    ):
+    def test_dispatches_recently_added_with_no_library_passes_none(self, scheduler_manager, monkeypatch):
         """No library_id = scanner gets library_ids=None (scan all sections)."""
         from plex_generate_previews.web import scheduler as sched_mod
 
@@ -511,9 +491,7 @@ class TestExecuteScheduledJobDispatch:
 
         mock_scanner.assert_called_once_with(1.0, library_ids=None)
 
-    def test_recently_added_dispatch_clamps_invalid_lookback(
-        self, scheduler_manager, monkeypatch
-    ):
+    def test_recently_added_dispatch_clamps_invalid_lookback(self, scheduler_manager, monkeypatch):
         """Garbage lookback_hours values are coerced to a safe default."""
         from plex_generate_previews.web import scheduler as sched_mod
 
@@ -539,9 +517,7 @@ class TestExecuteScheduledJobDispatch:
         # Falls back to 1.0 hour default
         mock_scanner.assert_called_once_with(1.0, library_ids=None)
 
-    def test_recently_added_dispatch_updates_last_run(
-        self, scheduler_manager, monkeypatch
-    ):
+    def test_recently_added_dispatch_updates_last_run(self, scheduler_manager, monkeypatch):
         """After dispatching a recently_added scan the schedule's last_run updates."""
         from plex_generate_previews.web import scheduler as sched_mod
 

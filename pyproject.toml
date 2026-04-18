@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "plex-generate-previews"
 dynamic = ["version"]
 authors = [
-    {name = "stevezau", email = "stevezau@example.com"},
+    {name = "Steve Adams", email = "stevezau@gmail.com"},
 ]
 description = "Generate video preview thumbnails for Plex Media Server"
 readme = "README.md"
@@ -28,7 +28,11 @@ classifiers = [
 keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
 dependencies = [
     "requests==2.33.0",
-    "urllib3>=1.26.0,<3.0.0",
+    # urllib3 >=2.6.3 covers CVE-2025-50181/50182 (redirect-handling),
+    # CVE-2025-66418/66471 (chunked encoding), CVE-2026-21441
+    # (proxy-auth). python>=3.10 is already required so dropping 1.x
+    # support is safe.
+    "urllib3>=2.6.3,<3.0.0",
     "python-dotenv==1.1.1",
     "plexapi==4.17.1",
     "loguru==0.7.3",
@@ -53,6 +57,7 @@ test = [
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
     "pytest-xdist>=3.0.0",
+    "pytest-timeout>=2.3.0",
     "pytest-playwright>=0.4.0",
     "playwright>=1.40.0",
     "flask-cors>=4.0.0",
@@ -79,14 +84,15 @@ testpaths = ["tests"]
 addopts = [
     "--cov=plex_generate_previews",
     "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-report=xml",
     "--cov-fail-under=70",
-    "-v",
     "--tb=short",
     "--strict-markers",
     "--disable-warnings",
-    "-m", "not gpu",
+    "-n", "auto",
+    "--dist", "load",
+    "-m", "not gpu and not e2e",
+    "--timeout=30",
+    "--timeout-method=thread",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
@@ -98,6 +104,9 @@ markers = [
     "slow: marks tests as slow running",
     "ci: marks tests that work in CI environments",
     "e2e: marks tests as end-to-end browser tests",
+    "real_prewarm: opt out of the autouse _prewarm_caches no-op in conftest",
+    "real_logging: opt out of the autouse setup_logging no-op in conftest",
+    "real_job_async: opt out of the autouse _start_job_async no-op in conftest",
 ]
 
 [tool.coverage.run]
@@ -118,3 +127,37 @@ skip_covered = false
 write_to = "plex_generate_previews/_version.py"
 local_scheme = "no-local-version"
 fallback_version = "0.0.0+unknown"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "plex_generate_previews/_version.py",
+    ".venv",
+    ".venv-test",
+    "htmlcov",
+    "tmp_migration_test",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade (modernizes typing, f-strings, etc.)
+]
+ignore = [
+    "E501",  # line-too-long handled by formatter
+    "B008",  # function calls in argument defaults (Flask/Depends idiom)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # assert False is fine in tests
+"plex_generate_previews/gpu/__init__.py" = ["F401"]  # public-API re-export
+"plex_generate_previews/processing/__init__.py" = ["F401"]  # public-API re-export
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

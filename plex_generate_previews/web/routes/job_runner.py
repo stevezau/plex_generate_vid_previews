@@ -44,9 +44,7 @@ def _build_selected_gpus(settings) -> list:
 
     # Build a lookup from device path -> gpu_config entry
     config_by_device = {
-        entry["device"]: entry
-        for entry in gpu_config
-        if isinstance(entry, dict) and entry.get("device")
+        entry["device"]: entry for entry in gpu_config if isinstance(entry, dict) and entry.get("device")
     }
 
     selected = []
@@ -84,9 +82,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
     """
     with _inflight_lock:
         if job_id in _inflight_jobs:
-            logger.info(
-                f"Skipping duplicate _start_job_async for {job_id} — already in flight"
-            )
+            logger.info(f"Skipping duplicate _start_job_async for {job_id} — already in flight")
             return
         _inflight_jobs.add(job_id)
 
@@ -98,9 +94,10 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             from loguru import logger as loguru_logger
 
-            from ...processing import run_processing
             from ...config import ConfigValidationError, load_config
-            from ...media_processing import (
+            from ...jobs.orchestrator import run_processing
+            from ...jobs.worker import is_job_thread, register_job_thread
+            from ...processing.orchestrator import (
                 _verify_tmp_folder_health,
                 clear_failures,
                 failure_scope,
@@ -108,7 +105,6 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 set_file_result_callback,
             )
             from ...utils import setup_working_directory as create_working_directory
-            from ...worker import is_job_thread, register_job_thread
             from ..settings_manager import get_settings_manager
 
             register_job_thread()
@@ -126,9 +122,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     if not merged.get("path_count"):
                         merged["path_count"] = len(wp)
                 job_manager.update_job_config(job_id, merged)
-                logger.info(
-                    f"Job {job_id} not started — global processing paused; job remains pending"
-                )
+                logger.info(f"Job {job_id} not started — global processing paused; job remains pending")
                 return
 
             def log_sink(message):
@@ -222,47 +216,25 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             path_mappings = normalize_path_mappings(settings)
             if path_mappings:
                 config.path_mappings = path_mappings
-            config.exclude_paths = normalize_exclude_paths(
-                settings.get("exclude_paths")
-            )
+            config.exclude_paths = normalize_exclude_paths(settings.get("exclude_paths"))
             if settings.get("plex_videos_path_mapping"):
-                config.plex_videos_path_mapping = settings.get(
-                    "plex_videos_path_mapping"
-                )
+                config.plex_videos_path_mapping = settings.get("plex_videos_path_mapping")
             if settings.get("plex_local_videos_path_mapping"):
-                config.plex_local_videos_path_mapping = settings.get(
-                    "plex_local_videos_path_mapping"
-                )
+                config.plex_local_videos_path_mapping = settings.get("plex_local_videos_path_mapping")
 
             # Credits/intro detection settings
-            config.credits_detection_enabled = bool(
-                settings.get("credits_detection_enabled", False)
-            )
-            config.credits_detection_overwrite = bool(
-                settings.get("credits_detection_overwrite", False)
-            )
-            config.credits_scan_last_pct = max(
-                5.0, min(50.0, float(settings.get("credits_scan_last_pct", 25.0)))
-            )
-            config.credits_min_duration = max(
-                5.0, min(120.0, float(settings.get("credits_min_duration", 15.0)))
-            )
-            config.intro_detection_enabled = bool(
-                settings.get("intro_detection_enabled", False)
-            )
-            config.intro_detection_overwrite = bool(
-                settings.get("intro_detection_overwrite", False)
-            )
+            config.credits_detection_enabled = bool(settings.get("credits_detection_enabled", False))
+            config.credits_detection_overwrite = bool(settings.get("credits_detection_overwrite", False))
+            config.credits_scan_last_pct = max(5.0, min(50.0, float(settings.get("credits_scan_last_pct", 25.0))))
+            config.credits_min_duration = max(5.0, min(120.0, float(settings.get("credits_min_duration", 15.0))))
+            config.intro_detection_enabled = bool(settings.get("intro_detection_enabled", False))
+            config.intro_detection_overwrite = bool(settings.get("intro_detection_overwrite", False))
             config.intro_scan_duration_sec = max(
                 120.0,
                 min(1800.0, float(settings.get("intro_scan_duration_sec", 600.0))),
             )
-            config.intro_min_duration_sec = max(
-                5.0, min(60.0, float(settings.get("intro_min_duration_sec", 15.0)))
-            )
-            config.intro_max_duration_sec = max(
-                30.0, min(300.0, float(settings.get("intro_max_duration_sec", 120.0)))
-            )
+            config.intro_min_duration_sec = max(5.0, min(60.0, float(settings.get("intro_min_duration_sec", 15.0))))
+            config.intro_max_duration_sec = max(30.0, min(300.0, float(settings.get("intro_max_duration_sec", 120.0))))
 
             if config_overrides:
                 for key, value in config_overrides.items():
@@ -276,9 +248,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     elif key == "force_generate":
                         config.regenerate_thumbnails = bool(value)
                     elif key == "webhook_paths":
-                        config.webhook_paths = [
-                            str(path).strip() for path in value if str(path).strip()
-                        ]
+                        config.webhook_paths = [str(path).strip() for path in value if str(path).strip()]
                     elif hasattr(config, key):
                         setattr(config, key, value)
 
@@ -290,9 +260,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 logger.warning(message)
                 job_manager.add_log(job_id, f"WARNING - {message}")
             if not tmp_ok:
-                raise RuntimeError(
-                    f"Working temp folder is not healthy: {config.working_tmp_folder}"
-                )
+                raise RuntimeError(f"Working temp folder is not healthy: {config.working_tmp_folder}")
 
             selected_gpus = _build_selected_gpus(settings)
 
@@ -330,13 +298,11 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                 active_worker_keys = set()
                 for worker_data in workers_list:
-                    worker_key = (
-                        f"{worker_data['worker_type']}_{worker_data['worker_id']}"
-                    )
+                    worker_key = f"{worker_data['worker_type']}_{worker_data['worker_id']}"
                     active_worker_keys.add(worker_key)
                     remaining_time = worker_data.get("remaining_time")
                     worker_eta = ""
-                    if isinstance(remaining_time, (int, float)) and remaining_time > 0:
+                    if isinstance(remaining_time, int | float) and remaining_time > 0:
                         worker_eta = _format_eta(float(remaining_time))
                     status = WorkerStatus(
                         worker_id=worker_data["worker_id"],
@@ -399,9 +365,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             _job_scope.enter_context(failure_scope(job_id))
             try:
                 if _retry_cancelled:
-                    job_manager.add_log(
-                        job_id, "WARNING - Retry cancelled by user during wait"
-                    )
+                    job_manager.add_log(job_id, "WARNING - Retry cancelled by user during wait")
                     job_manager.cancel_job(job_id)
                 else:
                     clear_failures()
@@ -454,12 +418,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         progress_callback=progress_callback,
                         worker_callback=worker_callback,
                         item_complete_callback=_on_item_complete,
-                        cancel_check=lambda: job_manager.is_cancellation_requested(
-                            job_id
-                        ),
+                        cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
                         pause_check=lambda: (
-                            job_manager.is_pause_requested(job_id)
-                            or get_settings_manager().processing_paused
+                            job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
                         ),
                         worker_pool_callback=_on_pool_available,
                         job_id=job_id,
@@ -476,11 +437,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         job_manager.set_job_outcome(job_id, outcome)
 
                     current_job = job_manager.get_job(job_id)
-                    status_value = (
-                        getattr(current_job.status, "value", current_job.status)
-                        if current_job
-                        else None
-                    )
+                    status_value = getattr(current_job.status, "value", current_job.status) if current_job else None
                     job_config = (current_job.config or {}) if current_job else {}
 
                     resolution = result.get("webhook_resolution", {})
@@ -496,8 +453,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     unresolved_detail = (
                         path_hints[0]
                         if path_hints
-                        else "file may not be scanned yet, "
-                        "or path mappings in Settings may need adjusting"
+                        else "file may not be scanned yet, or path mappings in Settings may need adjusting"
                     )
                     for upath in unresolved_paths:
                         job_manager.record_file_result(
@@ -510,9 +466,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     retry_attempt = int(job_config.get("retry_attempt", 0))
                     max_retries = int(job_config.get("max_retries", 0))
                     retry_count = max(0, int(job_config.get("webhook_retry_count", 0)))
-                    retry_delay_sec = max(
-                        10, min(300, int(job_config.get("webhook_retry_delay", 30)))
-                    )
+                    retry_delay_sec = max(10, min(300, int(job_config.get("webhook_retry_delay", 30))))
                     effective_max = max_retries or retry_count
 
                     # Plex resolved these items but returned stale file paths
@@ -552,25 +506,16 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         # Extract source prefix (e.g. "Sonarr") and build
                         # a name reflecting the actual unresolved count.
                         colon_pos = parent_lib.find(": ")
-                        source_prefix = (
-                            parent_lib[:colon_pos] if colon_pos > 0 else parent_lib
-                        )
+                        source_prefix = parent_lib[:colon_pos] if colon_pos > 0 else parent_lib
                         if len(paths) == 1:
-                            retry_library_name = (
-                                f"Retry: {source_prefix}: {basenames[0]}"
-                            )
+                            retry_library_name = f"Retry: {source_prefix}: {basenames[0]}"
                         elif source_prefix:
-                            retry_library_name = (
-                                f"Retry: {source_prefix}: {len(paths)} files"
-                            )
+                            retry_library_name = f"Retry: {source_prefix}: {len(paths)} files"
                         else:
                             retry_library_name = f"Retry: {basenames[0]}"
                         parent_id = job_config.get("parent_job_id") or job_id
                         backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
-                        scheduled_at = (
-                            datetime.now(timezone.utc)
-                            + timedelta(seconds=backoff_delay)
-                        ).isoformat()
+                        scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_delay)).isoformat()
                         parent_priority = current_job.priority if current_job else 2
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
@@ -589,9 +534,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         selected_libs = settings.get("selected_libraries", []) or []
                         if not isinstance(selected_libs, list):
                             selected_libs = []
-                        selected_libs = [
-                            str(x).strip() for x in selected_libs if str(x).strip()
-                        ]
+                        selected_libs = [str(x).strip() for x in selected_libs if str(x).strip()]
                         _start_job_async(
                             rj.id,
                             {
@@ -604,9 +547,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         )
                         return rj.id
 
-                    if all_scan_paths and not (
-                        result.get("cancelled") or status_value == "cancelled"
-                    ):
+                    if all_scan_paths and not (result.get("cancelled") or status_value == "cancelled"):
                         try:
                             from ...plex_client import trigger_plex_partial_scan
 
@@ -626,57 +567,38 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 detail = " + ".join(parts) or "affected"
                                 job_manager.add_log(
                                     job_id,
-                                    f"INFO - Triggered Plex scan for "
-                                    f"{len(scan_results)} path(s) ({detail})",
+                                    f"INFO - Triggered Plex scan for {len(scan_results)} path(s) ({detail})",
                                 )
                         except Exception as scan_exc:  # noqa: BLE001
-                            logger.debug(
-                                f"Plex partial scan attempt failed (non-fatal): {scan_exc}"
-                            )
+                            logger.debug(f"Plex partial scan attempt failed (non-fatal): {scan_exc}")
 
                     spawned_retry_id = None
-                    if retry_paths and not (
-                        result.get("cancelled") or status_value == "cancelled"
-                    ):
+                    if retry_paths and not (result.get("cancelled") or status_value == "cancelled"):
                         if is_retry and retry_attempt < effective_max:
                             next_attempt = retry_attempt + 1
-                            spawned_retry_id = _spawn_retry_job(
-                                retry_paths, next_attempt
-                            )
-                            next_delay = min(
-                                300, retry_delay_sec * (2 ** (next_attempt - 1))
-                            )
+                            spawned_retry_id = _spawn_retry_job(retry_paths, next_attempt)
+                            next_delay = min(300, retry_delay_sec * (2 ** (next_attempt - 1)))
                             reason_parts = []
                             if unresolved_paths:
-                                reason_parts.append(
-                                    f"{len(unresolved_paths)} unresolved"
-                                )
+                                reason_parts.append(f"{len(unresolved_paths)} unresolved")
                             if not_found_on_disk:
-                                reason_parts.append(
-                                    f"{len(not_found_on_disk)} stale path(s)"
-                                )
+                                reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
                             reason = " + ".join(reason_parts) or "issues"
                             job_manager.add_log(
                                 job_id,
-                                f"INFO - Retry {retry_attempt}/{effective_max}: "
-                                f"{reason}, next retry in {next_delay}s",
+                                f"INFO - Retry {retry_attempt}/{effective_max}: {reason}, next retry in {next_delay}s",
                             )
                         elif not is_retry and effective_max > 0:
                             spawned_retry_id = _spawn_retry_job(retry_paths, 1)
                             reason_parts = []
                             if unresolved_paths:
-                                reason_parts.append(
-                                    f"{len(unresolved_paths)} not found in Plex"
-                                )
+                                reason_parts.append(f"{len(unresolved_paths)} not found in Plex")
                             if not_found_on_disk:
-                                reason_parts.append(
-                                    f"{len(not_found_on_disk)} stale path(s)"
-                                )
+                                reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
                             reason = ", ".join(reason_parts) or "issues"
                             job_manager.add_log(
                                 job_id,
-                                f"INFO - {reason}, "
-                                f"retry scheduled in {retry_delay_sec}s",
+                                f"INFO - {reason}, retry scheduled in {retry_delay_sec}s",
                             )
 
                     if result.get("cancelled") or status_value == "cancelled":
@@ -691,11 +613,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 f"WARNING - {len(failures)} file(s) failed during processing",
                             )
                             for i, f in enumerate(failures, 1):
-                                wt = (
-                                    f"[{f['worker_type']}] "
-                                    if f.get("worker_type")
-                                    else ""
-                                )
+                                wt = f"[{f['worker_type']}] " if f.get("worker_type") else ""
                                 job_manager.add_log(
                                     job_id,
                                     f"ERROR - {i}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}",
@@ -723,9 +641,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 error_parts.append(msg)
 
                         if spawned_retry_id:
-                            error_parts.append(
-                                f"{len(retry_paths)} path(s) sent for retry"
-                            )
+                            error_parts.append(f"{len(retry_paths)} path(s) sent for retry")
                             summary = dict(job_config)
                             summary["resolution_summary"] = {
                                 "total": total_paths,
@@ -737,20 +653,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             job_manager.update_job_config(job_id, summary)
                         elif unresolved_paths:
                             if is_retry:
-                                error_parts.append(
-                                    f"Could not find in Plex after {effective_max} attempt(s)"
-                                )
+                                error_parts.append(f"Could not find in Plex after {effective_max} attempt(s)")
                             else:
-                                error_parts.append(
-                                    f"{len(unresolved_paths)} item(s) not found in Plex"
-                                )
+                                error_parts.append(f"{len(unresolved_paths)} item(s) not found in Plex")
 
                         if error_parts:
                             if total_paths > 0 and resolved_count < total_paths:
-                                error_msg = (
-                                    f"{resolved_count}/{total_paths} processed; "
-                                    + ", ".join(error_parts)
-                                )
+                                error_msg = f"{resolved_count}/{total_paths} processed; " + ", ".join(error_parts)
                             else:
                                 error_msg = "; ".join(error_parts)
                             job_manager.add_log(job_id, f"WARNING - {error_msg}")
@@ -760,11 +669,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 and outcome.get("skipped_file_not_found", 0) > 0
                                 and not spawned_retry_id
                             )
-                            nothing_resolved = (
-                                total_paths > 0
-                                and resolved_count == 0
-                                and not spawned_retry_id
-                            )
+                            nothing_resolved = total_paths > 0 and resolved_count == 0 and not spawned_retry_id
                             is_hard_failure = (
                                 bool(failures)
                                 or (is_retry and retry_paths and not spawned_retry_id)
@@ -777,13 +682,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 job_manager.complete_job(job_id, warning=error_msg)
                         else:
                             if is_retry:
-                                job_manager.add_log(
-                                    job_id, "INFO - Retry job completed successfully"
-                                )
+                                job_manager.add_log(job_id, "INFO - Retry job completed successfully")
                             else:
-                                job_manager.add_log(
-                                    job_id, "INFO - Job completed successfully"
-                                )
+                                job_manager.add_log(job_id, "INFO - Job completed successfully")
                             job_manager.complete_job(job_id)
             finally:
                 # Release the per-job failure bucket before the scope exits
@@ -798,24 +699,15 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                 import shutil
 
-                if config.working_tmp_folder and os.path.isdir(
-                    config.working_tmp_folder
-                ):
+                if config.working_tmp_folder and os.path.isdir(config.working_tmp_folder):
                     try:
-                        logger.debug(
-                            f"Cleaning up working temp folder: {config.working_tmp_folder}"
-                        )
+                        logger.debug(f"Cleaning up working temp folder: {config.working_tmp_folder}")
                         shutil.rmtree(config.working_tmp_folder)
-                        logger.debug(
-                            f"Cleaned up working temp folder: {config.working_tmp_folder}"
-                        )
+                        logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to clean up: {cleanup_error}")
                 elif config.working_tmp_folder:
-                    logger.debug(
-                        "Working temp folder already absent, skipping cleanup: "
-                        f"{config.working_tmp_folder}"
-                    )
+                    logger.debug(f"Working temp folder already absent, skipping cleanup: {config.working_tmp_folder}")
 
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}")
@@ -825,7 +717,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             job_manager.complete_job(job_id, error=str(e))
         finally:
             set_file_result_callback(None)
-            from ...worker import unregister_job_thread
+            from ...jobs.worker import unregister_job_thread
 
             unregister_job_thread()
             with _inflight_lock:

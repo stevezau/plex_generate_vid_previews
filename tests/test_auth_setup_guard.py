@@ -12,9 +12,7 @@ def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
     monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr(
-        "plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path)
-    )
+    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
     from plex_generate_previews.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()

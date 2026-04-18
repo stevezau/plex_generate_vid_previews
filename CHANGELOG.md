@@ -83,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI mode (`--cli`, `plex-generate-previews` CLI entry point, `cli.py`)
 - `__main__.py` module (standalone execution)
 - `pytest` from pre-push hooks
+- Dedicated CPU-fallback worker pool — GPU workers now retry on CPU in-place
+
+### Migrating from 3.4.x
+
+- **`--cli` flag is gone.** 3.5 is web-only. Configure everything through the Setup Wizard and the Settings page. Existing env vars (`PLEX_URL`, `PLEX_TOKEN`, `CPU_THREADS`, …) are migrated into `settings.json` on first start; after that, `settings.json` is the source of truth.
+- **`CPU_FALLBACK_WORKERS` / "CPU Fallback Workers" setting is gone.** CPU fallback is now automatic: when a GPU worker hits an unsupported codec or decoder error, the same worker retries on CPU in-place. If you want more dedicated CPU concurrency for files that never decode on the GPU, raise **CPU Workers** (previously you would have configured a separate fallback pool).
+- **Plex generation setting.** For best results, set Plex **Library → Generate video preview thumbnails** to **Never** so this tool is the only source of BIFs.
+- **First boot after upgrade.** The `CONFIG_DIR` volume is re-used; the upgrade routine will migrate settings on startup. No manual steps required.
 
 ---
 

@@ -52,11 +52,15 @@ class TestGetCorsOrigins:
 
     def test_default_returns_wildcard(self, monkeypatch):
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
-        assert get_cors_origins() == "*"
+        origins, is_default = get_cors_origins()
+        assert origins == "*"
+        assert is_default is True
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
-        assert get_cors_origins() == "http://localhost:3000"
+        origins, is_default = get_cors_origins()
+        assert origins == "http://localhost:3000"
+        assert is_default is False
 
 
 class TestDeriveSecret:
@@ -181,16 +185,12 @@ class TestRequeueInterruptedOnStartup:
     @patch("plex_generate_previews.web.routes._start_job_async")
     @patch("plex_generate_previews.web.app.get_job_manager")
     @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
-    def test_string_false_disables_requeue(
-        self, mock_get_settings_manager, mock_get_job_manager, mock_start_job
-    ):
+    def test_string_false_disables_requeue(self, mock_get_settings_manager, mock_get_job_manager, mock_start_job):
         """String 'false' disables startup requeue the same as a bool false."""
-        mock_get_settings_manager.return_value.get.side_effect = (
-            lambda key, default=None: {
-                "auto_requeue_on_restart": "false",
-                "requeue_max_age_minutes": 60,
-            }.get(key, default)
-        )
+        mock_get_settings_manager.return_value.get.side_effect = lambda key, default=None: {
+            "auto_requeue_on_restart": "false",
+            "requeue_max_age_minutes": 60,
+        }.get(key, default)
 
         _requeue_interrupted_on_startup("/tmp/config")
 
@@ -200,28 +200,18 @@ class TestRequeueInterruptedOnStartup:
     @patch("plex_generate_previews.web.routes._start_job_async")
     @patch("plex_generate_previews.web.app.get_job_manager")
     @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
-    def test_string_true_requeues_jobs(
-        self, mock_get_settings_manager, mock_get_job_manager, mock_start_job
-    ):
+    def test_string_true_requeues_jobs(self, mock_get_settings_manager, mock_get_job_manager, mock_start_job):
         """String 'true' still enables startup requeue for persisted settings."""
-        mock_get_settings_manager.return_value.get.side_effect = (
-            lambda key, default=None: {
-                "auto_requeue_on_restart": "true",
-                "requeue_max_age_minutes": "45",
-            }.get(key, default)
-        )
-        requeued_job = type(
-            "RequeuedJob", (), {"id": "job-123", "config": {"foo": "bar"}}
-        )()
-        mock_get_job_manager.return_value.requeue_interrupted_jobs.return_value = [
-            requeued_job
-        ]
+        mock_get_settings_manager.return_value.get.side_effect = lambda key, default=None: {
+            "auto_requeue_on_restart": "true",
+            "requeue_max_age_minutes": "45",
+        }.get(key, default)
+        requeued_job = type("RequeuedJob", (), {"id": "job-123", "config": {"foo": "bar"}})()
+        mock_get_job_manager.return_value.requeue_interrupted_jobs.return_value = [requeued_job]
 
         _requeue_interrupted_on_startup("/tmp/config")
 
-        mock_get_job_manager.return_value.requeue_interrupted_jobs.assert_called_once_with(
-            max_age_minutes=45
-        )
+        mock_get_job_manager.return_value.requeue_interrupted_jobs.assert_called_once_with(max_age_minutes=45)
         mock_start_job.assert_called_once_with("job-123", {"foo": "bar"})
 
     @patch("plex_generate_previews.web.routes._start_job_async")
@@ -239,9 +229,7 @@ class TestRequeueInterruptedOnStartup:
         sm.processing_paused = True
 
         requeued_job = type("RequeuedJob", (), {"id": "job-456", "config": {}})()
-        mock_get_job_manager.return_value.requeue_interrupted_jobs.return_value = [
-            requeued_job
-        ]
+        mock_get_job_manager.return_value.requeue_interrupted_jobs.return_value = [requeued_job]
 
         _requeue_interrupted_on_startup("/tmp/config")
 
@@ -280,12 +268,17 @@ class TestPrewarmCaches:
 
         shutil.rmtree(config_dir, ignore_errors=True)
 
+    @pytest.mark.real_prewarm
+    @patch(
+        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+        return_value=None,
+    )
     @patch(
         "plex_generate_previews.web.routes.api_system._get_version_info",
         return_value={"current_version": "1.0.0"},
     )
     @patch("plex_generate_previews.web.routes._helpers._ensure_gpu_cache")
-    def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version):
+    def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version, mock_vulkan):
         """_prewarm_caches starts threads for GPU and version caches."""
         import threading
 

@@ -10,8 +10,8 @@ import shutil
 
 from loguru import logger
 
-from .media_processing import ProcessingResult, clear_failures, log_failure_summary
-from .plex_client import get_library_sections, get_media_items_by_paths, plex_server
+from ..plex_client import get_library_sections, get_media_items_by_paths, plex_server
+from ..processing.orchestrator import ProcessingResult, clear_failures, log_failure_summary
 from .worker import WorkerPool
 
 
@@ -66,18 +66,11 @@ def run_processing(
 
         title_max_width = 200
 
-        fallback_cpu_workers = (
-            config.fallback_cpu_threads
-            if config.cpu_threads == 0 and config.fallback_cpu_threads > 0
-            else 0
-        )
-
         def _create_worker_pool():
             pool = WorkerPool(
                 gpu_workers=config.gpu_threads,
                 cpu_workers=config.cpu_threads,
                 selected_gpus=selected_gpus,
-                fallback_cpu_workers=fallback_cpu_workers,
             )
             if worker_pool_callback:
                 worker_pool_callback(pool)
@@ -102,7 +95,7 @@ def run_processing(
         # Passed explicitly through the worker pipeline (not attached to config).
         fingerprint_store = None
         if getattr(config, "intro_detection_enabled", False):
-            from .intro_detection import IntroFingerprintStore
+            from ..intro_detection import IntroFingerprintStore
 
             fingerprint_store = IntroFingerprintStore()
 
@@ -112,7 +105,7 @@ def run_processing(
             """Dispatch items via shared dispatcher or local pool."""
             nonlocal worker_pool, _dispatch_started
             if job_id:
-                from .job_dispatcher import get_dispatcher
+                from .dispatcher import get_dispatcher
 
                 existing = get_dispatcher()
                 if existing is not None:
@@ -147,7 +140,7 @@ def run_processing(
                     "pause_check": pause_check,
                     "fingerprint_store": fingerprint_store,
                 }
-                from .web.jobs import PRIORITY_NORMAL
+                from ..web.jobs import PRIORITY_NORMAL
 
                 tracker = dispatcher.submit_items(
                     job_id=job_id,
@@ -187,12 +180,9 @@ def run_processing(
                 progress_callback(
                     0,
                     0,
-                    f"Looking up {path_count} file path(s) in Plex — "
-                    "this can take a while...",
+                    f"Looking up {path_count} file path(s) in Plex — this can take a while...",
                 )
-            webhook_resolution = get_media_items_by_paths(
-                plex, config, config.webhook_paths
-            )
+            webhook_resolution = get_media_items_by_paths(plex, config, config.webhook_paths)
             return_data = {
                 "webhook_resolution": {
                     "unresolved_paths": list(webhook_resolution.unresolved_paths),
@@ -203,9 +193,7 @@ def run_processing(
                 }
             }
             if not webhook_resolution.items:
-                logger.warning(
-                    "No Plex items matched webhook file paths; skipping processing"
-                )
+                logger.warning("No Plex items matched webhook file paths; skipping processing")
             else:
                 result = _dispatch_items(webhook_resolution.items, "Webhook Targets")
                 total_successful += result["completed"]
@@ -223,34 +211,26 @@ def run_processing(
                 progress_callback=progress_callback,
             ):
                 if cancel_check and cancel_check():
-                    logger.info(
-                        "Cancellation requested during library enumeration "
-                        "— skipping remaining libraries"
-                    )
+                    logger.info("Cancellation requested during library enumeration — skipping remaining libraries")
                     cancellation_requested = True
                     break
                 count = len(media_items)
                 if count <= 0:
-                    logger.info(
-                        f"No media items found in library '{section.title}', skipping"
-                    )
+                    logger.info(f"No media items found in library '{section.title}', skipping")
                     continue
                 logger.info(f"Queued library '{section.title}' with {count} items")
                 all_media_items.extend(media_items)
                 library_item_counts.append((section.title, count))
 
             if cancel_check and cancel_check():
-                logger.info(
-                    "Cancellation requested before dispatch — skipping processing"
-                )
+                logger.info("Cancellation requested before dispatch — skipping processing")
                 cancellation_requested = True
             elif not all_media_items:
                 logger.info("No media items found across selected libraries")
             else:
                 total_items = len(all_media_items)
                 logger.info(
-                    f"Processing {total_items} items across "
-                    f"{len(library_item_counts)} libraries in a shared queue"
+                    f"Processing {total_items} items across {len(library_item_counts)} libraries in a shared queue"
                 )
                 for library_name, count in library_item_counts:
                     logger.info(f"Library queued: {library_name} ({count} items)")
@@ -271,9 +251,7 @@ def run_processing(
                     total_processed,
                     f"Intro detection: comparing {len(seasons)} season(s)...",
                 )
-            _process_intro_fingerprints(
-                fingerprint_store, config, plex, cancel_check, progress_callback
-            )
+            _process_intro_fingerprints(fingerprint_store, config, plex, cancel_check, progress_callback)
 
         generated = aggregate_outcome.get("generated", 0)
         bif_exists = aggregate_outcome.get("skipped_bif_exists", 0)
@@ -313,8 +291,7 @@ def run_processing(
                 "because the media file was not found locally."
             )
             logger.warning(
-                "This usually means your path mappings are incorrect. "
-                "Check your path mapping settings in the web UI."
+                "This usually means your path mappings are incorrect. Check your path mapping settings in the web UI."
             )
             logger.warning("=" * 80)
 
@@ -347,19 +324,12 @@ def run_processing(
         try:
             if os.path.isdir(config.working_tmp_folder):
                 shutil.rmtree(config.working_tmp_folder)
-                logger.debug(
-                    f"Cleaned up working temp folder: {config.working_tmp_folder}"
-                )
+                logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
         except Exception as cleanup_error:
-            logger.warning(
-                f"Failed to clean up working temp folder "
-                f"{config.working_tmp_folder}: {cleanup_error}"
-            )
+            logger.warning(f"Failed to clean up working temp folder {config.working_tmp_folder}: {cleanup_error}")
 
 
-def _process_intro_fingerprints(
-    fingerprint_store, config, plex, cancel_check=None, progress_callback=None
-):
+def _process_intro_fingerprints(fingerprint_store, config, plex, cancel_check=None, progress_callback=None):
     """Intro detection pass 2: compare fingerprints and write markers.
 
     Iterates over each season with 2+ fingerprinted episodes, finds the
@@ -372,8 +342,8 @@ def _process_intro_fingerprints(
         cancel_check: Optional cancellation callable.
 
     """
-    from .intro_detection import find_common_intro
-    from .plex_db import (
+    from ..intro_detection import find_common_intro
+    from ..plex_db import (
         check_db_write_safety,
         delete_markers,
         get_marker_tag_id,
@@ -401,9 +371,7 @@ def _process_intro_fingerprints(
             logger.info("Intro detection cancelled")
             break
 
-        logger.debug(
-            f"Comparing {len(episodes)} episodes of {show_title} S{season_num:02d}"
-        )
+        logger.debug(f"Comparing {len(episodes)} episodes of {show_title} S{season_num:02d}")
 
         intro = find_common_intro(
             episodes,
@@ -431,9 +399,7 @@ def _process_intro_fingerprints(
                 try:
                     item = plex.fetchItem(rating_key)
                     if getattr(item, "hasIntroMarker", False):
-                        logger.debug(
-                            f"Intro marker exists for item {rating_key}, skipping"
-                        )
+                        logger.debug(f"Intro marker exists for item {rating_key}, skipping")
                         continue
                 except Exception:
                     pass

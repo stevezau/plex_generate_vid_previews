@@ -32,9 +32,7 @@ class TestPlexServerConnection:
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
-    def test_plex_server_connection_success(
-        self, mock_session, mock_plex_server, mock_config
-    ):
+    def test_plex_server_connection_success(self, mock_session, mock_plex_server, mock_config):
         """Test successful connection to Plex server."""
         mock_plex = MagicMock()
         mock_plex_server.return_value = mock_plex
@@ -46,13 +44,9 @@ class TestPlexServerConnection:
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
-    def test_plex_server_connection_failure(
-        self, mock_session, mock_plex_server, mock_config
-    ):
+    def test_plex_server_connection_failure(self, mock_session, mock_plex_server, mock_config):
         """Test connection error handling."""
-        mock_plex_server.side_effect = requests.exceptions.ConnectionError(
-            "Connection refused"
-        )
+        mock_plex_server.side_effect = requests.exceptions.ConnectionError("Connection refused")
 
         with pytest.raises(ConnectionError):
             plex_server(mock_config)
@@ -68,9 +62,7 @@ class TestPlexServerConnection:
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
-    def test_plex_server_retry_strategy(
-        self, mock_session, mock_plex_server, mock_config
-    ):
+    def test_plex_server_retry_strategy(self, mock_session, mock_plex_server, mock_config):
         """Test that retry strategy is configured."""
         mock_plex = MagicMock()
         mock_plex_server.return_value = mock_plex
@@ -82,9 +74,7 @@ class TestPlexServerConnection:
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
-    def test_plex_server_respects_ssl_verify_setting(
-        self, mock_session, mock_plex_server, mock_config
-    ):
+    def test_plex_server_respects_ssl_verify_setting(self, mock_session, mock_plex_server, mock_config):
         """Test that session.verify follows config.plex_verify_ssl."""
         mock_config.plex_verify_ssl = False
         mock_plex_server.return_value = MagicMock()
@@ -253,9 +243,7 @@ class TestTriggerPlexPartialScan:
         sections_response = MagicMock()
         sections_response.raise_for_status = MagicMock()
         sections_response.json.return_value = {
-            "MediaContainer": {
-                "Directory": [{"key": "3", "Location": [{"path": location_path}]}]
-            }
+            "MediaContainer": {"Directory": [{"key": "3", "Location": [{"path": location_path}]}]}
         }
         refresh_response = MagicMock(status_code=200)
         mock_get.side_effect = [sections_response, refresh_response]
@@ -267,9 +255,7 @@ class TestTriggerPlexPartialScan:
         )
 
         assert result == [unresolved_path]
-        assert mock_get.call_args_list[1].kwargs["params"] == {
-            "path": expected_scan_folder
-        }
+        assert mock_get.call_args_list[1].kwargs["params"] == {"path": expected_scan_folder}
 
     @patch("requests.get")
     def test_sections_request_error_returns_empty(self, mock_get):
@@ -290,9 +276,7 @@ class TestTriggerPlexPartialScan:
         sections_response = MagicMock()
         sections_response.raise_for_status = MagicMock()
         sections_response.json.return_value = {
-            "MediaContainer": {
-                "Directory": [{"key": "7", "Location": [{"path": "/data/movies"}]}]
-            }
+            "MediaContainer": {"Directory": [{"key": "7", "Location": [{"path": "/data/movies"}]}]}
         }
         refresh_response = MagicMock(status_code=500)
         mock_get.side_effect = [sections_response, refresh_response]
@@ -490,9 +474,7 @@ class TestPathMapping:
         plex_videos_path_mapping = "/data"
         plex_local_videos_path_mapping = "/media"
 
-        mapped_path = plex_path.replace(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
 
         assert mapped_path == "/media/Movies/movie.mkv"
 
@@ -504,9 +486,7 @@ class TestPathMapping:
         plex_videos_path_mapping = "/mnt/user/media"
         plex_local_videos_path_mapping = "/media"
 
-        mapped_path = plex_path.replace(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
 
         assert mapped_path == "/media/tv/Show/Season 1/Episode.mkv"
 
@@ -516,9 +496,7 @@ class TestPathMapping:
         plex_videos_path_mapping = "/mnt/user/My Media"
         plex_local_videos_path_mapping = "/media"
 
-        mapped_path = plex_path.replace(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
 
         assert mapped_path == "/media/Movies/A Movie Title (2024)/movie.mkv"
 
@@ -550,9 +528,7 @@ class TestPathMapping:
 
         # When both are empty, no replacement should occur
         if plex_videos_path_mapping and plex_local_videos_path_mapping:
-            mapped_path = plex_path.replace(
-                plex_videos_path_mapping, plex_local_videos_path_mapping
-            )
+            mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
         else:
             mapped_path = plex_path
 
@@ -565,9 +541,7 @@ class TestPathMapping:
         plex_videos_path_mapping = "//server/media"
         plex_local_videos_path_mapping = "/mnt/media"
 
-        mapped_path = plex_path.replace(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
 
         assert mapped_path == "/mnt/media/Movies/movie.mkv"
 
@@ -578,9 +552,7 @@ class TestPathMapping:
         plex_local_videos_path_mapping = "/media"
 
         # Should NOT replace because case doesn't match
-        mapped_path = plex_path.replace(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
 
         # Path unchanged because /data != /Data
         assert mapped_path == "/Data/Movies/movie.mkv"
@@ -592,9 +564,7 @@ class TestPathMapping:
         plex_videos_path_mapping = "/data"
         plex_local_videos_path_mapping = "/media"
 
-        mapped_path = plex_path.replace(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
 
         # This demonstrates a limitation - str.replace will match prefix of /database
         # Real implementation should use startswith() or proper path prefix matching
@@ -707,9 +677,7 @@ class TestGetLibrarySectionsExtended:
     def test_get_library_sections_api_error(self, mock_config):
         """Test handling of API errors."""
         mock_plex = MagicMock()
-        mock_plex.library.sections.side_effect = requests.exceptions.RequestException(
-            "API error"
-        )
+        mock_plex.library.sections.side_effect = requests.exceptions.RequestException("API error")
 
         sections = list(get_library_sections(mock_plex, mock_config))
 
@@ -726,9 +694,7 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
         # Use a specific exception type that's caught by the code
-        mock_section.search.side_effect = requests.exceptions.RequestException(
-            "Search failed"
-        )
+        mock_section.search.side_effect = requests.exceptions.RequestException("Search failed")
 
         mock_plex.library.sections.return_value = [mock_section]
 
@@ -779,9 +745,7 @@ class TestGetLibrarySectionsExtended:
 
         mock_plex.library.sections.return_value = [mock_section]
 
-        sections = list(
-            get_library_sections(mock_plex, mock_config, cancel_check=lambda: True)
-        )
+        sections = list(get_library_sections(mock_plex, mock_config, cancel_check=lambda: True))
 
         assert sections == []
         mock_section.search.assert_not_called()
@@ -816,11 +780,7 @@ class TestGetLibrarySectionsExtended:
             # Second call (after section1 retrieval): cancel
             return call_count > 1
 
-        sections = list(
-            get_library_sections(
-                mock_plex, mock_config, cancel_check=cancel_after_first
-            )
-        )
+        sections = list(get_library_sections(mock_plex, mock_config, cancel_check=cancel_after_first))
 
         # Only the first section should have been returned before cancellation
         assert len(sections) == 0  # cancelled after retrieval, before yield
@@ -887,9 +847,7 @@ class TestGetMediaItemsByPaths:
         assert result.skipped_paths == []
 
     @patch("plex_generate_previews.plex_client.logger.info")
-    def test_get_media_items_by_paths_logs_received_and_file_path_query(
-        self, mock_info, mock_config
-    ):
+    def test_get_media_items_by_paths_logs_received_and_file_path_query(self, mock_info, mock_config):
         """Webhook resolution logs received file count and file-path query."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -899,22 +857,14 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = []
 
-        get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/Some Movie (2024)/movie.mkv"]
-        )
+        get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Some Movie (2024)/movie.mkv"])
         assert any(
-            "Received" in str(call) and "webhook input file" in str(call).lower()
-            for call in mock_info.call_args_list
+            "Received" in str(call) and "webhook input file" in str(call).lower() for call in mock_info.call_args_list
         )
-        assert any(
-            "Querying Plex by file path" in str(call)
-            for call in mock_info.call_args_list
-        )
+        assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
 
     @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_non_string_path_skipped(
-        self, mock_warning, mock_config
-    ):
+    def test_get_media_items_by_paths_non_string_path_skipped(self, mock_warning, mock_config):
         """Non-string webhook paths are skipped without raising."""
         mock_plex = MagicMock()
         result = get_media_items_by_paths(mock_plex, mock_config, [123, None, "   "])
@@ -938,9 +888,7 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
         assert result.items[0][0] == "/library/metadata/100"
         assert result.items[0][1] == "Test Movie"
@@ -951,9 +899,7 @@ class TestGetMediaItemsByPaths:
         assert "Test Movie.mkv" in call_ekey or "Test%20Movie.mkv" in call_ekey
 
     @patch("plex_generate_previews.plex_client.logger.info")
-    def test_get_media_items_by_paths_logs_per_path_resolved_status(
-        self, mock_info, mock_config
-    ):
+    def test_get_media_items_by_paths_logs_per_path_resolved_status(self, mock_info, mock_config):
         """Resolved path emits a per-path diagnostic status line."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -969,9 +915,7 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
         assert any("resolved" in str(call) for call in mock_info.call_args_list)
         assert any("[1/1]" in str(call) for call in mock_info.call_args_list)
@@ -987,16 +931,12 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = []
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/nonexistent/path.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/nonexistent/path.mkv"])
         assert result.items == []
         assert result.unresolved_paths == ["/nonexistent/path.mkv"]
 
     @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(
-        self, mock_warning, mock_config
-    ):
+    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(self, mock_warning, mock_config):
         """Unresolved path emits a per-path diagnostic with explicit reason."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -1007,15 +947,10 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = []
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/nonexistent/path.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/nonexistent/path.mkv"])
         assert result.items == []
         assert any("not found" in str(call) for call in mock_warning.call_args_list)
-        assert any(
-            "Direct path not found in Plex" in str(call)
-            for call in mock_warning.call_args_list
-        )
+        assert any("Direct path not found in Plex" in str(call) for call in mock_warning.call_args_list)
 
     def test_get_media_items_by_paths_episode_match(self, mock_config):
         """Path matching an episode location returns episode tuple."""
@@ -1049,9 +984,7 @@ class TestGetMediaItemsByPaths:
         assert "type=4" in call_ekey
         assert "S01E01.mkv" in call_ekey
 
-    def test_get_media_items_by_paths_upgrade_file_found_via_file_path_search(
-        self, mock_config
-    ):
+    def test_get_media_items_by_paths_upgrade_file_found_via_file_path_search(self, mock_config):
         """File-path search finds upgraded files (Plex keeps old addedAt; file= filter does not depend on it)."""
         mock_config.path_mappings = [
             {
@@ -1090,9 +1023,7 @@ class TestGetMediaItemsByPaths:
         assert result.items[0][2] == "episode"
         assert mock_plex.fetchItems.called
 
-    def test_get_media_items_by_paths_file_path_search_resolves_match(
-        self, mock_config
-    ):
+    def test_get_media_items_by_paths_file_path_search_resolves_match(self, mock_config):
         """Targeted file-path search resolves path to Plex item."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -1108,18 +1039,14 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
 
         assert len(result.items) == 1
         assert result.items[0][0] == "/library/metadata/999"
         assert mock_plex.fetchItems.called
 
     @patch("plex_generate_previews.plex_client.logger.info")
-    def test_get_media_items_by_paths_logs_file_path_query(
-        self, mock_info, mock_config
-    ):
+    def test_get_media_items_by_paths_logs_file_path_query(self, mock_info, mock_config):
         """File-path resolution logs the query step."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -1133,18 +1060,11 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"]
-        )
-        assert any(
-            "Querying Plex by file path" in str(call)
-            for call in mock_info.call_args_list
-        )
+        get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
+        assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
 
     @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_item_without_key_is_skipped(
-        self, mock_warning, mock_config
-    ):
+    def test_get_media_items_by_paths_item_without_key_is_skipped(self, mock_warning, mock_config):
         """Matched items missing a Plex key are ignored safely."""
         mock_plex = MagicMock()
         mock_section = MagicMock()
@@ -1160,18 +1080,14 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/No Key Movie/No Key Movie.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/No Key Movie/No Key Movie.mkv"])
         assert result.items == []
         assert any(
             "metadata key" in str(call).lower() or "without metadata key" in str(call)
             for call in mock_warning.call_args_list
         )
 
-    def test_get_media_items_by_paths_webhook_path_matches_plex_via_mapping(
-        self, mock_config
-    ):
+    def test_get_media_items_by_paths_webhook_path_matches_plex_via_mapping(self, mock_config):
         """Webhook sends /data/...; Plex item at /data_16tb1/...; mapping links them."""
         mock_config.path_mappings = [
             {
@@ -1203,9 +1119,7 @@ class TestGetMediaItemsByPaths:
         assert result.items[0][0] == "/library/metadata/100"
         assert result.items[0][2] == "movie"
 
-    def test_get_media_items_by_paths_plex_form_path_matches_with_mapping(
-        self, mock_config
-    ):
+    def test_get_media_items_by_paths_plex_form_path_matches_with_mapping(self, mock_config):
         """Webhook path in Plex form (/data_16tb1/...) canonicalized and matched."""
         mock_config.path_mappings = [
             {
@@ -1253,9 +1167,7 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/movies/Direct Match.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Direct Match.mkv"])
         assert len(result.items) == 1
         assert result.items[0][0] == "/library/metadata/102"
 
@@ -1296,9 +1208,7 @@ class TestGetMediaItemsByPaths:
         assert len(result.items) == 1
         assert result.items[0][0] == "/library/metadata/200"
 
-    def test_get_media_items_by_paths_fans_out_local_path_across_plex_roots(
-        self, mock_config
-    ):
+    def test_get_media_items_by_paths_fans_out_local_path_across_plex_roots(self, mock_config):
         """Webhook /data path should fan out to multiple Plex roots and match first hit."""
         mock_config.path_mappings = [
             {
@@ -1336,9 +1246,7 @@ class TestGetMediaItemsByPaths:
         assert result.items[0][0] == "/library/metadata/300"
 
     @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_skipped_unselected_library(
-        self, mock_warning, mock_config
-    ):
+    def test_get_media_items_by_paths_logs_skipped_unselected_library(self, mock_warning, mock_config):
         """Log a clear reason when webhook path matches only excluded libraries."""
         mock_config.plex_libraries = ["movies"]
 
@@ -1370,23 +1278,15 @@ class TestGetMediaItemsByPaths:
 
         mock_plex.fetchItems.side_effect = fetchItems_side_effect
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"])
         assert result.items == []
+        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
         assert any(
-            "unselected libraries" in str(call).lower()
-            for call in mock_warning.call_args_list
-        )
-        assert any(
-            "skipped" in str(call).lower() and "excluded" in str(call).lower()
-            for call in mock_warning.call_args_list
+            "skipped" in str(call).lower() and "excluded" in str(call).lower() for call in mock_warning.call_args_list
         )
 
     @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_unselected_library_file_path_search(
-        self, mock_warning, mock_config
-    ):
+    def test_get_media_items_by_paths_logs_unselected_library_file_path_search(self, mock_warning, mock_config):
         """Excluded-library diagnostics when file-path search finds item there."""
         mock_config.plex_libraries = ["movies"]
         mock_plex = MagicMock()
@@ -1417,15 +1317,10 @@ class TestGetMediaItemsByPaths:
 
         mock_plex.fetchItems.side_effect = fetchItems_side_effect
 
-        result = get_media_items_by_paths(
-            mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"]
-        )
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"])
 
         assert result.items == []
-        assert any(
-            "unselected libraries" in str(call).lower()
-            for call in mock_warning.call_args_list
-        )
+        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
 
 
 class TestExpandDirectoryToMediaFiles:
@@ -1570,8 +1465,7 @@ class TestDetectPathPrefixMismatches:
     def test_trash_guides_docker_mismatch(self):
         """Detects the classic TRaSH Guides mismatch: /data/media vs /media."""
         unresolved = [
-            "/data/media/tv/For All Mankind (2019)/Season 05/"
-            "For All Mankind (2019) - S05E01 - First Light.mkv"
+            "/data/media/tv/For All Mankind (2019)/Season 05/For All Mankind (2019) - S05E01 - First Light.mkv"
         ]
         plex_locations = ["/media/tv", "/media/movies"]
 
@@ -1671,9 +1565,7 @@ class TestMismatchCoveredByMappings:
                 "webhook_prefixes": ["/Volumes/NAS2/series"],
             }
         ]
-        assert _mismatch_covered_by_mappings(
-            "/Volumes/NAS2/series", "/series", mappings
-        )
+        assert _mismatch_covered_by_mappings("/Volumes/NAS2/series", "/series", mappings)
 
     def test_plex_and_local_cover_mismatch(self):
         """Returns True when plex_prefix and local_prefix span the mismatch."""
@@ -1710,9 +1602,7 @@ class TestMismatchCoveredByMappings:
                 "webhook_prefixes": ["/Volumes/NAS2/Series"],
             }
         ]
-        assert _mismatch_covered_by_mappings(
-            "/volumes/nas2/series", "/series", mappings
-        )
+        assert _mismatch_covered_by_mappings("/volumes/nas2/series", "/series", mappings)
 
     def test_trailing_slashes_ignored(self):
         """Trailing slashes on prefixes don't affect matching."""

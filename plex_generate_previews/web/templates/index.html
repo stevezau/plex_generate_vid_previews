@@ -53,14 +53,6 @@
                             <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU" data-direction="1" onclick="scaleWorkersGlobal('CPU', 1)" title="Add one CPU worker"><i class="bi bi-plus-lg"></i></button>
                         </span>
                     </div>
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>CPU Fallback Workers: <i class="bi bi-info-circle text-muted" style="cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" title="Only used when CPU Workers is 0. If GPU encoding fails (e.g. unsupported codec), fallback workers retry the item using software encoding."></i></span>
-                        <span class="d-flex align-items-center gap-1">
-                            <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="-1" onclick="scaleWorkersGlobal('CPU_FALLBACK', -1)" title="Remove one CPU fallback worker"><i class="bi bi-dash-lg"></i></button>
-                            <span id="cpuFallbackWorkers" class="badge bg-info" style="min-width: 1.5rem;">-</span>
-                            <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU_FALLBACK" data-direction="1" onclick="scaleWorkersGlobal('CPU_FALLBACK', 1)" title="Add one CPU fallback worker"><i class="bi bi-plus-lg"></i></button>
-                        </span>
-                    </div>
                 </div>
                 <div class="small text-muted">Changes save automatically and apply to the running job.</div>
 
@@ -96,12 +88,9 @@
                     <button class="btn btn-outline-primary" onclick="showManualTriggerModal()">
                         <i class="bi bi-file-earmark-play me-2"></i>Manual Trigger
                     </button>
-                    <a href="/settings" class="btn btn-outline-light">
+                    <a href="/settings" class="btn btn-outline-secondary">
                         <i class="bi bi-gear me-2"></i>Settings
                     </a>
-                    <button class="btn btn-outline-light" onclick="refreshStatus()">
-                        <i class="bi bi-arrow-clockwise me-2"></i>Refresh Status
-                    </button>
                 </div>
 
                 <hr>
@@ -156,7 +145,7 @@
                     <span class="small text-muted text-uppercase" style="letter-spacing:0.05em;font-size:0.72rem;">
                         <i class="bi bi-calendar-event me-1"></i>Schedules
                     </span>
-                    <a href="{{ url_for('main.schedules_page') }}" class="small text-decoration-none" title="Manage schedules">
+                    <a href="{{ url_for('main.automation_page') }}#schedules" class="small text-decoration-none" title="Manage schedules">
                         Manage <i class="bi bi-arrow-right-short"></i>
                     </a>
                 </div>
@@ -459,10 +448,10 @@
                             </div>
                             <div id="logsContent" class="bg-body-tertiary text-body p-3 rounded log-viewer" style="max-height: 500px; overflow-y: auto; font-size: 0.85rem;">No logs available</div>
                             <div class="position-absolute d-flex flex-column gap-1" style="right: 1.2rem; bottom: 0.7rem; z-index: 2;">
-                                <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('top')" title="Scroll to top">
+                                <button class="btn btn-sm btn-outline-secondary opacity-75 log-nav-btn" onclick="scrollLogsTo('top')" title="Scroll to top">
                                     <i class="bi bi-chevron-double-up"></i>
                                 </button>
-                                <button class="btn btn-sm btn-outline-light opacity-75 log-nav-btn" onclick="scrollLogsTo('bottom')" title="Scroll to bottom">
+                                <button class="btn btn-sm btn-outline-secondary opacity-75 log-nav-btn" onclick="scrollLogsTo('bottom')" title="Scroll to bottom">
                                     <i class="bi bi-chevron-double-down"></i>
                                 </button>
                             </div>
@@ -518,13 +507,13 @@
             </div>
             <div class="modal-footer">
                 <small class="text-muted me-auto" id="logsLineCount"></small>
-                <button type="button" class="btn btn-outline-light" onclick="copyLogs()" title="Copy to clipboard">
+                <button type="button" class="btn btn-outline-secondary" onclick="copyLogs()" title="Copy to clipboard">
                     <i class="bi bi-clipboard me-1"></i>Copy
                 </button>
-                <button type="button" class="btn btn-outline-light" onclick="downloadLogs()" title="Download as text file">
+                <button type="button" class="btn btn-outline-secondary" onclick="downloadLogs()" title="Download as text file">
                     <i class="bi bi-download me-1"></i>Download
                 </button>
-                <button type="button" class="btn btn-outline-light" onclick="refreshLogs()">
+                <button type="button" class="btn btn-outline-secondary" onclick="refreshLogs()">
                     <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                 </button>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>

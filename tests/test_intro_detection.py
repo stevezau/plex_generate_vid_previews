@@ -3,7 +3,6 @@
 import random
 from unittest.mock import MagicMock, patch
 
-
 from plex_generate_previews.intro_detection import (
     IntroFingerprintStore,
     MatchRegion,
@@ -15,7 +14,6 @@ from plex_generate_previews.intro_detection import (
     find_common_intro,
     fingerprint_episode,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -207,9 +205,7 @@ class TestFindBestCommonSegment:
         matches = [
             MatchRegion(offset_a=0, offset_b=0, length=10000, score=0.95),
         ]
-        result = _find_best_common_segment(
-            matches, min_duration_sec=15.0, max_duration_sec=120.0
-        )
+        result = _find_best_common_segment(matches, min_duration_sec=15.0, max_duration_sec=120.0)
         assert result is None
 
     def test_returns_none_for_empty(self):

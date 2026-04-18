@@ -38,7 +38,12 @@ def _reset_singletons():
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
     with sched_mod._schedule_lock:
-        sched_mod._schedule_manager = None
+        if sched_mod._schedule_manager is not None:
+            try:
+                sched_mod._schedule_manager.stop()
+            except Exception:
+                pass
+            sched_mod._schedule_manager = None
 
 
 @pytest.fixture()
@@ -179,6 +184,29 @@ class TestSubscription:
 # ---------------------------------------------------------------------------
 
 
+def _wait_for_event(sio_client, event_name: str, timeout: float = 2.0) -> list:
+    """Drain receive buffer until *event_name* arrives or *timeout* elapses.
+
+    ``JobManager._emit_event`` spawns a daemon thread per emit (see
+    ``plex_generate_previews/web/jobs.py:265-272``) so the SocketIO event
+    arrives asynchronously and can lose a race against ``get_received``
+    — especially under pytest-xdist + coverage where the emit thread gets
+    scheduled unpredictably. Poll instead of read-once.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    collected: list = []
+    while _time.monotonic() < deadline:
+        batch = sio_client.get_received(namespace="/jobs")
+        if batch:
+            collected.extend(batch)
+            if any(r["name"] == event_name for r in collected):
+                return collected
+        _time.sleep(0.01)
+    return collected
+
+
 class TestJobEvents:
     """Test that job lifecycle events are emitted via SocketIO."""
 
@@ -189,7 +217,7 @@ class TestJobEvents:
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Movies")
 
-        received = authed_socketio_client.get_received(namespace="/jobs")
+        received = _wait_for_event(authed_socketio_client, "job_created")
         event_names = [r["name"] for r in received]
         assert "job_created" in event_names
 
@@ -205,11 +233,11 @@ class TestJobEvents:
 
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="TV")
-        # Clear the creation event
-        authed_socketio_client.get_received(namespace="/jobs")
+        # Drain the creation event
+        _wait_for_event(authed_socketio_client, "job_created")
 
         job_manager.start_job(job.id)
-        received = authed_socketio_client.get_received(namespace="/jobs")
+        received = _wait_for_event(authed_socketio_client, "job_started")
         event_names = [r["name"] for r in received]
         assert "job_started" in event_names
 
@@ -220,8 +248,8 @@ class TestJobEvents:
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Anime")
         job_manager.start_job(job.id)
-        # Clear setup events
-        authed_socketio_client.get_received(namespace="/jobs")
+        # Drain setup events
+        _wait_for_event(authed_socketio_client, "job_started")
 
         job_manager.update_progress(
             job.id,
@@ -231,7 +259,7 @@ class TestJobEvents:
             current_item="Episode 5",
         )
 
-        received = authed_socketio_client.get_received(namespace="/jobs")
+        received = _wait_for_event(authed_socketio_client, "job_progress")
         event_names = [r["name"] for r in received]
         assert "job_progress" in event_names
 
@@ -242,10 +270,10 @@ class TestJobEvents:
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Music Videos")
         job_manager.start_job(job.id)
-        authed_socketio_client.get_received(namespace="/jobs")
+        _wait_for_event(authed_socketio_client, "job_started")
 
         job_manager.complete_job(job.id)
-        received = authed_socketio_client.get_received(namespace="/jobs")
+        received = _wait_for_event(authed_socketio_client, "job_completed")
         event_names = [r["name"] for r in received]
         assert "job_completed" in event_names
 

@@ -18,9 +18,7 @@ def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
     monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr(
-        "plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path)
-    )
+    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
 
     from plex_generate_previews.web.settings_manager import reset_settings_manager
 
@@ -119,9 +117,7 @@ class TestPathTraversalPrevention:
             assert data["valid"] is False
             assert any("Invalid" in e for e in data["errors"])
 
-    def test_validate_paths_traversal_resolved(
-        self, client, auth_headers, tmp_path, monkeypatch
-    ):
+    def test_validate_paths_traversal_resolved(self, client, auth_headers, tmp_path, monkeypatch):
         """Paths with .. components are resolved via realpath."""
         plex_dir = tmp_path / "plex"
         plex_dir.mkdir()
@@ -149,9 +145,7 @@ class TestPathTraversalPrevention:
         # Should resolve to the real path without errors about traversal
         assert not any("Invalid" in e for e in data["errors"])
 
-    def test_validate_paths_outside_root_rejected(
-        self, client, auth_headers, tmp_path, monkeypatch
-    ):
+    def test_validate_paths_outside_root_rejected(self, client, auth_headers, tmp_path, monkeypatch):
         """Paths outside the configured PLEX_DATA_ROOT are rejected."""
         allowed_root = tmp_path / "allowed"
         allowed_root.mkdir()
@@ -173,9 +167,7 @@ class TestPathTraversalPrevention:
         assert data["valid"] is False
         assert any("must be within" in e for e in data["errors"])
 
-    def test_validate_paths_traversal_escape_rejected(
-        self, client, auth_headers, tmp_path, monkeypatch
-    ):
+    def test_validate_paths_traversal_escape_rejected(self, client, auth_headers, tmp_path, monkeypatch):
         """Path using .. to escape the root is rejected."""
         allowed_root = tmp_path / "plex"
         allowed_root.mkdir()
@@ -256,9 +248,7 @@ class TestInformationExposurePrevention:
         """Error in get_system_status does not expose exception details."""
         with patch(
             "plex_generate_previews.web.routes.api_system.get_job_manager",
-            side_effect=RuntimeError(
-                "nvidia-smi binary not found at /usr/bin/nvidia-smi"
-            ),
+            side_effect=RuntimeError("nvidia-smi binary not found at /usr/bin/nvidia-smi"),
         ):
             response = client.get("/api/system/status", headers=auth_headers)
             assert response.status_code == 500
@@ -269,9 +259,7 @@ class TestInformationExposurePrevention:
 class TestFlaskSecretFilePermissions:
     """Tests for Flask secret key file permissions."""
 
-    @pytest.mark.skipif(
-        os.name == "nt", reason="POSIX file permissions not enforced on Windows"
-    )
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions not enforced on Windows")
     def test_secret_file_has_restricted_permissions(self, tmp_path):
         """Generated Flask secret file has 0o600 permissions."""
         from plex_generate_previews.web.app import get_or_create_flask_secret
@@ -294,9 +282,7 @@ class TestXSSPrevention:
         from tests.mocks.mock_plex_tv import app as mock_app
 
         with mock_app.test_client() as c:
-            response = c.get(
-                "/auth?pin=<script>alert(1)</script>&code=<img onerror=alert(1)>"
-            )
+            response = c.get("/auth?pin=<script>alert(1)</script>&code=<img onerror=alert(1)>")
             html = response.data.decode()
             assert "<script>" not in html
             assert "&lt;script&gt;" in html

@@ -17,7 +17,6 @@ import json
 import os
 import sqlite3
 import time
-from typing import Dict, List, Tuple
 
 from loguru import logger
 
@@ -25,9 +24,7 @@ from loguru import logger
 # Path resolution
 # ---------------------------------------------------------------------------
 
-_PLEX_DB_RELATIVE = os.path.join(
-    "Plug-in Support", "Databases", "com.plexapp.plugins.library.db"
-)
+_PLEX_DB_RELATIVE = os.path.join("Plug-in Support", "Databases", "com.plexapp.plugins.library.db")
 
 # Plex config folder may contain a nested "Library/Application Support/
 # Plex Media Server" subtree (host-mounted) or point directly at the
@@ -62,11 +59,7 @@ def get_plex_db_path(plex_config_folder: str) -> str:
 
     raise FileNotFoundError(
         f"Plex database not found under {plex_config_folder}. "
-        f"Checked paths: "
-        + ", ".join(
-            os.path.join(plex_config_folder, s, _PLEX_DB_RELATIVE)
-            for s in _PLEX_SUBTREES
-        )
+        f"Checked paths: " + ", ".join(os.path.join(plex_config_folder, s, _PLEX_DB_RELATIVE) for s in _PLEX_SUBTREES)
     )
 
 
@@ -75,7 +68,7 @@ def get_plex_db_path(plex_config_folder: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def check_db_write_safety(db_path: str) -> Tuple[bool, str]:
+def check_db_write_safety(db_path: str) -> tuple[bool, str]:
     """Check whether it is safe to write to the Plex database.
 
     Detects:
@@ -111,8 +104,7 @@ def check_db_write_safety(db_path: str) -> Tuple[bool, str]:
         # fcntl not available (Windows native Python) — not in Docker
         return (
             False,
-            "POSIX file locking not available (Windows). "
-            "Stop Plex Media Server before writing markers.",
+            "POSIX file locking not available (Windows). Stop Plex Media Server before writing markers.",
         )
     except OSError as exc:
         return (
@@ -244,16 +236,13 @@ def write_marker(
 
     """
     if marker_type not in ("intro", "credits"):
-        raise ValueError(
-            f"marker_type must be 'intro' or 'credits', got {marker_type!r}"
-        )
+        raise ValueError(f"marker_type must be 'intro' or 'credits', got {marker_type!r}")
 
     conn = _connect(db_path)
     try:
         # Determine next index for this item
         row = conn.execute(
-            'SELECT COALESCE(MAX("index"), -1) + 1 AS next_idx '
-            "FROM taggings WHERE metadata_item_id = ? AND tag_id = ?",
+            'SELECT COALESCE(MAX("index"), -1) + 1 AS next_idx FROM taggings WHERE metadata_item_id = ? AND tag_id = ?',
             (metadata_item_id, tag_id),
         ).fetchone()
         next_index = row["next_idx"] if row else 0
@@ -280,14 +269,11 @@ def write_marker(
         )
         conn.commit()
         logger.debug(
-            f"Wrote {marker_type} marker for item {metadata_item_id}: "
-            f"{start_ms}ms–{end_ms}ms (index={next_index})"
+            f"Wrote {marker_type} marker for item {metadata_item_id}: {start_ms}ms–{end_ms}ms (index={next_index})"
         )
         return True
     except sqlite3.Error as exc:
-        logger.warning(
-            f"Failed to write {marker_type} marker for item {metadata_item_id}: {exc}"
-        )
+        logger.warning(f"Failed to write {marker_type} marker for item {metadata_item_id}: {exc}")
         return False
     finally:
         conn.close()
@@ -314,21 +300,16 @@ def delete_markers(
     conn = _connect(db_path)
     try:
         cursor = conn.execute(
-            "DELETE FROM taggings "
-            "WHERE metadata_item_id = ? AND tag_id = ? AND text = ?",
+            "DELETE FROM taggings WHERE metadata_item_id = ? AND tag_id = ? AND text = ?",
             (metadata_item_id, tag_id, marker_type),
         )
         conn.commit()
         deleted = cursor.rowcount
         if deleted:
-            logger.debug(
-                f"Deleted {deleted} {marker_type} marker(s) for item {metadata_item_id}"
-            )
+            logger.debug(f"Deleted {deleted} {marker_type} marker(s) for item {metadata_item_id}")
         return deleted
     except sqlite3.Error as exc:
-        logger.warning(
-            f"Failed to delete {marker_type} markers for item {metadata_item_id}: {exc}"
-        )
+        logger.warning(f"Failed to delete {marker_type} markers for item {metadata_item_id}: {exc}")
         return 0
     finally:
         conn.close()
@@ -338,7 +319,7 @@ def get_existing_markers(
     db_path: str,
     metadata_item_id: int,
     tag_id: int,
-) -> List[Dict]:
+) -> list[dict]:
     """Read existing markers for a media item.
 
     Args:

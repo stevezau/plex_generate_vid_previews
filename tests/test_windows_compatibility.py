@@ -70,7 +70,7 @@ class TestWindowsPathSanitization:
         assert result == "C:\\Users\\Test\\Videos\\movie.mkv"
 
     @patch("os.name", "nt")
-    @patch("os.path.normpath")
+    @patch("plex_generate_previews.utils.os.path.normpath")
     def test_sanitize_path_normpath(self, mock_normpath):
         """Test path normalization on Windows."""
         # Mock normpath to behave like Windows (resolve .. and .)
@@ -80,10 +80,10 @@ class TestWindowsPathSanitization:
         result = sanitize_path(path)
         assert result == "C:\\Users\\Videos\\movie.mkv"
 
-        # Verify normpath was called with the backslash-converted path
-        mock_normpath.assert_called_once_with(
-            "C:\\Users\\Test\\..\\Videos\\.\\movie.mkv"
-        )
+        # Verify normpath was called with the backslash-converted path.
+        # Use assert_any_call (not assert_called_once_with) because under
+        # pytest-xdist + coverage, other framework code also hits normpath.
+        mock_normpath.assert_any_call("C:\\Users\\Test\\..\\Videos\\.\\movie.mkv")
 
     @patch("os.name", "posix")
     @patch(
@@ -176,9 +176,7 @@ class TestWindowsTempDirectory:
 
         # Should use Windows temp directory from tempfile.gettempdir()
         assert config is not None
-        assert (
-            config.tmp_folder == "C:\\Temp"
-        )  # Should use the mocked gettempdir() value
+        assert config.tmp_folder == "C:\\Temp"  # Should use the mocked gettempdir() value
 
 
 class TestWindowsSignalHandling:
@@ -262,9 +260,7 @@ class TestWindowsFFmpegLogPath:
         pid = 12345
         thread_id = 67890
         timestamp = 1234567890123456789
-        output_file = os.path.join(
-            tempfile.gettempdir(), f"ffmpeg_output_{pid}_{thread_id}_{timestamp}.log"
-        )
+        output_file = os.path.join(tempfile.gettempdir(), f"ffmpeg_output_{pid}_{thread_id}_{timestamp}.log")
 
         # Verify the path format is valid (actual temp path depends on environment)
         assert "ffmpeg_output_" in output_file

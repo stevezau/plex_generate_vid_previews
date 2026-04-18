@@ -2,17 +2,27 @@
 
 > [Back to Docs](README.md)
 
-User guides for the web interface, webhooks, load testing, and answers to common questions.
+Guides for the web interface, automation and webhooks, HDR handling, and troubleshooting.
 
 > [!IMPORTANT]
 > This page is the source of truth for web operations, webhook workflows, and troubleshooting.
 > For installation and first-time setup, use [Getting Started](getting-started.md).
 > For exact configuration values and API contracts, use [Configuration & API Reference](reference.md).
 
+## Contents
+
+- [Web Interface](#web-interface)
+- [Webhook Integration](#webhook-integration)
+- [Auto-trigger from Plex (no Sonarr/Radarr)](#auto-trigger-from-plex-no-sonarrradarr)
+- [HDR & Dolby Vision](#hdr--dolby-vision)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](faq.md)
+
 ## Related Docs
 
 - [Getting Started](getting-started.md)
 - [Configuration & API Reference](reference.md)
+- [FAQ](faq.md)
 - [Main README](../README.md)
 
 ---
@@ -28,7 +38,7 @@ When you first access the web interface, you'll be guided through a **Setup Wiza
 1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
 2. **Select Server** — choose which Plex server to connect to
 3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, CPU threads, CPU fallback workers, thumbnail quality, etc.
+4. **Processing Options** — configure GPU threads, CPU threads, thumbnail quality, etc.
 5. **Security** — view or customize your access token (optional)
 
 After setup completes, you'll be taken to the dashboard.
@@ -65,12 +75,14 @@ After setup completes, you'll be taken to the dashboard.
 
 **Scheduling:**
 
-The Dashboard shows a compact "Schedules" teaser with the next upcoming run and a total count. Full schedule management lives on the dedicated **Schedules** page (`/schedules`, also linked from the top nav):
+The Dashboard shows a compact "Schedules" teaser with the next upcoming run and a total count. Full schedule management lives on the **Automation** page, under the **Schedules** tab (`/automation#schedules`, also linked from the top nav):
 
 - **Cron schedules** — set up recurring processing
 - **Interval-based** — run every X minutes
 - **Per-library** — schedule specific libraries
 - **Scan mode** — each schedule is either a *Full library scan* (default) or a *Recently added only* scan (see [Auto-trigger from Plex](#auto-trigger-from-plex-no-sonarrradarr))
+
+> **Legacy URL note:** `/schedules` and `/webhooks` still work — they 302-redirect to `/automation#schedules` and `/automation#webhooks` respectively, so existing bookmarks and shared links keep working.
 
 ### Settings Page
 
@@ -79,35 +91,48 @@ Access settings at `/settings` to manage:
 - **Plex Connection** — re-authenticate, test connection
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
-- **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, CPU fallback workers, thumbnail interval and quality
+- **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, thumbnail interval and quality
 
-Settings and Webhooks pages **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
+The Settings page and the Automation page's **Triggers** tab **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
 
-### CPU Fallback Workers (GPU Safety Net)
+### Automatic GPU → CPU Fallback
 
-Use this when you want GPU-only main processing but still want CPU recovery for unsupported GPU files.
+Every GPU worker includes automatic CPU fallback — no extra configuration
+is needed. If FFmpeg fails on the GPU for any of the common reasons:
 
-- Set **CPU Workers** to `0`
-- Set **CPU Fallback Workers** to `1` or more
+- Unsupported codec on the HW decoder
+- Hardware-accelerator runtime error (CUDA sync/transfer failure, VAAPI surface exhaustion)
+- Driver crash or FFmpeg signal kill (segfault, OOM)
 
-Behavior:
+…the same worker retries the file on CPU in-place.  The job log records
+the specific reason ("Dolby Vision Profile 5 rejected by Intel VAAPI",
+"signal kill (signal 11)", etc.) and the dashboard shows a yellow
+"CPU fallback" badge on the affected worker card along with a toast.
 
-- Main queue runs on GPU workers only
-- If a GPU worker hits an unsupported codec/runtime decode failure, the item is queued to CPU fallback workers
-- If **CPU Workers > 0**, fallback-only workers are not used (regular CPU workers already handle fallback work)
+The worker is busy on CPU while the retry runs.  If you have a lot of
+content that never decodes on the GPU, set **CPU Workers > 0** so that
+content routes directly to dedicated CPU workers from the main queue
+instead of blocking a GPU worker each time.
 
 Settings are saved to `/config/settings.json` and persist across restarts.
 
-### Webhooks Page
+### Automation Page
 
-Access the Webhooks page at `/webhooks` to configure Radarr/Sonarr integration:
+The **Automation** page (`/automation`) hosts two tabs:
+
+- **Triggers** — incoming webhooks from Radarr, Sonarr, Sportarr, Tdarr / custom scripts, and Plex Direct. Also houses the Recently Added Scanner shortcut. This is where you wire the app up to whatever puts media into Plex.
+- **Schedules** — full CRUD for recurring scans (cron / interval / specific time). Both Full library and Recently-Added scanners live here.
+
+The Triggers tab includes:
 
 - **Enable/Disable** — master toggle for webhook processing
-- **Webhook URLs** — copy-ready URLs for Radarr and Sonarr
+- **Webhook URLs** — copy-ready URLs for Radarr, Sonarr, Sportarr, and the generic Custom webhook
 - **Delay** — seconds to wait after import (gives Plex time to index)
 - **Webhook Secret** — optional dedicated authentication token
-- **Setup Instructions** — step-by-step guide for Radarr/Sonarr configuration
+- **Setup instructions** — step-by-step guides for each source
 - **Activity Log** — recent webhook events with status badges
+
+The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to the Triggers and Schedules tabs on the new page.
 
 ### Production Server
 
@@ -214,31 +239,11 @@ curl -H "X-Auth-Token: YOUR_TOKEN" http://localhost:8080/api/jobs
 
 ### Rate Limiting
 
-Protection against brute force:
-
-| Endpoint | Limit |
-|----------|-------|
-| `/login` POST | 5 per minute |
-| `/api/auth/login` | 10 per minute |
-| Default | 200 per day, 50 per hour |
-
-For multi-worker deployments, configure Redis:
-
-```bash
-RATELIMIT_STORAGE_URL=redis://localhost:6379
-```
+Login and API endpoints are rate-limited to protect against brute force. See [Reference — Rate Limiting](reference.md#rate-limiting) for the exact limits and the `RATELIMIT_STORAGE_URL` env var for multi-worker deployments.
 
 ### Real-Time Updates
 
-The dashboard uses Flask-SocketIO with WebSocket for real-time job progress updates. The client connects to the `/jobs` namespace.
-
-| Event | Description |
-|-------|-------------|
-| `job_created` | New job was started |
-| `job_progress` | Progress update (percentage, current item) |
-| `job_complete` | Job finished successfully |
-| `job_error` | Job encountered an error |
-| `worker_update` | Worker status changed |
+The dashboard streams live job progress over WebSocket (Flask-SocketIO, `/jobs` namespace). See [Reference — WebSocket Events](reference.md#websocket-events) for the event table and payloads.
 
 ---
 
@@ -261,7 +266,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### Configure Radarr
 
-1. Open the web UI and navigate to **Webhooks** (in the top nav)
+1. Open the web UI and navigate to **Automation** → **Triggers** tab (in the top nav)
 2. Copy the **Radarr Webhook URL**
 3. In Radarr, go to **Settings → Connect → + → Webhook**
 4. Set **Name**: `Plex Previews`
@@ -277,7 +282,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### Configure Sonarr
 
-1. Copy the **Sonarr Webhook URL** from the web UI Webhooks page
+1. Copy the **Sonarr Webhook URL** from the web UI Automation → Triggers tab
 2. In Sonarr, go to **Settings → Connect → + → Webhook**
 3. Set **Name**: `Plex Previews`
 4. Set **URL**: paste the Sonarr Webhook URL
@@ -334,7 +339,7 @@ Authentication is the same as Radarr/Sonarr: use `X-Auth-Token` header, `Authori
 
 Tdarr doesn't have built-in webhook support like Sonarr/Radarr. Instead, use the **Send Web Request** Flow plugin to POST to the custom endpoint after each transcode.
 
-1. Open the web UI and navigate to **Webhooks** — copy the **Custom Webhook URL**
+1. Open the web UI and navigate to **Automation** → **Triggers** tab — copy the **Custom Webhook URL**
 2. In Tdarr, open the **Flow** you want to trigger previews from
 3. Add a **Send Web Request** plugin after your transcode step
 4. Configure the plugin:
@@ -359,7 +364,7 @@ curl -X POST "http://your-server:8080/api/webhooks/custom" \
 ```
 
 ### Configuration
-All settings are configurable from the **Webhooks** page in the web UI.
+All settings are configurable from the **Automation** page → **Triggers** tab in the web UI.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -373,7 +378,7 @@ Webhook processing uses your Settings library selection. If a webhook path belon
 
 By default, webhooks authenticate using your main API token. You can optionally configure a **dedicated webhook secret** for better security isolation:
 
-1. On the Webhooks page, click **Generate** next to the secret field
+1. On the Automation page (Triggers tab), click **Generate** next to the secret field
 2. Click **Save Changes**
 3. Use the generated secret as the token: in Radarr/Sonarr, either put it in **Password** (leave Username empty) or in the **X-Auth-Token** header if your form has a Headers section.
 
@@ -383,13 +388,13 @@ When multiple files are imported in quick succession (e.g., a season pack), the 
 
 **Example:** Sonarr imports 10 episodes over 30 seconds with a 60s delay. The timer keeps resetting as each episode arrives. One job runs 60 seconds after the *last* episode and processes all 10 files. A file that arrived at 59 seconds is not processed in an earlier batch — it goes in this batch, and the batch runs 60 seconds after it, so Plex has time to index it.
 
-**Viewing files in a batch:** On the **Dashboard**, jobs from webhooks show a label like "Sonarr: 3 files". Click the **+** (chevron) next to the label to expand and see the list of files. On the **Webhooks** page, **Recent Activity** rows for triggered batches include a chevron; click it to expand and see the files in that batch.
+**Viewing files in a batch:** On the **Dashboard**, jobs from webhooks show a label like "Sonarr: 3 files". Click the **+** (chevron) next to the label to expand and see the list of files. On the **Automation** page (Triggers tab), **Activity Log** rows for triggered batches include a chevron; click it to expand and see the files in that batch.
 
 ---
 
 ## Auto-trigger from Plex (no Sonarr/Radarr)
 
-For media you add to Plex **manually** — copying files into a watched folder, importing through Plex itself, or using any tool other than Sonarr/Radarr/Tdarr — there are two built-in ways to auto-trigger preview generation. Both live on the **Webhooks** page as dedicated sections (**Plex Direct** and **Recently Added Scanner** in the sidebar), and both feed into the same job pipeline as the existing webhooks.
+For media you add to Plex **manually** — copying files into a watched folder, importing through Plex itself, or using any tool other than Sonarr/Radarr/Tdarr — there are two built-in ways to auto-trigger preview generation. Both live on the **Automation** page's **Triggers** tab as dedicated sections (**Plex Direct** and **Recently Added Scanner** in the sidebar), and both feed into the same job pipeline as the existing webhooks.
 
 > [!IMPORTANT]
 > **Both options trigger only on _new_ library items.** When Sonarr or Radarr **upgrades** an existing file in place, Plex keeps the same library item, so neither option will see it. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
@@ -403,7 +408,7 @@ This uses Plex's built-in webhook feature. The app calls Plex's account API to r
 - **Mobile Push Notifications enabled** on your Plex server. This is the catch: Plex's `library.new` event is delivered through the same code path as mobile push notifications, and if push notifications are off, library events are silently dropped. Enable them under Plex Web → Settings → Server → Notifications. You don't have to actually use mobile push — they just need to be turned on.
 
 **Setup:**
-1. Open the web UI → **Webhooks** and scroll to (or click) the **Plex Direct** sidebar link.
+1. Open the web UI → **Automation** → **Triggers** tab and scroll to (or click) the **Plex Direct** sidebar link.
 2. The URL field is pre-filled with the URL you're currently accessing the app at (typically correct for same-host setups). If your Plex Media Server is on a different host or behind a different network/proxy, override it with a URL Plex can reach.
 3. Click **Test reachability** to verify the URL is routable. The app self-POSTs a synthetic ping; success means Plex should also be able to deliver.
 4. Click **Register with Plex**. If you're missing Plex Pass, the UI will tell you and disable the button.
@@ -420,12 +425,12 @@ A scheduled poll for items where Plex's `addedAt` falls within a configured look
 **The scanner is a first-class schedule type.**  You create, edit, enable, disable, and delete Recently Added scanners through the same Schedules UI as any other scheduled job — and you can create **multiple scanners** with different libraries, intervals, or lookback windows.  For example: scan Movies every 15 minutes with a 1-hour lookback, and your 4K library every 6 hours with a 24-hour lookback.
 
 **Quick start (one click):**
-1. Open the web UI → **Webhooks** → **Recently Added Scanner** (sidebar link).
+1. Open the web UI → **Automation** → **Triggers** tab → **Recently Added Scanner** (sidebar link).
 2. Click **Create default scanner**.  A schedule is created with sensible defaults: runs every **15 minutes**, lookback window **1 hour**, all libraries.
 3. That's it.  You can stop here, or continue to customize it.
 
 **Customize or add more scanners:**
-1. Click **Manage on Schedules page** on the Webhooks card, or open the **Schedules** page directly from the top nav.
+1. Click **Manage in Schedules tab** on the scanner card, or switch to the **Schedules** tab directly.
 2. Click **Add Schedule** (or **Edit** on an existing scanner).
 3. In the modal, choose **Scan mode → Recently added only**.  The Schedule Type field defaults to Interval; pick your frequency.
 4. Choose a **Lookback window** — 15 min / 30 min / 1 hour (default) / 2 hours / 6 hours / 24 hours / 3 days / 7 days.
@@ -514,70 +519,9 @@ locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
 
 ---
 
-## FAQ
+## HDR & Dolby Vision
 
-### General
-
-**What does this tool do?**
-
-Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos. Plex's built-in generation is slow — this tool makes it 5-10x faster using GPU acceleration.
-
-**What Plex settings should I use?**
-
-In Plex Settings → Library, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation. Disabling it in Plex avoids duplicate work and prevents Plex from using CPU for thumbnails when you want this app to handle them.
-
-**Does this generate chapter thumbnails?**
-
-No. This tool only generates **video preview thumbnails** (BIF files for timeline scrubbing). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
-
-**Does this work on Windows?**
-
-Yes! Windows supports GPU acceleration: NVIDIA GPUs use CUDA, and AMD/Intel GPUs use D3D11VA. Install the latest GPU drivers and it just works.
-
-**Can I use this without a GPU?**
-
-Yes! In **Settings** → **Processing Options**, disable all GPUs (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `4` or `8`).
-
-**Is Docker required? Is there a standalone .exe?**
-
-Docker is the recommended and supported way to run this tool. There is no standalone executable. Advanced users can install from source on Linux (requires Python 3.10+, FFmpeg, and mediainfo), but this is not officially supported. See [Getting Started](getting-started.md) for Docker setup.
-
-**Does Plex need to run in Docker too?**
-
-No. Plex can run bare-metal, in Docker, or any other way. This tool just needs network access to the Plex API and read/write access to the Plex application data directory (where BIF files are stored).
-
-**Can I run this on a different machine than my Plex server?**
-
-Yes, as long as the tool can reach the Plex API over the network and both machines have access to the media files and Plex config directory (e.g. via NFS or SMB mounts). See [Networking](getting-started.md#networking) for setup details.
-
-**Does this work with Jellyfin or Emby?**
-
-No. This tool is Plex-only — it generates Plex-specific BIF files and uses the Plex API to discover libraries and media items.
-
-### GPUs
-
-**How do I know which GPUs are detected?**
-
-Open **Settings** → **Processing Options**. The GPU panel lists all detected GPUs with their device IDs, names, and types.
-
-**Can I use multiple GPUs?**
-
-Yes! In **Settings** → **Processing Options**, enable individual GPUs and set workers and FFmpeg threads per GPU. Each GPU can be enabled/disabled independently.
-
-**Which GPU should I use?**
-
-| GPU Type | Best For |
-|----------|----------|
-| NVIDIA | Fastest for video processing |
-| Intel iGPU | Great for low-power setups, common on Unraid |
-| AMD | Good VAAPI support on Linux |
-| CPU-only | Works everywhere, slower |
-
-### HDR / Tone Mapping
-
-**Does it handle HDR content correctly?**
-
-Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating thumbnails:
+The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbnails. Behavior depends on the HDR format:
 
 | Format | Method |
 |--------|--------|
@@ -585,9 +529,31 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
 | Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | libplacebo via Vulkan; NVDEC on NVIDIA, software decode elsewhere ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178), [#212](https://github.com/stevezau/plex_generate_vid_previews/issues/212)) |
 
-**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires `libplacebo` for tone mapping because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. libplacebo's `apply_dolbyvision` (enabled by default in FFmpeg 8+) handles this correctly. On NVIDIA hosts, the HEVC decode step runs on NVDEC before libplacebo picks up the frames — this is about 3× faster than software decode on 4K DV5 content with identical visual output. Other vendors (Intel VAAPI, QSV, AMD, Apple VideoToolbox, D3D11VA) stay on software decode for this path because NVDEC is the only HW decoder currently validated with libplacebo's DV5 tone map; Intel VAAPI specifically benchmarked slower than software decode. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+### Tone-map algorithm
+
+Non-DV HDR content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. Change it in **Settings → Thumbnail Settings → HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` env var. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If HDR thumbnails look too dark, try `reinhard`. Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
+
+### Dolby Vision Profile 5
+
+Profile 5 has no backward-compatible HDR10 layer, so the zscale/tonemap chain can't read its RPU reshaping metadata and produces dark or blank thumbnails. The tool picks the fastest working path per GPU vendor:
+
+| Vendor | DV5 path | Typical speed on 4K |
+|---|---|---|
+| Intel (iGPU / Arc via VAAPI) | VAAPI decode → OpenCL `tonemap_opencl` (Jellyfin-patched, DV-RPU-aware) | **~17×** (UHD 770) |
+| NVIDIA | NVDEC decode → Vulkan `libplacebo` via hwupload | ~10–16× (Turing), faster on Ada/Hopper |
+| AMD Radeon | VAAPI decode → Vulkan `libplacebo` via DMA-BUF hwmap | untested locally; same flags as NVIDIA |
+| CPU-only / software fallback | libx265 decode → Vulkan `libplacebo` | ~5–10× (CPU-bound) |
+
+The image ships **jellyfin-ffmpeg 7.1.3** as the preferred FFmpeg binary because Jellyfin's fork carries the `tonemap_opencl` DV-aware patch upstream FFmpeg still lacks. Falls back to the base image's FFmpeg 8.0.1 automatically on non-amd64 builds.
+
+Profile 7/8 (with HDR10 fallback) uses the standard zscale/tonemap chain — FFmpeg reads the HDR10 base layer, so no libplacebo or special handling is needed.
+
+### Container edge cases handled automatically
+
+- **`/dev/dri/by-path` fixup.** Intel's OpenCL runtime (NEO) discovers GPUs by scanning `/dev/dri/by-path/*-render`. Under `--runtime=nvidia`, NVIDIA Container Toolkit populates that directory only for NVIDIA cards — leaving the Intel iGPU invisible to OpenCL. The container runs a oneshot s6 init (`init-dri-by-path`) that adds the missing symlinks for every DRM render node in `/dev/dri/`. No-op on bare metal / single-vendor hosts.
+- **NVIDIA Vulkan on dual-GPU hosts.** The Vulkan probe runs up to four retry strategies to get NVIDIA's ICD working (standard ICD, `__EGL_VENDOR_LIBRARY_FILENAMES`, synthesised GLVND vendor JSON, `VK_DRIVER_FILES`+EGL combined). On dual-GPU hosts (Intel iGPU + NVIDIA dGPU) the default probe picks Intel ANV first; the combined `VK_DRIVER_FILES` + `__EGL_VENDOR_LIBRARY_FILENAMES` retry forces NVIDIA so libplacebo runs on the NVIDIA card instead of ping-ponging frames across PCIe.
 
 > [!IMPORTANT]
 > **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
@@ -597,111 +563,11 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 >
 > If the warning banner persists after the restart, your setup may be hitting one of the less-common causes (driver 570–579 regression, CDI manifest missing `libnvidia-glvkspirv.so`, or ICD JSON at the wrong path). The in-app warning will name the specific cause it detected. You can also open `GET /api/system/vulkan/debug` to fetch a plain-text diagnostic bundle to attach to a GitHub issue.
 
-**Dolby Vision Profile 7/8** (with HDR10 fallback) uses the standard zscale/tonemap chain. FFmpeg reads the HDR10 base layer by default, so no libplacebo or special handling is needed.
+---
 
-**Non-DV HDR** content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.
+## FAQ
 
-Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
-
-### Performance
-
-**How many threads should I use?**
-
-Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Options**. The GPU panel lets you set workers and FFmpeg threads per GPU.
-
-| Scenario | GPU Workers (per GPU) | CPU Threads |
-|----------|-------------|-------------|
-| Default | 1 | 1 |
-| Balanced | 4 total | 2 |
-| High-end | 8 total | 4 |
-| CPU-only | 0 | 8 |
-
-> [!TIP]
-> Start with the defaults and increase gradually while monitoring system load.
-
-**Why is CPU usage high when I have a GPU configured?**
-
-GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding (via NVDEC, VAAPI, etc.) and tone mapping (via Vulkan/libplacebo for Dolby Vision content). The CPU handles frame selection, pixel format conversion, thumbnail scaling, and JPEG encoding.
-
-For **standard (SDR) content**, GPU does nearly all the work and CPU usage is minimal — you'll see speeds of 500x or higher.
-
-For **Dolby Vision content**, CPU usage is noticeably higher because frames must be moved between CPU and GPU memory for the libplacebo tone map. Expected speeds on 4K DV content:
-
-- **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60x+ across all GPU vendors. Uses HW decode + zscale on the HDR10 base layer.
-- **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker) — about 12x on NVIDIA (NVDEC decode + libplacebo), about 4x on Intel / AMD / Apple / CPU (software decode + libplacebo).
-
-The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
-
-**What's thumbnail quality 1-10?**
-
-Lower numbers = higher quality but larger file sizes.
-
-- Quality 2 = highest quality
-- Quality 4 = default (good balance)
-- Quality 10 = lowest quality
-
-### Docker
-
-**Why does my container fail to start?**
-
-Most common cause: using `init: true` in docker-compose. Remove it -- this container uses s6-overlay (a built-in process manager) and `init: true` conflicts with it.
-
-**Why can't the container find my files?**
-
-Path mapping issue. See [Path Mappings](reference.md#path-mappings).
-
-**How do I get the authentication token?**
-
-Use [Authentication Token](getting-started.md#authentication-token).
-
-**Does GPU passthrough work with Docker Desktop on Windows?**
-
-Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, run natively (CUDA for NVIDIA, D3D11VA for AMD/Intel) instead of Docker.
-
-**Windows: paths in config must use forward slashes**
-
-On Windows, use forward slashes (`/`) in all path configuration (environment variables, `.env` files, Settings). Backslashes (`\`) will cause path resolution failures.
-
-### Processing
-
-**Can I process specific libraries only?**
-
-Yes! In **Settings** → **Libraries**, select which libraries to process.
-
-**How do I regenerate existing thumbnails?**
-
-When starting a job, use the **Regenerate** option to force regeneration of existing thumbnails.
-
-**Why is it "skipping" some files?**
-
-Possible causes:
-
-- Thumbnails already exist (use the **Regenerate** option when starting a job to force)
-- File not found (check [path mappings](reference.md#path-mappings))
-- Invalid file format
-
-**Why does ETA show "Calculating..." for so long?**
-
-The ETA calculation is designed to be **accurate, not fast**:
-
-1. **Initial skip burst (0-30 seconds)**: shows "Calculating..." — many files may already have thumbnails and are skipped instantly
-2. **First few items processed (30s-5 min)**: still shows "Calculating..." — real FFmpeg encoding is underway, but not enough data yet
-3. **Realistic estimate appears (5+ min)**: shows time like "8h 30m" — calculated from actual per-item processing time, updates every 3 seconds
-4. **During processing**: ETA counts down and adjusts in real-time as processing rate varies
-
-Early ETA guesses based on incomplete data are wildly inaccurate. The "Calculating..." phase filters out this noise.
-
-**What is the Sonarr/Radarr path column for?**
-
-Only relevant if you use [webhook integration](guides.md#webhook-integration). When Sonarr/Radarr fire a webhook, they include the file path as *they* see it inside their container, which may differ from the path inside this tool's container. The path column translates between them. For example:
-
-| Container | Might see the file as |
-|-----------|----------------------|
-| Plex | `/data/tv/Show/episode.mkv` |
-| Sonarr | `/tv/Show/episode.mkv` |
-| This tool | `/mnt/media/tv/Show/episode.mkv` |
-
-If you are not using webhooks, or all containers use the same media paths, leave it blank.
+Common questions have moved to their own page — see [FAQ](faq.md).
 
 ---
 

@@ -1,72 +1,4 @@
-{% extends "base.html" %}
-
-{% block title %}Schedules - Plex Preview Generator{% endblock %}
-
-{% block head %}
-<style>
-    html { scroll-behavior: smooth; }
-
-    .section-card {
-        margin-bottom: 1.5rem;
-        scroll-margin-top: 6rem;
-    }
-
-    /* Sidebar navigation — mirrors settings.html / webhooks.html */
-    .schedules-sidebar {
-        top: 5rem;
-        max-height: calc(100vh - 6rem);
-        overflow-y: auto;
-        padding-top: 0.5rem;
-    }
-    .schedules-sidebar .nav-link {
-        color: var(--bs-secondary-color);
-        font-size: 0.875rem;
-        padding: 0.5rem 0.75rem;
-        border-radius: 0.375rem;
-        border-left: 3px solid transparent;
-        margin-bottom: 0.125rem;
-    }
-    .schedules-sidebar .nav-link:hover {
-        color: var(--bs-body-color);
-        background-color: var(--bs-tertiary-bg);
-    }
-    .schedules-sidebar .nav-link.active {
-        color: var(--plex-orange);
-        background-color: rgba(229, 160, 13, 0.1);
-        border-left-color: var(--plex-orange);
-        font-weight: 500;
-    }
-    .schedules-content { padding-bottom: 40vh; }
-
-    .schedule-type-badge {
-        font-size: 0.7rem;
-        padding: 0.25em 0.55em;
-        background: rgba(13, 110, 253, 0.2);
-        color: var(--bs-primary);
-    }
-</style>
-{% endblock %}
-
-{% block content %}
-<div class="row">
-    <!-- Sidebar -->
-    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
-        <nav id="schedules-sidebar" class="schedules-sidebar sticky-top">
-            <div class="nav flex-column nav-pills">
-                <a class="nav-link" href="#section-schedules-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
-                <a class="nav-link" href="#section-schedules-list"><i class="bi bi-calendar-event me-2"></i>All Schedules</a>
-            </div>
-        </nav>
-    </div>
-
-    <!-- Main Content -->
-    <div class="col-lg-9 col-xl-8 schedules-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2><i class="bi bi-calendar-event me-2"></i>Schedules</h2>
-            <button class="btn btn-primary" onclick="showNewScheduleModal()">
-                <i class="bi bi-plus me-1"></i>Add Schedule
-            </button>
-        </div>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/automation_schedules.css') }}">
 
         <!-- Overview -->
         <div class="card section-card" id="section-schedules-overview">
@@ -84,7 +16,8 @@
                     </li>
                     <li>
                         <strong>Recently added only</strong> — fast poll that just checks what Plex added in the last few minutes. Good for tight, frequent intervals (every 15 min) when you want fresh imports to get previews quickly without scanning everything. See the
-                        <a href="{{ url_for('main.webhooks_page') }}#section-webhooks-recently-added">Webhooks page</a> for a one-click "Create default scanner" shortcut.
+                        <a href="#section-webhooks-recently-added"
+                           onclick="showAutomationTab('triggers'); setTimeout(function(){ var el=document.getElementById('section-webhooks-recently-added'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }, 100); return false;">Triggers tab</a> for a one-click "Create default scanner" shortcut.
                     </li>
                 </ul>
                 <div class="small text-muted">
@@ -127,8 +60,6 @@
                 </div>
             </div>
         </div>
-    </div>
-</div>
 
 <!-- Schedule Modal (Create / Edit) -->
 <div class="modal fade" id="newScheduleModal" tabindex="-1">
@@ -293,53 +224,11 @@
         </div>
     </div>
 </div>
-{% endblock %}
 
-{% block scripts %}
 <script>
-// This page reuses the schedule-management functions from app.js (loadSchedules,
-// saveSchedule, showNewScheduleModal, showEditScheduleModal, updateScheduleList,
-// onScheduleTypeChange, onScanModeChange, etc.) so the logic stays in one place.
+// Libraries are needed for the schedule modal's library selector.
+// Polling, ScrollSpy, and sidebar scrolling are managed by automation.html.
 document.addEventListener('DOMContentLoaded', function() {
-    // Libraries are needed for the schedule modal's library selector.
     if (typeof loadLibraries === 'function') loadLibraries();
-
-    // Load the schedule list, then honour ?editSchedule=<id> on the URL.
-    if (typeof loadSchedules === 'function') {
-        loadSchedules().then(() => {
-            if (typeof maybeAutoOpenScheduleEdit === 'function') {
-                maybeAutoOpenScheduleEdit();
-            }
-        });
-    }
-
-    // Poll schedules every 10s so "Next Run" and "Status" stay fresh.
-    setInterval(() => {
-        if (typeof loadSchedules === 'function') loadSchedules();
-    }, 10000);
-
-    // Activate ScrollSpy for the sidebar.
-    new bootstrap.ScrollSpy(document.body, {
-        target: '#schedules-sidebar',
-        rootMargin: '0px 0px -60%',
-        smoothScroll: true,
-    });
-
-    // Smooth-scroll for sidebar anchors with navbar offset.
-    document.querySelectorAll('a[href^="#section-schedules-"]').forEach(function(link) {
-        link.addEventListener('click', function(e) {
-            var href = link.getAttribute('href') || '';
-            if (!href.startsWith('#')) return;
-            e.preventDefault();
-            var el = document.getElementById(href.substring(1));
-            if (!el) return;
-            var navbar = document.querySelector('.navbar.sticky-top');
-            var navH = navbar ? navbar.offsetHeight : 56;
-            var top = el.getBoundingClientRect().top + window.scrollY - navH - 16;
-            window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
-            if (history.pushState) history.pushState(null, '', href);
-        });
-    });
 });
 </script>
-{% endblock %}

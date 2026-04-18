@@ -14,9 +14,7 @@ def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
     monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr(
-        "plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path)
-    )
+    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
 
     # Reset the global settings manager singleton
     from plex_generate_previews.web.settings_manager import reset_settings_manager
@@ -158,9 +156,7 @@ class TestSetupRoutes:
         client.post(
             "/api/settings",
             headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps(
-                {"plex_url": "http://localhost:32400", "plex_token": "test-token"}
-            ),
+            data=json.dumps({"plex_url": "http://localhost:32400", "plex_token": "test-token"}),
         )
 
         response = client.post("/api/setup/complete", headers=auth_headers)
@@ -216,9 +212,7 @@ class TestAuthRequired:
 
     def test_invalid_token_rejected(self, client):
         """Test that invalid token is rejected."""
-        response = client.get(
-            "/api/settings", headers={"X-Auth-Token": "invalid-token-12345"}
-        )
+        response = client.get("/api/settings", headers={"X-Auth-Token": "invalid-token-12345"})
         assert response.status_code == 401
 
 
@@ -350,9 +344,7 @@ class TestTokenAPIEndpoints:
         response = client.post(
             "/api/setup/set-token",
             headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps(
-                {"token": "my-new-password-123", "confirm_token": "my-new-password-123"}
-            ),
+            data=json.dumps({"token": "my-new-password-123", "confirm_token": "my-new-password-123"}),
         )
 
         assert response.status_code == 200
@@ -366,9 +358,7 @@ class TestTokenAPIEndpoints:
         response = client.post(
             "/api/setup/set-token",
             headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps(
-                {"token": "password-one-123", "confirm_token": "password-two-456"}
-            ),
+            data=json.dumps({"token": "password-one-123", "confirm_token": "password-two-456"}),
         )
 
         assert response.status_code == 400

@@ -11,12 +11,12 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
 
-def _distribute_gpu_threads_into_dict(settings: Dict[str, Any], value: int) -> None:
+def _distribute_gpu_threads_into_dict(settings: dict[str, Any], value: int) -> None:
     """Distribute a total GPU worker count across enabled GPUs in ``gpu_config``.
 
     Mutates ``settings`` in place (same rules as ``SettingsManager._distribute_gpu_threads``).
@@ -44,9 +44,7 @@ def _distribute_gpu_threads_into_dict(settings: Dict[str, Any], value: int) -> N
     settings["gpu_config"] = config
 
 
-def preview_settings_after_update(
-    base: Dict[str, Any], updates: Dict[str, Any]
-) -> Dict[str, Any]:
+def preview_settings_after_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     """Return settings dict after applying the same merge rules as ``SettingsManager.update``.
 
     Produces the effective configuration state without mutating ``base``.
@@ -78,9 +76,9 @@ class SettingsManager:
         self.settings_file = self.config_dir / "settings.json"
         self.client_id_file = self.config_dir / "client_id"
         self.setup_state_file = self.config_dir / "setup_state.json"
-        self._settings: Dict[str, Any] = {}
-        self._setup_state: Dict[str, Any] = {}
-        self._client_id: Optional[str] = None
+        self._settings: dict[str, Any] = {}
+        self._setup_state: dict[str, Any] = {}
+        self._client_id: str | None = None
         self._lock = threading.RLock()
         self._load()
         self._load_setup_state()
@@ -89,7 +87,7 @@ class SettingsManager:
         """Load settings from file."""
         if self.settings_file.exists():
             try:
-                with open(self.settings_file, "r") as f:
+                with open(self.settings_file) as f:
                     self._settings = json.load(f)
                 logger.debug(f"Loaded settings from {self.settings_file}")
             except Exception as e:
@@ -119,7 +117,7 @@ class SettingsManager:
         """Load setup wizard state from file."""
         if self.setup_state_file.exists():
             try:
-                with open(self.setup_state_file, "r") as f:
+                with open(self.setup_state_file) as f:
                     self._setup_state = json.load(f)
                 logger.debug(f"Loaded setup state from {self.setup_state_file}")
             except Exception as e:
@@ -150,12 +148,12 @@ class SettingsManager:
             self._settings[key] = value
             self._save()
 
-    def get_all(self) -> Dict[str, Any]:
+    def get_all(self) -> dict[str, Any]:
         """Get all settings."""
         with self._lock:
             return self._settings.copy()
 
-    def update(self, settings: Dict[str, Any]) -> None:
+    def update(self, settings: dict[str, Any]) -> None:
         """Update multiple settings at once.
 
         ``gpu_threads`` is special-cased: its value is distributed across
@@ -178,8 +176,8 @@ class SettingsManager:
 
     def apply_changes(
         self,
-        updates: Dict[str, Any] = None,
-        deletes: List[str] = None,
+        updates: dict[str, Any] = None,
+        deletes: list[str] = None,
     ) -> None:
         """Apply a batch of updates and deletions atomically.
 
@@ -204,7 +202,7 @@ class SettingsManager:
     # =========================================================================
 
     @property
-    def plex_url(self) -> Optional[str]:
+    def plex_url(self) -> str | None:
         """Plex server URL."""
         return self.get("plex_url")
 
@@ -213,7 +211,7 @@ class SettingsManager:
         self.set("plex_url", value)
 
     @property
-    def plex_token(self) -> Optional[str]:
+    def plex_token(self) -> str | None:
         """Plex authentication token."""
         return self.get("plex_token")
 
@@ -222,7 +220,7 @@ class SettingsManager:
         self.set("plex_token", value)
 
     @property
-    def plex_config_folder(self) -> Optional[str]:
+    def plex_config_folder(self) -> str | None:
         """Plex configuration folder path."""
         return self.get("plex_config_folder") or "/plex"
 
@@ -243,7 +241,7 @@ class SettingsManager:
         self.set("plex_verify_ssl", bool(value))
 
     @property
-    def media_path(self) -> Optional[str]:
+    def media_path(self) -> str | None:
         """Local media root path."""
         return self.get("media_path")
 
@@ -261,7 +259,7 @@ class SettingsManager:
         self.set("thumbnail_interval", value)
 
     @property
-    def gpu_config(self) -> List[Dict[str, Any]]:
+    def gpu_config(self) -> list[dict[str, Any]]:
         """Per-GPU configuration list.
 
         Each entry has: device, name, type, enabled, workers, ffmpeg_threads.
@@ -273,7 +271,7 @@ class SettingsManager:
         return [e for e in val if isinstance(e, dict)]
 
     @gpu_config.setter
-    def gpu_config(self, value: List[Dict[str, Any]]) -> None:
+    def gpu_config(self, value: list[dict[str, Any]]) -> None:
         self.set("gpu_config", value)
 
     @property
@@ -282,9 +280,7 @@ class SettingsManager:
         config = self.gpu_config
         if not config:
             return 0
-        return sum(
-            entry.get("workers", 0) for entry in config if entry.get("enabled", True)
-        )
+        return sum(entry.get("workers", 0) for entry in config if entry.get("enabled", True))
 
     @gpu_threads.setter
     def gpu_threads(self, value: int) -> None:
@@ -311,16 +307,6 @@ class SettingsManager:
         self.set("cpu_threads", value)
 
     @property
-    def cpu_fallback_threads(self) -> int:
-        """Number of CPU fallback worker threads."""
-        val = self.get("cpu_fallback_threads")
-        return int(val) if val is not None else 0
-
-    @cpu_fallback_threads.setter
-    def cpu_fallback_threads(self, value: int) -> None:
-        self.set("cpu_fallback_threads", value)
-
-    @property
     def thumbnail_quality(self) -> int:
         """Thumbnail quality (1-10, default 4)."""
         return int(self.get("thumbnail_quality") or 4)
@@ -339,16 +325,16 @@ class SettingsManager:
         self.set("tonemap_algorithm", str(value).strip().lower())
 
     @property
-    def selected_libraries(self) -> List[str]:
+    def selected_libraries(self) -> list[str]:
         """List of selected library IDs."""
         return self.get("selected_libraries", [])
 
     @selected_libraries.setter
-    def selected_libraries(self, value: List[str]) -> None:
+    def selected_libraries(self, value: list[str]) -> None:
         self.set("selected_libraries", value)
 
     @property
-    def plex_name(self) -> Optional[str]:
+    def plex_name(self) -> str | None:
         """Name of the connected Plex server."""
         return self.get("plex_name")
 
@@ -364,6 +350,56 @@ class SettingsManager:
     @processing_paused.setter
     def processing_paused(self, value: bool) -> None:
         self.set("processing_paused", bool(value))
+
+    @property
+    def dismissed_notifications(self) -> list[str]:
+        """IDs of notifications the user has permanently dismissed.
+
+        Keyed by stable notification ID (e.g. ``"vulkan_software_fallback"``)
+        so the warning message can evolve between releases without
+        un-suppressing the dismissal.  Session-only dismissals live in
+        memory in the notifications module and are not persisted here.
+        """
+        val = self.get("dismissed_notifications", [])
+        if not isinstance(val, list):
+            return []
+        return [str(entry) for entry in val if isinstance(entry, str)]
+
+    @dismissed_notifications.setter
+    def dismissed_notifications(self, value: list[str]) -> None:
+        cleaned = [str(entry) for entry in (value or []) if isinstance(entry, str)]
+        self.set("dismissed_notifications", cleaned)
+
+    def dismiss_notification_permanent(self, notification_id: str) -> None:
+        """Append a notification ID to the persistent dismissal list.
+
+        Idempotent: calling twice with the same ID is a no-op.
+        """
+        with self._lock:
+            current = list(self.dismissed_notifications)
+            if notification_id not in current:
+                current.append(notification_id)
+                self._settings["dismissed_notifications"] = current
+                self._save()
+
+    def undismiss_notification(self, notification_id: str) -> None:
+        """Remove a notification ID from the persistent dismissal list.
+
+        Used by the "reset dismissed notifications" UI button.  Idempotent.
+        """
+        with self._lock:
+            current = list(self.dismissed_notifications)
+            if notification_id in current:
+                current = [n for n in current if n != notification_id]
+                self._settings["dismissed_notifications"] = current
+                self._save()
+
+    def reset_dismissed_notifications(self) -> None:
+        """Clear all persistently-dismissed notifications."""
+        with self._lock:
+            if self._settings.get("dismissed_notifications"):
+                self._settings["dismissed_notifications"] = []
+                self._save()
 
     # =========================================================================
     # Configuration Status Methods
@@ -443,12 +479,12 @@ class SettingsManager:
     # Setup Wizard State
     # =========================================================================
 
-    def get_setup_state(self) -> Dict[str, Any]:
+    def get_setup_state(self) -> dict[str, Any]:
         """Get the current setup wizard state."""
         with self._lock:
             return self._setup_state.copy()
 
-    def set_setup_state(self, step: int, data: Dict[str, Any]) -> None:
+    def set_setup_state(self, step: int, data: dict[str, Any]) -> None:
         """Save setup wizard progress.
 
         Args:
@@ -505,7 +541,7 @@ class SettingsManager:
 
 
 # Global instance
-_settings_manager: Optional[SettingsManager] = None
+_settings_manager: SettingsManager | None = None
 _settings_lock = threading.Lock()
 
 

@@ -3,89 +3,7 @@
 {% block title %}Settings - Plex Preview Generator{% endblock %}
 
 {% block head %}
-<style>
-    html {
-        scroll-behavior: smooth;
-    }
-
-    .section-card {
-        margin-bottom: 1.5rem;
-        scroll-margin-top: 5rem;
-    }
-
-    .auth-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 0.25rem 0.75rem;
-        border-radius: 1rem;
-        font-size: 0.875rem;
-    }
-
-    .auth-badge.authenticated {
-        background-color: rgba(25, 135, 84, 0.2);
-        color: var(--bs-success);
-    }
-
-    .auth-badge.expired {
-        background-color: rgba(220, 53, 69, 0.2);
-        color: var(--bs-danger);
-    }
-
-    .library-checkbox {
-        padding: 0.5rem;
-        border: 1px solid var(--bs-border-color);
-        border-radius: 0.375rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .library-checkbox:hover {
-        border-color: var(--bs-primary);
-    }
-
-    .library-checkbox input {
-        margin-right: 0.5rem;
-    }
-
-    .save-banner {
-        position: sticky;
-        bottom: 1rem;
-        z-index: 100;
-    }
-
-    /* Settings sidebar navigation */
-    .settings-sidebar {
-        top: 5rem;
-        max-height: calc(100vh - 6rem);
-        overflow-y: auto;
-        padding-top: 0.5rem;
-    }
-
-    .settings-sidebar .nav-link {
-        color: var(--bs-secondary-color);
-        font-size: 0.875rem;
-        padding: 0.5rem 0.75rem;
-        border-radius: 0.375rem;
-        border-left: 3px solid transparent;
-        margin-bottom: 0.125rem;
-    }
-
-    .settings-sidebar .nav-link:hover {
-        color: var(--bs-body-color);
-        background-color: var(--bs-tertiary-bg);
-    }
-
-    .settings-sidebar .nav-link.active {
-        color: var(--plex-orange);
-        background-color: rgba(229, 160, 13, 0.1);
-        border-left-color: var(--plex-orange);
-        font-weight: 500;
-    }
-
-    .settings-content {
-        padding-bottom: 40vh;
-    }
-
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/settings.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -121,39 +39,6 @@
             <a href="#" onclick="reAuthPlex()" class="alert-link">Re-authenticate with Plex</a>
         </div>
 
-        <!-- Timezone Warning -->
-        <div id="timezoneWarning" class="alert alert-warning alert-dismissible d-none mb-4">
-            <i class="bi bi-clock-history me-2"></i>
-            <strong>Timezone not configured.</strong>
-            Your container is using UTC, so scheduled jobs and timestamps may not match your local time.
-            <br class="mb-1">
-            <span class="text-muted small">
-                Add <code>-v /etc/localtime:/etc/localtime:ro</code> to your Docker run command (recommended).<br>
-                Alternatively, set <code>-e TZ=America/New_York</code> (replace with your timezone).<br>
-                See the <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md" target="_blank" rel="noopener" class="alert-link">getting started guide</a> for details.
-            </span>
-            <button type="button" class="btn-close" aria-label="Close" onclick="dismissTimezoneWarning()"></button>
-        </div>
-
-        <!-- Vulkan / libplacebo Warning (DV Profile 5 green overlay).
-             Body is injected from /api/system/vulkan so the text stays
-             in lock-step with the dashboard banner (see app.js). -->
-        <div id="vulkanWarning" class="alert alert-warning alert-dismissible d-none mb-4">
-            <div class="d-flex align-items-start">
-                <i class="bi bi-gpu-card me-2 mt-1"></i>
-                <div>
-                    <strong>Dolby Vision Profile 5 thumbnails may have a green overlay.</strong>
-                    <div id="vulkanWarningBody"></div>
-                    <div class="mt-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyVulkanDiagnosticBundle(this)">
-                            <i class="bi bi-clipboard me-1"></i>Copy diagnostic bundle
-                        </button>
-                    </div>
-                </div>
-            </div>
-            <button type="button" class="btn-close" aria-label="Close" onclick="dismissVulkanWarning()"></button>
-        </div>
-
         <!-- Plex Connection -->
         <div class="card section-card" id="section-plex-connection">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -171,7 +56,7 @@
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">&nbsp;</label>
-                        <button class="btn btn-outline-light w-100" onclick="testConnection()">
+                        <button class="btn btn-outline-secondary w-100" onclick="testConnection()">
                             <i class="bi bi-plug me-1"></i>Test Connection
                         </button>
                     </div>
@@ -265,7 +150,7 @@
                         <div class="flex-shrink-0" style="width: 38px;"></div>
                     </div>
                     <div class="path-mapping-rows mb-2"></div>
-                    <button type="button" class="btn btn-outline-light btn-sm" id="addPathMappingBtn">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="addPathMappingBtn">
                         <i class="bi bi-plus-lg me-1"></i>Add another mapping
                     </button>
                 </div>
@@ -275,7 +160,7 @@
                 <p class="text-muted small mb-2">Paths or folders to skip for preview generation (as this app sees them). Add path prefixes for subfolder exclusion, or use regex for pattern matching.</p>
                 <div id="excludePathsContainer">
                     <div class="exclude-path-rows mb-2"></div>
-                    <button type="button" class="btn btn-outline-light btn-sm" id="addExcludePathBtn">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="addExcludePathBtn">
                         <i class="bi bi-plus-lg me-1"></i>Add exclude path
                     </button>
                 </div>
@@ -301,7 +186,7 @@
                     </div>
                     <div id="gpuConfigList"></div>
                 </div>
-                <button type="button" class="btn btn-outline-light btn-sm mt-2 mb-4"
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-4"
                         onclick="rescanGPUs()" id="gpuRescanBtn">
                     <i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs
                 </button>
@@ -315,25 +200,12 @@
                                min="0" max="32" value="1">
                         <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
                     </div>
-                    <div class="col-md-6 mb-3">
-                        <label for="cpuFallbackThreads" class="form-label">
-                            CPU Fallback Workers
-                        </label>
-                        <input type="number" class="form-control" id="cpuFallbackThreads"
-                               min="0" max="32" value="0">
-                        <div class="form-text">
-                            Retries on the CPU if the GPU can&rsquo;t handle a file (e.g. unsupported codec). Only used when CPU Workers is 0.
-                        </div>
-                    </div>
                 </div>
                 <div class="alert alert-secondary py-2 mb-4">
                     <small>
-                        <strong>CPU Fallback Workers</strong> &mdash; Set <em>CPU Workers = 0</em>
-                        and <em>CPU Fallback Workers &gt; 0</em> to process everything on GPU
-                        while still handling unsupported files on CPU.
-                        Ignored when CPU Workers is greater than 0.
-                        <a href="https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md#cpu-fallback-workers"
-                           target="_blank" rel="noopener noreferrer">Learn more</a>.
+                        If a GPU worker can&rsquo;t process a file (e.g. unsupported codec, hardware-accelerator error),
+                        it automatically retries the same item on CPU in-place &mdash; no separate fallback pool is needed.
+                        The reason appears in logs and the worker card.
                     </small>
                 </div>
 
@@ -687,16 +559,13 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize scrollspy for sidebar navigation
     new bootstrap.ScrollSpy(document.body, {
         target: '#settings-sidebar',
-        rootMargin: '0px 0px -60%',
-        smoothScroll: true
+        rootMargin: '0px 0px -60%'
     });
 
     // Fire all API calls concurrently to avoid a sequential waterfall.
     // GPU rendering needs window._gpuConfig from settings, so we start
     // the GPU status fetch in parallel but render after both resolve.
     const gpuPromise = fetchGpuStatus();
-    checkTimezoneWarning();
-    checkVulkanWarning();
     Promise.all([
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
         loadLibraries(),
@@ -774,7 +643,6 @@ async function loadSettings() {
         // Store gpu_config for the GPU panel
         window._gpuConfig = settings.gpu_config || [];
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
-        document.getElementById('cpuFallbackThreads').value = settings.cpu_fallback_threads ?? 0;
         document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
@@ -1074,7 +942,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
             card.className = 'card mb-2 border-danger';
             card.style.opacity = '0.85';
             const errorHtml = gpu.error_detail
-                ? `<br><span class="text-light mt-1 d-inline-block">${escapeHtml(gpu.error_detail)}</span>`
+                ? `<br><span class="text-muted mt-1 d-inline-block">${escapeHtml(gpu.error_detail)}</span>`
                 : '';
             card.innerHTML = `
             <div class="card-body py-2 px-3">
@@ -1284,7 +1152,6 @@ async function saveAllSettings() {
         exclude_paths: collectExcludePathRows(),
         gpu_config: collectGpuConfig(),
         cpu_threads: parseInt(document.getElementById('cpuThreads').value),
-        cpu_fallback_threads: parseInt(document.getElementById('cpuFallbackThreads').value),
         thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
         thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
         tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
@@ -1598,41 +1465,6 @@ async function applyLogLevel() {
     } catch (error) {
         showToast('Failed to update log level: ' + error.message, 'danger');
     }
-}
-
-function checkTimezoneWarning() {
-    if (sessionStorage.getItem('tz_warning_dismissed')) return;
-    fetch('/api/system/timezone')
-        .then(r => r.json())
-        .then(data => {
-            if (data.warning) {
-                document.getElementById('timezoneWarning').classList.remove('d-none');
-            }
-        })
-        .catch(() => {});
-}
-
-function dismissTimezoneWarning() {
-    sessionStorage.setItem('tz_warning_dismissed', '1');
-    document.getElementById('timezoneWarning').classList.add('d-none');
-}
-
-function checkVulkanWarning() {
-    if (sessionStorage.getItem('vk_warning_dismissed')) return;
-    fetch('/api/system/vulkan')
-        .then(r => r.json())
-        .then(data => {
-            if (!data.warning) return;
-            var body = document.getElementById('vulkanWarningBody');
-            if (body) body.innerHTML = data.warning;
-            document.getElementById('vulkanWarning').classList.remove('d-none');
-        })
-        .catch(() => {});
-}
-
-function dismissVulkanWarning() {
-    sessionStorage.setItem('vk_warning_dismissed', '1');
-    document.getElementById('vulkanWarning').classList.add('d-none');
 }
 
 function toggleCreditsOptions() {

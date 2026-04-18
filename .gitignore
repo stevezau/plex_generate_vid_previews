@@ -15,6 +15,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-test/
 venv/
 env/
 ENV/
@@ -36,9 +37,11 @@ Thumbs.db
 htmlcov/
 coverage.xml
 .coverage
+.coverage.*
 .pytest_cache/
 .tox/
 test_env/
+tmp_migration_test/
 
 # Local planning files
 plan.md

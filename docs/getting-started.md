@@ -9,10 +9,25 @@ Get Plex preview thumbnails generating in minutes.
 > For operations and troubleshooting, use [Guides & Troubleshooting](guides.md).
 > For exact settings and API contracts, use [Configuration & API Reference](reference.md).
 
+## Contents
+
+- [Prerequisites](#prerequisites)
+- [Quick Start (Docker)](#quick-start-docker)
+- [Recommended Plex Settings](#recommended-plex-settings)
+- [Volume Mounts](#volume-mounts)
+- [Authentication Token](#authentication-token)
+- [Docker Compose](#docker-compose)
+- [GPU Acceleration](#gpu-acceleration)
+- [Unraid](#unraid)
+- [Networking](#networking)
+- [Common Operations](#common-operations)
+- [Next Steps](#next-steps)
+
 ## Related Docs
 
 - [Guides & Troubleshooting](guides.md)
 - [Configuration & API Reference](reference.md)
+- [FAQ](faq.md)
 - [Contributing & Development](../CONTRIBUTING.md)
 
 ---
@@ -68,12 +83,12 @@ Find your token using the [Authentication Token](#authentication-token) section 
 
 In **Plex Settings → Library**, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation with GPU-accelerated processing. If Plex's option is left on, Plex may use CPU to generate thumbnails for new media, which can conflict with or duplicate this app's work.
 
-This tool generates **video preview thumbnails only** (BIF files — the images shown when scrubbing through a video timeline). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
+This tool generates **video preview thumbnails only** — the small frames Plex shows when you drag the scrub bar (stored as BIF files). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
 
-## Recommended Workflow
-
-- **For new media:** Set up [Radarr/Sonarr webhooks](guides.md#webhook-integration) so previews are generated automatically when media is imported.
-- **For catch-all coverage:** Add a daily cron schedule (e.g. `0 2 * * *`) in the web UI (**Schedules**) to scan all libraries and process any items that were missed.
+> [!TIP]
+> **After setup, you probably want one or both of:**
+> - [Radarr/Sonarr webhooks](guides.md#webhook-integration) — auto-process new imports.
+> - A daily cron schedule (`0 2 * * *`) in the web UI under **Schedules** — catches anything the webhooks miss.
 
 ---
 
@@ -115,11 +130,14 @@ See [docker-compose.example.yml](../docker-compose.example.yml) for ready-to-use
 
 Copy the file, uncomment the section for your hardware, and adjust volume paths.
 
+> [!WARNING]
+> **Don't set `init: true`.** This container runs s6-overlay as its own init; `init: true` conflicts with it and prevents the container from starting.
+
 ---
 
 ## GPU Acceleration
 
-Hardware-accelerated video processing for faster thumbnail generation.
+Hardware-accelerated video processing for faster thumbnail generation. To check what's detected on your system, open the web UI (`http://YOUR_IP:8080`) and go to **Settings** or **Setup** — detected GPUs are listed there with device IDs, names, and types.
 
 ### Supported GPUs
 
@@ -134,10 +152,6 @@ Hardware-accelerated video processing for faster thumbnail generation.
 
 > [!NOTE]
 > **"Native only"** means GPU acceleration requires running the app from source on that platform. Docker on Windows (WSL2) and macOS runs a Linux VM — D3D11VA and VideoToolbox are not available inside Docker. Docker on these platforms will use CPU-only processing. Apple Silicon users benefit from the native ARM64 Docker image (no Rosetta overhead).
-
-### GPU Detection
-
-Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup**. Detected GPUs are shown there.
 
 ### Intel iGPU (QuickSync)
 
@@ -238,13 +252,9 @@ Apple Silicon and Intel Macs use VideoToolbox for GPU-accelerated decoding. This
 > [!WARNING]
 > Docker on macOS runs in a Linux VM and cannot access VideoToolbox. If you run the Docker image on macOS, processing will use CPU only. Apple Silicon users still benefit from the native ARM64 Docker image (no Rosetta emulation overhead). For GPU acceleration on macOS, install from source with Python and FFmpeg.
 
-### Multi-GPU and Per-GPU Configuration
+### Worker Configuration
 
-In **Settings** → **Processing Options**, the GPU panel lists all detected GPUs. Enable or disable each GPU independently and set **workers** and **FFmpeg threads** per GPU.
-
-### CPU-Only Mode
-
-In **Settings** → **Processing Options**, disable all GPUs (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `8`).
+In **Settings** → **Processing Options**, the GPU panel lists all detected GPUs. Enable or disable each GPU independently and set **workers** and **FFmpeg threads** per GPU. For CPU-only mode, disable every GPU (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `8`).
 
 ### Performance Tuning
 
@@ -261,21 +271,19 @@ Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Op
 
 ## Unraid
 
-Setup guide for Unraid with Community Applications template and manual Docker options.
+Two install paths: the Community Applications template (easiest) or a manual `docker run` command (more control).
 
-### Quick Start
+**Easiest:** search for `plex-generate-previews` in **Community Applications** and install the template.
 
-1. **Run the container** (see options below)
-2. **Open the Web UI** at `http://YOUR_UNRAID_IP:8080`
-3. **Get the authentication token** from container logs or set `WEB_AUTH_TOKEN`
-4. **Complete the Setup Wizard** — sign in with Plex, configure settings
+**Quick start (either path):**
+
+1. Run the container (CA template or `docker run` below).
+2. Open the Web UI at `http://YOUR_UNRAID_IP:8080`.
+3. Get the authentication token from container logs, or set `WEB_AUTH_TOKEN` on the container.
+4. Complete the Setup Wizard — sign in with Plex, configure settings.
 
 > [!TIP]
-> The setup wizard guides you through Plex OAuth authentication. No need to manually find your Plex token!
-
-### Community Applications (Easiest)
-
-Search for "plex-generate-previews" in Community Applications and install the template.
+> The setup wizard guides you through Plex OAuth authentication. No need to manually find your Plex token.
 
 ### Manual Docker Run — Intel iGPU (Most Common)
 
@@ -417,6 +425,9 @@ For users following [TRaSH Guides](https://trash-guides.info/):
 
 ## Networking
 
+> [!IMPORTANT]
+> **Use the host's IP address for Plex, not `localhost`.** The container can't reach `localhost` on your Docker host. If you set a Plex URL manually (env var or Settings), use something like `http://192.168.1.100:32400`. The Setup Wizard handles this for you when you pick your server from the list.
+
 ### Quick Decision Tree
 
 ```
@@ -474,56 +485,7 @@ docker rm plex-generate-previews
 # Re-run your docker run command
 ```
 
----
-
-## Development Environment
-
-The project includes a [devcontainer](https://containers.dev/) configuration for a consistent development environment.
-
-### What It Provides
-
-- Python 3.12 with FFmpeg and mediainfo
-- Docker-in-Docker for container builds
-- Pre-commit hooks (ruff check + format)
-- Playwright with Chromium for e2e testing
-
-### How to Use
-
-- **VS Code**: Reopen in Container (Ctrl+Shift+P → "Dev Containers: Reopen in Container")
-- **GitHub Codespaces**: Open the repository in a Codespace
-
-### Installed Extensions
-
-Python, Debugpy, Ruff, Pylance, TOML, Copilot, Playwright, Coverage Gutters, Docker, REST Client
-
-### Port Forwarding
-
-| Port | Service |
-|------|---------|
-| 8080 | Web UI |
-| 8089 | Locust (load testing) |
-
-### Post-Create Setup
-
-The devcontainer automatically:
-
-1. Installs the package with dev dependencies
-2. Installs Playwright Chromium browser
-3. Sets up pre-commit hooks
-
-See `.devcontainer/` for the full configuration.
-
----
-
-## Important Notes
-
-**Don't Use `init: true`**
-
-This container uses s6-overlay (a built-in process manager). Adding `init: true` in docker-compose conflicts with it and will prevent the container from starting.
-
-**Use IP address for Plex when needed**
-
-The container cannot reach `localhost` on your host. When using the Setup Wizard, pick your Plex server from the list (it will show the correct URL). If you set a Plex URL manually (env var or Settings), use your host's IP (e.g. `http://192.168.1.100:32400`), not `localhost`.
+Your `/config/settings.json` persists between upgrades, so Plex auth, GPU config, and schedules come back automatically after re-running the container.
 
 ---
 

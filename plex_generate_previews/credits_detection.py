@@ -9,11 +9,10 @@ No external dependencies beyond FFmpeg are required.
 
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, List, Optional
 
 from loguru import logger
-
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -73,9 +72,7 @@ _BLACK_RE = re.compile(
 )
 
 _SILENCE_START_RE = re.compile(r"silence_start:\s*(\d+(?:\.\d+)?)")
-_SILENCE_END_RE = re.compile(
-    r"silence_end:\s*(\d+(?:\.\d+)?)\s*\|\s*silence_duration:\s*(\d+(?:\.\d+)?)"
-)
+_SILENCE_END_RE = re.compile(r"silence_end:\s*(\d+(?:\.\d+)?)\s*\|\s*silence_duration:\s*(\d+(?:\.\d+)?)")
 
 
 def _run_blackdetect(
@@ -84,8 +81,8 @@ def _run_blackdetect(
     ffmpeg_path: str = "ffmpeg",
     black_min_duration: float = 0.5,
     pix_threshold: float = 0.10,
-    cancel_check: Optional[Callable] = None,
-) -> List[BlackFrame]:
+    cancel_check: Callable | None = None,
+) -> list[BlackFrame]:
     """Run FFmpeg blackdetect filter and parse output.
 
     Args:
@@ -114,7 +111,7 @@ def _run_blackdetect(
         "-",
     ]
 
-    frames: List[BlackFrame] = []
+    frames: list[BlackFrame] = []
     try:
         proc = subprocess.Popen(
             cmd,
@@ -148,8 +145,8 @@ def _run_silencedetect(
     ffmpeg_path: str = "ffmpeg",
     noise_threshold: str = "-40dB",
     silence_duration: float = 3.0,
-    cancel_check: Optional[Callable] = None,
-) -> List[SilenceRegion]:
+    cancel_check: Callable | None = None,
+) -> list[SilenceRegion]:
     """Run FFmpeg silencedetect filter and parse output.
 
     Args:
@@ -178,8 +175,8 @@ def _run_silencedetect(
         "-",
     ]
 
-    regions: List[SilenceRegion] = []
-    pending_start: Optional[float] = None
+    regions: list[SilenceRegion] = []
+    pending_start: float | None = None
     try:
         proc = subprocess.Popen(
             cmd,
@@ -200,9 +197,7 @@ def _run_silencedetect(
             if end_match and pending_start is not None:
                 end = float(end_match.group(1)) + seek_to
                 duration = float(end_match.group(2))
-                regions.append(
-                    SilenceRegion(start=pending_start, end=end, duration=duration)
-                )
+                regions.append(SilenceRegion(start=pending_start, end=end, duration=duration))
                 pending_start = None
         proc.wait()
     except FileNotFoundError:
@@ -230,11 +225,11 @@ def _regions_overlap_or_adjacent(
 
 
 def _find_black_cluster(
-    black_frames: List[BlackFrame],
+    black_frames: list[BlackFrame],
     min_start_time: float,
     min_frames: int = 2,
     cluster_window: float = 60.0,
-) -> Optional[float]:
+) -> float | None:
     """Find the earliest cluster of multiple black frames.
 
     A single black frame can be a scene transition; credits typically
@@ -264,12 +259,12 @@ def _find_black_cluster(
 
 
 def _combine_detections(
-    black_frames: List[BlackFrame],
-    silence_regions: List[SilenceRegion],
+    black_frames: list[BlackFrame],
+    silence_regions: list[SilenceRegion],
     total_duration_sec: float,
     min_credits_duration_sec: float = 15.0,
     max_credits_start_pct: float = 75.0,
-) -> Optional[CreditsSegment]:
+) -> CreditsSegment | None:
     """Combine black frame and silence detections to identify credits.
 
     Strategy (ordered by confidence):
@@ -297,9 +292,7 @@ def _combine_detections(
     cluster_start = _find_black_cluster(sorted_blacks, min_start_time)
     if cluster_start is not None:
         for sr in silence_regions:
-            if _regions_overlap_or_adjacent(
-                cluster_start, cluster_start + 60.0, sr.start, sr.end
-            ):
+            if _regions_overlap_or_adjacent(cluster_start, cluster_start + 60.0, sr.start, sr.end):
                 credits_start = min(cluster_start, sr.start)
                 credits_duration = total_duration_sec - credits_start
                 if credits_duration >= min_credits_duration_sec:
@@ -364,9 +357,9 @@ def detect_credits(
     media_file: str,
     total_duration_sec: float,
     ffmpeg_path: str = "ffmpeg",
-    config: Optional[CreditsDetectionConfig] = None,
-    cancel_check: Optional[Callable] = None,
-) -> Optional[CreditsSegment]:
+    config: CreditsDetectionConfig | None = None,
+    cancel_check: Callable | None = None,
+) -> CreditsSegment | None:
     """Detect the credits start point in a media file.
 
     Runs FFmpeg blackdetect and silencedetect filters on the last
@@ -388,8 +381,7 @@ def detect_credits(
 
     if total_duration_sec < config.min_credits_duration:
         logger.debug(
-            f"Video too short for credits detection "
-            f"({total_duration_sec:.0f}s < {config.min_credits_duration}s)"
+            f"Video too short for credits detection ({total_duration_sec:.0f}s < {config.min_credits_duration}s)"
         )
         return None
 
@@ -397,8 +389,7 @@ def detect_credits(
     seek_to = total_duration_sec * (1.0 - config.scan_last_pct / 100.0)
 
     logger.info(
-        f"Credits scan: scanning from {seek_to:.0f}s "
-        f"(last {config.scan_last_pct}% of {total_duration_sec:.0f}s)"
+        f"Credits scan: scanning from {seek_to:.0f}s (last {config.scan_last_pct}% of {total_duration_sec:.0f}s)"
     )
 
     black_frames = _run_blackdetect(
@@ -425,10 +416,7 @@ def detect_credits(
     if cancel_check and cancel_check():
         return None
 
-    logger.debug(
-        f"Credits detection: found {len(black_frames)} black frames, "
-        f"{len(silence_regions)} silence regions"
-    )
+    logger.debug(f"Credits detection: found {len(black_frames)} black frames, {len(silence_regions)} silence regions")
 
     return _combine_detections(
         black_frames,

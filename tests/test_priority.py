@@ -10,7 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.job_dispatcher import JobDispatcher, JobTracker
+from plex_generate_previews.jobs.dispatcher import JobDispatcher, JobTracker
+from plex_generate_previews.jobs.worker import WorkerPool
 from plex_generate_previews.web.jobs import (
     PRIORITY_HIGH,
     PRIORITY_LOW,
@@ -19,7 +20,6 @@ from plex_generate_previews.web.jobs import (
     JobManager,
     parse_priority,
 )
-from plex_generate_previews.worker import WorkerPool
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,6 @@ def _make_config():
     config = MagicMock()
     config.cpu_threads = 1
     config.gpu_threads = 0
-    config.fallback_cpu_threads = 0
     config.worker_pool_timeout = 5
     return config
 

@@ -1,8 +1,9 @@
 #!/bin/bash
-# Wrapper script to run plex-generate-previews web server
-# This script is executed by s6-overlay after user/group setup
+# Wrapper script to run plex-generate-previews web server.
+# Executed by s6-overlay after user/group setup.
+set -euo pipefail
 
-cd /app || exit 1
+cd /app
 
 # Check if init: true is preventing s6-overlay from running
 if [ ! -d "/run/s6" ] && ps -p 1 -o comm= 2>/dev/null | grep -qE '(tini|docker-init)'; then

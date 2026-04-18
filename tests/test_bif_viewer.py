@@ -15,7 +15,6 @@ from plex_generate_previews.bif_reader import (
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.settings_manager import reset_settings_manager
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -23,9 +22,7 @@ from plex_generate_previews.web.settings_manager import reset_settings_manager
 _FRAME_DATA = [b"\xff\xd8\xff" + bytes([i] * 50) for i in range(5)]
 
 
-def _write_test_bif(
-    path: str, frames: list[bytes] = _FRAME_DATA, interval_ms: int = 2000
-) -> str:
+def _write_test_bif(path: str, frames: list[bytes] = _FRAME_DATA, interval_ms: int = 2000) -> str:
     """Write a minimal valid BIF file and return its path."""
     magic = [0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A]
     version = 0
@@ -146,6 +143,16 @@ def _reset_singletons():
     clear_gpu_cache()
     yield
     reset_settings_manager()
+    with jobs_mod._job_lock:
+        jobs_mod._job_manager = None
+    with sched_mod._schedule_lock:
+        if sched_mod._schedule_manager is not None:
+            try:
+                sched_mod._schedule_manager.stop()
+            except Exception:
+                pass
+            sched_mod._schedule_manager = None
+    clear_gpu_cache()
 
 
 @pytest.fixture()
@@ -157,9 +164,7 @@ def app(tmp_path):
         json.dump({"token": "test-token-12345678"}, f)
     settings_file = os.path.join(config_dir, "settings.json")
     with open(settings_file, "w") as f:
-        json.dump(
-            {"setup_complete": True, "plex_config_folder": str(tmp_path / "plex")}, f
-        )
+        json.dump({"setup_complete": True, "plex_config_folder": str(tmp_path / "plex")}, f)
 
     with patch.dict(
         os.environ,
@@ -194,16 +199,7 @@ def _api_headers() -> dict:
 @pytest.fixture()
 def sample_bif(tmp_path):
     """Write a test BIF inside the tmp_path tree (under PLEX_DATA_ROOT)."""
-    bif_dir = (
-        tmp_path
-        / "plex"
-        / "Media"
-        / "localhost"
-        / "a"
-        / "bcdef.bundle"
-        / "Contents"
-        / "Indexes"
-    )
+    bif_dir = tmp_path / "plex" / "Media" / "localhost" / "a" / "bcdef.bundle" / "Contents" / "Indexes"
     bif_dir.mkdir(parents=True)
     return _write_test_bif(str(bif_dir / "index-sd.bif"))
 
@@ -276,30 +272,22 @@ class TestBifFrameEndpoint:
         assert resp.status_code == 401
 
     def test_returns_jpeg(self, client, sample_bif):
-        resp = client.get(
-            f"/api/bif/frame?path={sample_bif}&index=0", headers=_api_headers()
-        )
+        resp = client.get(f"/api/bif/frame?path={sample_bif}&index=0", headers=_api_headers())
         assert resp.status_code == 200
         assert resp.content_type == "image/jpeg"
         assert resp.data == _FRAME_DATA[0]
 
     def test_second_frame(self, client, sample_bif):
-        resp = client.get(
-            f"/api/bif/frame?path={sample_bif}&index=1", headers=_api_headers()
-        )
+        resp = client.get(f"/api/bif/frame?path={sample_bif}&index=1", headers=_api_headers())
         assert resp.status_code == 200
         assert resp.data == _FRAME_DATA[1]
 
     def test_out_of_range(self, client, sample_bif):
-        resp = client.get(
-            f"/api/bif/frame?path={sample_bif}&index=999", headers=_api_headers()
-        )
+        resp = client.get(f"/api/bif/frame?path={sample_bif}&index=999", headers=_api_headers())
         assert resp.status_code == 400
 
     def test_invalid_index(self, client, sample_bif):
-        resp = client.get(
-            f"/api/bif/frame?path={sample_bif}&index=abc", headers=_api_headers()
-        )
+        resp = client.get(f"/api/bif/frame?path={sample_bif}&index=abc", headers=_api_headers())
         assert resp.status_code == 400
 
 

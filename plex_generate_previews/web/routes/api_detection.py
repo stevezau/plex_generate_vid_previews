@@ -39,9 +39,9 @@ def analyze_detection():
         from ...config import load_config
         from ...credits_detection import (
             CreditsDetectionConfig,
+            _combine_detections,
             _run_blackdetect,
             _run_silencedetect,
-            _combine_detections,
         )
         from ...plex_client import plex_server, retry_plex_call
         from ..settings_manager import get_settings_manager

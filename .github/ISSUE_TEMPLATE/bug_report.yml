@@ -1,0 +1,74 @@
+name: Bug report
+description: Something isn't working — job fails, GPU not detected, Plex scan is wrong, etc.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this! Please fill in as much as you can — log excerpts and the Settings page details are the most useful.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you see instead?
+      placeholder: e.g. "Started a Full Library Scan on my Movies library — job ends immediately with 0 items processed."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Shortest path from a fresh container start to the bug.
+      placeholder: |
+        1. docker run … stevezzau/plex_generate_vid_previews:latest
+        2. Log into the web UI
+        3. Start a Full Library Scan on Movies
+        4. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the web UI footer, or run `docker inspect <container> | grep GIT_SHA`.
+      placeholder: "3.5.0 / sha abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - Docker (Linux host)
+        - Docker (Unraid)
+        - Docker Desktop (macOS)
+        - Docker Desktop (Windows)
+        - Kubernetes / TrueNAS Scale
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / acceleration
+      description: What the web UI shows under Settings → Detected GPUs. "None" is fine if you're on CPU only.
+      placeholder: "Intel Arc A770 (VAAPI) + NVIDIA RTX 3080 (CUDA)"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: From the Logs page in the web UI, or `docker logs <container>`. A few dozen lines around the failure is ideal.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, related issues, recent changes to your setup, etc.

@@ -12,17 +12,29 @@ import os
 import re
 import shutil
 import struct
-import subprocess
 import sys
-import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from enum import Enum
-from typing import Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
-from .utils import sanitize_path
+from ..utils import sanitize_path
+from .filter_chain import (
+    DV5_PATH_INTEL_OPENCL,
+    DV5_PATH_LIBPLACEBO,
+    DV5_PATH_VAAPI_VULKAN,
+    build_dv5_vf,
+)
+from .hdr_detection import (
+    is_dolby_vision,
+    is_dv_no_backward_compat,
+)
+from .retry_cascade import (
+    classify_cpu_fallback_reason,
+    classify_dv_safe_retry_reason,
+)
 
 
 class ProcessingResult(Enum):
@@ -70,14 +82,12 @@ FFMPEG_STALL_TIMEOUT_SEC = 300
 # generate_images / _run_ffmpeg land in the right bucket.
 
 _failure_lock = threading.Lock()
-_failures_by_job: Dict[str, List[dict]] = {}
-_failure_job_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "failure_job_id", default=None
-)
+_failures_by_job: dict[str, list[dict]] = {}
+_failure_job_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("failure_job_id", default=None)
 
 
 @contextlib.contextmanager
-def failure_scope(job_id: Optional[str]) -> Iterator[None]:
+def failure_scope(job_id: str | None) -> Iterator[None]:
     """Bind the current thread's failure-tracking scope to ``job_id``.
 
     Any ``record_failure``/``get_failures``/``clear_failures``/
@@ -97,9 +107,7 @@ def failure_scope(job_id: Optional[str]) -> Iterator[None]:
         _failure_job_id_var.reset(token)
 
 
-def record_failure(
-    file_path: str, exit_code: int, reason: str, worker_type: str = ""
-) -> None:
+def record_failure(file_path: str, exit_code: int, reason: str, worker_type: str = "") -> None:
     """Record an FFmpeg / processing failure for the end-of-run summary.
 
     The failure is attributed to the job whose ``failure_scope`` is
@@ -132,7 +140,7 @@ def record_failure(
         )
 
 
-def get_failures() -> List[dict]:
+def get_failures() -> list[dict]:
     """Return a copy of the current scope's failure list (thread-safe)."""
     job_id = _failure_job_id_var.get()
     if job_id is None:
@@ -176,9 +184,7 @@ def set_file_result_callback(callback) -> None:
         _file_result_callback = callback
 
 
-def _notify_file_result(
-    file_path: str, outcome: "ProcessingResult", reason: str = "", worker: str = ""
-) -> None:
+def _notify_file_result(file_path: str, outcome: "ProcessingResult", reason: str = "", worker: str = "") -> None:
     """Invoke the file-result callback if one is set."""
     with _file_result_callback_lock:
         cb = _file_result_callback
@@ -200,9 +206,7 @@ def log_failure_summary() -> None:
     logger.warning(f"{'=' * 80}")
     for i, f in enumerate(failures, 1):
         wt = f"[{f['worker_type']}] " if f["worker_type"] else ""
-        logger.warning(
-            f"  {i:3d}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}"
-        )
+        logger.warning(f"  {i:3d}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}")
     logger.warning(f"{'=' * 80}")
 
 
@@ -212,9 +216,7 @@ try:
     # Test that native library is available
     MediaInfo.can_parse()
 except ImportError:
-    logger.error(
-        "pymediainfo Python package not found. Please install: pip install pymediainfo"
-    )
+    logger.error("pymediainfo Python package not found. Please install: pip install pymediainfo")
     sys.exit(1)
 except OSError as e:
     if "libmediainfo" in str(e).lower():
@@ -222,9 +224,7 @@ except OSError as e:
         if sys.platform == "darwin":
             logger.error("  macOS: brew install media-info")
         elif sys.platform.startswith("linux"):
-            logger.error(
-                "  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev"
-            )
+            logger.error("  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev")
             logger.error("  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel")
         else:
             logger.error("  See: https://mediaarea.net/en/MediaInfo/Download")
@@ -233,8 +233,8 @@ except Exception as e:
     logger.warning(f"Could not validate MediaInfo library: {e}")
     logger.warning("Proceeding anyway, but errors may occur during processing")
 
-from .config import Config, is_path_excluded, plex_path_to_local  # noqa: E402
-from .plex_client import retry_plex_call  # noqa: E402
+from ..config import Config, is_path_excluded, plex_path_to_local  # noqa: E402
+from ..plex_client import retry_plex_call  # noqa: E402
 
 
 class CodecNotSupportedError(Exception):
@@ -299,7 +299,7 @@ def _is_signal_killed(returncode: int) -> bool:
     return _diagnose_ffmpeg_exit_code(returncode).startswith("signal:")
 
 
-def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
+def _extract_ffmpeg_error_summary(stderr_lines: list[str]) -> str:
     """Extract a concise, human-readable error summary from FFmpeg stderr.
 
     Scans the last lines for the most informative error messages (e.g.
@@ -329,7 +329,7 @@ def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
         "corrupt",
     )
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     for line in stderr_lines[-10:]:
         stripped = line.strip()
         if not stripped:
@@ -357,9 +357,7 @@ def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
     return candidates[-1]
 
 
-def _save_ffmpeg_failure_log(
-    video_file: str, returncode: int, stderr_lines: List[str]
-) -> None:
+def _save_ffmpeg_failure_log(video_file: str, returncode: int, stderr_lines: list[str]) -> None:
     """Save full FFmpeg stderr output to a per-file log for post-mortem debugging.
 
     Files are written to {CONFIG_DIR}/logs/ffmpeg_failures/ with a sanitised
@@ -372,9 +370,7 @@ def _save_ffmpeg_failure_log(
         stderr_lines: Complete FFmpeg stderr output lines.
 
     """
-    log_dir = os.path.join(
-        os.environ.get("CONFIG_DIR", "/config"), "logs", "ffmpeg_failures"
-    )
+    log_dir = os.path.join(os.environ.get("CONFIG_DIR", "/config"), "logs", "ffmpeg_failures")
     try:
         os.makedirs(log_dir, exist_ok=True)
     except OSError:
@@ -412,37 +408,7 @@ def _save_ffmpeg_failure_log(
         pass
 
 
-def _detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
-    """Detect FFmpeg Dolby Vision RPU parsing failures that can abort processing.
-
-    This is intentionally narrow to avoid false positives. It matches a small
-    allow-list of known fatal signatures from upstream FFmpeg/libdovi output.
-
-    Args:
-        stderr_lines: List of FFmpeg stderr lines
-
-    Returns:
-        bool: True if the Dolby Vision RPU error is detected
-
-    """
-    if not stderr_lines:
-        return False
-
-    # Known fatal Dolby Vision parsing signatures (extend as new cases are reported).
-    # Keep these specific to avoid triggering on benign informational/warning messages.
-    fatal_signatures = [
-        "multiple dolby vision rpus found in one au",
-        # Some FFmpeg builds append additional context after the core message.
-        "multiple dolby vision rpus found in one au. skipping previous.",
-    ]
-
-    stderr_text = " ".join(stderr_lines).lower()
-    return any(sig in stderr_text for sig in fatal_signatures)
-
-
-def _verify_tmp_folder_health(
-    path: str, min_free_mb: int = 512
-) -> Tuple[bool, List[str]]:
+def _verify_tmp_folder_health(path: str, min_free_mb: int = 512) -> tuple[bool, list[str]]:
     """Verify that a temporary directory is writable and has free space.
 
     Args:
@@ -454,7 +420,7 @@ def _verify_tmp_folder_health(
         and error diagnostics suitable for logging.
 
     """
-    messages: List[str] = []
+    messages: list[str] = []
 
     if not path:
         return False, ["Temporary directory path is empty"]
@@ -481,133 +447,14 @@ def _verify_tmp_folder_health(
         usage = shutil.disk_usage(path)
         free_mb = usage.free / (1024 * 1024)
         if free_mb < min_free_mb:
-            messages.append(
-                f"Temporary directory {path} has low free space ({free_mb:.1f} MB < {min_free_mb} MB)"
-            )
+            messages.append(f"Temporary directory {path} has low free space ({free_mb:.1f} MB < {min_free_mb} MB)")
     except OSError as error:
-        messages.append(
-            f"Unable to read disk usage for temporary directory {path}: {error}"
-        )
+        messages.append(f"Unable to read disk usage for temporary directory {path}: {error}")
 
     return True, messages
 
 
-def _detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
-    """Detect zscale filter failures caused by unsupported colorspace conversions.
-
-    Dolby Vision Profile 5 (and some other HDR flavours) use IPT-PQ or
-    proprietary transfer characteristics that zscale cannot map to linear.
-    FFmpeg emits ``code 3074: no path between colorspaces`` and then crashes
-    the filter graph, typically producing exit code 187.
-
-    Args:
-        stderr_lines: List of FFmpeg stderr lines
-
-    Returns:
-        bool: True if a zscale colorspace error is detected
-
-    """
-    if not stderr_lines:
-        return False
-
-    stderr_text = " ".join(stderr_lines).lower()
-
-    # Exact substring signatures — the most reliable patterns.
-    fatal_signatures = [
-        "no path between colorspaces",
-        "zscale: generic error in an external library",
-    ]
-    if any(sig in stderr_text for sig in fatal_signatures):
-        return True
-
-    # FFmpeg may log the filter name in brackets with an address, e.g.
-    # [Parsed_zscale_1 @ 0x55eb] Generic error in an external library
-    # [vf#0:0/zscale @ 0x5f3a] Generic error in an external library
-    # Match these even when "zscale:" doesn't appear as a bare prefix.
-    if re.search(
-        r"parsed_zscale_\d+.*generic error in an external library", stderr_text
-    ):
-        return True
-    if re.search(
-        r"zscale\s*@\s*0x[0-9a-f]+\].*generic error in an external library",
-        stderr_text,
-    ):
-        return True
-
-    return False
-
-
-def _is_dolby_vision(hdr_format: Optional[str]) -> bool:
-    """Detect any Dolby Vision content (any profile).
-
-    Used to identify DV content so the caller can choose the correct
-    tone-mapping strategy:
-
-    * DV Profile 5 (no backward-compat HDR10 layer) — requires libplacebo.
-    * DV Profile 7/8 (with HDR10 fallback) — the standard zscale/tonemap
-      chain reads the HDR10 base layer and works correctly.
-
-    Args:
-        hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
-
-    Returns:
-        bool: ``True`` if Dolby Vision metadata is present, ``False`` otherwise.
-
-    """
-    if not hdr_format or hdr_format == "None":
-        return False
-
-    return "dolby vision" in hdr_format.lower()
-
-
-def _is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
-    """Detect Dolby Vision content without a backward-compatible HDR base layer.
-
-    DV Profile 5 (and similar) uses IPT-PQ transfer characteristics with
-    no HDR10/HLG fallback.  These files **must** be processed via
-    libplacebo because there is no HDR10 base layer for zscale/tonemap.
-
-    DV Profile 7/8 (with HDR10 fallback) returns ``False`` here and can
-    safely use the standard zscale/tonemap chain on the HDR10 base layer.
-
-    Args:
-        hdr_format: Value of ``MediaInfo.video_tracks[0].hdr_format``.
-
-    Returns:
-        bool: ``True`` if content is DV without backward compat,
-              ``False`` otherwise.
-
-    """
-    if not hdr_format or hdr_format == "None":
-        return False
-
-    hdr_lower = hdr_format.lower()
-
-    if "dolby vision" not in hdr_lower:
-        return False
-
-    # Profiles that use IPT-PQ transfer — no backward-compat base layer.
-    # Profile 5 (HEVC): dvhe.05  |  Profile 4 (HEVC, non-backward-compat): dvhe.04
-    # AV1 DV Profile 5: dvav.05  |  AV1 DV set/entry: dvav.se
-    dv_unsafe_profiles = ["dvhe.05", "dvhe.04", "dvav.05", "dvav.se"]
-    if any(tag in hdr_lower for tag in dv_unsafe_profiles):
-        return True
-
-    backward_compat_keywords = [
-        "hdr10",
-        "hlg",
-        "pq10",
-        "smpte st 2086",
-        "smpte st 2094",
-        "compatible",
-        "compat",
-    ]
-    return not any(kw in hdr_lower for kw in backward_compat_keywords)
-
-
-def parse_ffmpeg_progress_line(
-    line: str, total_duration: float, progress_callback=None
-):
+def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callback=None):
     """Parse a single FFmpeg progress line and call progress callback if provided.
 
     Args:
@@ -651,18 +498,14 @@ def parse_ffmpeg_progress_line(
             # Update progress (1 decimal place for UI; Issue #144)
             progress_percent = 0
             if total_duration and total_duration > 0:
-                progress_percent = min(
-                    100.0, round((current_time / total_duration) * 100, 1)
-                )
+                progress_percent = min(100.0, round((current_time / total_duration) * 100, 1))
 
             # Calculate remaining wall-clock time using ffmpeg speed
             remaining_time = 0
             if total_duration and total_duration > 0 and current_time < total_duration:
                 remaining_media = total_duration - current_time
                 speed_val = float(speed_match.group(1)) if speed_match else 0
-                remaining_time = (
-                    remaining_media / speed_val if speed_val > 0 else remaining_media
-                )
+                remaining_time = remaining_media / speed_val if speed_val > 0 else remaining_media
 
             # Call progress callback with all FFmpeg data
             if progress_callback:
@@ -683,7 +526,7 @@ def parse_ffmpeg_progress_line(
     return total_duration
 
 
-def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
+def _detect_codec_error(returncode: int, stderr_lines: list[str]) -> bool:
     """Detect if FFmpeg failure is due to unsupported codec/hardware decoder error.
 
     Checks exit codes and stderr patterns to identify codec-related errors.
@@ -741,7 +584,7 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
     return False
 
 
-def _detect_hwaccel_runtime_error(stderr_lines: List[str]) -> bool:
+def _detect_hwaccel_runtime_error(stderr_lines: list[str]) -> bool:
     """Detect GPU hardware accelerator runtime errors in FFmpeg output.
 
     These errors indicate that the hardware decoder started successfully but
@@ -785,137 +628,107 @@ def _detect_hwaccel_runtime_error(stderr_lines: List[str]) -> bool:
     return any(pattern in stderr_text for pattern in hwaccel_error_patterns)
 
 
-def heuristic_allows_skip(ffmpeg_path: str, video_file: str) -> bool:
-    """Probe the first 10 frames to decide if ``-skip_frame:v nokey`` is safe.
+def _clean_output_images(output_folder: str) -> None:
+    """Remove any ``*.jpg`` files in ``output_folder``, silently ignoring
+    files that vanish or are unremovable.
 
-    Uses ``-err_detect explode`` + ``-xerror`` to bail immediately on the
-    first decode error.  Returns ``True`` if the probe succeeds (zero exit
-    code), else ``False``.
-
-    .. note::
-
-       For Dolby Vision content this function almost always returns ``False``
-       because ``-err_detect explode`` triggers on RPU NAL-unit parsing
-       artefacts.  This is **benign** — it simply forces the slower no-skip
-       decode path, which is the correct behaviour for DV anyway.
-
-    Args:
-        ffmpeg_path: Path to the FFmpeg binary.
-        video_file: Path to the media file to probe.
-
-    Returns:
-        bool: ``True`` when skip_frame is safe, ``False`` otherwise.
-
+    Called between FFmpeg retry tiers so the next attempt starts with an
+    empty output directory.
     """
-    null_sink = "NUL" if os.name == "nt" else "/dev/null"
-    cmd = [
-        ffmpeg_path,
-        "-hide_banner",
-        "-nostats",
-        "-v",
-        "error",  # only errors
-        "-xerror",  # make errors set non-zero exit
-        "-err_detect",
-        "explode",  # fail fast on decode issues
-        "-skip_frame:v",
-        "nokey",
-        "-threads",
-        "2",
-        "-filter_threads",
-        "2",
-        "-threads:v",
-        "1",
-        "-i",
-        video_file,
-        "-an",
-        "-sn",
-        "-dn",
-        "-frames:v",
-        "10",  # stop as soon as one frame decodes
-        "-f",
-        "null",
-        null_sink,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        logger.debug(f"skip_frame probe timed out for {video_file}")
-        return False
-    ok = proc.returncode == 0
-    if not ok:
-        last = (proc.stderr or "").strip().splitlines()[-1:]  # tail(1)
-        logger.debug(f"skip_frame probe FAILED at 0s: rc={proc.returncode} msg={last}")
-    else:
-        logger.debug("skip_frame probe OK at 0s")
-    return ok
+    for img in glob.glob(os.path.join(output_folder, "*.jpg")):
+        try:
+            os.remove(img)
+        except OSError:
+            pass
 
 
 def generate_images(
     video_file: str,
     output_folder: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config: Config,
     progress_callback=None,
-    ffmpeg_threads_override: Optional[int] = None,
+    ffmpeg_threads_override: int | None = None,
     cancel_check=None,
-) -> tuple:
-    """Generate thumbnail images from a video using FFmpeg.
+) -> tuple[bool, int, str, float, float, str | None]:
+    """Generate thumbnail images from ``video_file`` using FFmpeg.
 
-    Runs FFmpeg with hardware acceleration when configured. If the skip-frame
-    heuristic allowed it, attempts with '-skip_frame:v nokey' first. If that
-    yields zero images or returns non-zero, automatically retries without '-skip_frame'.
-
-    If GPU processing fails with a codec error (detected via stderr parsing for
-    patterns like "Codec not supported", "Unsupported codec", etc., or exit codes
-    -22/EINVAL or 69/max error rate) and CPU threads are available, automatically
-    falls back to CPU processing. This ensures files are processed even when the
-    GPU doesn't support the codec (e.g., AV1 on RTX 2060 SUPER).
+    Selects hardware acceleration based on ``gpu`` / ``gpu_device_path``
+    and runs the 4-tier retry cascade on failure (skip-frame →
+    sw-libplacebo → DV-safe filter → CPU fallback). On codec-level GPU
+    failure, raises :class:`CodecNotSupportedError` so the worker can
+    retry the whole item on CPU in-place.
 
     Args:
-        video_file: Path to input video file
-        output_folder: Directory where thumbnail images will be written
-        gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WINDOWS_GPU', 'APPLE', or None)
-        gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI)
-        config: Configuration object
-        progress_callback: Optional progress callback for UI updates
-        cancel_check: Optional callable returning True when job is cancelled
+        video_file: Path to input video file.
+        output_folder: Directory where thumbnail images are written.
+        gpu: GPU type (``NVIDIA``/``AMD``/``INTEL``/``WINDOWS_GPU``/``APPLE``) or ``None``.
+        gpu_device_path: Device path (e.g. ``/dev/dri/renderD128`` for VAAPI).
+        config: Processing config.
+        progress_callback: Optional progress callback for UI updates.
+        cancel_check: Optional callable returning ``True`` when the job is cancelled.
 
     Returns:
-        (success, image_count, hw_used, seconds, speed, error_summary):
-            success (bool): True if at least one image was produced
-            image_count (int): Number of images written
-            hw_used (bool): Whether hardware acceleration was actually used
-                           (False if CPU fallback occurred)
-            seconds (float): Elapsed processing time (last attempt)
-            speed (str): Reported or computed FFmpeg speed string
-            error_summary (str): Concise FFmpeg error excerpt on failure,
-                empty string on success.
-
+        Tuple of ``(success, image_count, hw_used, seconds, speed, error_summary)``.
     """
     media_info = MediaInfo.parse(video_file)
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
 
-    # Base video filter for SDR content
+    # Filter primitives.  The final vf chain is assembled inside
+    # _run_ffmpeg so it can adapt to the effective GPU on each attempt
+    # (GPU→CPU retry, NVIDIA↔VAAPI overrides, etc.).
+    fps_filter = f"fps=fps={fps_value}:round=up"
     base_scale = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
-    vf_parameters = f"fps=fps={fps_value}:round=up,{base_scale}"
 
-    # Track whether the filter chain requires Vulkan (libplacebo).
+    # vf assembly classification.  Set by HDR detection below; consumed
+    # by _run_ffmpeg.  Possible values:
+    #   "sdr"               — fps + scale (or GPU-scale segment)
+    #   "hdr10_zscale"      — HDR10 / DV P7+8: zscale tonemap chain
+    #   "libplacebo_dv5"    — DV Profile 5 with libplacebo (CPU/NVIDIA input)
+    #   "libplacebo_vaapi"  — DV Profile 5 on AMD: VAAPI→Vulkan DMA-BUF
+    #   "opencl_dv5_intel"  — DV Profile 5 on Intel: VAAPI→OpenCL tonemap
+    #                         (Intel VAAPI + Vulkan libplacebo has an upstream
+    #                         interop bug that returns VK_ERROR_OUT_OF_DEVICE_MEMORY
+    #                         in containers on both iGPU and DG2 Arc; jellyfin-
+    #                         ffmpeg's patched tonemap_opencl handles DV5 RPU
+    #                         correctly and runs on the Intel media engine
+    #                         entirely.  See issue #212.)
+    path_kind = "sdr"
+    # Pre-assembled filter chain for the libplacebo / OpenCL paths (they
+    # already contain hwupload/hwmap/hwdownload and do not need GPU-scale
+    # rewriting).
+    libplacebo_vf: str | None = None
+
+    # Track whether the filter chain requires Vulkan (libplacebo) or OpenCL.
     use_libplacebo = False
+    # True when DV5 uses AMD's VAAPI→Vulkan DMA-BUF libplacebo path.
+    use_vaapi_dv5_path = False
+    # True when DV5 uses Intel's VAAPI→OpenCL tonemap_opencl path (Jellyfin
+    # pattern).  Intel's VAAPI→Vulkan libplacebo path is broken upstream on
+    # Mesa ANV — see path_kind doc above.
+    use_intel_opencl_dv5_path = False
+    # DV5 content + software/missing Vulkan: skip both libplacebo AND
+    # the zscale fallback, because zscale on a DV5 stream produces a
+    # green overlay (no HDR10 base layer to read).  The SDR path_kind
+    # (fps + scale, no tonemap) is the same DV-safe chain used by the
+    # downstream DV-safe retry and produces dim-but-correct thumbnails.
+    dv5_software_fallback = False
+
+    # HDR10 / DV P7+8 zscale chain (sans fps and base_scale).  See
+    # _assemble_vf below for how it's composed with the GPU-scale
+    # segment when hardware decode is active.
+    hdr10_zscale_chain = (
+        "zscale=t=linear:npl=100,format=gbrpf32le,"
+        f"zscale=p=bt709,tonemap={config.tonemap_algorithm}:desat=0,"
+        "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    )
 
     # Check if we have HDR Format. Note: Sometimes it can be returned as "None" (string) hence the check for None type or "None" (String)
     if media_info.video_tracks:
         hdr_fmt = media_info.video_tracks[0].hdr_format
         if hdr_fmt != "None" and hdr_fmt is not None:
-            if _is_dv_no_backward_compat(hdr_fmt):
+            if is_dv_no_backward_compat(hdr_fmt):
                 # Dolby Vision Profile 5 (no HDR10 base layer).
                 # Only libplacebo can handle these — there is no
                 # backward-compat HDR10 stream for zscale/tonemap to
@@ -924,7 +737,15 @@ def generate_images(
                 # then tonemapping converts to SDR.
                 #
                 # Constraints for correct output:
-                #  - No filters before hwupload (preserve RPU side-data)
+                #  - No expensive pixel-touching filters before hwupload.
+                #    The fps dropper IS OK (timestamp-only, preserves RPU
+                #    side-data) and is required on NVIDIA Turing — placing
+                #    fps inside libplacebo makes FFmpeg hwupload every
+                #    decoded frame (24 fps × 4K p010) before libplacebo
+                #    drops them, which exhausts the Vulkan allocator with
+                #    VK_ERROR_OUT_OF_DEVICE_MEMORY.  All three libplacebo
+                #    paths (Intel OpenCL, AMD VAAPI→Vulkan, NVIDIA/software)
+                #    put the fps filter first.
                 #  - No forced colorspace (apply_dolbyvision sets it)
                 #  - No -skip_frame (RPU has inter-frame dependencies)
                 #  - HW decode: NVDEC is validated (~3x speedup on 4K DV5
@@ -932,33 +753,76 @@ def generate_images(
                 #    VideoToolbox are untested on this path and stay on
                 #    software decode.  See the vendor gate in _run_ffmpeg
                 #    below.
-                logger.info(
-                    f"Dolby Vision Profile 5 detected for {video_file}; "
-                    f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
-                )
-                use_libplacebo = True
-                # contrast=1.3, saturation=1.3 restore the punch that
-                # libplacebo's default PQ→SDR curve leaves on the table.
-                # Default reinhard compresses mids into a narrow band
-                # (Y≈61, Ymax≈182, Sat≈1.74 on MIB corridor at 30:00),
-                # which reads as dim and washed-out next to the zscale
-                # chain used for HDR10/DV P7+8.
-                #
-                # A plain brightness offset was rejected: it lifts black
-                # levels as much as mids, so blacks turn gray and colors
-                # stay muted.  Scaling contrast and saturation instead
-                # stretches the range (Ymin=0, Ymax≈237, Sat≈2.91) while
-                # preserving deep blacks.  Verified across three MIB
-                # scenes (dark/mid/bright) — no highlight clipping,
-                # punchy output comparable to the DV P7+8 reference.
-                vf_parameters = (
-                    f"hwupload,"
-                    f"libplacebo=tonemapping={config.tonemap_algorithm}"
-                    f":format=yuv420p:fps={fps_value}"
-                    f":contrast=1.3:saturation=1.3,"
-                    f"hwdownload,format=yuv420p,{base_scale}"
-                )
-            elif _is_dolby_vision(hdr_fmt):
+                #  - Vulkan MUST be hardware.  libplacebo on a software
+                #    rasterizer (llvmpipe/lavapipe) produces a green
+                #    overlay on DV5 output.  Probe the Vulkan state
+                #    first and drop to the DV-safe filter when software.
+                from ..gpu.vulkan_probe import get_vulkan_device_info
+
+                vulkan_info = get_vulkan_device_info()
+                vk_device = vulkan_info.device
+                vk_is_software = vulkan_info.is_software
+                if vk_is_software or vk_device is None:
+                    logger.warning(
+                        f"Dolby Vision Profile 5 detected for {video_file} "
+                        f"but Vulkan is unavailable or software only "
+                        f"(device={vk_device!r}); skipping libplacebo and "
+                        "using the DV-safe filter chain (dim but colour-"
+                        "correct thumbnails).  See the dashboard notification "
+                        "centre for the specific remediation steps."
+                    )
+                    dv5_software_fallback = True
+                else:
+                    logger.info(
+                        f"Dolby Vision Profile 5 detected for {video_file}; "
+                        f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
+                    )
+                    use_libplacebo = True
+                    # Pick the DV5 filter chain based on GPU vendor.
+                    #
+                    # Intel (iGPU + Arc DG2): use VAAPI decode + OpenCL tonemap.
+                    #   Intel's VAAPI→Vulkan DMA-BUF interop path is broken
+                    #   upstream (libplacebo's vkCreateImage returns
+                    #   VK_ERROR_OUT_OF_DEVICE_MEMORY on Mesa ANV for the
+                    #   format+modifier combinations used for DV5 hwmap —
+                    #   reproduces on my own UHD 770 in-container and on
+                    #   the reporter's Arc A380).  Jellyfin-ffmpeg's
+                    #   patched tonemap_opencl reads DV RPU side-data and
+                    #   produces correct colours — benchmarked 17x/0 CPU
+                    #   on UHD 770.  See issue #212.
+                    #
+                    # AMD Radeon: use VAAPI→Vulkan DMA-BUF libplacebo.
+                    #   Jellyfin ships this pattern in production for
+                    #   discrete AMD cards; untested locally but FFmpeg
+                    #   flags are vendor-agnostic.
+                    #
+                    # NVIDIA: CUDA decode (set in _run_ffmpeg) + Vulkan
+                    #   libplacebo via hwupload of CPU frames.
+                    #
+                    # Other / no device path: software decode + libplacebo
+                    #   via plain vulkan=vk + hwupload.
+                    # Filter-chain assembly for each vendor's DV5 path lives
+                    # in :func:`build_dv5_vf` at module top.  The reasoning
+                    # about fps-first placement, contrast/saturation, and
+                    # per-vendor hwmap/hwupload choices is documented there.
+                    if gpu == "INTEL" and gpu_device_path is not None and gpu_device_path.startswith("/dev/dri/"):
+                        use_intel_opencl_dv5_path = True
+                        path_kind = DV5_PATH_INTEL_OPENCL
+                    else:
+                        use_vaapi_dv5_path = bool(
+                            gpu is not None
+                            and gpu != "NVIDIA"
+                            and gpu_device_path is not None
+                            and gpu_device_path.startswith("/dev/dri/")
+                        )
+                        path_kind = DV5_PATH_VAAPI_VULKAN if use_vaapi_dv5_path else DV5_PATH_LIBPLACEBO
+                    libplacebo_vf = build_dv5_vf(
+                        path_kind=path_kind,
+                        tonemap_algorithm=config.tonemap_algorithm,
+                        fps_value=fps_value,
+                        base_scale=base_scale,
+                    )
+            elif is_dolby_vision(hdr_fmt):
                 # Dolby Vision Profile 7/8 with HDR10 backward-compat
                 # base layer.  FFmpeg reads the HDR10 base layer by
                 # default, so the standard zscale/tonemap chain works
@@ -969,382 +833,55 @@ def generate_images(
                     f"mapping (hdr_format={hdr_fmt!r})"
                 )
             # For both DV-with-fallback (above) and non-DV HDR, use
-            # the zscale/tonemap chain.
-            if not use_libplacebo:
-                # npl=100 (SDR reference white) is the standard value
-                # for PQ-to-linear conversion.  Using MaxCLL here would
-                # normalise all luminance to the content peak, making
-                # typical scene content (50-200 nits) map to tiny linear
-                # values that barely get tone mapped → dark output.
-                vf_parameters = (
-                    f"fps=fps={fps_value}:round=up,"
-                    f"zscale=t=linear:npl=100,format=gbrpf32le,"
-                    f"zscale=p=bt709,tonemap={config.tonemap_algorithm}:desat=0,"
-                    f"zscale=t=bt709:m=bt709:r=tv,format=yuv420p,{base_scale}"
-                )
+            # the zscale/tonemap chain.  Skip for DV5 software fallback:
+            # zscale on a DV5 stream (no HDR10 base) produces a green
+            # overlay, so the default fps+scale chain is used instead.
+            if not use_libplacebo and not dv5_software_fallback:
+                # HDR10 or DV Profile 7/8 (HDR10 base layer).  zscale
+                # tonemap chain.  npl=100 (SDR reference white) is the
+                # standard value for PQ-to-linear conversion.  Using
+                # MaxCLL here would normalise all luminance to the
+                # content peak, making typical scene content
+                # (50-200 nits) map to tiny linear values that barely
+                # get tone mapped → dark output.
+                path_kind = "hdr10_zscale"
 
-    def _run_ffmpeg(
-        use_skip: bool,
-        gpu_override: Optional[str] = None,
-        gpu_device_path_override: Optional[str] = None,
-        vf_override: Optional[str] = None,
-        init_vulkan: bool = False,
-    ) -> tuple:
-        """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
-        # Build FFmpeg command with proper argument ordering
-        # Hardware acceleration flags must come BEFORE the input file (-i)
-        effective_vf = vf_override if vf_override is not None else vf_parameters
-        args = [
-            config.ffmpeg_path,
-            "-loglevel",
-            "info",
-        ]
+    # FFmpeg subprocess machinery (previously three nested closures:
+    # _gpu_scale_segment, _assemble_vf, _run_ffmpeg — ~540 lines) now lives
+    # in :mod:`processing.ffmpeg_runner`.  The factory captures per-file
+    # state and returns a callable with the same signature the old nested
+    # _run_ffmpeg had, so the retry cascade below reads identically.
+    from .ffmpeg_runner import create_ffmpeg_runner
 
-        # Cap FFmpeg's global and filter-graph thread pools for GPU workers.
-        # GPU decode is offloaded to hardware, so the CPU threads are mostly
-        # idle overhead; capping them prevents thread oversubscription when
-        # running multiple workers.  CPU paths are left uncapped so software
-        # decode can use all available cores.
-        effective_gpu = gpu_override if gpu_override is not None else gpu
-        effective_ffmpeg_threads = (
-            ffmpeg_threads_override
-            if ffmpeg_threads_override is not None
-            else config.ffmpeg_threads
-        )
-        if effective_gpu is not None and effective_ffmpeg_threads > 0:
-            args += [
-                "-threads",
-                str(effective_ffmpeg_threads),
-                "-filter_threads",
-                str(effective_ffmpeg_threads),
-            ]
+    _run_ffmpeg = create_ffmpeg_runner(
+        video_file=video_file,
+        output_folder=output_folder,
+        gpu=gpu,
+        gpu_device_path=gpu_device_path,
+        config=config,
+        progress_callback=progress_callback,
+        ffmpeg_threads_override=ffmpeg_threads_override,
+        cancel_check=cancel_check,
+        path_kind=path_kind,
+        libplacebo_vf=libplacebo_vf,
+        use_libplacebo=use_libplacebo,
+        dv5_software_fallback=dv5_software_fallback,
+        base_scale=base_scale,
+        fps_filter=fps_filter,
+        hdr10_zscale_chain=hdr10_zscale_chain,
+    )
 
-        # Vulkan device for the libplacebo filter (Dolby Vision tone mapping).
-        # -filter_hw_device tells hwupload which device to target when
-        # multiple hardware contexts coexist (e.g. CUDA + Vulkan).
-        if init_vulkan:
-            args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
-
-        # Hardware acceleration for decoding (before -i flag).
-        #
-        # Non-libplacebo paths (HDR10, SDR, DV Profile 7/8 via zscale on
-        # the HDR10 base layer) have always benefited from HW decode
-        # across all supported vendors.
-        #
-        # The DV Profile 5 libplacebo path (``init_vulkan=True``) is
-        # more restrictive: it was blanket-disabled in ``a06ed98`` when
-        # green-tinted output was observed on DV Profile 7/8 + libplacebo
-        # (see issue #178).  That P7/8 code path was removed by
-        # ``85c5212`` (P7/8 now uses zscale on the HDR10 base layer) but
-        # the HW-decode block on P5 stayed off as a conservative
-        # carry-over.  A 2026-04 benchmark with FFmpeg 8.0.1 /
-        # libplacebo on a real DV Profile 5 4K file showed NVDEC + the
-        # libplacebo DV tone-map produces visually identical output to
-        # software decode and runs ~3x faster, so NVDEC is re-enabled
-        # here for DV5.  Intel VAAPI benchmarked *slower* than software
-        # decode on the same file/hardware (Intel UHD 770), and other
-        # vendors are untested, so they continue to fall through to
-        # software decode on the libplacebo path.
-        effective_gpu_device_path = (
-            gpu_device_path_override
-            if gpu_device_path_override is not None
-            else gpu_device_path
-        )
-        use_gpu = effective_gpu is not None
-        hw_decode_active = False
-        if use_gpu and effective_gpu == "NVIDIA":
-            args += ["-hwaccel", "cuda"]
-            hw_decode_active = True
-        elif use_gpu and not init_vulkan:
-            if effective_gpu == "WINDOWS_GPU":
-                args += ["-hwaccel", "d3d11va"]
-                hw_decode_active = True
-            elif effective_gpu == "APPLE":
-                args += ["-hwaccel", "videotoolbox"]
-                hw_decode_active = True
-            elif effective_gpu_device_path and effective_gpu_device_path.startswith(
-                "/dev/dri/"
-            ):
-                args += [
-                    "-hwaccel",
-                    "vaapi",
-                    "-vaapi_device",
-                    effective_gpu_device_path,
-                ]
-                hw_decode_active = True
-        elif use_gpu and init_vulkan:
-            logger.debug(
-                f"Skipping HW decode for DV Profile 5 ({video_file}) on "
-                f"{effective_gpu}; using software decode + Vulkan/libplacebo "
-                f"tone mapping (HW decode validated only for NVIDIA on this path)"
-            )
-
-        # Cap the video decoder to 1 thread ONLY when decode is offloaded
-        # to a hardware accelerator.  With hwaccel the CPU thread is just
-        # an orchestrator and the cap prevents thread oversubscription
-        # across parallel GPU workers.  For software decode — pure CPU
-        # workers, or DV Profile 5 on non-NVIDIA GPUs where the vendor
-        # gate above skips hwaccel — let FFmpeg pick the default thread
-        # count so 4K HEVC can saturate available cores.  Fixes issue
-        # #212 (DV P5 pinned to one core at ~0.8x before this gate).
-        if hw_decode_active:
-            args += ["-threads:v", "1"]
-
-        # Add skip_frame option for faster decoding (if safe).
-        # Disabled for DV Profile 5 (init_vulkan) — RPU side-data has
-        # inter-frame dependencies that break with keyframe-only decode.
-        if use_skip and not init_vulkan:
-            args += ["-skip_frame:v", "nokey"]
-
-        # Add input file and output options
-        args += [
-            "-i",
-            video_file,
-            "-an",
-            "-sn",
-            "-dn",
-            "-q:v",
-            str(config.thumbnail_quality),
-            "-vf",
-            effective_vf,
-            f"{output_folder}/img-%06d.jpg",
-        ]
-
-        start_local = time.time()
-        hw_label = "GPU" if gpu else "CPU"
-        logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
-        logger.info(f"FFmpeg command: {' '.join(args)}")
-
-        # When the Layer-3 probe retry in gpu_detection succeeded only with
-        # VK_DRIVER_FILES set, propagate those env overrides to the real
-        # FFmpeg invocation on the libplacebo DV Profile 5 path. On every
-        # other path the override dict is empty and we pass env=None so
-        # the child process inherits the parent environment unchanged.
-        ffmpeg_env: dict | None = None
-        if init_vulkan:
-            from .gpu_detection import get_vulkan_env_overrides
-
-            vulkan_overrides = get_vulkan_env_overrides()
-            if vulkan_overrides:
-                ffmpeg_env = os.environ.copy()
-                ffmpeg_env.update(vulkan_overrides)
-                logger.debug(
-                    f"FFmpeg libplacebo path: injecting Vulkan env overrides "
-                    f"{vulkan_overrides} into subprocess"
-                )
-
-        # Use file polling approach for non-blocking, high-frequency progress monitoring
-        thread_id = threading.get_ident()
-        output_file = os.path.join(
-            tempfile.gettempdir(),
-            f"ffmpeg_output_{os.getpid()}_{thread_id}_{time.time_ns()}.log",
-        )
-        stderr_fh = open(output_file, "w", encoding="utf-8")
-        try:
-            proc = subprocess.Popen(
-                args,
-                stderr=stderr_fh,
-                stdout=subprocess.DEVNULL,
-                env=ffmpeg_env,
-            )
-
-            # Signal that FFmpeg process has started
-            if progress_callback:
-                progress_callback(0, 0, 0, "0.0x", media_file=video_file)
-
-            # Track progress
-            total_duration = None
-            speed_local = "0.0x"
-            ffmpeg_output_lines = []
-            line_count = 0
-            last_progress_time = time.time()
-            stalled = False
-
-            def speed_capture_callback(
-                progress_percent,
-                current_duration,
-                total_duration_param,
-                speed_value,
-                remaining_time=None,
-                frame=0,
-                fps=0,
-                q=0,
-                size=0,
-                time_str="00:00:00.00",
-                bitrate=0,
-            ):
-                nonlocal speed_local
-                if speed_value and speed_value != "0.0x":
-                    speed_local = speed_value
-                if progress_callback:
-                    progress_callback(
-                        progress_percent,
-                        current_duration,
-                        total_duration_param,
-                        speed_value,
-                        remaining_time,
-                        frame,
-                        fps,
-                        q,
-                        size,
-                        time_str,
-                        bitrate,
-                        media_file=video_file,
-                    )
-
-            time.sleep(0.02)
-            while proc.poll() is None:
-                if cancel_check and cancel_check():
-                    logger.info(
-                        f"Cancellation requested, terminating FFmpeg for {video_file}"
-                    )
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
-                    raise CancellationError(f"Processing cancelled for {video_file}")
-                if os.path.exists(output_file):
-                    try:
-                        with open(output_file, "r", encoding="utf-8") as f:
-                            lines = f.readlines()
-                            if len(lines) > line_count:
-                                for i in range(line_count, len(lines)):
-                                    line = lines[i].strip()
-                                    if line:
-                                        ffmpeg_output_lines.append(line)
-                                        total_duration = parse_ffmpeg_progress_line(
-                                            line, total_duration, speed_capture_callback
-                                        )
-                                line_count = len(lines)
-                                last_progress_time = time.time()
-                    except (OSError, IOError):
-                        pass
-                if time.time() - last_progress_time > FFMPEG_STALL_TIMEOUT_SEC:
-                    logger.warning(
-                        f"FFmpeg stalled (no progress for {FFMPEG_STALL_TIMEOUT_SEC}s), killing process for {video_file}"
-                    )
-                    stalled = True
-                    proc.kill()
-                    proc.wait()
-                    break
-                time.sleep(0.005)
-
-            # Process any remaining data
-            if os.path.exists(output_file):
-                try:
-                    with open(output_file, "r", encoding="utf-8") as f:
-                        lines = f.readlines()
-                        if len(lines) > line_count:
-                            for i in range(line_count, len(lines)):
-                                line = lines[i].strip()
-                                if line:
-                                    ffmpeg_output_lines.append(line)
-                                    total_duration = parse_ffmpeg_progress_line(
-                                        line, total_duration, speed_capture_callback
-                                    )
-                except (OSError, IOError):
-                    pass
-        finally:
-            # Ensure stderr file handle is always closed
-            stderr_fh.close()
-            try:
-                os.remove(output_file)
-            except OSError:
-                pass
-
-        # Error logging (skip generic failure log when we killed due to stall; already logged above)
-        if proc.returncode != 0 and not stalled:
-            exit_diagnosis = _diagnose_ffmpeg_exit_code(proc.returncode)
-            logger.error(
-                f"FFmpeg failed with return code {proc.returncode} ({exit_diagnosis}) for {video_file}"
-            )
-
-            # Log last few stderr lines at WARNING level so users can diagnose
-            # failures without needing DEBUG mode (especially for crashes/signals)
-            if _is_signal_killed(proc.returncode):
-                signal_detail = _diagnose_ffmpeg_exit_code(proc.returncode).split(
-                    ":", 1
-                )[1]
-                logger.warning(
-                    f"FFmpeg exited with code {proc.returncode} due to signal {signal_detail} for {video_file}"
-                )
-            elif exit_diagnosis == "io_error":
-                logger.warning(
-                    f"FFmpeg reported an I/O error while writing temp output for {video_file}; "
-                    f"temp_directory={output_folder}, exists={os.path.isdir(output_folder)}"
-                )
-            elif exit_diagnosis == "high_exit_non_signal":
-                logger.warning(
-                    f"FFmpeg exited with high non-signal code {proc.returncode} for {video_file}; "
-                    "likely a runtime/internal failure rather than process signal termination"
-                )
-            if ffmpeg_output_lines:
-                tail = ffmpeg_output_lines[-5:]
-                logger.warning(
-                    f"FFmpeg stderr (last {len(tail)} lines) for {video_file}:"
-                )
-                for line in tail:
-                    logger.warning(f"  {line}")
-
-            # Check for permission-related errors in FFmpeg output
-            # FFmpeg outputs "Permission denied" in messages like "av_interleaved_write_frame(): Permission denied"
-            # We use lowercase for case-insensitive matching
-            permission_keywords = ["permission denied", "access denied"]
-            permission_errors = []
-            for line in ffmpeg_output_lines:
-                line_lower = line.lower()
-                for keyword in permission_keywords:
-                    if keyword in line_lower:
-                        permission_errors.append(line.strip())
-                        break
-
-            # Log permission errors at INFO level so users can see them without DEBUG
-            if permission_errors:
-                logger.info(f"Permission error detected while processing {video_file}:")
-                for error_line in permission_errors[
-                    :3
-                ]:  # Show up to 3 permission error lines
-                    logger.info(f"  {error_line}")
-                if len(permission_errors) > 3:
-                    logger.info(
-                        f"  ... and {len(permission_errors) - 3} more permission-related error(s)"
-                    )
-
-            # Log full FFmpeg output at DEBUG level for detailed troubleshooting
-            logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
-            for i, line in enumerate(ffmpeg_output_lines[-10:]):
-                logger.debug(f"  {i + 1:3d}: {line}")
-
-            # Save full FFmpeg stderr to a per-file log for post-mortem debugging
-            _save_ffmpeg_failure_log(video_file, proc.returncode, ffmpeg_output_lines)
-
-        end_local = time.time()
-        seconds_local = round(end_local - start_local, 1)
-        # Calculate fallback speed if needed
-        if (
-            speed_local == "0.0x"
-            and total_duration
-            and total_duration > 0
-            and seconds_local > 0
-        ):
-            calculated_speed = total_duration / seconds_local
-            speed_local = f"{calculated_speed:.0f}x"
-
-        return proc.returncode, seconds_local, speed_local, ffmpeg_output_lines
-
-    # Decide initial skip usage from heuristic
-    use_skip_initial = heuristic_allows_skip(config.ffmpeg_path, video_file)
+    # DV Profile 5 paths cannot use -skip_frame (RPU side-data has
+    # inter-frame dependencies). Everything else attempts skip_frame
+    # first and falls back via the retry below if the decoder rejects it.
+    use_skip_initial = not (use_libplacebo or dv5_software_fallback)
 
     # Ensure output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
     # First attempt
-    rc, seconds, speed, stderr_lines = _run_ffmpeg(
-        use_skip_initial, init_vulkan=use_libplacebo
-    )
-    stderr_lines_all: List[str] = list(stderr_lines) if stderr_lines else []
+    rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial, init_vulkan=use_libplacebo)
+    stderr_lines_all: list[str] = list(stderr_lines) if stderr_lines else []
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
     # (If we didn't use skip initially, retrying without skip would just repeat the same command)
@@ -1356,18 +893,10 @@ def generate_images(
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_retry = True
-        logger.warning(
-            f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame"
-        )
+        logger.warning(f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame")
         # Clean up any partial files from first attempt (no need to rename if we're retrying)
-        for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-            try:
-                os.remove(img)
-            except OSError:
-                pass
-        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(
-            use_skip=False, init_vulkan=use_libplacebo
-        )
+        _clean_output_images(output_folder)
+        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False, init_vulkan=use_libplacebo)
         # Update rc and stderr_lines to retry results for codec error detection
         rc = retry_rc
         stderr_lines = retry_stderr_lines
@@ -1376,6 +905,59 @@ def generate_images(
 
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
+
+    # Hardware DV5 path unavailable — retry with software decode + libplacebo.
+    #
+    # Two known upstream scenarios trigger this:
+    #   * Intel iGPU/dGPU under NVIDIA Container Runtime (before the
+    #     init-dri-by-path s6 fixup lands on the host): NEO enumerates
+    #     GPUs via /dev/dri/by-path/, which the NVIDIA runtime only
+    #     populates for the NVIDIA cards it manages.  tonemap_opencl
+    #     then fails with "No matching devices found" (CL -19).
+    #   * AMD Radeon / Intel Arc DG2 via Mesa ANV: VAAPI→Vulkan DMA-BUF
+    #     import succeeds but libplacebo's vkCreateImage returns
+    #     VK_ERROR_OUT_OF_DEVICE_MEMORY (see libplacebo!117, mpv#8702)
+    #     — generic format/modifier-not-supported, not real OOM.
+    #
+    # Software decode + libplacebo still produces correct DV tonemapping
+    # at ~5-10× (CPU-bound HEVC) — preferable to falling through to the
+    # DV-safe fps+scale chain (~1.7× and dim output).
+    did_sw_libplacebo_retry = False
+    if rc != 0 and image_count == 0 and (use_vaapi_dv5_path or use_intel_opencl_dv5_path):
+        if cancel_check and cancel_check():
+            raise CancellationError(f"Processing cancelled for {video_file}")
+        did_sw_libplacebo_retry = True
+        hw_name = "Intel OpenCL" if use_intel_opencl_dv5_path else "VAAPI+Vulkan"
+        if use_intel_opencl_dv5_path:
+            reason = "Intel OpenCL init failed — uncommon, usually a container runtime / ICD conflict"
+        else:
+            reason = "VAAPI→Vulkan libplacebo interop upstream bug (Mesa ANV / amdvlk on some driver+GPU combos)"
+        logger.warning(
+            f"Hardware {hw_name} DV5 path unavailable for {video_file} "
+            f"({reason}); falling back to software decode + libplacebo "
+            f"(correct DV tonemapping, ~5-10× typical)"
+        )
+        stderr_excerpt = "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
+        logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+        _clean_output_images(output_folder)
+        # Same filter shape as the NVIDIA/software primary DV5 path; run
+        # here without hardware decode so it works on any host with a
+        # hardware Vulkan device.
+        sw_libplacebo_vf = build_dv5_vf(
+            path_kind=DV5_PATH_LIBPLACEBO,
+            tonemap_algorithm=config.tonemap_algorithm,
+            fps_value=fps_value,
+            base_scale=base_scale,
+        )
+        rc, seconds, speed, stderr_lines = _run_ffmpeg(
+            use_skip=False,
+            init_vulkan=True,
+            disable_vaapi_dv5=True,
+            vf_override=sw_libplacebo_vf,
+        )
+        if stderr_lines:
+            stderr_lines_all.extend(stderr_lines)
+        image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
 
     did_dv_safe_retry = False
 
@@ -1387,46 +969,26 @@ def generate_images(
     if rc != 0 and image_count == 0:
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
-        is_dv_rpu = _detect_dolby_vision_rpu_error(stderr_lines_all)
-        is_zscale = _detect_zscale_colorspace_error(stderr_lines_all)
-        # libplacebo failure: if the libplacebo chain was active and FFmpeg
-        # failed, fall back to the basic fps+scale chain regardless of the
-        # specific error message (Vulkan not available, driver issue, etc.).
-        is_libplacebo_fail = use_libplacebo and not is_dv_rpu and not is_zscale
-        if is_dv_rpu or is_zscale or is_libplacebo_fail:
+        diag_label = classify_dv_safe_retry_reason(stderr_lines_all, use_libplacebo=use_libplacebo)
+        if diag_label is not None:
             did_dv_safe_retry = True
-            if is_dv_rpu:
-                diag_label = "Dolby Vision RPU parsing error"
-            elif is_zscale:
-                diag_label = "zscale colorspace conversion error"
-            else:
-                diag_label = "libplacebo tone mapping error"
-            stderr_excerpt_source = (
-                stderr_lines_all if stderr_lines_all else stderr_lines
-            )
+            stderr_excerpt_source = stderr_lines_all if stderr_lines_all else stderr_lines
             stderr_excerpt = (
-                "\n".join(stderr_excerpt_source[-5:])
-                if len(stderr_excerpt_source) > 0
-                else "No stderr output"
+                "\n".join(stderr_excerpt_source[-5:]) if len(stderr_excerpt_source) > 0 else "No stderr output"
             )
-            logger.warning(
-                f"{diag_label} detected for {video_file}; retrying with DV-safe filter chain (fps+scale)"
-            )
+            logger.warning(f"{diag_label} detected for {video_file}; retrying with DV-safe filter chain (fps+scale)")
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
 
             # Clean up any partial files before retrying
-            for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-                try:
-                    os.remove(img)
-                except OSError:
-                    pass
+            _clean_output_images(output_folder)
 
-            # DV-safe filter: avoid zscale/tonemap; mirror the known-working workaround in issue #130.
-            dv_safe_vf = f"fps=fps={fps_value}:round=up,{base_scale}"
-
-            rc, seconds, speed, stderr_lines = _run_ffmpeg(
-                use_skip=False, vf_override=dv_safe_vf
-            )
+            # DV-safe filter: avoid zscale/tonemap; mirror the known-working
+            # workaround in issue #130.  path_kind_override="sdr" lets
+            # _assemble_vf build the vendor-correct SDR chain — including
+            # scale_cuda / scale_vaapi + hwdownload when GPU decode is
+            # still active — so the retry doesn't choke on -hwaccel_output_format
+            # surfaces feeding a CPU-only scale filter.
+            rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=False, path_kind_override="sdr")
             if stderr_lines:
                 stderr_lines_all.extend(stderr_lines)
             image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
@@ -1434,14 +996,8 @@ def generate_images(
             if rc != 0 and image_count == 0:
                 if gpu is not None:
                     # Still failing on GPU even with DV-safe filter -> hand off to CPU worker.
-                    for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-                        try:
-                            os.remove(img)
-                        except OSError:
-                            pass
-                    raise CodecNotSupportedError(
-                        f"{diag_label} in GPU context for {video_file}"
-                    )
+                    _clean_output_images(output_folder)
+                    raise CodecNotSupportedError(f"{diag_label} in GPU context for {video_file}")
                 else:
                     # Already on CPU: no further fallback available without remuxing/bitstream filtering.
                     logger.error(
@@ -1451,50 +1007,35 @@ def generate_images(
                         "If this persists, try upgrading FFmpeg or re-encoding/remuxing the file to remove Dolby Vision metadata."
                     )
 
-    # Check for codec errors or crash signals after DV-safe retry (if any) and skip-frame retries.
-    # If in GPU context and codec/crash error detected, raise exception for worker pool to handle
+    # Check for codec errors or crash signals after every prior retry tier
+    # has had a chance: skip-frame retry (earliest, ~line 1614), software-
+    # libplacebo retry (~line 1660), DV-safe fps+scale retry (~line 1721).
+    # If this is still a GPU context and a codec/crash error is detected,
+    # raise so the worker pool can hand off to a CPU worker.
 
     if rc != 0 and image_count == 0 and gpu is not None:
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
-        should_fallback = _detect_codec_error(rc, stderr_lines)
-        fallback_reason = "codec error"
-
-        # Detect GPU hardware accelerator runtime errors (surface sync, transfer
-        # failures, CUDA errors etc.) — these are driver-level issues that almost
-        # always succeed on CPU.
-        if not should_fallback and _detect_hwaccel_runtime_error(stderr_lines_all):
-            should_fallback = True
-            fallback_reason = "hardware accelerator runtime error"
-
-        # Also fall back to CPU if FFmpeg was killed by a signal (crash, OOM, segfault).
-        # GPU decode paths can trigger driver bugs or OOM that don't occur on CPU.
-        if not should_fallback and _is_signal_killed(rc):
-            should_fallback = True
-            signal_num = rc - 128 if rc > 128 else rc
-            fallback_reason = f"signal kill (signal {signal_num})"
+        should_fallback, fallback_reason = classify_cpu_fallback_reason(
+            rc,
+            stderr_lines,
+            stderr_lines_all,
+            detect_codec_error=_detect_codec_error,
+            detect_hwaccel_runtime_error=_detect_hwaccel_runtime_error,
+            is_signal_killed=_is_signal_killed,
+        )
 
         if should_fallback:
             # Log relevant stderr excerpt for debugging
-            stderr_excerpt = (
-                "\n".join(stderr_lines[-5:])
-                if len(stderr_lines) > 0
-                else "No stderr output"
-            )
+            stderr_excerpt = "\n".join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
             logger.warning(
                 f"GPU processing failed with {fallback_reason} (exit code {rc}) for {video_file}; will hand off to CPU worker"
             )
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
             # Clean up any partial files from GPU attempts
-            for img in glob.glob(os.path.join(output_folder, "*.jpg")):
-                try:
-                    os.remove(img)
-                except OSError:
-                    pass
+            _clean_output_images(output_folder)
             # Raise exception to signal worker pool to re-queue for CPU worker
-            raise CodecNotSupportedError(
-                f"GPU processing failed ({fallback_reason}) for {video_file} (exit code {rc})"
-            )
+            raise CodecNotSupportedError(f"GPU processing failed ({fallback_reason}) for {video_file} (exit code {rc})")
 
     if rc != 0 and image_count == 0 and gpu is None:
         if _detect_codec_error(rc, stderr_lines):
@@ -1518,7 +1059,7 @@ def generate_images(
         fallback_suffix = (
             " (DV-safe retry)"
             if did_dv_safe_retry
-            else (" (retry no-skip)" if did_retry else "")
+            else (" (sw libplacebo retry)" if did_sw_libplacebo_retry else (" (retry no-skip)" if did_retry else ""))
         )
         logger.info(
             f"Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}"
@@ -1527,11 +1068,9 @@ def generate_images(
         fallback_suffix = (
             " after DV-safe retry"
             if did_dv_safe_retry
-            else (" after retry" if did_retry else "")
+            else (" after sw libplacebo retry" if did_sw_libplacebo_retry else (" after retry" if did_retry else ""))
         )
-        logger.error(
-            f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}"
-        )
+        logger.error(f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}")
         error_summary = _extract_ffmpeg_error_summary(stderr_lines_all)
         worker_ctx = "GPU" if gpu is not None else "CPU"
         reason = (
@@ -1546,7 +1085,7 @@ def generate_images(
     return success, image_count, hw, seconds, speed, error_summary
 
 
-def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str]:
+def _setup_bundle_paths(bundle_hash: str, config: Config) -> tuple[str, str, str]:
     """Set up all bundle-related paths.
 
     Args:
@@ -1558,9 +1097,7 @@ def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str
 
     """
     bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1::1]}.bundle")
-    bundle_path = sanitize_path(
-        os.path.join(config.plex_config_folder, "Media", "localhost", bundle_file)
-    )
+    bundle_path = sanitize_path(os.path.join(config.plex_config_folder, "Media", "localhost", bundle_file))
     indexes_path = sanitize_path(os.path.join(bundle_path, "Contents", "Indexes"))
     index_bif = sanitize_path(os.path.join(indexes_path, "index-sd.bif"))
     tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
@@ -1583,12 +1120,8 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
         try:
             os.makedirs(indexes_path)
         except PermissionError as e:
-            logger.error(
-                f"Permission denied creating index path {indexes_path} for {media_file}: {e}"
-            )
-            logger.info(
-                f"Please check directory permissions for: {os.path.dirname(indexes_path)}"
-            )
+            logger.error(f"Permission denied creating index path {indexes_path} for {media_file}: {e}")
+            logger.info(f"Please check directory permissions for: {os.path.dirname(indexes_path)}")
             return False
         except OSError as e:
             logger.error(
@@ -1600,12 +1133,8 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
         try:
             os.makedirs(tmp_path)
         except PermissionError as e:
-            logger.error(
-                f"Permission denied creating tmp path {tmp_path} for {media_file}: {e}"
-            )
-            logger.info(
-                f"Please check directory permissions for: {os.path.dirname(tmp_path)}"
-            )
+            logger.error(f"Permission denied creating tmp path {tmp_path} for {media_file}: {e}")
+            logger.info(f"Please check directory permissions for: {os.path.dirname(tmp_path)}")
             return False
         except OSError as e:
             logger.error(
@@ -1638,11 +1167,11 @@ def _generate_and_save_bif(
     media_file: str,
     tmp_path: str,
     index_bif: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config: Config,
     progress_callback=None,
-    ffmpeg_threads_override: Optional[int] = None,
+    ffmpeg_threads_override: int | None = None,
     cancel_check=None,
 ) -> None:
     """Generate images and create BIF file.
@@ -1701,9 +1230,7 @@ def _generate_and_save_bif(
         logger.error(f"No thumbnails generated for {media_file}; skipping BIF creation")
         _cleanup_temp_directory(tmp_path)
         detail = f" ({ffmpeg_error})" if ffmpeg_error else ""
-        raise RuntimeError(
-            f"Thumbnail generation produced 0 images for {media_file}{detail}"
-        )
+        raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}{detail}")
 
     # Generate BIF file
     try:
@@ -1714,12 +1241,8 @@ def _generate_and_save_bif(
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
-            logger.warning(
-                f"Failed to remove failed BIF file {index_bif}: {remove_error}"
-            )
-        logger.error(
-            f"Permission denied generating BIF file {index_bif} for {media_file}: {e}"
-        )
+            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
+        logger.error(f"Permission denied generating BIF file {index_bif} for {media_file}: {e}")
         logger.info(f"Please check write permissions for: {os.path.dirname(index_bif)}")
         raise
     except Exception as e:
@@ -1732,9 +1255,7 @@ def _generate_and_save_bif(
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
-            logger.warning(
-                f"Failed to remove failed BIF file {index_bif}: {remove_error}"
-            )
+            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
         raise
 
 
@@ -1754,9 +1275,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     version = 0
 
     try:
-        images = [
-            img for img in os.listdir(images_path) if os.path.splitext(img)[1] == ".jpg"
-        ]
+        images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == ".jpg"]
     except PermissionError as e:
         logger.error(f"Permission denied reading images directory {images_path}: {e}")
         logger.info(f"Please check read permissions for: {images_path}")
@@ -1767,9 +1286,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
         f = open(bif_filename, "wb")
     except PermissionError as e:
         logger.error(f"Permission denied writing BIF file {bif_filename}: {e}")
-        logger.info(
-            f"Please check write permissions for: {os.path.dirname(bif_filename)}"
-        )
+        logger.info(f"Please check write permissions for: {os.path.dirname(bif_filename)}")
         raise
 
     try:
@@ -1789,9 +1306,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
                 try:
                     statinfo = os.stat(os.path.join(images_path, image))
                 except PermissionError as e:
-                    logger.error(
-                        f"Permission denied reading image file {os.path.join(images_path, image)}: {e}"
-                    )
+                    logger.error(f"Permission denied reading image file {os.path.join(images_path, image)}: {e}")
                     logger.info(f"Please check read permissions for: {images_path}")
                     raise
                 f.write(struct.pack("<I", timestamp))
@@ -1808,9 +1323,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
                     with open(os.path.join(images_path, image), "rb") as img_file:
                         data = img_file.read()
                 except PermissionError as e:
-                    logger.error(
-                        f"Permission denied reading image file {os.path.join(images_path, image)}: {e}"
-                    )
+                    logger.error(f"Permission denied reading image file {os.path.join(images_path, image)}: {e}")
                     logger.info(f"Please check read permissions for: {images_path}")
                     raise
                 f.write(data)
@@ -1822,12 +1335,12 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
 
 def process_item(
     item_key: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config: Config,
     plex,
     progress_callback=None,
-    ffmpeg_threads_override: Optional[int] = None,
+    ffmpeg_threads_override: int | None = None,
     cancel_check=None,
     worker_name: str = "",
     fingerprint_store=None,
@@ -1869,10 +1382,7 @@ def process_item(
         if hasattr(e, "request") and e.request:
             logger.error(f"Request URL: {e.request.url}")
             logger.error(f"Request method: {e.request.method}")
-            safe_headers = {
-                k: ("****" if "token" in k.lower() else v)
-                for k, v in e.request.headers.items()
-            }
+            safe_headers = {k: ("****" if "token" in k.lower() else v) for k, v in e.request.headers.items()}
             logger.error(f"Request headers: {safe_headers}")
         _notify_file_result(
             f"item:{item_key}",
@@ -1942,13 +1452,9 @@ def process_item(
                 continue
 
             try:
-                indexes_path, index_bif, tmp_path = _setup_bundle_paths(
-                    bundle_hash, config
-                )
+                indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
             except Exception as e:
-                logger.error(
-                    f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}"
-                )
+                logger.error(f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}")
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,
@@ -1959,15 +1465,11 @@ def process_item(
                 continue
 
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
-                logger.debug(
-                    f"Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}"
-                )
+                logger.debug(f"Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}")
                 try:
                     os.remove(index_bif)
                 except Exception as e:
-                    logger.error(
-                        f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}"
-                    )
+                    logger.error(f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}")
                     _update_best(ProcessingResult.FAILED)
                     _notify_file_result(
                         media_file,
@@ -1978,9 +1480,7 @@ def process_item(
                     continue
 
             if os.path.isfile(index_bif):
-                logger.info(
-                    f"Skipping {media_file} — BIF already exists at {index_bif}"
-                )
+                logger.info(f"Skipping {media_file} — BIF already exists at {index_bif}")
                 _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
                 _notify_file_result(
                     media_file,
@@ -2054,9 +1554,7 @@ def process_item(
                 )
                 continue
             except Exception as e:
-                logger.error(
-                    f"Error processing {media_file}: {type(e).__name__}: {str(e)}"
-                )
+                logger.error(f"Error processing {media_file}: {type(e).__name__}: {str(e)}")
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,
@@ -2108,24 +1606,16 @@ def _run_marker_detection(
     # Credits detection (movies + episodes)
     if config.credits_detection_enabled:
         try:
-            _detect_and_write_credits(
-                item_key, media_file, plex, config, cancel_check, detection_stats
-            )
+            _detect_and_write_credits(item_key, media_file, plex, config, cancel_check, detection_stats)
         except CancellationError:
             raise
         except Exception as exc:
             logger.warning(f"Credits detection failed for {media_file}: {exc}")
 
     # Intro fingerprinting pass 1 (episodes only)
-    if (
-        config.intro_detection_enabled
-        and fingerprint_store is not None
-        and media_type == "episode"
-    ):
+    if config.intro_detection_enabled and fingerprint_store is not None and media_type == "episode":
         try:
-            _fingerprint_for_intro(
-                item_key, media_file, plex, config, fingerprint_store, cancel_check
-            )
+            _fingerprint_for_intro(item_key, media_file, plex, config, fingerprint_store, cancel_check)
         except CancellationError:
             raise
         except Exception as exc:
@@ -2162,9 +1652,7 @@ def _detect_and_write_credits(
             if getattr(item, "hasCreditsMarker", False):
                 logger.info(f"Credits marker exists for {media_file}, skipping")
                 if detection_stats is not None:
-                    detection_stats["credits_skipped"] = (
-                        detection_stats.get("credits_skipped", 0) + 1
-                    )
+                    detection_stats["credits_skipped"] = detection_stats.get("credits_skipped", 0) + 1
                 return
         except Exception as exc:
             logger.debug(f"Could not check existing markers: {exc}")
@@ -2216,10 +1704,7 @@ def _detect_and_write_credits(
 
     # Skip low-confidence detections to reduce false positives
     if segment.confidence < 0.5:
-        logger.info(
-            f"Credits detection below confidence threshold for {media_file} "
-            f"({segment.confidence:.0%} < 50%)"
-        )
+        logger.info(f"Credits detection below confidence threshold for {media_file} ({segment.confidence:.0%} < 50%)")
         return
 
     tag_id = get_marker_tag_id(db_path)
@@ -2240,9 +1725,7 @@ def _detect_and_write_credits(
 
     if success:
         if detection_stats is not None:
-            detection_stats["credits_written"] = (
-                detection_stats.get("credits_written", 0) + 1
-            )
+            detection_stats["credits_written"] = detection_stats.get("credits_written", 0) + 1
         logger.info(
             f"Credits marker: {media_file} "
             f"{segment.start_ms}ms–{segment.end_ms}ms "
@@ -2299,7 +1782,4 @@ def _fingerprint_for_intro(
 
     if fp is not None:
         fingerprint_store.add(show_title, int(season_number), rating_key, fp)
-        logger.debug(
-            f"Fingerprinted {show_title} S{season_number:02d} "
-            f"(item {rating_key}, {len(fp)} samples)"
-        )
+        logger.debug(f"Fingerprinted {show_title} S{season_number:02d} (item {rating_key}, {len(fp)} samples)")

@@ -12,9 +12,9 @@ Covers:
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.media_processing import ProcessingResult, process_item
+from plex_generate_previews.jobs.worker import Worker
+from plex_generate_previews.processing import ProcessingResult, process_item
 from plex_generate_previews.web.jobs import JobManager, JobProgress
-from plex_generate_previews.worker import Worker
 
 
 class TestProcessingResultEnum:
@@ -60,33 +60,25 @@ class TestProcessItemReturnsResult:
         assert result == ProcessingResult.NO_MEDIA_PARTS
 
     @patch("os.path.isfile")
-    def test_missing_file_returns_skipped_file_not_found(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_missing_file_returns_skipped_file_not_found(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """File that doesn't exist locally returns SKIPPED_FILE_NOT_FOUND."""
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
         mock_isfile.return_value = False
         mock_config.plex_config_folder = "/config/plex"
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_FILE_NOT_FOUND
 
     @patch("os.path.isfile")
-    def test_excluded_path_returns_skipped_excluded(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_excluded_path_returns_skipped_excluded(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """Path matching exclude_paths returns SKIPPED_EXCLUDED."""
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
         mock_config.plex_config_folder = "/config/plex"
         mock_config.exclude_paths = [{"value": "/data/movies", "type": "path"}]
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_EXCLUDED
 
     def test_invalid_hash_returns_skipped_invalid_hash(self, mock_config):
@@ -107,9 +99,7 @@ class TestProcessItemReturnsResult:
         assert result == ProcessingResult.SKIPPED_INVALID_HASH
 
     @patch("os.path.isfile")
-    def test_bif_exists_returns_skipped_bif_exists(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_bif_exists_returns_skipped_bif_exists(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """Existing BIF file returns SKIPPED_BIF_EXISTS."""
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
@@ -117,13 +107,11 @@ class TestProcessItemReturnsResult:
         mock_config.plex_config_folder = "/config/plex"
         mock_config.regenerate_thumbnails = False
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_BIF_EXISTS
 
-    @patch("plex_generate_previews.media_processing.generate_bif")
-    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
+    @patch("plex_generate_previews.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
     @patch("os.path.isdir")
     @patch("os.makedirs")
@@ -153,9 +141,7 @@ class TestProcessItemReturnsResult:
         mock_config.regenerate_thumbnails = False
         mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.GENERATED
 
 
@@ -168,7 +154,7 @@ class TestWorkerOutcomeCounts:
         for r in ProcessingResult:
             assert worker.outcome_counts[r.value] == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_completed_item_increments_outcome(self, mock_process):
         """Successful process_item updates both completed and outcome_counts."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -189,7 +175,7 @@ class TestWorkerOutcomeCounts:
         assert worker.completed == 1
         assert worker.failed == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_skipped_item_counts_as_completed_not_failed(self, mock_process):
         """Skipped items (e.g. BIF exists) count as completed, not failed."""
         mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
@@ -210,7 +196,7 @@ class TestWorkerOutcomeCounts:
         assert worker.completed == 1
         assert worker.failed == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_failed_result_counts_as_failed(self, mock_process):
         """ProcessingResult.FAILED increments worker.failed."""
         mock_process.return_value = ProcessingResult.FAILED
@@ -231,7 +217,7 @@ class TestWorkerOutcomeCounts:
         assert worker.failed == 1
         assert worker.completed == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_file_not_found_counts_as_completed(self, mock_process):
         """SKIPPED_FILE_NOT_FOUND is a completed item (no exception)."""
         mock_process.return_value = ProcessingResult.SKIPPED_FILE_NOT_FOUND
@@ -317,7 +303,7 @@ class TestMisconfigurationDetection:
 
     def test_warning_logged_when_all_not_found(self):
         """When all items are skipped_file_not_found, a warning is logged."""
-        from plex_generate_previews.media_processing import ProcessingResult
+        from plex_generate_previews.processing import ProcessingResult
 
         outcome = {r.value: 0 for r in ProcessingResult}
         outcome["skipped_file_not_found"] = 100
@@ -332,7 +318,7 @@ class TestMisconfigurationDetection:
 
     def test_no_warning_when_items_generated(self):
         """When items are generated, no misconfiguration warning."""
-        from plex_generate_previews.media_processing import ProcessingResult
+        from plex_generate_previews.processing import ProcessingResult
 
         outcome = {r.value: 0 for r in ProcessingResult}
         outcome["generated"] = 50
@@ -344,7 +330,7 @@ class TestMisconfigurationDetection:
 
     def test_no_warning_when_all_exist(self):
         """When all items already have BIF files, no warning."""
-        from plex_generate_previews.media_processing import ProcessingResult
+        from plex_generate_previews.processing import ProcessingResult
 
         outcome = {r.value: 0 for r in ProcessingResult}
         outcome["skipped_bif_exists"] = 500
@@ -356,17 +342,16 @@ class TestMisconfigurationDetection:
 class TestOutcomeInWorkerPoolResult:
     """Test that WorkerPool includes outcome in its return dict."""
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_process_items_headless_includes_outcome(self, mock_process):
         """process_items_headless result dict contains an 'outcome' key."""
         mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         config.cpu_threads = 1
-        config.fallback_cpu_threads = 0
         plex = MagicMock()
 
         items = [("/library/metadata/1", "Movie 1", "movie")]
@@ -382,7 +367,7 @@ class TestOutcomeInWorkerPoolResult:
         assert isinstance(result["outcome"], dict)
         assert result["outcome"]["skipped_bif_exists"] >= 1
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_outcome_counts_match_items_processed(self, mock_process):
         """Sum of all outcome values equals total items processed."""
         results_iter = iter(
@@ -394,12 +379,11 @@ class TestOutcomeInWorkerPoolResult:
         )
         mock_process.side_effect = lambda *args, **kwargs: next(results_iter)
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         config.cpu_threads = 1
-        config.fallback_cpu_threads = 0
         plex = MagicMock()
 
         items = [

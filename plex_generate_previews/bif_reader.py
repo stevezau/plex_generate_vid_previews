@@ -7,7 +7,6 @@ preview thumbnails.  The write side lives in media_processing.generate_bif().
 import os
 import struct
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 _HEADER_SIZE = 64
@@ -24,8 +23,8 @@ class BifMetadata:
     frame_interval_ms: int
     file_size: int
     created_at: float
-    frame_offsets: List[int] = field(repr=False)
-    frame_sizes: List[int] = field(repr=False)
+    frame_offsets: list[int] = field(repr=False)
+    frame_sizes: list[int] = field(repr=False)
 
 
 def read_bif_metadata(path: str) -> BifMetadata:
@@ -56,7 +55,7 @@ def read_bif_metadata(path: str) -> BifMetadata:
 
         f.seek(_HEADER_SIZE)
 
-        offsets: List[int] = []
+        offsets: list[int] = []
         for _ in range(frame_count):
             f.read(4)  # skip timestamp (sequential counter, unused)
             offset = struct.unpack("<I", f.read(4))[0]
@@ -82,9 +81,7 @@ def read_bif_metadata(path: str) -> BifMetadata:
     )
 
 
-def read_bif_frame(
-    path: str, index: int, metadata: Optional[BifMetadata] = None
-) -> bytes:
+def read_bif_frame(path: str, index: int, metadata: BifMetadata | None = None) -> bytes:
     """Extract a single JPEG frame from a BIF file.
 
     Args:
@@ -104,9 +101,7 @@ def read_bif_frame(
         metadata = read_bif_metadata(path)
 
     if index < 0 or index >= metadata.frame_count:
-        raise IndexError(
-            f"Frame index {index} out of range (0..{metadata.frame_count - 1})"
-        )
+        raise IndexError(f"Frame index {index} out of range (0..{metadata.frame_count - 1})")
 
     offset = metadata.frame_offsets[index]
     size = metadata.frame_sizes[index]

@@ -91,9 +91,7 @@ class TestLoggingConfig:
         assert app_log_call.kwargs.get("rotation") == "5 MB"
         assert app_log_call.kwargs.get("retention") == 4
 
-    @patch(
-        "plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError
-    )
+    @patch("plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError)
     @patch("plex_generate_previews.logging_config.logger")
     def test_setup_logging_handles_permission_error(self, mock_logger, mock_makedirs):
         """Test that setup_logging handles permission errors for log directory."""
@@ -176,10 +174,7 @@ class TestJSONLogging:
             with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
                 setup_logging(log_format="json")
                 logger.info("hello structured world")
-                # Allow enqueued message to flush
-                import time
-
-                time.sleep(0.2)
+                logger.complete()
 
         logger.remove()
         output = captured.getvalue().strip()
@@ -196,9 +191,7 @@ class TestJSONLogging:
             if "hello structured world" in parsed.get("message", ""):
                 record = parsed
                 break
-        assert record is not None, (
-            f"Expected JSON line with 'hello structured world' in output:\n{output}"
-        )
+        assert record is not None, f"Expected JSON line with 'hello structured world' in output:\n{output}"
         assert record["level"] == "INFO"
         assert "timestamp" in record
         assert "function" in record
@@ -217,9 +210,7 @@ class TestJSONLogging:
                     raise ValueError("boom")
                 except ValueError:
                     logger.exception("caught error")
-                import time
-
-                time.sleep(0.2)
+                logger.complete()
 
         logger.remove()
         output = captured.getvalue().strip()
@@ -444,9 +435,7 @@ class TestJsonlRecordPatcher:
             logger.remove()
             setup_logging(log_level="DEBUG")
             logger.info("integration test message")
-            import time
-
-            time.sleep(0.3)
+            logger.complete()
 
         logger.remove()
         app_log = tmp_path / "logs" / "app.log"

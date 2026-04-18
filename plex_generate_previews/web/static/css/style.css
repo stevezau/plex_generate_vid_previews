@@ -26,6 +26,34 @@ html[data-bs-theme="light"] .navbar {
     font-weight: bold;
 }
 
+/* Notification bell dropdown in the top-right navbar. */
+.notification-bell-wrapper {
+    position: relative;
+}
+
+.notification-bell-wrapper .dropdown-menu.notification-dropdown {
+    width: 28rem;
+    max-width: 95vw;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.notification-bell-wrapper .notification-entry {
+    transition: background-color 0.15s ease;
+}
+
+.notification-bell-wrapper .notification-entry:hover {
+    background-color: var(--bs-tertiary-bg);
+}
+
+.notification-bell-wrapper .notification-entry .notification-details code {
+    word-break: break-word;
+}
+
+.notification-bell-wrapper .notification-list .notification-entry:last-child {
+    border-bottom: 0 !important;
+}
+
 /* Dark theme — custom overrides apply only when data-bs-theme=dark. Light
    mode falls back to Bootstrap 5.3's built-in light theme, which handles
    cards/modals/forms/tables natively. */

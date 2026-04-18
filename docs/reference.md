@@ -9,10 +9,24 @@ Complete reference for all configuration options and REST API endpoints.
 > For installation and setup flows, use [Getting Started](getting-started.md).
 > For operations, webhooks, and troubleshooting, use [Guides & Troubleshooting](guides.md).
 
+## Contents
+
+- [Configuration Priority](#configuration-priority)
+- [Plex Connection](#plex-connection)
+- [Processing Options](#processing-options)
+- [Environment Variables](#environment-variables)
+- [Web Interface Settings](#web-interface-settings)
+- [Webhook Settings](#webhook-settings)
+- [Path Mappings](#path-mappings)
+- [REST API](#rest-api)
+- [WebSocket Events](#websocket-events)
+- [Rate Limiting](#rate-limiting)
+
 ## Related Docs
 
 - [Getting Started](getting-started.md)
 - [Guides & Troubleshooting](guides.md)
+- [FAQ](faq.md)
 - [Main README](../README.md)
 
 ---
@@ -41,7 +55,6 @@ Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Value
 ---
 
 ## Processing Options
-<a id="cpu-fallback-workers"></a>
 
 ### Per-GPU Configuration (gpu_config)
 
@@ -61,15 +74,16 @@ GPU settings are configured per-GPU in **Settings** → **Processing Options**. 
 | Setting | Web UI | Default | Description |
 |---------|--------|---------|-------------|
 | `cpu_threads` | Yes | `1` | Number of CPU worker threads (0–32) |
-| `cpu_fallback_threads` | Yes | `0` | CPU fallback workers for GPU failures (0–32, used when `cpu_threads=0`) |
 | `thumbnail_quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
 | `thumbnail_interval` | Yes | `5` | Interval between preview images (1–60 s) |
 | `selected_libraries` | Yes | All | Library IDs to process |
 
-> [!TIP]
-> For GPU-first processing with CPU safety net:
-> set `cpu_threads=0` and `cpu_fallback_threads>0`.
-> This prevents regular CPU main-queue work while still allowing GPU-failed items to be retried on CPU.
+> [!NOTE]
+> When a GPU worker can't process a file (unsupported codec,
+> hardware-accelerator error, driver crash), the same worker retries
+> on CPU in-place and the UI shows a warning badge with the reason.
+> No separate fallback pool is needed — increase `cpu_threads` if you
+> want more dedicated CPU concurrency for files that never hit the GPU.
 
 ### Marker Detection (Experimental)
 
@@ -164,7 +178,7 @@ These env vars are deprecated. Configure via **Settings** instead:
 On first run, these env vars are migrated into settings.json. After that, settings.json is the source of truth:
 
 - `PLEX_URL`, `PLEX_TOKEN`, `PLEX_CONFIG_FOLDER`, `PLEX_VERIFY_SSL`, `PLEX_TIMEOUT`
-- `PLEX_BIF_FRAME_INTERVAL`, `THUMBNAIL_QUALITY`, `CPU_THREADS`, `FALLBACK_CPU_THREADS`
+- `PLEX_BIF_FRAME_INTERVAL`, `THUMBNAIL_QUALITY`, `CPU_THREADS`
 - `MEDIA_PATH`, `TMP_FOLDER`, `LOG_LEVEL`
 
 ---
@@ -189,13 +203,13 @@ Settings for automatic preview generation when media is imported via Radarr or S
 
 Webhook processing respects `selected_libraries`; paths outside unchecked libraries are ignored.
 
-The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules](#post-apischedules) below). Create one through the Webhooks page's "Create default scanner" shortcut, or through the Schedules modal with **Scan mode → Recently added only**.
+The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules](#post-apischedules) below). Create one through the Automation page (Triggers tab) "Create default scanner" shortcut, or through the Schedules tab modal with **Scan mode → Recently added only**.
 
 > [!IMPORTANT]
 > The Plex direct webhook and Recently Added schedules trigger only on **new** library items (new `ratingKey`s). They do **not** detect in-place file upgrades — Plex keeps the same item when Sonarr/Radarr replaces a file. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
 
 > [!TIP]
-> Configure webhooks via the **Webhooks** page in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions.
+> Configure webhooks on the **Automation** page (`/automation`, Triggers tab) in the web UI. See [Webhook Integration](guides.md#webhook-integration) for setup instructions. The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to the relevant tab.
 
 ---
 
@@ -285,9 +299,9 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8080/api/jobs
 
 Get your token from [Authentication Token](getting-started.md#authentication-token), or set a fixed token with `WEB_AUTH_TOKEN`.
 
-## Setup & Settings Endpoints
+### Setup & Settings Endpoints
 
-### GET /api/setup/status
+#### GET /api/setup/status
 
 Check if setup is complete. **No authentication required.**
 
@@ -300,7 +314,7 @@ Check if setup is complete. **No authentication required.**
 }
 ```
 
-### GET /api/setup/state
+#### GET /api/setup/state
 
 Get current setup wizard state.
 
@@ -313,7 +327,7 @@ Get current setup wizard state.
 }
 ```
 
-### POST /api/setup/state
+#### POST /api/setup/state
 
 Save setup wizard progress.
 
@@ -328,11 +342,11 @@ Save setup wizard progress.
 }
 ```
 
-### POST /api/setup/complete
+#### POST /api/setup/complete
 
 Mark setup as complete. Returns `{"success": true, "redirect": "/"}`.
 
-### GET /api/setup/token-info
+#### GET /api/setup/token-info
 
 Get information about the current authentication token (used by Step 5 of the setup wizard).
 
@@ -352,7 +366,7 @@ Get information about the current authentication token (used by Step 5 of the se
 | `token_length` | number | Length of the token |
 | `source` | string | Either `"environment"` or `"config"` |
 
-### POST /api/setup/set-token
+#### POST /api/setup/set-token
 
 Set a custom authentication token during setup.
 
@@ -371,7 +385,7 @@ Returns `{"success": true}` on success, or `{"success": false, "error": "..."}` 
 - `"Token must be at least 8 characters long."`
 - `"Token is controlled by WEB_AUTH_TOKEN environment variable and cannot be changed."`
 
-### GET /api/settings
+#### GET /api/settings
 
 Get current settings.
 
@@ -392,28 +406,27 @@ Get current settings.
     {"device": "/dev/dri/renderD128", "name": "Intel UHD 630", "type": "intel", "enabled": true, "workers": 4, "ffmpeg_threads": 2}
   ],
   "cpu_threads": 2,
-  "cpu_fallback_threads": 0,
   "thumbnail_interval": 5,
   "thumbnail_quality": 4
 }
 ```
 
-### POST /api/settings
+#### POST /api/settings
 
 Update settings. Send only the fields to change.
 
 ```json
 {
   "gpu_config": [{"device": "/dev/dri/renderD128", "enabled": true, "workers": 4, "ffmpeg_threads": 2}],
-  "cpu_fallback_threads": 1,
+  "cpu_threads": 2,
   "thumbnail_interval": 5,
   "plex_url": "http://192.168.1.100:32400"
 }
 ```
 
-## Plex OAuth Endpoints
+### Plex OAuth Endpoints
 
-### POST /api/plex/auth/pin
+#### POST /api/plex/auth/pin
 
 Create a new Plex OAuth PIN.
 
@@ -425,11 +438,11 @@ Create a new Plex OAuth PIN.
 }
 ```
 
-### GET /api/plex/auth/pin/{id}
+#### GET /api/plex/auth/pin/{id}
 
 Check if PIN has been authenticated. Returns `{"authenticated": true, "auth_token": "..."}` or `{"authenticated": false, "auth_token": null}`.
 
-### GET /api/plex/servers
+#### GET /api/plex/servers
 
 Get list of user's Plex servers.
 
@@ -449,7 +462,7 @@ Get list of user's Plex servers.
 }
 ```
 
-### GET /api/plex/libraries
+#### GET /api/plex/libraries
 
 Get libraries from connected Plex server. Optional query parameters: `url`, `token`.
 
@@ -462,11 +475,11 @@ Get libraries from connected Plex server. Optional query parameters: `url`, `tok
 }
 ```
 
-### POST /api/plex/test
+#### POST /api/plex/test
 
 Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"success": true, "server_name": "...", "version": "..."}`.
 
-## Processing state (global pause)
+### Processing state (global pause)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -480,7 +493,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 
 **POST /api/processing/resume** — Response: `{"paused": false}`.
 
-## Jobs Endpoints
+### Jobs Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -492,7 +505,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | POST | `/api/jobs/{id}/resume` | Global resume (delegates to `/api/processing/resume`) |
 | DELETE | `/api/jobs/{id}` | Delete job |
 
-### GET /api/jobs
+#### GET /api/jobs
 
 ```json
 {
@@ -512,13 +525,13 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 }
 ```
 
-### POST /api/jobs
+#### POST /api/jobs
 
 **Request:** `{"library_id": "1", "library_name": "Movies"}`
 
 **Response:** `{"id": "job-123", "status": "pending", "message": "Job created successfully"}`
 
-### GET /api/jobs/{id}
+#### GET /api/jobs/{id}
 
 ```json
 {
@@ -543,7 +556,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 }
 ```
 
-## Schedules Endpoints
+### Schedules Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -553,7 +566,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | DELETE | `/api/schedules/{id}` | Delete schedule |
 | POST | `/api/schedules/{id}/run` | Run now |
 
-### POST /api/schedules
+#### POST /api/schedules
 
 **Cron request — full library scan (default):**
 
@@ -595,7 +608,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 - `"full_library"` *(default — optional, omit to get the same behaviour)* — schedule runs a full library scan via the standard job pipeline, processing every item in `library_id` that's missing previews.
 - `"recently_added"` — schedule runs a Recently Added scan instead. Requires `config.lookback_hours` (float, clamped to 0.25–720). Scans only items whose Plex `addedAt` falls within the lookback window, queuing each through the webhook job pipeline. When `library_id` is `null`, the scan falls back to the globally selected libraries in Settings (or every supported library when no global filter is set); when set, only that section is scanned.
 
-## System Endpoints
+### System Endpoints
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
@@ -604,11 +617,11 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | GET | `/api/system/config` | Yes | Current configuration |
 | GET | `/api/libraries` | Yes | Plex libraries |
 
-## Webhook Endpoints
+### Webhook Endpoints
 
 Inbound webhook endpoints for Radarr/Sonarr/Custom integration. Webhook endpoints accept `X-Auth-Token`, `Authorization: Bearer`, or a configured `webhook_secret`.
 
-### POST /api/webhooks/radarr
+#### POST /api/webhooks/radarr
 
 Receive a Radarr webhook payload.
 
@@ -628,7 +641,7 @@ Receive a Radarr webhook payload.
 
 **Test event:** `{"eventType": "Test"}` → **Response (200):** `{"success": true, "message": "Radarr webhook configured successfully"}`
 
-### POST /api/webhooks/sonarr
+#### POST /api/webhooks/sonarr
 
 Same authentication and response patterns as Radarr.
 
@@ -642,7 +655,7 @@ Same authentication and response patterns as Radarr.
 }
 ```
 
-### POST /api/webhooks/custom
+#### POST /api/webhooks/custom
 
 Receive a custom webhook payload from any external tool (Tdarr, scripts, etc.). Accepts one or more file paths to process.
 
@@ -679,11 +692,11 @@ Receive a custom webhook payload from any external tool (Tdarr, scripts, etc.). 
 
 **Error (400):** `{"success": false, "error": "Payload must include 'file_path' (string) or 'file_paths' (array of strings)"}`
 
-### POST /api/webhooks/plex
+#### POST /api/webhooks/plex
 
 Receive a native Plex webhook (Plex Pass feature). Plex POSTs `multipart/form-data` with a `payload` part containing the JSON event body. Only `library.new` events trigger work; other events (`media.play`, `media.rate`, `library.on.deck`, etc.) are acknowledged with 200 and ignored.
 
-The endpoint also accepts a synthetic `test.ping` event used by the **Test reachability** button on the Webhooks page.
+The endpoint also accepts a synthetic `test.ping` event used by the **Test reachability** button on the Automation page (Triggers tab).
 
 **`library.new` payload (excerpt):**
 
@@ -707,7 +720,7 @@ When `Media[].Part[].file` is missing from the payload (Plex doesn't always incl
 > [!IMPORTANT]
 > Plex's `library.new` webhook is wired through the same code path as mobile push notifications. If push notifications are disabled on your Plex server, library events are silently dropped — enable them under Plex Web → Settings → Server → Notifications. See the [Auto-trigger from Plex guide](guides.md#auto-trigger-from-plex-no-sonarrradarr) for full details.
 
-### POST /api/settings/plex_webhook/register
+#### POST /api/settings/plex_webhook/register
 
 Register the Plex direct webhook (`/api/webhooks/plex`) with the user's plex.tv account, using the configured Plex token.
 
@@ -726,11 +739,11 @@ Register the Plex direct webhook (`/api/webhooks/plex`) with the user's plex.tv 
 - `403` — Plex Pass required (`reason: "plex_pass_required"`)
 - `502` — registration call to plex.tv failed
 
-### POST /api/settings/plex_webhook/unregister
+#### POST /api/settings/plex_webhook/unregister
 
 Remove the Plex direct webhook from the user's plex.tv account and turn off the local toggle. Returns `{"success": true, "registered_in_plex": false}`.
 
-### GET /api/settings/plex_webhook/status
+#### GET /api/settings/plex_webhook/status
 
 Probe live state. Returns the configured public URL, whether it is currently registered with Plex, and Plex Pass detection.
 
@@ -746,15 +759,15 @@ Probe live state. Returns the configured public URL, whether it is currently reg
 }
 ```
 
-### POST /api/settings/plex_webhook/test
+#### POST /api/settings/plex_webhook/test
 
 Self-POST a synthetic `test.ping` payload to the configured public URL to verify reachability. The receiving endpoint records a "test" history entry. Returns `{"success": true, "status_code": 200, ...}` on success.
 
 To run a Recently Added scan immediately, call `POST /api/schedules/<id>/run` on the scanner schedule — it's a standard user schedule now, not a dedicated settings endpoint.
 
-### GET /api/webhooks/history
+#### GET /api/webhooks/history
 
-Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files" / "Custom: N files") and on the Webhooks page Recent Activity (expand triggered rows).
+Get recent webhook events (newest first, max 100). For events with `status: "triggered"` (a debounced batch that was processed), the response may include `job_id`, `path_count`, and `files_preview` (up to 20 basenames) so the UI can show which files were in the batch. File lists are also available on the Dashboard job queue (expand with the chevron next to "Sonarr: N files" / "Radarr: N files" / "Custom: N files") and on the Automation page (Triggers tab) Activity Log (expand triggered rows).
 
 ```json
 {
@@ -773,11 +786,11 @@ Get recent webhook events (newest first, max 100). For events with `status: "tri
 }
 ```
 
-### DELETE /api/webhooks/history
+#### DELETE /api/webhooks/history
 
 Clear all webhook history. Returns `{"success": true}`.
 
-## Error Responses
+### Error Responses
 
 All errors follow this format:
 

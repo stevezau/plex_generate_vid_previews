@@ -24,7 +24,7 @@ import json as _json
 import os
 import sys
 import threading
-from typing import List, Optional
+from typing import Optional
 
 from loguru import logger
 from rich.console import Console
@@ -35,7 +35,7 @@ from rich.console import Console
 
 # Handler IDs managed by setup_logging() — only these are removed on
 # hot-reload so that per-job log sinks (added externally) are preserved.
-_managed_handler_ids: List[int] = []
+_managed_handler_ids: list[int] = []
 _initial_setup_done: bool = False
 _handler_lock = threading.Lock()
 
@@ -52,10 +52,7 @@ LEVEL_ORDER = {
     "CRITICAL": 50,
 }
 
-_CONSOLE_FORMAT = (
-    "<green>{time:YYYY/MM/DD HH:mm:ss}</green> | "
-    "{level.icon}  - <level>{message}</level>"
-)
+_CONSOLE_FORMAT = "<green>{time:YYYY/MM/DD HH:mm:ss}</green> | {level.icon}  - <level>{message}</level>"
 
 # ---------------------------------------------------------------------------
 # Shared payload builder

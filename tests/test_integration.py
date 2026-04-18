@@ -8,14 +8,14 @@ to BIF generation with all components working together.
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.media_processing import ProcessingResult
+from plex_generate_previews.processing import ProcessingResult
 
 
 class TestFullPipeline:
     """Test complete processing pipeline."""
 
-    @patch("plex_generate_previews.media_processing.generate_bif")
-    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
+    @patch("plex_generate_previews.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
     @patch("os.path.isdir")
     @patch("os.makedirs")
@@ -32,7 +32,7 @@ class TestFullPipeline:
         plex_xml_movie_tree,
     ):
         """Test processing a single video through the full pipeline."""
-        from plex_generate_previews.media_processing import process_item
+        from plex_generate_previews.processing import process_item
 
         # Mock Plex
         mock_plex = MagicMock()
@@ -61,12 +61,12 @@ class TestFullPipeline:
         assert mock_gen_images.called
         assert mock_gen_bif.called
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_full_pipeline_multiple_videos(self, mock_process, mock_config):
         """Test processing multiple videos with worker pool."""
         import time
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Mock process_item to simulate some processing time
         def mock_process_fn(*args, **kwargs):
@@ -95,21 +95,19 @@ class TestFullPipeline:
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
         # Process items
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify all items were processed
         assert mock_process.call_count == 4
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 4
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_full_pipeline_with_errors(self, mock_process, mock_config):
         """Test pipeline with some items failing."""
         import time
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Make some items fail
         call_count = [0]
@@ -140,9 +138,7 @@ class TestFullPipeline:
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
         # Process items (should handle errors gracefully)
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify some succeeded and some failed
         total_completed = sum(w.completed for w in pool.workers)
@@ -156,8 +152,8 @@ class TestFullPipeline:
 class TestWorkerPoolIntegration:
     """Test worker pool integration with processing."""
 
-    @patch("plex_generate_previews.media_processing.generate_bif")
-    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
+    @patch("plex_generate_previews.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
     @patch("os.path.isdir")
     @patch("os.makedirs")
@@ -174,7 +170,7 @@ class TestWorkerPoolIntegration:
         plex_xml_movie_tree,
     ):
         """Test worker pool coordinating multiple workers."""
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Mock Plex
         mock_plex = MagicMock()
@@ -211,9 +207,7 @@ class TestWorkerPoolIntegration:
         # Each item simulates successful image generation
         mock_gen_images.return_value = (True, 1, False, 0.8, "1.0x")
         # Process
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify all completed
         total_completed = sum(w.completed for w in pool.workers)
@@ -223,12 +217,12 @@ class TestWorkerPoolIntegration:
         assert mock_gen_images.call_count == 3
         assert mock_gen_bif.call_count == 3
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_worker_pool_load_balancing(self, mock_process, mock_config):
         """Test that work is distributed across workers."""
         import time
 
-        from plex_generate_previews.worker import WorkerPool
+        from plex_generate_previews.jobs.worker import WorkerPool
 
         # Simulate variable processing times
         def variable_process(*args, **kwargs):
@@ -250,9 +244,7 @@ class TestWorkerPoolIntegration:
         worker_progress.add_task = MagicMock(side_effect=list(range(20)))
 
         # Process
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify work was distributed (each worker should have processed some items)
         for worker in pool.workers:

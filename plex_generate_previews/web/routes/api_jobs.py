@@ -15,7 +15,6 @@ from ..auth import (
 )
 from ..jobs import PRIORITY_NORMAL, JobStatus, get_job_manager, parse_priority
 from . import api
-from .job_runner import _start_job_async
 from ._helpers import (
     MEDIA_ROOT,
     _ensure_gpu_cache,
@@ -25,11 +24,7 @@ from ._helpers import (
     _safe_resolve_within,
     limiter,
 )
-
-
-# ============================================================================
-# API Routes - Authentication
-# ============================================================================
+from .job_runner import _start_job_async
 
 
 @api.route("/auth/status")
@@ -104,12 +99,7 @@ def get_jobs():
             key=lambda j: (j.priority, j.created_at or ""),
         )
         terminal = sorted(
-            (
-                j
-                for j in all_jobs
-                if j.status
-                in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
-            ),
+            (j for j in all_jobs if j.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)),
             key=lambda j: j.completed_at or j.created_at or "",
             reverse=True,
         )
@@ -177,9 +167,7 @@ def create_job():
 
     job_manager = get_job_manager()
     job = job_manager.create_job(
-        library_id=",".join(library_names)
-        if library_names
-        else (",".join(library_ids) if library_ids else None),
+        library_id=",".join(library_names) if library_names else (",".join(library_ids) if library_ids else None),
         library_name=data.get("library_name", ""),
         config=data.get("config", {}),
         priority=priority,
@@ -226,9 +214,7 @@ def create_manual_job():
             continue
         resolved = _safe_resolve_within(path_str, MEDIA_ROOT)
         if resolved is None:
-            return jsonify(
-                {"error": f"Path is outside allowed media root: {path_str}"}
-            ), 400
+            return jsonify({"error": f"Path is outside allowed media root: {path_str}"}), 400
         resolved_paths.append(resolved)
 
     if not resolved_paths:
@@ -315,7 +301,7 @@ def set_job_priority(job_id):
 
     if job.status == JobStatus.RUNNING:
         try:
-            from ...job_dispatcher import get_dispatcher
+            from ...jobs.dispatcher import get_dispatcher
 
             dispatcher = get_dispatcher()
             if dispatcher is not None:
@@ -383,7 +369,7 @@ def add_workers_global():
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = _get_shared_worker_pool()
@@ -414,7 +400,7 @@ def remove_workers_global():
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = _get_shared_worker_pool()
@@ -448,7 +434,7 @@ def _get_shared_worker_pool():
     if pool is not None:
         return pool
     try:
-        from ...job_dispatcher import get_dispatcher
+        from ...jobs.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         if dispatcher is not None:
@@ -472,7 +458,7 @@ def add_job_workers(job_id):
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = job_manager.get_active_worker_pool()
@@ -508,7 +494,7 @@ def remove_job_workers(job_id):
     count = int(data.get("count", 1))
     if count <= 0:
         return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU", "CPU_FALLBACK"}:
+    if worker_type not in {"GPU", "CPU"}:
         return jsonify({"error": "Invalid worker_type"}), 400
 
     worker_pool = job_manager.get_active_worker_pool()
@@ -563,9 +549,7 @@ def get_job_logs(job_id):
         total_lines = len(logs)
         actual_offset = 0
 
-    log_cleared_by_retention = (
-        len(logs) == 1 and logs[0] == LOG_RETENTION_CLEARED_MESSAGE
-    )
+    log_cleared_by_retention = len(logs) == 1 and logs[0] == LOG_RETENTION_CLEARED_MESSAGE
 
     return jsonify(
         {
@@ -653,14 +637,10 @@ def get_worker_statuses():
         if not workers:
             workers = _get_dispatcher_worker_statuses()
 
-        return jsonify(
-            {"workers": [w.to_dict() if hasattr(w, "to_dict") else w for w in workers]}
-        )
+        return jsonify({"workers": [w.to_dict() if hasattr(w, "to_dict") else w for w in workers]})
     except Exception as e:
         logger.error(f"Failed to get worker statuses: {e}")
-        return jsonify(
-            {"error": "Failed to retrieve worker statuses", "workers": []}
-        ), 500
+        return jsonify({"error": "Failed to retrieve worker statuses", "workers": []}), 500
 
 
 def _get_dispatcher_worker_statuses():
@@ -676,7 +656,7 @@ def _get_dispatcher_worker_statuses():
 
     """
     try:
-        from ...job_dispatcher import get_dispatcher
+        from ...jobs.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         if dispatcher is not None:
@@ -705,7 +685,6 @@ def _build_idle_workers_from_config():
         settings = get_settings_manager()
         gpu_config = settings.gpu_config
         cpu_count = settings.cpu_threads
-        cpu_fb_count = settings.cpu_fallback_threads
     except Exception:
         logger.debug("Could not read worker counts from settings", exc_info=True)
         return []
@@ -727,9 +706,7 @@ def _build_idle_workers_from_config():
 
     # Build GPU workers from per-GPU config
     config_by_device = {
-        entry["device"]: entry
-        for entry in gpu_config
-        if isinstance(entry, dict) and entry.get("device")
+        entry["device"]: entry for entry in gpu_config if isinstance(entry, dict) and entry.get("device")
     }
 
     for gpu_info in gpu_infos:
@@ -763,17 +740,6 @@ def _build_idle_workers_from_config():
                 "worker_id": worker_id,
                 "worker_type": "CPU",
                 "worker_name": f"CPU - Worker {i + 1}",
-                **idle_entry,
-            }
-        )
-
-    for i in range(cpu_fb_count):
-        worker_id += 1
-        statuses.append(
-            {
-                "worker_id": worker_id,
-                "worker_type": "CPU_FALLBACK",
-                "worker_name": f"CPU Fallback - Worker {i + 1}",
                 **idle_entry,
             }
         )
