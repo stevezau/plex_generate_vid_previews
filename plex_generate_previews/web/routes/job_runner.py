@@ -95,7 +95,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             from loguru import logger as loguru_logger
 
             from ...config import ConfigValidationError, load_config
-            from ...job_orchestrator import run_processing
+            from ...jobs.orchestrator import run_processing
             from ...media_processing import (
                 _verify_tmp_folder_health,
                 clear_failures,

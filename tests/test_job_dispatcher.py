@@ -141,7 +141,7 @@ class TestJobDispatcher:
         yield
         reset_dispatcher()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_single_job_completes(self, mock_process):
         """A single job with multiple items completes via the dispatcher."""
         mock_process.side_effect = _fake_process_item
@@ -167,7 +167,7 @@ class TestJobDispatcher:
         assert result["failed"] == 0
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_two_jobs_share_workers(self, mock_process):
         """Two jobs submitted concurrently share workers."""
         mock_process.side_effect = _fake_process_item
@@ -202,7 +202,7 @@ class TestJobDispatcher:
         assert tracker_b.get_result()["completed"] == 3
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_idle_workers_pick_up_next_job(self, mock_process):
         """If job A has 1 item and 3 workers, free workers spill to job B."""
         call_log = []
@@ -245,7 +245,7 @@ class TestJobDispatcher:
         assert set(call_log) == {"/a/1", "/b/1", "/b/2", "/b/3"}
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_cancel_one_job_others_continue(self, mock_process):
         """Cancelling one job does not affect other jobs."""
         processing_started = threading.Event()
@@ -295,7 +295,7 @@ class TestJobDispatcher:
         assert not result_b["cancelled"]
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_pause_one_job_others_continue(self, mock_process):
         """Pausing one job lets other jobs continue."""
         mock_process.side_effect = _fake_process_item
@@ -335,7 +335,7 @@ class TestJobDispatcher:
         assert tracker_a.get_result()["completed"] == 1
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_gpu_fallback_routes_to_correct_job(self, mock_process):
         """GPU codec fallback items route back to the correct job tracker."""
         call_count = {"gpu": 0, "cpu": 0}
@@ -369,7 +369,7 @@ class TestJobDispatcher:
         assert result["failed"] == 0
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_mixed_success_and_failure(self, mock_process):
         """Items that succeed and fail are tracked correctly per job."""
         call_idx = {"n": 0}
@@ -403,7 +403,7 @@ class TestJobDispatcher:
         assert result["completed"] + result["failed"] == 4
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_submit_after_previous_completes(self, mock_process):
         """A second job can be submitted after the first finishes."""
         mock_process.side_effect = _fake_process_item
@@ -430,7 +430,7 @@ class TestJobDispatcher:
         assert t2.get_result()["completed"] == 2
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_fifo_priority_drains_first_job_before_second(self, mock_process):
         """FIFO scheduling: all items from job 1 are dispatched before job 2."""
         dispatch_order = []
@@ -469,7 +469,7 @@ class TestJobDispatcher:
         assert dispatch_order == ["/a/1", "/a/2", "/a/3", "/b/1", "/b/2"]
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_outcome_counts_merged_to_tracker(self, mock_process):
         """Per-task outcome deltas are correctly merged into the tracker."""
         mock_process.side_effect = _fake_process_item
@@ -489,7 +489,7 @@ class TestJobDispatcher:
         assert result["outcome"].get("generated", 0) == 2
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_drain_orphaned_fallback_routes_to_tracker(self, mock_process):
         """Draining orphan fallback items attributes failures to the correct tracker."""
 
@@ -518,7 +518,7 @@ class TestJobDispatcher:
         assert result["failed"] >= 1
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_cancel_passes_cancel_check_to_worker(self, mock_process):
         """Cancelled job's cancel_check is passed through to the worker thread."""
         cancel_checks_received = []
@@ -548,7 +548,7 @@ class TestJobDispatcher:
         assert cancel_checks_received[0] is cancel_fn
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_cancelled_fallback_items_are_not_dispatched(self, mock_process):
         """Fallback items from a cancelled job are skipped, not assigned to CPU."""
         call_count = [0]
@@ -596,7 +596,7 @@ class TestJobDispatcher:
 class TestDispatchLoopOrdering:
     """Verify that task assignment happens before status emissions."""
 
-    @patch("plex_generate_previews.worker.process_item", _fake_process_item)
+    @patch("plex_generate_previews.jobs.worker.process_item", _fake_process_item)
     def test_first_worker_update_shows_busy_worker(self):
         """The first worker_callback emission should reflect a busy worker,
         not stale idle data from before task assignment."""
@@ -655,7 +655,7 @@ class TestInProgressFraction:
 class TestProgressCallbackPercentOverride:
     """Verify that progress_callback accepts percent_override."""
 
-    @patch("plex_generate_previews.worker.process_item", _fake_process_item)
+    @patch("plex_generate_previews.jobs.worker.process_item", _fake_process_item)
     def test_progress_includes_in_flight_work(self):
         """Progress percent should be non-zero while a file is processing,
         not stuck at 0% until the first completion."""
@@ -700,7 +700,7 @@ class TestReapRetrySkipThroughput:
         yield
         reset_dispatcher()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_fast_items_complete_quickly(self, mock_process):
         """Items that complete nearly instantly (< 1ms) should not each
         cost a full 5ms dispatch cycle.  With 10 instant items and 1
@@ -730,7 +730,7 @@ class TestReapRetrySkipThroughput:
         assert elapsed < 0.5, f"Expected < 500ms, took {elapsed:.3f}s"
         dispatcher.shutdown()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_slow_and_fast_items_mixed(self, mock_process):
         """When one worker is busy with a slow item, another worker
         should still cycle through fast items efficiently."""
@@ -777,7 +777,7 @@ class TestPoolReconciliationOnDispatch:
         yield
         reset_dispatcher()
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_pool_gains_workers_via_callback(self, mock_process):
         """A pool created with 0 GPU workers should gain workers when the
         worker_pool_callback reconciles with fresh settings."""

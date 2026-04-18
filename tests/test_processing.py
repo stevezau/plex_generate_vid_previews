@@ -13,7 +13,7 @@ import pytest
 from plex_generate_previews.job_orchestrator import run_processing
 from plex_generate_previews.media_processing import ProcessingResult
 
-MODULE = "plex_generate_previews.job_orchestrator"
+MODULE = "plex_generate_previews.jobs.orchestrator"
 
 
 def _make_config(tmp_path, **overrides):
@@ -521,7 +521,7 @@ class TestJobDispatcherPath:
                 return_value=iter([(section, items)]),
             ),
             patch(
-                "plex_generate_previews.job_orchestrator.get_dispatcher",
+                "plex_generate_previews.jobs.orchestrator.get_dispatcher",
                 side_effect=[mock_dispatcher, mock_dispatcher],
                 create=True,
             ) as mock_get_disp,
@@ -532,7 +532,7 @@ class TestJobDispatcherPath:
                 patch.dict(
                     "sys.modules",
                     {
-                        "plex_generate_previews.job_dispatcher": MagicMock(get_dispatcher=mock_get_disp),
+                        "plex_generate_previews.jobs.dispatcher": MagicMock(get_dispatcher=mock_get_disp),
                         "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                     },
                 ),
@@ -578,7 +578,7 @@ class TestJobDispatcherPath:
             with patch.dict(
                 "sys.modules",
                 {
-                    "plex_generate_previews.job_dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
+                    "plex_generate_previews.jobs.dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
                     "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                 },
             ):

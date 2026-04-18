@@ -154,7 +154,7 @@ class TestWorkerOutcomeCounts:
         for r in ProcessingResult:
             assert worker.outcome_counts[r.value] == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_completed_item_increments_outcome(self, mock_process):
         """Successful process_item updates both completed and outcome_counts."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -175,7 +175,7 @@ class TestWorkerOutcomeCounts:
         assert worker.completed == 1
         assert worker.failed == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_skipped_item_counts_as_completed_not_failed(self, mock_process):
         """Skipped items (e.g. BIF exists) count as completed, not failed."""
         mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
@@ -196,7 +196,7 @@ class TestWorkerOutcomeCounts:
         assert worker.completed == 1
         assert worker.failed == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_failed_result_counts_as_failed(self, mock_process):
         """ProcessingResult.FAILED increments worker.failed."""
         mock_process.return_value = ProcessingResult.FAILED
@@ -217,7 +217,7 @@ class TestWorkerOutcomeCounts:
         assert worker.failed == 1
         assert worker.completed == 0
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_file_not_found_counts_as_completed(self, mock_process):
         """SKIPPED_FILE_NOT_FOUND is a completed item (no exception)."""
         mock_process.return_value = ProcessingResult.SKIPPED_FILE_NOT_FOUND
@@ -342,7 +342,7 @@ class TestMisconfigurationDetection:
 class TestOutcomeInWorkerPoolResult:
     """Test that WorkerPool includes outcome in its return dict."""
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_process_items_headless_includes_outcome(self, mock_process):
         """process_items_headless result dict contains an 'outcome' key."""
         mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
@@ -367,7 +367,7 @@ class TestOutcomeInWorkerPoolResult:
         assert isinstance(result["outcome"], dict)
         assert result["outcome"]["skipped_bif_exists"] >= 1
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_outcome_counts_match_items_processed(self, mock_process):
         """Sum of all outcome values equals total items processed."""
         results_iter = iter(

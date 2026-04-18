@@ -61,7 +61,7 @@ class TestFullPipeline:
         assert mock_gen_images.called
         assert mock_gen_bif.called
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_full_pipeline_multiple_videos(self, mock_process, mock_config):
         """Test processing multiple videos with worker pool."""
         import time
@@ -102,7 +102,7 @@ class TestFullPipeline:
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 4
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_full_pipeline_with_errors(self, mock_process, mock_config):
         """Test pipeline with some items failing."""
         import time
@@ -217,7 +217,7 @@ class TestWorkerPoolIntegration:
         assert mock_gen_images.call_count == 3
         assert mock_gen_bif.call_count == 3
 
-    @patch("plex_generate_previews.worker.process_item")
+    @patch("plex_generate_previews.jobs.worker.process_item")
     def test_worker_pool_load_balancing(self, mock_process, mock_config):
         """Test that work is distributed across workers."""
         import time
