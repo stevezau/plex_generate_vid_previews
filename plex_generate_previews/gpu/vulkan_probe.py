@@ -135,12 +135,44 @@ _NVIDIA_DEVICE_NAME_HINTS = (
     "gtx",
 )
 
+# Explicit non-NVIDIA prefixes.  If a Vulkan device name starts with one of
+# these, we never classify it as NVIDIA even if a brand hint like "titan"
+# appears downstream (e.g. a hypothetical "Intel Titan IP Extreme" SKU).
+# FFmpeg always prefixes the Intel Mesa driver's device names with
+# "Intel(R)" and the AMD Mesa driver with "AMD " (plus llvmpipe /
+# lavapipe for software).  These prefixes are derived from
+# ``VkPhysicalDeviceProperties::deviceName`` which the drivers set
+# themselves, so the prefix is stable.
+_NON_NVIDIA_VENDOR_PREFIXES = (
+    "intel",
+    "amd ",
+    "amd radeon",
+    "radeon",
+    "llvmpipe",
+    "lavapipe",
+    "apple",
+    "swiftshader",
+)
+
 
 def _is_nvidia_vulkan_device(device: Optional[str]) -> bool:
-    """Return True if ``device`` looks like an NVIDIA GPU name."""
+    """Return True if ``device`` is an NVIDIA GPU.
+
+    Uses a two-step check to guard against hypothetical brand-string
+    collisions with other vendors (e.g. a future Intel "Titan" SKU):
+
+    1. Reject explicit non-NVIDIA prefixes ("Intel(R)", "AMD Radeon",
+       "llvmpipe", etc.).  These come straight from each vendor's
+       Vulkan driver and are stable across driver versions.
+    2. Then accept any of the NVIDIA brand substrings ("nvidia",
+       "geforce", "rtx", ...).
+    """
     if not device:
         return False
-    d = device.lower()
+    d = device.lower().lstrip()
+    for prefix in _NON_NVIDIA_VENDOR_PREFIXES:
+        if d.startswith(prefix):
+            return False
     return any(hint in d for hint in _NVIDIA_DEVICE_NAME_HINTS)
 
 

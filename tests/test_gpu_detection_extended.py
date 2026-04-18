@@ -3102,3 +3102,38 @@ class TestFormatDriverLabel:
         label = _format_driver_label("/dev/dri/renderD128", "amdgpu")
         assert label == "driver: amdgpu"
         assert mock_probe.call_count == 0
+
+
+class TestIsNvidiaVulkanDevice:
+    """Tests for _is_nvidia_vulkan_device vendor-prefix rejection."""
+
+    @pytest.mark.parametrize(
+        "device,expected",
+        [
+            # Real NVIDIA device names from various driver versions.
+            ("NVIDIA GeForce RTX 4090 (discrete)", True),
+            ("NVIDIA TITAN RTX", True),
+            ("GeForce RTX 3080", True),
+            ("Quadro P4000", True),
+            ("Tesla T4", True),
+            # Intel: name-based brand hint ("titan") must NOT overrule the
+            # Intel vendor prefix.  Guards against a hypothetical future
+            # Intel SKU colliding with the NVIDIA "titan" brand hint.
+            ("Intel(R) Graphics (RPL-S) (integrated) (0xa780)", False),
+            ("Intel Arc A380 Graphics", False),
+            ("Intel Titan Extreme (hypothetical)", False),
+            # AMD driver prefix blocks name-based misclassification.
+            ("AMD Radeon RX 7900 XTX (discrete)", False),
+            ("AMD Radeon TITAN XT Ultra (hypothetical)", False),
+            # Software rasterisers.
+            ("llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)", False),
+            ("lavapipe (software)", False),
+            # Empty/None.
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_classification(self, device, expected):
+        from plex_generate_previews.gpu.vulkan_probe import _is_nvidia_vulkan_device
+
+        assert _is_nvidia_vulkan_device(device) is expected
