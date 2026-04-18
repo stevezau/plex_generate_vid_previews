@@ -3047,7 +3047,7 @@ class TestFormatDriverLabel:
     nothing regresses on systems without ``vainfo``.
     """
 
-    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    @patch("plex_generate_previews.gpu.vaapi_probe._probe_vaapi_driver")
     def test_intel_label_includes_both_drivers(self, mock_probe):
         """i915 + successful vainfo probe produces a two-driver label."""
         mock_probe.return_value = "Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"
@@ -3057,7 +3057,7 @@ class TestFormatDriverLabel:
             "va-api driver: Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"
         )
 
-    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    @patch("plex_generate_previews.gpu.vaapi_probe._probe_vaapi_driver")
     def test_xe_driver_is_treated_as_intel(self, mock_probe):
         """xe (new Intel DRM driver) also triggers the vainfo probe."""
         mock_probe.return_value = "Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"
@@ -3065,14 +3065,14 @@ class TestFormatDriverLabel:
         assert label.startswith("kernel driver: xe, va-api driver: Intel iHD")
         mock_probe.assert_called_once_with("/dev/dri/renderD128")
 
-    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    @patch("plex_generate_previews.gpu.vaapi_probe._probe_vaapi_driver")
     def test_intel_falls_back_to_legacy_when_probe_fails(self, mock_probe):
         """Missing vainfo must not regress the log format on Intel."""
         mock_probe.return_value = None
         label = _format_driver_label("/dev/dri/renderD128", "i915")
         assert label == "driver: i915"
 
-    @patch("plex_generate_previews.gpu_detection._probe_vaapi_driver")
+    @patch("plex_generate_previews.gpu.vaapi_probe._probe_vaapi_driver")
     def test_non_intel_driver_never_probes(self, mock_probe):
         """nvidia/amdgpu GPUs produce the legacy label and skip vainfo."""
         label = _format_driver_label("/dev/dri/renderD128", "nvidia")

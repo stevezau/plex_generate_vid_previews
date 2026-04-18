@@ -8,7 +8,6 @@ import os
 import platform
 import re
 import subprocess
-from functools import lru_cache
 from typing import List, Optional, Tuple
 
 from loguru import logger
@@ -19,6 +18,9 @@ from loguru import logger
 # ``from plex_generate_previews.gpu_detection import get_vulkan_device_info``
 # keep working.  New code should import from :mod:`.gpu` or
 # :mod:`.gpu.vulkan_probe` directly.
+from .gpu.vaapi_probe import _format_driver_label as _format_driver_label
+from .gpu.vaapi_probe import _INTEL_KERNEL_DRIVERS as _INTEL_KERNEL_DRIVERS
+from .gpu.vaapi_probe import _probe_vaapi_driver as _probe_vaapi_driver
 from .gpu.vulkan_probe import VulkanProbeResult as VulkanProbeResult
 from .gpu.vulkan_probe import _find_libegl_nvidia as _find_libegl_nvidia
 from .gpu.vulkan_probe import (
@@ -100,81 +102,8 @@ DRIVER_VENDOR_MAP = {
     "vc4": "VIDEOCORE",
 }
 
-# Kernel drivers that correspond to Intel GPUs (worth probing vainfo for
-# the user-space VA-API driver identity, since the kernel driver name
-# alone is misleading — i915/xe sit underneath iHD).
-_INTEL_KERNEL_DRIVERS = frozenset({"i915", "xe"})
-
-
-@lru_cache(maxsize=None)
-def _probe_vaapi_driver(render_device: str) -> Optional[str]:
-    """Return the user-space VA-API driver version string for a render node.
-
-    Runs ``vainfo --display drm --device <render_device>`` and extracts
-    the ``Driver version:`` line. Returns None on any failure (missing
-    binary, timeout, parse failure) so callers can fall back to a
-    legacy log format.
-
-    Cached for the lifetime of the process: the underlying VA-API
-    driver does not change at runtime, and three log sites probe the
-    same device during startup.
-
-    Args:
-        render_device: Path to a DRM render node (e.g. ``/dev/dri/renderD128``).
-
-    Returns:
-        Optional[str]: The raw driver version string (e.g.
-        ``"Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"``) on
-        success, or None if the probe could not determine a driver.
-
-    """
-    try:
-        result = subprocess.run(
-            ["vainfo", "--display", "drm", "--device", render_device],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return None
-    marker = "Driver version:"
-    for line in result.stdout.splitlines():
-        idx = line.find(marker)
-        if idx == -1:
-            continue
-        value = line[idx + len(marker) :].strip()
-        return value or None
-    return None
-
-
-def _format_driver_label(render_device: str, kernel_driver: str) -> str:
-    """Build the parenthesised driver label for a GPU log line.
-
-    For Intel GPUs the label shows both the kernel DRM driver (``i915``
-    or ``xe``) and the user-space VA-API driver from ``vainfo``. For
-    everything else, or when ``vainfo`` is unavailable, the label falls
-    back to the legacy ``driver: <kernel_driver>`` format.
-
-    Args:
-        render_device: Render node path (e.g. ``/dev/dri/renderD128``).
-        kernel_driver: Kernel driver name read from
-            ``/sys/class/drm/cardX/device/driver``.
-
-    Returns:
-        str: Label without enclosing parens, suitable for inclusion in
-        debug log lines, e.g. ``"kernel driver: i915, va-api driver:
-        Intel iHD driver for Intel(R) Gen Graphics - 25.3.4"`` or
-        ``"driver: i915"``.
-
-    """
-    if kernel_driver in _INTEL_KERNEL_DRIVERS:
-        vaapi_driver = _probe_vaapi_driver(render_device)
-        if vaapi_driver:
-            return f"kernel driver: {kernel_driver}, va-api driver: {vaapi_driver}"
-    return f"driver: {kernel_driver}"
+# VA-API driver probing moved to plex_generate_previews/gpu/vaapi_probe.py;
+# re-exported from this module's top-of-file imports.
 
 
 def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
