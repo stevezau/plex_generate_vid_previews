@@ -1,34 +1,23 @@
-"""Tier-by-tier retry-cascade predicates for FFmpeg thumbnail jobs.
+"""Retry-cascade predicates for FFmpeg thumbnail jobs.
 
 :func:`generate_images` in :mod:`..media_processing` runs up to four
 FFmpeg invocations in sequence when the first attempt produces zero
-thumbnails.  This module pulls the *pure* decision logic — "given the
-outcome of the last FFmpeg pass, should we retry at the next tier, and
-with what reason label?" — out of that huge orchestrator function so it
-can be unit-tested on synthetic stderr streams without needing FFmpeg
-on the test box.
+thumbnails. The predicates here decide, given the outcome of the last
+FFmpeg pass, whether to retry at the next tier and with what reason
+label. Keeping them pure lets them be unit-tested on synthetic stderr
+streams without needing FFmpeg on the test box.
 
 The tiers (from first to last):
 
-1. ``SKIP_FRAME``         — retry without ``-skip_frame nokey`` when the
-                            keyframe-only pass produced nothing.
-2. ``SW_LIBPLACEBO``      — fall back from hardware DV5 paths
-                            (Intel OpenCL or VAAPI→Vulkan) to software
-                            decode + libplacebo when the hardware
-                            pipeline fails.
-3. ``DV_SAFE_FILTER``     — swap the zscale/tonemap/libplacebo chain
-                            for a plain fps+scale chain on
-                            HDR/DV-specific errors.
-4. ``CPU_FALLBACK``       — raise :class:`CodecNotSupportedError` so
-                            the GPU worker can retry the whole item on
-                            CPU in-place.
-
-The orchestration loop itself still lives in :func:`generate_images`
-because it mutates a dozen local variables (rc, seconds, speed,
-stderr_lines, image_count, plus several flags) and early-returns on
-cancellation — extracting it into a pure function would require
-threading a large ``RetryState`` dataclass through every call site
-and gain little readability over the current in-line form.
+1. ``SKIP_FRAME``    — retry without ``-skip_frame nokey`` when the
+                       keyframe-only pass produced nothing.
+2. ``SW_LIBPLACEBO`` — fall back from hardware DV5 paths (Intel OpenCL
+                       or VAAPI → Vulkan) to software decode + libplacebo
+                       when the hardware pipeline fails.
+3. ``DV_SAFE_FILTER`` — swap the zscale/tonemap/libplacebo chain for a
+                        plain fps+scale chain on HDR/DV-specific errors.
+4. ``CPU_FALLBACK``   — raise :class:`CodecNotSupportedError` so the GPU
+                        worker can retry the whole item on CPU in-place.
 """
 
 from __future__ import annotations

@@ -1,23 +1,18 @@
 """Video processing pipeline — filter-chain assembly, FFmpeg execution,
-HDR/DV detection, retry orchestration, and BIF packing.
-
-Everything needed to take one video file and produce its thumbnail
-index.  Higher-level library/job orchestration lives in
-:mod:`job_orchestrator`; the top-level :mod:`media_processing` module
-re-exports the public API of this package for backwards compatibility.
+HDR/DV detection, retry orchestration.
 
 Sub-modules:
 
 * :mod:`.hdr_detection`  — pure helpers for detecting DV/HDR content
   and matching FFmpeg stderr signatures on tonemap failure.
 * :mod:`.filter_chain`   — builders for the ``-vf`` filter string for
-  each vendor / content-format combination.  The ``path_kind`` string
+  each vendor / content-format combination. The ``path_kind`` string
   is the single source of truth for which pipeline shape runs.
 * :mod:`.ffmpeg_runner`   — subprocess invocation, progress parsing,
   timeout handling.
-* :mod:`.retry_cascade`   — tier-by-tier classifier helpers for the
-  4-tier FFmpeg retry cascade.
-* (future) :mod:`.bif_writer`     — pack JPEGs into the Plex BIF index.
+* :mod:`.retry_cascade`   — classifier helpers for the 4-tier FFmpeg
+  retry cascade (skip-frame → sw libplacebo → DV-safe filter → CPU
+  fallback).
 """
 
 from .filter_chain import (

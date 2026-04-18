@@ -26,10 +26,6 @@ from ._helpers import (
 )
 from .job_runner import _start_job_async
 
-# ============================================================================
-# API Routes - Authentication
-# ============================================================================
-
 
 @api.route("/auth/status")
 def auth_status():

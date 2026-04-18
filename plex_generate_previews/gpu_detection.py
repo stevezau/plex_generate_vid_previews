@@ -10,12 +10,10 @@ import subprocess
 
 from loguru import logger
 
-# Re-exports: the Vulkan probe moved to :mod:`.gpu.vulkan_probe` as part
-# of the gpu_detection refactor.  Every private and public name is
-# forwarded here so existing callers that do
-# ``from plex_generate_previews.gpu_detection import get_vulkan_device_info``
-# keep working.  New code should import from :mod:`.gpu` or
-# :mod:`.gpu.vulkan_probe` directly.
+# Legacy import shim: public + private names from the :mod:`.gpu` subpackage
+# are re-exported here so existing imports of the form
+# ``from plex_generate_previews.gpu_detection import X`` keep working.
+# New code should import from :mod:`.gpu` directly.
 from .gpu.enumeration import DRIVER_VENDOR_MAP as DRIVER_VENDOR_MAP
 from .gpu.enumeration import (
     _detect_gpu_type_from_lspci as _detect_gpu_type_from_lspci,

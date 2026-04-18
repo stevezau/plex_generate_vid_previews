@@ -1,7 +1,6 @@
 """GPU detection, capability probing, and Vulkan-specific tooling.
 
-Carved out of the legacy :mod:`gpu_detection` monolith across several
-refactor tiers:
+Sub-modules:
 
 * :mod:`.vulkan_probe`        — multi-strategy Vulkan device probe
   (NVIDIA EGL-vendor fallback, VK_DRIVER_FILES overrides, software
@@ -13,11 +12,6 @@ refactor tiers:
 * :mod:`.enumeration`         — platform-specific GPU enumeration
   (Linux DRM, Apple system_profiler, WSL2 detection, lspci / PCI
   resolvers, ``get_gpu_name``, driver→vendor map).
-
-Public API is re-exported so callers can do
-``from plex_generate_previews.gpu import get_vulkan_device_info``;
-the legacy :mod:`gpu_detection` module also keeps forwarding the same
-symbols for anything that still imports them from the old location.
 """
 
 from .enumeration import DRIVER_VENDOR_MAP, get_gpu_name

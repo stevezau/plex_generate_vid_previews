@@ -1,16 +1,10 @@
-"""Pure helpers for detecting Dolby Vision / HDR content and the kinds of
-FFmpeg stderr signatures that mean our tonemap filter just fell over.
+"""Pure helpers for detecting Dolby Vision / HDR content and the FFmpeg
+stderr signatures that mean our tonemap filter fell over.
 
-These are pure, side-effect-free functions of their inputs (a media
-metadata field or a list of stderr lines).  They were previously inlined
-in :mod:`media_processing`; grouping them here keeps the detection
-vocabulary in one place and lets :func:`generate_images` focus on
-pipeline orchestration rather than string-matching heuristics.
-
-Every function is re-exported from :mod:`media_processing` for
-backwards compatibility, so existing callers and tests that do
-``from plex_generate_previews.media_processing import _is_dolby_vision``
-keep working.
+Side-effect-free functions of their inputs (media-metadata fields or
+a list of stderr lines). Grouping them here keeps the detection
+vocabulary in one place so :func:`generate_images` stays focused on
+pipeline orchestration.
 """
 
 from __future__ import annotations

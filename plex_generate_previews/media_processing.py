@@ -36,11 +36,7 @@ from .processing.retry_cascade import (
 )
 from .utils import sanitize_path
 
-# Backwards-compat re-exports.  The detection helpers used to live in this
-# module under underscore-prefixed names; they moved to :mod:`hdr_detection`
-# as part of the media_processing split, but external tests and callers
-# still import them from here.  The public-name aliases below keep both the
-# old names (``_is_dolby_vision`` etc.) and the new names importable.
+# Legacy underscore-prefixed aliases kept for external callers.
 _is_dolby_vision = is_dolby_vision
 _is_dv_no_backward_compat = is_dv_no_backward_compat
 _detect_dolby_vision_rpu_error = detect_dolby_vision_rpu_error
@@ -660,9 +656,8 @@ def _clean_output_images(output_folder: str) -> None:
     """Remove any ``*.jpg`` files in ``output_folder``, silently ignoring
     files that vanish or are unremovable.
 
-    Used between FFmpeg retry tiers so the next attempt starts with an
-    empty output directory.  Extracted from five identical inline blocks
-    in :func:`generate_images` to keep the retry cascade readable.
+    Called between FFmpeg retry tiers so the next attempt starts with an
+    empty output directory.
     """
     for img in glob.glob(os.path.join(output_folder, "*.jpg")):
         try:
@@ -681,40 +676,25 @@ def generate_images(
     ffmpeg_threads_override: int | None = None,
     cancel_check=None,
 ) -> tuple[bool, int, str, float, float, str | None]:
-    """Generate thumbnail images from a video using FFmpeg.
+    """Generate thumbnail images from ``video_file`` using FFmpeg.
 
-    Runs FFmpeg with hardware acceleration when configured. Attempts with
-    '-skip_frame:v nokey' first on paths that support it (disabled for DV
-    Profile 5 and libplacebo because the RPU side-data has inter-frame
-    dependencies). If the first attempt returns non-zero, automatically
-    retries without '-skip_frame'.
-
-    If GPU processing fails with a codec error (detected via stderr parsing for
-    patterns like "Codec not supported", "Unsupported codec", etc., or exit codes
-    -22/EINVAL or 69/max error rate) and CPU threads are available, automatically
-    falls back to CPU processing. This ensures files are processed even when the
-    GPU doesn't support the codec (e.g., AV1 on RTX 2060 SUPER).
+    Selects hardware acceleration based on ``gpu`` / ``gpu_device_path``
+    and runs the 4-tier retry cascade on failure (skip-frame →
+    sw-libplacebo → DV-safe filter → CPU fallback). On codec-level GPU
+    failure, raises :class:`CodecNotSupportedError` so the worker can
+    retry the whole item on CPU in-place.
 
     Args:
-        video_file: Path to input video file
-        output_folder: Directory where thumbnail images will be written
-        gpu: GPU type ('NVIDIA', 'AMD', 'INTEL', 'WINDOWS_GPU', 'APPLE', or None)
-        gpu_device_path: GPU device path (e.g., '/dev/dri/renderD128' for VAAPI)
-        config: Configuration object
-        progress_callback: Optional progress callback for UI updates
-        cancel_check: Optional callable returning True when job is cancelled
+        video_file: Path to input video file.
+        output_folder: Directory where thumbnail images are written.
+        gpu: GPU type (``NVIDIA``/``AMD``/``INTEL``/``WINDOWS_GPU``/``APPLE``) or ``None``.
+        gpu_device_path: Device path (e.g. ``/dev/dri/renderD128`` for VAAPI).
+        config: Processing config.
+        progress_callback: Optional progress callback for UI updates.
+        cancel_check: Optional callable returning ``True`` when the job is cancelled.
 
     Returns:
-        (success, image_count, hw_used, seconds, speed, error_summary):
-            success (bool): True if at least one image was produced
-            image_count (int): Number of images written
-            hw_used (bool): Whether hardware acceleration was actually used
-                           (False if CPU fallback occurred)
-            seconds (float): Elapsed processing time (last attempt)
-            speed (str): Reported or computed FFmpeg speed string
-            error_summary (str): Concise FFmpeg error excerpt on failure,
-                empty string on success.
-
+        Tuple of ``(success, image_count, hw_used, seconds, speed, error_summary)``.
     """
     media_info = MediaInfo.parse(video_file)
     fps_value = round(1 / config.plex_bif_frame_interval, 6)

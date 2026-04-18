@@ -309,10 +309,8 @@ def create_ffmpeg_runner(
             elif effective_gpu_device_path and effective_gpu_device_path.startswith("/dev/dri/"):
                 # -hwaccel_device (not the deprecated -vaapi_device)
                 # pairs with -hwaccel_output_format vaapi so decoded
-                # frames stay in VAAPI surfaces for scale_vaapi.  Pre-
-                # refactor this path also used scale_vaapi and only
-                # hwdownloaded the 320x240 frame; issue #218 restores
-                # that.
+                # frames stay in VAAPI surfaces for scale_vaapi; the
+                # 320x240 frame is hwdownloaded at the end (issue #218).
                 args += [
                     "-hwaccel",
                     "vaapi",

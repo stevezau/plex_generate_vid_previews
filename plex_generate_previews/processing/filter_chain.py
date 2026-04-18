@@ -1,14 +1,8 @@
-"""FFmpeg ``-vf`` filter-chain builders for the DV5 tone-map paths.
+"""FFmpeg ``-vf`` filter-chain builders for Dolby Vision Profile 5 paths.
 
-Today this module only owns the DV Profile 5 builder; the SDR / HDR10
-/ DV Profile 7+8 chains are still assembled inline in
+The SDR / HDR10 / DV Profile 7+8 chains are still assembled inline in
 :func:`media_processing.generate_images` because they depend on the
-nested ``_gpu_scale_segment`` helper's captured state.  When that
-closure is promoted in the upcoming :mod:`ffmpeg_runner` extraction
-(Tier 3 PR B), the rest of the chain builders should move here too.
-
-Everything is re-exported from :mod:`media_processing` for backwards
-compatibility.
+nested ``_gpu_scale_segment`` helper's captured state.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ Creates and configures the Flask application with SocketIO support.
 import atexit
 import hashlib
 import hmac
-import logging
+import logging  # stdlib logging only — required to mute werkzeug's own logger; app code must use loguru
 import os
 from datetime import timedelta
 from pathlib import Path

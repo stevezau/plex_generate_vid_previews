@@ -1,19 +1,11 @@
 """Platform-specific GPU enumeration helpers.
 
-Moved out of :mod:`..gpu_detection` as Tier 4 of the GPU-audit refactor.
-The functions here are the *information-gathering* layer — they probe
-sysfs / DRM / lspci / nvidia-smi / system_profiler and answer
-questions like "which render nodes exist?", "what vendor owns this
-driver?", "what does lspci call this PCI device?".
-
-The orchestration layer — :func:`..gpu_detection.detect_all_gpus` and
-its per-OS detectors — stays in the top-level module, uses these
-helpers to build the public list of GPUs and decide which hardware
-accelerators to surface.
-
-:mod:`..gpu_detection` re-exports every public symbol so existing
-``from plex_generate_previews.gpu_detection import X`` callers (and
-their test patches) keep working.
+The information-gathering layer for GPU detection: probes sysfs / DRM /
+lspci / nvidia-smi / system_profiler to answer questions like "which
+render nodes exist?", "what vendor owns this driver?", "what does
+lspci call this PCI device?". The orchestration layer
+(:func:`..gpu_detection.detect_all_gpus` and its per-OS detectors)
+composes these helpers into the public GPU list.
 """
 
 from __future__ import annotations
