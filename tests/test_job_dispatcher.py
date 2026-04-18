@@ -248,8 +248,10 @@ class TestJobDispatcher:
     @patch("plex_generate_previews.worker.process_item")
     def test_cancel_one_job_others_continue(self, mock_process):
         """Cancelling one job does not affect other jobs."""
+        processing_started = threading.Event()
 
         def slow_process(*args, **kwargs):
+            processing_started.set()
             time.sleep(0.15)
             return ProcessingResult.GENERATED
 
@@ -278,8 +280,9 @@ class TestJobDispatcher:
             plex=MagicMock(),
         )
 
-        # Let processing start, then cancel job A
-        time.sleep(0.05)
+        # Wait for processing to actually start before cancelling — previously
+        # a flaky 50 ms sleep could beat the dispatcher on slow CI agents.
+        assert processing_started.wait(timeout=5), "expected processing to start"
         cancelled.set()
 
         assert tracker_a.wait(timeout=10)
