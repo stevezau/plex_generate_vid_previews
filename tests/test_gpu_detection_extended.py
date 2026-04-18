@@ -29,9 +29,9 @@ from plex_generate_previews.gpu_detection import (
 class TestDetectAllGPUs:
     """Test comprehensive GPU detection."""
 
-    @patch("plex_generate_previews.gpu_detection._test_acceleration_method")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices")
-    @patch("plex_generate_previews.gpu_detection.get_gpu_name")
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect.get_gpu_name")
     @patch("platform.system", return_value="Linux")
     def test_detect_all_gpus_nvidia(self, mock_platform, mock_name, mock_devices, mock_test):
         """Test NVIDIA CUDA GPU detection."""
@@ -48,9 +48,9 @@ class TestDetectAllGPUs:
         assert "RTX 3080" in nvidia_gpus[0][2]["name"]
         assert nvidia_gpus[0][2]["acceleration"] == "CUDA"
 
-    @patch("plex_generate_previews.gpu_detection._test_acceleration_method")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices")
-    @patch("plex_generate_previews.gpu_detection.get_gpu_name")
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect.get_gpu_name")
     @patch("platform.system", return_value="Linux")
     def test_detect_all_gpus_amd(self, mock_platform, mock_name, mock_devices, mock_test):
         """Test AMD VAAPI GPU detection."""
@@ -66,9 +66,9 @@ class TestDetectAllGPUs:
         assert "/dev/dri/renderD128" in amd_gpus[0][1]
         assert amd_gpus[0][2]["acceleration"] == "VAAPI"
 
-    @patch("plex_generate_previews.gpu_detection._test_acceleration_method")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices")
-    @patch("plex_generate_previews.gpu_detection.get_gpu_name")
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect.get_gpu_name")
     @patch("platform.system", return_value="Linux")
     def test_detect_all_gpus_intel(self, mock_platform, mock_name, mock_devices, mock_test):
         """Test Intel VAAPI GPU detection."""
@@ -84,20 +84,20 @@ class TestDetectAllGPUs:
         assert intel_gpus[0][1] == "/dev/dri/renderD128"
         assert intel_gpus[0][2]["acceleration"] == "VAAPI"
 
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
     def test_detect_all_gpus_none(self, mock_devices):
         """Test when no GPUs are detected."""
         mock_devices.return_value = []
         # Ensure platform-specific paths (macOS) are not taken in this test
         with (
-            patch("plex_generate_previews.gpu_detection.is_macos", return_value=False),
-            patch("plex_generate_previews.gpu_detection.is_windows", return_value=False),
+            patch("plex_generate_previews.gpu.detect.is_macos", return_value=False),
+            patch("plex_generate_previews.gpu.detect.is_windows", return_value=False),
             patch(
                 "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
                 return_value=[],
             ),
             patch(
-                "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+                "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
                 return_value="",
             ),
         ):
@@ -281,11 +281,11 @@ class TestHwaccelFunctionality:
 class TestGetGPUDevices:
     """Test GPU device enumeration."""
 
-    @patch("plex_generate_previews.gpu_detection.os.path.islink")
-    @patch("plex_generate_previews.gpu_detection.os.readlink")
-    @patch("plex_generate_previews.gpu_detection.os.listdir")
-    @patch("plex_generate_previews.gpu_detection.os.path.exists")
-    @patch("plex_generate_previews.gpu_detection.os.path.realpath")
+    @patch("plex_generate_previews.gpu.detect.os.path.islink")
+    @patch("plex_generate_previews.gpu.detect.os.readlink")
+    @patch("plex_generate_previews.gpu.detect.os.listdir")
+    @patch("plex_generate_previews.gpu.detect.os.path.exists")
+    @patch("plex_generate_previews.gpu.detect.os.path.realpath")
     def test_get_gpu_devices(self, mock_realpath, mock_exists, mock_listdir, mock_readlink, mock_islink):
         """Test enumerating GPU devices from /sys/class/drm."""
         mock_exists.return_value = True
@@ -300,13 +300,13 @@ class TestGetGPUDevices:
         mock_readlink.return_value = "amdgpu"
         mock_realpath.side_effect = lambda x: "/sys/devices/pci0000:00/0000:00:01.0"
         # Force Linux code path for this test
-        with patch("plex_generate_previews.gpu_detection.platform.system", return_value="Linux"):
+        with patch("plex_generate_previews.gpu.detect.platform.system", return_value="Linux"):
             devices = _get_gpu_devices()
 
         # Should find GPU devices
         assert len(devices) > 0
 
-    @patch("plex_generate_previews.gpu_detection.os.path.exists")
+    @patch("plex_generate_previews.gpu.detect.os.path.exists")
     def test_get_gpu_devices_no_drm(self, mock_exists):
         """Test when /sys/class/drm doesn't exist."""
         mock_exists.return_value = False
@@ -370,17 +370,17 @@ class TestGetGPUName:
 
         assert "AMD" in name or "Radeon" in name
 
-    @patch("plex_generate_previews.gpu_detection.os.sep", "/")
+    @patch("plex_generate_previews.gpu.detect.os.sep", "/")
     @patch(
-        "plex_generate_previews.gpu_detection.os.path.join",
+        "plex_generate_previews.gpu.detect.os.path.join",
         side_effect=__import__("posixpath").join,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.os.path.basename",
+        "plex_generate_previews.gpu.detect.os.path.basename",
         side_effect=__import__("posixpath").basename,
     )
-    @patch("plex_generate_previews.gpu_detection.os.path.exists")
-    @patch("plex_generate_previews.gpu_detection.os.path.realpath")
+    @patch("plex_generate_previews.gpu.detect.os.path.exists")
+    @patch("plex_generate_previews.gpu.detect.os.path.realpath")
     @patch("subprocess.run")
     def test_get_gpu_name_multi_gpu_distinct_per_render_node(
         self, mock_run, mock_realpath, mock_exists, mock_basename, mock_join
@@ -680,7 +680,7 @@ class TestParseLspciGPUName:
 class TestAccelerationMethodTesting:
     """Test acceleration method testing."""
 
-    @patch("plex_generate_previews.gpu_detection._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
     def test_test_acceleration_method_cuda_failure(self, mock_test):
         """Test CUDA acceleration method failure."""
 
@@ -689,7 +689,7 @@ class TestAccelerationMethodTesting:
         result = _test_acceleration_method("nvidia", "CUDA", None)
         assert result is False
 
-    @patch("plex_generate_previews.gpu_detection._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
     def test_test_acceleration_method_vaapi_failure(self, mock_test):
         """Test VAAPI acceleration method failure."""
 
@@ -944,11 +944,11 @@ class TestGetFFmpegVersionParsing:
 class TestDetectAllGPUsEdgeCases:
     """Test edge cases in detect_all_gpus."""
 
-    @patch("plex_generate_previews.gpu_detection.is_macos")
-    @patch("plex_generate_previews.gpu_detection.is_windows")
-    @patch("plex_generate_previews.gpu_detection.platform.system")
-    @patch("plex_generate_previews.gpu_detection._test_acceleration_method")
-    @patch("plex_generate_previews.gpu_detection.get_gpu_name")
+    @patch("plex_generate_previews.gpu.detect.is_macos")
+    @patch("plex_generate_previews.gpu.detect.is_windows")
+    @patch("plex_generate_previews.gpu.detect.platform.system")
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect.get_gpu_name")
     def test_detect_all_gpus_macos_videotoolbox(
         self,
         mock_gpu_name,
@@ -971,11 +971,11 @@ class TestDetectAllGPUsEdgeCases:
         assert len(apple_gpus) > 0
         assert "M1 Max" in apple_gpus[0][2]["name"]
 
-    @patch("plex_generate_previews.gpu_detection.is_macos")
-    @patch("plex_generate_previews.gpu_detection.is_windows")
-    @patch("plex_generate_previews.gpu_detection.platform.system")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices")
-    @patch("plex_generate_previews.gpu_detection._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect.is_macos")
+    @patch("plex_generate_previews.gpu.detect.is_windows")
+    @patch("plex_generate_previews.gpu.detect.platform.system")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
     def test_detect_all_gpus_nvidia_nvenc(
         self,
         mock_test,
@@ -1014,25 +1014,25 @@ class TestWSL2NoDRMDevices:
     paravirtualization, so detection should succeed without DRM entries.
     """
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=True)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda", "vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_gpu_name",
+        "plex_generate_previews.gpu.detect.get_gpu_name",
         return_value="NVIDIA GeForce RTX 5080",
     )
     def test_wsl2_no_drm_cuda_detected(
@@ -1059,17 +1059,17 @@ class TestWSL2NoDRMDevices:
         assert gpu_info["card"] == "wsl2"
         assert "RTX 5080" in gpu_info["name"]
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=True)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=[],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_wsl2_no_drm_no_cuda_hwaccel(
@@ -1086,21 +1086,21 @@ class TestWSL2NoDRMDevices:
         gpus = detect_all_gpus()
         assert gpus == []
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="UNKNOWN",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_not_wsl2_no_drm_no_render_devices(
@@ -1118,29 +1118,29 @@ class TestWSL2NoDRMDevices:
         gpus = detect_all_gpus()
         assert gpus == []
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=["/dev/dri/renderD128"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        "plex_generate_previews.gpu.detect._detect_gpu_type_from_lspci",
         return_value="INTEL",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_gpu_name",
+        "plex_generate_previews.gpu.detect.get_gpu_name",
         return_value="Intel Arc A770",
     )
     def test_container_no_sysfs_vaapi_detected(
@@ -1165,25 +1165,25 @@ class TestWSL2NoDRMDevices:
         assert info["acceleration"] == "VAAPI"
         assert info["name"] == "Intel Arc A770"
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=["/dev/dri/renderD128"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        "plex_generate_previews.gpu.detect._detect_gpu_type_from_lspci",
         return_value="UNKNOWN",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     def test_container_no_sysfs_unknown_vendor(
@@ -1207,25 +1207,25 @@ class TestWSL2NoDRMDevices:
         assert info["acceleration"] == "VAAPI"
         assert info["name"] == "GPU"
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=["/dev/dri/renderD128"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        "plex_generate_previews.gpu.detect._detect_gpu_type_from_lspci",
         return_value="INTEL",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=False,
     )
     def test_container_no_sysfs_vaapi_fails(
@@ -1248,29 +1248,29 @@ class TestWSL2NoDRMDevices:
         assert info["status"] == "failed"
         assert info["acceleration"] == "VAAPI"
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=["/dev/dri/renderD128", "/dev/dri/renderD129"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_gpu_type_from_lspci",
+        "plex_generate_previews.gpu.detect._detect_gpu_type_from_lspci",
         return_value="INTEL",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_gpu_name",
+        "plex_generate_previews.gpu.detect.get_gpu_name",
         return_value="Intel Arc A770",
     )
     def test_container_no_sysfs_multiple_render_devices(
@@ -1294,21 +1294,21 @@ class TestWSL2NoDRMDevices:
         for _, _, info in gpus:
             assert info["acceleration"] == "VAAPI"
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=True)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="UNKNOWN",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_wsl2_no_drm_nvidia_smi_fails(
@@ -1326,25 +1326,25 @@ class TestWSL2NoDRMDevices:
         gpus = detect_all_gpus()
         assert gpus == []
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=True)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=True)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=False,
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_wsl2_no_drm_cuda_test_fails(
@@ -1373,29 +1373,29 @@ class TestLinuxContainerNvidiaFallback:
     render nodes are absent. Detection must fall back to probing CUDA directly.
     """
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda", "vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_gpu_name",
+        "plex_generate_previews.gpu.detect.get_gpu_name",
         return_value="NVIDIA GeForce RTX 3080",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_linux_container_cuda_detected(
@@ -1425,21 +1425,21 @@ class TestLinuxContainerNvidiaFallback:
         assert gpu_info["status"] == "ok"
         assert "RTX 3080" in gpu_info["name"]
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="UNKNOWN",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_linux_container_nvidia_smi_unknown(
@@ -1457,21 +1457,21 @@ class TestLinuxContainerNvidiaFallback:
         gpus = detect_all_gpus()
         assert gpus == []
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_linux_container_no_cuda_hwaccel(
@@ -1489,25 +1489,25 @@ class TestLinuxContainerNvidiaFallback:
         gpus = detect_all_gpus()
         assert gpus == []
 
-    @patch("plex_generate_previews.gpu_detection.is_macos", return_value=False)
-    @patch("plex_generate_previews.gpu_detection.is_windows", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
+    @patch("plex_generate_previews.gpu.detect.is_windows", return_value=False)
     @patch("platform.system", return_value="Linux")
-    @patch("plex_generate_previews.gpu_detection._get_gpu_devices", return_value=[])
-    @patch("plex_generate_previews.gpu_detection._is_wsl2", return_value=False)
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices", return_value=[])
+    @patch("plex_generate_previews.gpu.detect._is_wsl2", return_value=False)
     @patch(
         "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_hwaccels",
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=False,
     )
     @patch(
-        "plex_generate_previews.gpu_detection._scan_dev_dri_render_devices",
+        "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
         return_value=[],
     )
     def test_linux_container_cuda_test_fails(
@@ -1539,19 +1539,19 @@ class TestDetectWindowsGPUs:
     """
 
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.detect._get_ffmpeg_hwaccels",
         return_value=["cuda", "d3d11va"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_gpu_name",
+        "plex_generate_previews.gpu.detect.get_gpu_name",
         return_value="NVIDIA GeForce RTX 5080",
     )
     def test_nvidia_cuda_detected(self, _mock_name, _mock_test, _mock_smi, _mock_hwaccels):
@@ -1565,19 +1565,19 @@ class TestDetectWindowsGPUs:
         assert "RTX 5080" in info["name"]
 
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.detect._get_ffmpeg_hwaccels",
         return_value=["cuda", "d3d11va"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=False,
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_acceleration_method",
+        "plex_generate_previews.gpu.detect._test_acceleration_method",
         return_value=True,
     )
     def test_cuda_test_fails_falls_back_to_d3d11va(self, _mock_accel, _mock_test, _mock_smi, _mock_hwaccels):
@@ -1590,15 +1590,15 @@ class TestDetectWindowsGPUs:
         assert info["acceleration"] == "D3D11VA"
 
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.detect._get_ffmpeg_hwaccels",
         return_value=["cuda", "d3d11va"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_acceleration_method",
+        "plex_generate_previews.gpu.detect._test_acceleration_method",
         return_value=True,
     )
     def test_no_nvidia_smi_falls_back_to_d3d11va(self, _mock_accel, _mock_smi, _mock_hwaccels):
@@ -1609,11 +1609,11 @@ class TestDetectWindowsGPUs:
         assert gpus[0][1] == "d3d11va"
 
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.detect._get_ffmpeg_hwaccels",
         return_value=["d3d11va"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_acceleration_method",
+        "plex_generate_previews.gpu.detect._test_acceleration_method",
         return_value=True,
     )
     def test_no_cuda_hwaccel_uses_d3d11va(self, _mock_accel, _mock_hwaccels):
@@ -1624,7 +1624,7 @@ class TestDetectWindowsGPUs:
         assert gpus[0][1] == "d3d11va"
 
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.detect._get_ffmpeg_hwaccels",
         return_value=[],
     )
     def test_no_hwaccels_returns_empty(self, _mock_hwaccels):
@@ -1633,19 +1633,19 @@ class TestDetectWindowsGPUs:
         assert gpus == []
 
     @patch(
-        "plex_generate_previews.gpu_detection._get_ffmpeg_hwaccels",
+        "plex_generate_previews.gpu.detect._get_ffmpeg_hwaccels",
         return_value=["cuda", "d3d11va"],
     )
     @patch(
-        "plex_generate_previews.gpu_detection._detect_nvidia_via_nvidia_smi",
+        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
         return_value="NVIDIA",
     )
     @patch(
-        "plex_generate_previews.gpu_detection._test_hwaccel_functionality",
+        "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_gpu_name",
+        "plex_generate_previews.gpu.detect.get_gpu_name",
         return_value="NVIDIA GeForce RTX 5080",
     )
     def test_nvidia_cuda_skips_d3d11va(self, _mock_name, _mock_test, _mock_smi, _mock_hwaccels):

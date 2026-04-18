@@ -256,7 +256,7 @@ def _get_vulkan_info() -> dict:
     live in a muted footer so curious users can google them without
     cluttering the main message.
     """
-    from ...gpu_detection import get_vulkan_device_info
+    from ...gpu.vulkan_probe import get_vulkan_device_info
 
     info = get_vulkan_device_info()
     device = info.device

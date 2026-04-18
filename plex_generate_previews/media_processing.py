@@ -781,7 +781,7 @@ def generate_images(
                 #    rasterizer (llvmpipe/lavapipe) produces a green
                 #    overlay on DV5 output.  Probe the Vulkan state
                 #    first and drop to the DV-safe filter when software.
-                from .gpu_detection import get_vulkan_device_info
+                from .gpu.vulkan_probe import get_vulkan_device_info
 
                 vulkan_info = get_vulkan_device_info()
                 vk_device = vulkan_info.device

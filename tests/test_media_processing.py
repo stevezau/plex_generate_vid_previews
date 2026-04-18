@@ -1756,7 +1756,7 @@ class TestProactiveDVSkip:
             )
 
         with patch(
-            "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=default_vulkan,
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
@@ -2497,7 +2497,7 @@ class TestLibplaceboFallback:
         # This test specifically exercises the in-flight libplacebo failure
         # path, not the software-Vulkan pre-flight fallback.
         with patch(
-            "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="Quadro P4000", is_software=False),
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
@@ -3215,11 +3215,11 @@ class TestGpuScaleOptimisation:
         assert "-hwaccel_output_format" not in args
 
     @patch(
-        "plex_generate_previews.gpu_detection.get_vulkan_device_info",
+        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
         return_value=VulkanProbeResult(device="vk", is_software=False),
     )
     @patch(
-        "plex_generate_previews.gpu_detection.get_vulkan_env_overrides",
+        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_env_overrides",
         return_value={},
     )
     @patch("plex_generate_previews.media_processing.MediaInfo")
