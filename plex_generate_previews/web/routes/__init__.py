@@ -13,13 +13,15 @@ api = Blueprint("api", __name__, url_prefix="/api")
 
 # Import sub-modules to register their route decorators with the blueprints.
 # Order doesn't matter; each module imports `main` or `api` from this package.
-from . import api_bif  # noqa: E402, F401
-from . import api_jobs  # noqa: E402, F401
-from . import api_plex  # noqa: E402, F401
-from . import api_schedules  # noqa: E402, F401
-from . import api_settings  # noqa: E402, F401
-from . import api_system  # noqa: E402, F401
-from . import pages  # noqa: E402, F401
+from . import (  # noqa: E402
+    api_bif,  # noqa: F401
+    api_jobs,  # noqa: F401
+    api_plex,  # noqa: F401
+    api_schedules,  # noqa: F401
+    api_settings,  # noqa: F401
+    api_system,  # noqa: F401
+    pages,  # noqa: F401
+)
 
 # Re-export names used by other modules (app.py, webhooks.py, tests)
 from ._helpers import (  # noqa: E402, F401

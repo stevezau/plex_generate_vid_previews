@@ -10,7 +10,7 @@ application-level configuration.
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -91,7 +91,7 @@ def _migrate_env_vars(sm) -> None:
     if sm.get("_env_migrated"):
         return
 
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     migrated_keys: list[str] = []
 
     for env_name, settings_key, val_type, _default in _ENV_MIGRATION_MAP:
@@ -110,42 +110,31 @@ def _migrate_env_vars(sm) -> None:
             updates[settings_key] = value
             migrated_keys.append(f"{env_name} -> {settings_key}")
         except (ValueError, TypeError):
-            logger.warning(
-                f"Could not migrate env var {env_name}={raw!r}: invalid value"
-            )
+            logger.warning(f"Could not migrate env var {env_name}={raw!r}: invalid value")
 
     if sm.get("gpu_config") is None:
         gpu_config = _build_gpu_config_from_env()
         if gpu_config is not None:
             updates["gpu_config"] = gpu_config
-            migrated_keys.append(
-                "GPU_THREADS/GPU_SELECTION/FFMPEG_THREADS -> gpu_config"
-            )
+            migrated_keys.append("GPU_THREADS/GPU_SELECTION/FFMPEG_THREADS -> gpu_config")
 
     if sm.get("path_mappings") is None:
         path_mappings = _build_path_mappings_from_env()
         if path_mappings is not None:
             updates["path_mappings"] = path_mappings
-            migrated_keys.append(
-                "PLEX_VIDEOS_PATH_MAPPING/PLEX_LOCAL_VIDEOS_PATH_MAPPING -> path_mappings"
-            )
+            migrated_keys.append("PLEX_VIDEOS_PATH_MAPPING/PLEX_LOCAL_VIDEOS_PATH_MAPPING -> path_mappings")
 
     if sm.get("selected_libraries") is None:
         libs = os.environ.get("PLEX_LIBRARIES", "").strip()
         if libs:
-            updates["selected_libraries"] = [
-                s.strip() for s in libs.split(",") if s.strip()
-            ]
+            updates["selected_libraries"] = [s.strip() for s in libs.split(",") if s.strip()]
             migrated_keys.append("PLEX_LIBRARIES -> selected_libraries")
 
     updates["_env_migrated"] = True
     sm.apply_changes(updates=updates)
 
     if migrated_keys:
-        logger.info(
-            f"Migrated {len(migrated_keys)} env var(s) into settings.json: "
-            + ", ".join(migrated_keys)
-        )
+        logger.info(f"Migrated {len(migrated_keys)} env var(s) into settings.json: " + ", ".join(migrated_keys))
 
     for env_name in _DEPRECATED_ENV_VARS:
         if os.environ.get(env_name):
@@ -207,10 +196,7 @@ def _migrate_schema(sm) -> None:
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
     if all_notes:
-        logger.info(
-            f"Settings schema migrated to v{_CURRENT_SCHEMA_VERSION}: "
-            + ", ".join(all_notes)
-        )
+        logger.info(f"Settings schema migrated to v{_CURRENT_SCHEMA_VERSION}: " + ", ".join(all_notes))
 
 
 def _migrate_to_v2(sm) -> list:
@@ -220,7 +206,7 @@ def _migrate_to_v2(sm) -> list:
         List of human-readable descriptions of what was migrated.
     """
     notes: list[str] = []
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     deletes: list[str] = []
 
     has_gpu_config = sm.get("gpu_config") is not None
@@ -231,9 +217,7 @@ def _migrate_to_v2(sm) -> list:
             old_threads = int(old_threads_val)
             old_ffmpeg = int(sm.get("ffmpeg_threads", 2))
         except (ValueError, TypeError):
-            logger.warning(
-                "Invalid gpu_threads/ffmpeg_threads in settings, skipping migration"
-            )
+            logger.warning("Invalid gpu_threads/ffmpeg_threads in settings, skipping migration")
             old_threads = 0
             old_ffmpeg = 2
 
@@ -265,10 +249,7 @@ def _migrate_to_v2(sm) -> list:
                     }
                 )
             updates["gpu_config"] = gpu_config
-            notes.append(
-                f"gpu_threads={old_threads} -> gpu_config "
-                f"({count} GPU(s), {per_gpu}+ workers each)"
-            )
+            notes.append(f"gpu_threads={old_threads} -> gpu_config ({count} GPU(s), {per_gpu}+ workers each)")
 
     for stale_key in ("gpu_threads", "ffmpeg_threads"):
         if sm.get(stale_key) is not None:
@@ -291,7 +272,7 @@ def _migrate_to_v3(sm) -> list:
     schedule type.
     """
     notes: list[str] = []
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
 
     plex_webhook_defaults = {
         "plex_webhook_enabled": False,
@@ -366,9 +347,7 @@ def _migrate_to_v4(sm) -> list:
                     },
                     enabled=True,
                 )
-                notes.append(
-                    f"v4: created 1 recently-added schedule ({schedule['id']})"
-                )
+                notes.append(f"v4: created 1 recently-added schedule ({schedule['id']})")
             else:
                 for entry in library_entries:
                     schedule = manager.create_schedule(
@@ -383,8 +362,7 @@ def _migrate_to_v4(sm) -> list:
                         enabled=True,
                     )
                 notes.append(
-                    f"v4: created {len(library_entries)} recently-added "
-                    f"schedule(s) from legacy library override"
+                    f"v4: created {len(library_entries)} recently-added schedule(s) from legacy library override"
                 )
 
             # Best-effort: remove the stale system job if it's still in
@@ -425,7 +403,7 @@ def _migrate_to_v5(sm) -> list:
     except (ValueError, TypeError):
         legacy_int = 0
 
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     if legacy_int > 0:
         current_cpu = sm.get("cpu_threads")
         try:
@@ -434,10 +412,7 @@ def _migrate_to_v5(sm) -> list:
             current_cpu_int = 1
         if legacy_int > current_cpu_int:
             updates["cpu_threads"] = legacy_int
-            notes.append(
-                f"v5: folded cpu_fallback_threads={legacy_int} into cpu_threads "
-                f"(was {current_cpu_int})"
-            )
+            notes.append(f"v5: folded cpu_fallback_threads={legacy_int} into cpu_threads (was {current_cpu_int})")
 
     sm.apply_changes(updates=updates or None, deletes=["cpu_fallback_threads"])
     notes.append("v5: removed obsolete cpu_fallback_threads key")
@@ -449,7 +424,7 @@ def _migrate_to_v5(sm) -> list:
 # =========================================================================
 
 
-def _build_gpu_config_from_env() -> Optional[List[Dict[str, Any]]]:
+def _build_gpu_config_from_env() -> list[dict[str, Any]] | None:
     """Build gpu_config list from legacy GPU env vars.
 
     Reads GPU_THREADS, GPU_SELECTION, and FFMPEG_THREADS from the
@@ -468,8 +443,7 @@ def _build_gpu_config_from_env() -> Optional[List[Dict[str, Any]]]:
         ffmpeg_threads = int(ffmpeg_threads_str) if ffmpeg_threads_str else 2
     except (ValueError, TypeError):
         logger.warning(
-            f"Invalid GPU_THREADS={gpu_threads_str!r} or FFMPEG_THREADS={ffmpeg_threads_str!r}, "
-            "using defaults"
+            f"Invalid GPU_THREADS={gpu_threads_str!r} or FFMPEG_THREADS={ffmpeg_threads_str!r}, using defaults"
         )
         gpu_threads = 1
         ffmpeg_threads = 2
@@ -489,9 +463,7 @@ def _build_gpu_config_from_env() -> Optional[List[Dict[str, Any]]]:
         enabled_indices = set(range(len(detected)))
     else:
         try:
-            enabled_indices = {
-                int(x.strip()) for x in gpu_selection_str.split(",") if x.strip()
-            }
+            enabled_indices = {int(x.strip()) for x in gpu_selection_str.split(",") if x.strip()}
         except ValueError:
             enabled_indices = set(range(len(detected)))
 
@@ -501,9 +473,7 @@ def _build_gpu_config_from_env() -> Optional[List[Dict[str, Any]]]:
         enabled_indices = set(range(len(detected)))
 
     per_gpu_workers = gpu_threads // enabled_count if gpu_threads > 0 else 0
-    remainder = (
-        gpu_threads - (per_gpu_workers * enabled_count) if gpu_threads > 0 else 0
-    )
+    remainder = gpu_threads - (per_gpu_workers * enabled_count) if gpu_threads > 0 else 0
 
     gpu_config = []
     for i, (gpu_type, gpu_device, gpu_info) in enumerate(detected):
@@ -531,7 +501,7 @@ def _build_gpu_config_from_env() -> Optional[List[Dict[str, Any]]]:
 # =========================================================================
 
 
-def _build_path_mappings_from_env() -> Optional[List[Dict[str, Any]]]:
+def _build_path_mappings_from_env() -> list[dict[str, Any]] | None:
     """Build path_mappings list from legacy path mapping env vars.
 
     Returns None if no relevant env vars are set.

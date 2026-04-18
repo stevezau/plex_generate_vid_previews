@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-from typing import List, Optional, Tuple
 
 from loguru import logger
 
@@ -20,7 +19,7 @@ from loguru import logger
 MIN_FFMPEG_VERSION = (7, 0, 0)
 
 
-def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
+def _get_ffmpeg_version() -> tuple[int, int, int] | None:
     """Get FFmpeg version as a tuple of integers.
 
     Returns:
@@ -49,9 +48,7 @@ def _get_ffmpeg_version() -> Optional[Tuple[int, int, int]]:
         # These are not semantic versions; treat as "unknown version" so we don't
         # incorrectly parse the year as the major version.
         if re.search(r"ffmpeg version \d{4}-\d{2}-\d{2}-", version_line):
-            logger.debug(
-                "Detected date-based FFmpeg git build; skipping semantic version parsing"
-            )
+            logger.debug("Detected date-based FFmpeg git build; skipping semantic version parsing")
             return None
 
         # Try multiple patterns to handle different FFmpeg version formats
@@ -115,13 +112,11 @@ def _check_ffmpeg_version() -> bool:
     logger.warning(
         f"⚠ FFmpeg version {version[0]}.{version[1]}.{version[2]} is below minimum requirement {MIN_FFMPEG_VERSION[0]}.{MIN_FFMPEG_VERSION[1]}.{MIN_FFMPEG_VERSION[2]}"
     )
-    logger.warning(
-        "Hardware acceleration may not work properly. Please upgrade FFmpeg."
-    )
+    logger.warning("Hardware acceleration may not work properly. Please upgrade FFmpeg.")
     return False
 
 
-def _get_ffmpeg_hwaccels() -> List[str]:
+def _get_ffmpeg_hwaccels() -> list[str]:
     """Get list of available FFmpeg hardware accelerators.
 
     Returns:

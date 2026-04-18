@@ -135,7 +135,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
             if seed:
                 logger.debug(f"Using Flask secret derived from seed in {seed_file}")
                 return _derive_secret(seed, config_dir)
-        except IOError as e:
+        except OSError as e:
             logger.warning(f"Failed to read Flask secret seed file: {e}")
 
     # Generate new random seed and persist it with restrictive permissions.
@@ -150,7 +150,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
         finally:
             os.close(fd)
         logger.info(f"Generated new Flask secret seed and saved to {seed_file}")
-    except IOError as e:
+    except OSError as e:
         logger.warning(f"Failed to save Flask secret seed to file: {e}")
 
     return _derive_secret(random_seed, config_dir)
@@ -222,9 +222,7 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         settings = get_settings_manager(config_dir)
         raw_enabled = settings.get("auto_requeue_on_restart", True)
         auto_requeue_enabled = (
-            raw_enabled
-            if isinstance(raw_enabled, bool)
-            else str(raw_enabled).strip().lower() in ("true", "1", "yes")
+            raw_enabled if isinstance(raw_enabled, bool) else str(raw_enabled).strip().lower() in ("true", "1", "yes")
         )
         if not auto_requeue_enabled:
             logger.info("Auto-requeue on restart is disabled")
@@ -234,10 +232,7 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         # jobs — the restart itself signals intent to resume work.
         if settings.processing_paused:
             settings.processing_paused = False
-            logger.info(
-                "Cleared processing_paused on startup — "
-                "pausing does not survive restarts"
-            )
+            logger.info("Cleared processing_paused on startup — pausing does not survive restarts")
 
         max_age = int(settings.get("requeue_max_age_minutes", 720))
         job_manager = get_job_manager()
@@ -277,9 +272,7 @@ def create_app(config_dir: str = None) -> Flask:
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
     # SESSION_COOKIE_SECURE is set dynamically via ProxyFix + Talisman or per-request.
     # ProxyFix below trusts X-Forwarded-Proto so request.scheme == 'https' works.
-    app.config["SESSION_COOKIE_SECURE"] = (
-        os.environ.get("HTTPS", "false").lower() == "true"
-    )
+    app.config["SESSION_COOKIE_SECURE"] = os.environ.get("HTTPS", "false").lower() == "true"
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["CONFIG_DIR"] = config_dir
@@ -481,10 +474,7 @@ def create_app(config_dir: str = None) -> Flask:
             settings = get_settings_manager()
             if not settings.is_setup_complete() and not settings.is_configured():
                 # Not configured and setup not complete - redirect to setup
-                if (
-                    request.endpoint not in ["main.login", "main.setup_wizard"]
-                    and is_authenticated()
-                ):
+                if request.endpoint not in ["main.login", "main.setup_wizard"] and is_authenticated():
                     return redirect(url_for("main.setup_wizard"))
         except Exception as e:
             logger.debug(f"Setup check error: {e}")
@@ -496,9 +486,7 @@ def create_app(config_dir: str = None) -> Flask:
         """Add standard security headers to every response."""
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault(
-            "Referrer-Policy", "strict-origin-when-cross-origin"
-        )
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         return response
 
     # Start scheduler

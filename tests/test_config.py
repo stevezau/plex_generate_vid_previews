@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from plex_generate_previews.config import (
-    expand_path_mapping_candidates,
     ConfigValidationError,
+    expand_path_mapping_candidates,
     get_config_value,
     get_path_mapping_pairs,
     is_path_excluded,
@@ -115,17 +115,13 @@ class TestGetConfigValue:
         # Test true values
         for value in ["true", "True", "1", "yes", "YES"]:
             with patch.dict("os.environ", {"BOOL_FIELD": value}):
-                result = get_config_value(
-                    cli_args, "bool_field", "BOOL_FIELD", False, bool
-                )
+                result = get_config_value(cli_args, "bool_field", "BOOL_FIELD", False, bool)
                 assert result is True
 
         # Test false values
         for value in ["false", "False", "0", "no", "NO"]:
             with patch.dict("os.environ", {"BOOL_FIELD": value}):
-                result = get_config_value(
-                    cli_args, "bool_field", "BOOL_FIELD", True, bool
-                )
+                result = get_config_value(cli_args, "bool_field", "BOOL_FIELD", True, bool)
                 assert result is False
 
     def test_get_config_value_int_conversion(self):
@@ -144,9 +140,7 @@ class TestGetConfigValue:
             __slots__ = ()
 
         with patch.dict("os.environ", {"TEST_FIELD": "env_value"}, clear=True):
-            result = get_config_value(
-                NoVarsObject(), "test_field", "TEST_FIELD", "default"
-            )
+            result = get_config_value(NoVarsObject(), "test_field", "TEST_FIELD", "default")
             assert result == "env_value"
 
 
@@ -155,15 +149,11 @@ class TestGetPathMappingPairs:
 
     def test_get_path_mapping_pairs_single(self):
         """Single Plex and single local returns one pair."""
-        assert get_path_mapping_pairs("/data/media", "/media") == [
-            ("/data/media", "/media")
-        ]
+        assert get_path_mapping_pairs("/data/media", "/media") == [("/data/media", "/media")]
 
     def test_get_path_mapping_pairs_mergefs(self):
         """Multiple Plex roots and one local returns all Plex mapped to that local."""
-        assert get_path_mapping_pairs(
-            "/data_disk1;/data_disk2;/data_disk3", "/data"
-        ) == [
+        assert get_path_mapping_pairs("/data_disk1;/data_disk2;/data_disk3", "/data") == [
             ("/data_disk1", "/data"),
             ("/data_disk2", "/data"),
             ("/data_disk3", "/data"),
@@ -213,9 +203,7 @@ class TestSplitLibrarySelectors:
 
     def test_split_library_selectors_mixed_and_deduplicated(self):
         """Mixed selectors are split and deduplicated while preserving order."""
-        ids, names = split_library_selectors(
-            ["1", "Movies", "1", "movies", "2", "TV Shows", "", None]
-        )
+        ids, names = split_library_selectors(["1", "Movies", "1", "movies", "2", "TV Shows", "", None])
         assert ids == ["1", "2"]
         assert names == ["movies", "tv shows"]
 
@@ -237,9 +225,7 @@ class TestExpandPathMappingCandidates:
                 "webhook_prefixes": ["/data"],
             },
         ]
-        candidates = expand_path_mapping_candidates(
-            "/data/tv/Show/S01E01.mkv", path_mappings
-        )
+        candidates = expand_path_mapping_candidates("/data/tv/Show/S01E01.mkv", path_mappings)
         assert "/data/tv/Show/S01E01.mkv" in candidates
         assert "/data_16tb/tv/Show/S01E01.mkv" in candidates
         assert "/data_16tb2/tv/Show/S01E01.mkv" in candidates
@@ -260,9 +246,7 @@ class TestExpandPathMappingCandidates:
                 "webhook_prefixes": [],
             },
         ]
-        candidates = expand_path_mapping_candidates(
-            "/data/tv/Show/S01E03.mkv", path_mappings
-        )
+        candidates = expand_path_mapping_candidates("/data/tv/Show/S01E03.mkv", path_mappings)
         assert "/data/tv/Show/S01E03.mkv" in candidates
         assert "/data_16tb1/tv/Show/S01E03.mkv" in candidates
         assert "/data_16tb2/tv/Show/S01E03.mkv" in candidates
@@ -276,9 +260,7 @@ class TestExpandPathMappingCandidates:
                 "webhook_prefixes": [],
             },
         ]
-        candidates = expand_path_mapping_candidates(
-            "F:\\Videos\\TV Shows\\Show\\S01E01.mkv", path_mappings
-        )
+        candidates = expand_path_mapping_candidates("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", path_mappings)
         assert "F:/Videos/TV Shows/Show/S01E01.mkv" in candidates
         assert "/data/tv/Show/S01E01.mkv" in candidates
 
@@ -380,11 +362,7 @@ class TestNormalizePathMappings:
         """Empty list and missing webhook_prefixes key both yield webhook_prefixes=[]."""
         for settings in [
             {"path_mappings": [{"plex_prefix": "/p", "local_prefix": "/l"}]},
-            {
-                "path_mappings": [
-                    {"plex_prefix": "/p", "local_prefix": "/l", "webhook_prefixes": []}
-                ]
-            },
+            {"path_mappings": [{"plex_prefix": "/p", "local_prefix": "/l", "webhook_prefixes": []}]},
         ]:
             result = normalize_path_mappings(settings)
             assert len(result) == 1
@@ -490,14 +468,8 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": [],
             }
         ]
-        assert (
-            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
-            == "/mnt/data/Movies/foo.mkv"
-        )
-        assert (
-            plex_path_to_local("/data/Movies/foo.mkv", mappings)
-            == "/mnt/data/Movies/foo.mkv"
-        )
+        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
+        assert plex_path_to_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
 
     def test_webhook_to_local(self):
         """Webhook path (webhook_prefixes) maps to same local as plex."""
@@ -508,14 +480,8 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": ["/data"],
             }
         ]
-        assert (
-            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
-            == "/data/Movies/foo.mkv"
-        )
-        assert (
-            path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings)
-            == "/data/Movies/foo.mkv"
-        )
+        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
+        assert path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
 
     def test_no_partial_match(self):
         """Prefix /data does not match /database."""
@@ -546,14 +512,8 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": [],
             },
         ]
-        assert (
-            path_to_canonical_local("/data_disk1/Movies/a.mkv", mappings)
-            == "/data/Movies/a.mkv"
-        )
-        assert (
-            path_to_canonical_local("/data_disk2/TV/b.mkv", mappings)
-            == "/data/TV/b.mkv"
-        )
+        assert path_to_canonical_local("/data_disk1/Movies/a.mkv", mappings) == "/data/Movies/a.mkv"
+        assert path_to_canonical_local("/data_disk2/TV/b.mkv", mappings) == "/data/TV/b.mkv"
 
     def test_first_match_wins_overlapping_prefixes(self):
         """When multiple mappings could match, first matching row is used."""
@@ -570,14 +530,8 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": [],
             },
         ]
-        assert (
-            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
-            == "/mnt/data/Movies/foo.mkv"
-        )
-        assert (
-            path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings)
-            == "/data/Movies/foo.mkv"
-        )
+        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
+        assert path_to_canonical_local("/data_disk1/Movies/foo.mkv", mappings) == "/data/Movies/foo.mkv"
 
     def test_case_sensitive_prefix_match(self):
         """Prefix matching is case-sensitive; /Data does not match plex_prefix /data."""
@@ -588,14 +542,8 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": [],
             }
         ]
-        assert (
-            path_to_canonical_local("/data/Movies/foo.mkv", mappings)
-            == "/mnt/data/Movies/foo.mkv"
-        )
-        assert (
-            path_to_canonical_local("/Data/Movies/foo.mkv", mappings)
-            == "/Data/Movies/foo.mkv"
-        )
+        assert path_to_canonical_local("/data/Movies/foo.mkv", mappings) == "/mnt/data/Movies/foo.mkv"
+        assert path_to_canonical_local("/Data/Movies/foo.mkv", mappings) == "/Data/Movies/foo.mkv"
 
     def test_first_match_plex_before_webhook_prefix(self):
         """When path matches both plex_prefix of row1 and webhook_prefix of row2, first row wins (plex)."""
@@ -624,10 +572,7 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": [],
             }
         ]
-        assert (
-            path_to_canonical_local("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", mappings)
-            == "/data/tv/Show/S01E01.mkv"
-        )
+        assert path_to_canonical_local("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", mappings) == "/data/tv/Show/S01E01.mkv"
 
     def test_windows_backslash_prefix_in_mapping(self):
         """Backslashes in mapping prefix config are also normalized."""
@@ -638,10 +583,7 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": [],
             }
         ]
-        assert (
-            path_to_canonical_local("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", mappings)
-            == "/data/tv/Show/S01E01.mkv"
-        )
+        assert path_to_canonical_local("F:\\Videos\\TV Shows\\Show\\S01E01.mkv", mappings) == "/data/tv/Show/S01E01.mkv"
 
     def test_windows_webhook_prefix_maps_to_local(self):
         """Windows webhook prefix with backslashes resolves to local."""
@@ -652,10 +594,7 @@ class TestPathToCanonicalLocal:
                 "webhook_prefixes": ["F:\\Videos\\Movies"],
             }
         ]
-        assert (
-            path_to_canonical_local("F:\\Videos\\Movies\\film.mkv", mappings)
-            == "/data/movies/film.mkv"
-        )
+        assert path_to_canonical_local("F:\\Videos\\Movies\\film.mkv", mappings) == "/data/movies/film.mkv"
 
 
 class TestLocalPathToWebhookAliases:
@@ -670,9 +609,7 @@ class TestLocalPathToWebhookAliases:
                 "webhook_prefixes": ["/data"],
             }
         ]
-        assert local_path_to_webhook_aliases(
-            "/data_16tb1/Movies/foo.mkv", mappings
-        ) == ["/data/Movies/foo.mkv"]
+        assert local_path_to_webhook_aliases("/data_16tb1/Movies/foo.mkv", mappings) == ["/data/Movies/foo.mkv"]
 
     def test_returns_empty_when_no_webhook_prefix(self):
         """Row without webhook_prefixes adds no alias."""
@@ -750,11 +687,7 @@ class TestLoadConfig:
             if "tmp" in path or path.startswith("/tmp"):
                 # Tmp folder should be empty or not exist
                 return []
-            elif (
-                path.endswith("/localhost")
-                or "/localhost" in path
-                and not path.endswith("Media")
-            ):
+            elif path.endswith("/localhost") or "/localhost" in path and not path.endswith("Media"):
                 # Inside localhost directory - return hex folders
                 return [
                     "0",
@@ -851,9 +784,7 @@ class TestLoadConfig:
         def mock_listdir_fn(path):
             if "tmp" in path or path.startswith("/tmp"):
                 return []
-            if path.endswith("/localhost") or (
-                "/localhost" in path and not path.endswith("Media")
-            ):
+            if path.endswith("/localhost") or ("/localhost" in path and not path.endswith("Media")):
                 return list("0123456789abcdef")
             if path.endswith("/Media"):
                 return ["localhost"]
@@ -873,9 +804,7 @@ class TestLoadConfig:
             {
                 "plex_url": "http://localhost:32400",
                 "plex_token": "test_token",
-                "plex_config_folder": (
-                    "/config/plex/Library/Application Support/Plex Media Server"
-                ),
+                "plex_config_folder": ("/config/plex/Library/Application Support/Plex Media Server"),
                 "cpu_threads": 0,
                 "gpu_config": [
                     {
@@ -957,9 +886,7 @@ class TestLoadConfig:
     @patch("shutil.which")
     @patch("plex_generate_previews.config.load_dotenv")
     @patch("plex_generate_previews.logging_config.setup_logging")
-    def test_load_config_missing_config_folder(
-        self, mock_logging, mock_load_dotenv, mock_which
-    ):
+    def test_load_config_missing_config_folder(self, mock_logging, mock_load_dotenv, mock_which):
         """Test error when config folder is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
         # Prevent load_dotenv from repopulating os.environ so missing_params is triggered
@@ -993,9 +920,7 @@ class TestLoadConfig:
     @patch("os.path.exists")
     @patch("plex_generate_previews.config.load_dotenv")
     @patch("plex_generate_previews.logging_config.setup_logging")
-    def test_load_config_invalid_path(
-        self, mock_logging, mock_load_dotenv, mock_exists, mock_run, mock_which
-    ):
+    def test_load_config_invalid_path(self, mock_logging, mock_load_dotenv, mock_exists, mock_run, mock_which):
         """Test error when config folder doesn't exist."""
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -1088,9 +1013,7 @@ class TestLoadConfig:
         mock_exists.return_value = True
         mock_isdir.return_value = True
         mock_listdir.side_effect = lambda path: (
-            ["Cache", "Media"]
-            if "Plex Media Server" in path
-            else ["0", "1", "2", "a", "b", "c"]
+            ["Cache", "Media"] if "Plex Media Server" in path else ["0", "1", "2", "a", "b", "c"]
         )
         mock_access.return_value = True
         statvfs_result = MagicMock()
@@ -1101,9 +1024,7 @@ class TestLoadConfig:
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
-            plex_config_folder=(
-                "/config/plex/Library/Application Support/Plex Media Server"
-            ),
+            plex_config_folder=("/config/plex/Library/Application Support/Plex Media Server"),
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1159,9 +1080,7 @@ class TestLoadConfig:
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
-            plex_config_folder=(
-                "/config/plex/Library/Application Support/Plex Media Server"
-            ),
+            plex_config_folder=("/config/plex/Library/Application Support/Plex Media Server"),
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1217,9 +1136,7 @@ class TestLoadConfig:
         args = SimpleNamespace(
             plex_url="http://localhost:32400",
             plex_token="token",
-            plex_config_folder=(
-                "/config/plex/Library/Application Support/Plex Media Server"
-            ),
+            plex_config_folder=("/config/plex/Library/Application Support/Plex Media Server"),
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1274,11 +1191,7 @@ class TestLoadConfig:
         def mock_listdir_fn(path):
             if "tmp" in path or path.startswith("/tmp"):
                 return []
-            elif (
-                path.endswith("/localhost")
-                or "/localhost" in path
-                and not path.endswith("Media")
-            ):
+            elif path.endswith("/localhost") or "/localhost" in path and not path.endswith("Media"):
                 return [
                     "0",
                     "1",
@@ -1338,9 +1251,7 @@ class TestLoadConfig:
         # Should succeed and create the folder
         assert config is not None
         assert config.tmp_folder_created_by_us is True
-        mock_makedirs.assert_called_once_with(
-            "/tmp/plex_generate_previews", exist_ok=True
-        )
+        mock_makedirs.assert_called_once_with("/tmp/plex_generate_previews", exist_ok=True)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1374,11 +1285,7 @@ class TestLoadConfig:
                     "file1.txt",
                     "file2.txt",
                 ]  # tmp folder has contents - should be OK
-            elif (
-                path.endswith("/localhost")
-                or "/localhost" in path
-                and not path.endswith("Media")
-            ):
+            elif path.endswith("/localhost") or "/localhost" in path and not path.endswith("Media"):
                 return [
                     "0",
                     "1",
@@ -1557,11 +1464,7 @@ class TestLoadConfig:
             if "tmp" in path or path.startswith("/tmp"):
                 # Tmp folder should be empty or not exist
                 return []
-            elif (
-                path.endswith("/localhost")
-                or "/localhost" in path
-                and not path.endswith("Media")
-            ):
+            elif path.endswith("/localhost") or "/localhost" in path and not path.endswith("Media"):
                 # Inside localhost directory - return hex folders
                 return [
                     "0",
@@ -1709,9 +1612,7 @@ class TestResolveFfmpegPath:
 
         monkeypatch.setattr("plex_generate_previews.config.os.path.isfile", fake_isfile)
         monkeypatch.setattr("plex_generate_previews.config.os.access", fake_access)
-        monkeypatch.setattr(
-            "plex_generate_previews.config.shutil.which", lambda name: which_returns
-        )
+        monkeypatch.setattr("plex_generate_previews.config.shutil.which", lambda name: which_returns)
 
         assert _resolve_ffmpeg_path() == expected
 
@@ -1725,9 +1626,5 @@ class TestDockerHelp:
         show_docker_help()
         logged_lines = [call.args[0] for call in mock_info.call_args_list]
         assert any("Docker Environment Detected" in line for line in logged_lines)
-        assert any(
-            "One-time seed environment variables" in line for line in logged_lines
-        )
-        assert any(
-            "Infrastructure environment variables" in line for line in logged_lines
-        )
+        assert any("One-time seed environment variables" in line for line in logged_lines)
+        assert any("Infrastructure environment variables" in line for line in logged_lines)

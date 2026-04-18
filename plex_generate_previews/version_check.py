@@ -10,7 +10,6 @@ Behavior:
 import os
 import re
 import subprocess
-from typing import Optional, Tuple
 
 import requests
 from loguru import logger
@@ -48,7 +47,7 @@ def get_current_version() -> str:
     return "0.0.0"
 
 
-def parse_version(version_str: str) -> Tuple[int, int, int]:
+def parse_version(version_str: str) -> tuple[int, int, int]:
     """Parse a semantic version string into comparable tuple.
 
     Args:
@@ -78,7 +77,7 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
     return (int(major), int(minor), int(patch))
 
 
-def get_latest_github_release() -> Optional[str]:
+def get_latest_github_release() -> str | None:
     """Query GitHub API for the latest release version.
 
     Returns:
@@ -105,9 +104,7 @@ def get_latest_github_release() -> Optional[str]:
         return latest_version
 
     except requests.exceptions.Timeout:
-        logger.debug(
-            "Version check timed out - no internet connection or slow response"
-        )
+        logger.debug("Version check timed out - no internet connection or slow response")
         return None
     except requests.exceptions.ConnectionError:
         logger.debug("Version check failed - no internet connection")
@@ -131,7 +128,7 @@ def get_latest_github_release() -> Optional[str]:
         return None
 
 
-def get_git_commit_sha() -> Optional[str]:
+def get_git_commit_sha() -> str | None:
     """Get current Git commit SHA if running from a git checkout.
 
     Checks in this order:
@@ -163,7 +160,7 @@ def get_git_commit_sha() -> Optional[str]:
     return None
 
 
-def get_git_branch() -> Optional[str]:
+def get_git_branch() -> str | None:
     """Get current Git branch if running from a git checkout.
 
     Checks in this order:
@@ -195,7 +192,7 @@ def get_git_branch() -> Optional[str]:
     return None
 
 
-def get_branch_head_sha(branch: str) -> Optional[str]:
+def get_branch_head_sha(branch: str) -> str | None:
     """Query GitHub API for the latest commit SHA on a branch.
 
     Args:
@@ -218,17 +215,13 @@ def get_branch_head_sha(branch: str) -> Optional[str]:
             return None
         return sha
     except requests.exceptions.Timeout:
-        logger.debug(
-            "Branch head check timed out - no internet connection or slow response"
-        )
+        logger.debug("Branch head check timed out - no internet connection or slow response")
         return None
     except requests.exceptions.ConnectionError:
         logger.debug("Branch head check failed - no internet connection")
         return None
     except requests.exceptions.HTTPError as e:
-        logger.debug(
-            f"GitHub branch API error: {getattr(e.response, 'status_code', 'unknown')}"
-        )
+        logger.debug(f"GitHub branch API error: {getattr(e.response, 'status_code', 'unknown')}")
         return None
     except requests.exceptions.RequestException as e:
         logger.debug(f"Branch head request failed: {e}")
@@ -252,31 +245,21 @@ def check_for_updates() -> None:
         git_sha = (os.environ.get("GIT_SHA") or "").strip()
 
         if git_branch and git_sha:
-            logger.debug(
-                f"Dev Docker detected: branch={git_branch}, commit={git_sha[:7]}"
-            )
+            logger.debug(f"Dev Docker detected: branch={git_branch}, commit={git_sha[:7]}")
             head_sha = get_branch_head_sha(git_branch)
             if head_sha:
                 # Compare allowing short SHAs inside full SHA
                 current_short = git_sha[:7]
                 head_short = head_sha[:7]
                 if not head_sha.startswith(git_sha):
-                    logger.warning(
-                        f"⚠️  Newer dev commit on {git_branch}: {head_short} (you have: {current_short})"
-                    )
-                    logger.warning(
-                        "🐳 Update dev image: docker pull stevezzau/plex_generate_vid_previews:dev"
-                    )
+                    logger.warning(f"⚠️  Newer dev commit on {git_branch}: {head_short} (you have: {current_short})")
+                    logger.warning("🐳 Update dev image: docker pull stevezzau/plex_generate_vid_previews:dev")
                     return
                 else:
-                    logger.info(
-                        f"✅ Dev build up to date with {git_branch} branch ({head_short})"
-                    )
+                    logger.info(f"✅ Dev build up to date with {git_branch} branch ({head_short})")
                     return
             else:
-                logger.debug(
-                    f"Could not check remote {git_branch} branch (API call failed)"
-                )
+                logger.debug(f"Could not check remote {git_branch} branch (API call failed)")
 
         # Path 2: Git checkout - running from source repository
         local_commit = get_git_commit_sha()
@@ -287,28 +270,20 @@ def check_for_updates() -> None:
         )
 
         if local_commit and local_branch:
-            logger.debug(
-                f"Detected git checkout on branch '{local_branch}' at commit {local_commit[:7]}"
-            )
+            logger.debug(f"Detected git checkout on branch '{local_branch}' at commit {local_commit[:7]}")
             head_sha = get_branch_head_sha(local_branch)
             if head_sha:
                 current_short = local_commit[:7]
                 head_short = head_sha[:7]
                 if not head_sha.startswith(local_commit):
-                    logger.warning(
-                        f"⚠️  Newer commit on {local_branch}: {head_short} (you have: {current_short})"
-                    )
+                    logger.warning(f"⚠️  Newer commit on {local_branch}: {head_short} (you have: {current_short})")
                     logger.warning(f"🔄 Update: git pull origin {local_branch}")
                     return
                 else:
-                    logger.info(
-                        f"✅ Git checkout up to date with {local_branch} branch ({head_short})"
-                    )
+                    logger.info(f"✅ Git checkout up to date with {local_branch} branch ({head_short})")
                     return
             else:
-                logger.debug(
-                    f"Could not fetch remote {local_branch} branch head (API call failed)"
-                )
+                logger.debug(f"Could not fetch remote {local_branch} branch head (API call failed)")
         else:
             logger.debug("Git checkout detection skipped - commit or branch not found")
 
@@ -336,35 +311,25 @@ def check_for_updates() -> None:
         if latest_tuple > current_tuple:
             # Check if running from dev snapshot (zip download without git)
             if current_version.startswith("0.0.0"):
-                logger.warning(
-                    "ℹ️  Running from development snapshot (not an official release)"
-                )
+                logger.warning("ℹ️  Running from development snapshot (not an official release)")
                 logger.warning(f"ℹ️  Latest stable release: {latest_version}")
-                logger.warning(
-                    "🐳 Install stable: docker pull stevezzau/plex_generate_vid_previews:latest"
-                )
+                logger.warning("🐳 Install stable: docker pull stevezzau/plex_generate_vid_previews:latest")
                 logger.warning(
                     "🔗 Or from source: pip install git+https://github.com/stevezau/plex_generate_vid_previews.git"
                 )
             else:
                 # Normal version update available
-                logger.warning(
-                    f"⚠️  A newer version is available: {latest_version} (you have: {current_version})"
-                )
+                logger.warning(f"⚠️  A newer version is available: {latest_version} (you have: {current_version})")
 
                 # Provide appropriate update instructions based on environment
                 if is_docker_environment():
-                    logger.warning(
-                        "🐳 Update: docker pull stevezzau/plex_generate_vid_previews:latest"
-                    )
+                    logger.warning("🐳 Update: docker pull stevezzau/plex_generate_vid_previews:latest")
                 else:
                     logger.warning(
                         "📦 Update: pip install --upgrade git+https://github.com/stevezau/plex_generate_vid_previews.git"
                     )
 
-            logger.warning(
-                "🔗 Release notes: https://github.com/stevezau/plex_generate_vid_previews/releases/latest"
-            )
+            logger.warning("🔗 Release notes: https://github.com/stevezau/plex_generate_vid_previews/releases/latest")
         else:
             logger.debug("Version is up to date")
 

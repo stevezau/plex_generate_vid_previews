@@ -27,8 +27,9 @@ import pytest
 # doesn't accept.
 # ---------------------------------------------------------------------------
 try:
-    import plex_generate_previews.web.scheduler as _sched_mod
     from apscheduler.jobstores.memory import MemoryJobStore as _MemoryJobStore
+
+    import plex_generate_previews.web.scheduler as _sched_mod
 
     class _TestMemoryJobStore(_MemoryJobStore):
         def __init__(self, *args, **kwargs):  # noqa: D401
@@ -84,15 +85,9 @@ def media_fixture():
             return sentinels[key]
         path = paths.get(key)
         if path is None:
-            raise KeyError(
-                f"Unknown media_fixture key: {key!r}. "
-                f"Known: {sorted(list(paths) + list(sentinels))}"
-            )
+            raise KeyError(f"Unknown media_fixture key: {key!r}. Known: {sorted(list(paths) + list(sentinels))}")
         if not path.exists():
-            pytest.skip(
-                f"Media fixture {path} missing — run "
-                f"tests/fixtures/media/generate.sh to rebuild it."
-            )
+            pytest.skip(f"Media fixture {path} missing — run tests/fixtures/media/generate.sh to rebuild it.")
         return path
 
     return resolve
@@ -202,7 +197,7 @@ def reference_bif(fixtures_dir):
 def plex_xml_library_sections(fixtures_dir):
     """Load library sections XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "library_sections.xml"
-    with open(xml_path, "r", encoding="utf-8") as f:
+    with open(xml_path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -210,7 +205,7 @@ def plex_xml_library_sections(fixtures_dir):
 def plex_xml_episode_tree(fixtures_dir):
     """Load episode tree XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "episode_tree.xml"
-    with open(xml_path, "r", encoding="utf-8") as f:
+    with open(xml_path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -218,13 +213,11 @@ def plex_xml_episode_tree(fixtures_dir):
 def plex_xml_movie_tree(fixtures_dir):
     """Load movie tree XML fixture."""
     xml_path = fixtures_dir / "plex_responses" / "movie_tree.xml"
-    with open(xml_path, "r", encoding="utf-8") as f:
+    with open(xml_path, encoding="utf-8") as f:
         return f.read()
 
 
-def create_mock_ffmpeg_process(
-    returncode=0, duration=60.0, create_images=True, output_dir=None
-):
+def create_mock_ffmpeg_process(returncode=0, duration=60.0, create_images=True, output_dir=None):
     """
     Helper function to create a mock FFmpeg process for testing.
 
@@ -286,9 +279,7 @@ def create_mock_mediainfo(has_hdr=False, hdr_format_override=None, duration=60.0
         video_track.hdr_format = hdr_format_override
     else:
         video_track.hdr_format = "HDR10" if has_hdr else None
-    video_track.maximum_content_light_level = (
-        None  # MaxCLL — override in tests as needed
-    )
+    video_track.maximum_content_light_level = None  # MaxCLL — override in tests as needed
     video_track.duration = duration * 1000  # milliseconds
     video_track.width = 1920
     video_track.height = 1080
@@ -328,19 +319,14 @@ def mock_mediainfo_hdr():
 @pytest.fixture
 def mock_mediainfo_dv_profile5():
     """Create a mock MediaInfo for Dolby Vision Profile 5 (no backward compat)."""
-    return create_mock_mediainfo(
-        hdr_format_override="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU"
-    )
+    return create_mock_mediainfo(hdr_format_override="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU")
 
 
 @pytest.fixture
 def mock_mediainfo_dv_with_hdr10():
     """Create a mock MediaInfo for Dolby Vision Profile 8 with HDR10 compat."""
     return create_mock_mediainfo(
-        hdr_format_override=(
-            "Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, "
-            "HDR10 compatible / SMPTE ST 2086"
-        )
+        hdr_format_override=("Dolby Vision, Version 1.0, dvhe.08.06, BL+RPU, HDR10 compatible / SMPTE ST 2086")
     )
 
 
@@ -410,9 +396,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
 
             mock_server = MagicMock()
             mock_server.library.sections.return_value = []
-            monkeypatch.setattr(
-                pc_mod, "plex_server", lambda *a, **kw: mock_server, raising=True
-            )
+            monkeypatch.setattr(pc_mod, "plex_server", lambda *a, **kw: mock_server, raising=True)
         except ImportError:
             pass
 
@@ -427,9 +411,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
         try:
             import plex_generate_previews.gpu_detection as gd_mod
 
-            monkeypatch.setattr(
-                gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True
-            )
+            monkeypatch.setattr(gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True)
         except ImportError:
             pass
 

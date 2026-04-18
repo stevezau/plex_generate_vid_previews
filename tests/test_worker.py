@@ -92,9 +92,7 @@ class TestWorker:
 
         mock_process.return_value = ProcessingResult.GENERATED
 
-        worker.assign_task(
-            "test_key", config, plex, media_title="Test", media_type="movie"
-        )
+        worker.assign_task("test_key", config, plex, media_title="Test", media_type="movie")
 
         # Should be busy initially
         assert worker.is_busy is True
@@ -168,16 +166,12 @@ class TestWorker:
         assert "RTX" in name or "NVIDIA" in name
 
         # Test AMD GPU
-        worker = Worker(
-            1, "GPU", "AMD", "/dev/dri/renderD128", 0, "AMD Radeon RX 6800 XT"
-        )
+        worker = Worker(1, "GPU", "AMD", "/dev/dri/renderD128", 0, "AMD Radeon RX 6800 XT")
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
 
         # Test Intel GPU
-        worker = Worker(
-            2, "GPU", "INTEL", "/dev/dri/renderD128", 0, "Intel UHD Graphics 770"
-        )
+        worker = Worker(2, "GPU", "INTEL", "/dev/dri/renderD128", 0, "Intel UHD Graphics 770")
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
 
@@ -198,9 +192,7 @@ class TestWorker:
 
         mock_process.side_effect = mock_process_fn
 
-        worker.assign_task(
-            "test_key", config, plex, media_title="Test", media_type="movie"
-        )
+        worker.assign_task("test_key", config, plex, media_title="Test", media_type="movie")
 
         # Give thread a moment to start
         time.sleep(0.01)
@@ -291,9 +283,7 @@ class TestWorker:
         assert "Codec not supported by GPU" in (worker.fallback_reason or "")
 
     @patch("plex_generate_previews.worker.process_item")
-    def test_worker_gpu_cpu_fallback_records_failure_when_cpu_retry_fails(
-        self, mock_process
-    ):
+    def test_worker_gpu_cpu_fallback_records_failure_when_cpu_retry_fails(self, mock_process):
         """If the in-place CPU retry also fails, the worker counts the task as failed."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
         config = MagicMock()
@@ -338,9 +328,7 @@ class TestWorker:
 
         mock_process.side_effect = mock_process_fn
 
-        worker.assign_task(
-            "test_key", config, plex, media_title="Test", media_type="movie"
-        )
+        worker.assign_task("test_key", config, plex, media_title="Test", media_type="movie")
 
         # Wait for thread to complete
         if worker.current_thread:
@@ -498,9 +486,7 @@ class TestWorkerPool:
                     assigned_count["removed"] = True
             return assigned
 
-        with patch.object(
-            pool, "_assign_main_queue_task", side_effect=assign_and_remove
-        ):
+        with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove):
             start = time.time()
             result = pool.process_items_headless(items, config, plex)
             elapsed = time.time() - start
@@ -536,9 +522,7 @@ class TestWorkerPool:
                     assign_count["removed"] = True
             return assigned
 
-        with patch.object(
-            pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu
-        ):
+        with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu):
             start = time.time()
             result = pool.process_items_headless(items, config, plex)
             elapsed = time.time() - start
@@ -912,9 +896,7 @@ class TestReconcileGpuWorkers:
 
     def test_reconcile_removes_idle_workers_immediately(self):
         """Idle excess workers are removed from the pool at once."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})]
         pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
         assert len(pool.workers) == 3
 
@@ -927,9 +909,7 @@ class TestReconcileGpuWorkers:
 
     def test_reconcile_defers_busy_workers(self):
         """Busy workers stay in the pool with _pending_removal set."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})]
         pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
         for w in pool.workers:
             w.is_busy = True
@@ -946,9 +926,7 @@ class TestReconcileGpuWorkers:
 
     def test_reconcile_mixed_idle_and_busy(self):
         """Idle workers removed first; only remaining busy workers deferred."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 4})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 4})]
         pool = WorkerPool(gpu_workers=4, cpu_workers=0, selected_gpus=selected_gpus)
         pool.workers[0].is_busy = True
         pool.workers[1].is_busy = True
@@ -964,9 +942,7 @@ class TestReconcileGpuWorkers:
 
     def test_pending_removal_prevents_task_assignment(self):
         """Workers flagged for removal are not considered available."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})]
         pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
         for w in pool.workers:
             w.is_busy = True
@@ -986,9 +962,7 @@ class TestReconcileGpuWorkers:
 
     def test_deferred_worker_retired_after_completion(self):
         """Deferred workers are retired by _retire_idle_worker_if_scheduled."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 2})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 2})]
         pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
         for w in pool.workers:
             w.is_busy = True
@@ -1007,9 +981,7 @@ class TestReconcileGpuWorkers:
 
     def test_deferred_workers_cleaned_by_apply_deferred_removals(self):
         """_apply_deferred_removals sweeps all idle deferred workers."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 3})]
         pool = WorkerPool(gpu_workers=3, cpu_workers=0, selected_gpus=selected_gpus)
         for w in pool.workers:
             w.is_busy = True
@@ -1027,9 +999,7 @@ class TestReconcileGpuWorkers:
 
     def test_reconcile_disabled_device_defers_busy(self):
         """Disabling an entire device defers busy workers instead of dropping them."""
-        selected_gpus = [
-            ("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 2})
-        ]
+        selected_gpus = [("NVIDIA", "/dev/dri/renderD128", {"name": "GPU0", "workers": 2})]
         pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
         pool.workers[0].is_busy = True
 
@@ -1093,8 +1063,7 @@ class TestWorkerProgressCount:
 
         # completed_tasks should have incremented to exactly 1 — NOT 2
         assert completed_counts[-1] == 1, (
-            f"Expected final completed_tasks=1, got {completed_counts[-1]}. "
-            f"All counts: {completed_counts}"
+            f"Expected final completed_tasks=1, got {completed_counts[-1]}. All counts: {completed_counts}"
         )
 
     @patch("plex_generate_previews.worker.process_item")

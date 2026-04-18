@@ -58,15 +58,13 @@ def _load_history_from_disk() -> None:
     if not path.exists():
         return
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             entries = json.load(f)
         if isinstance(entries, list):
             with _history_lock:
                 _webhook_history.clear()
                 _webhook_history.extend(entries[-_HISTORY_MAX:])
-            logger.debug(
-                "Loaded {} webhook history entries from {}", len(_webhook_history), path
-            )
+            logger.debug("Loaded {} webhook history entries from {}", len(_webhook_history), path)
     except Exception as exc:
         logger.warning("Failed to load webhook history from {}: {}", path, exc)
 
@@ -117,9 +115,7 @@ def _authenticate_webhook(f):
                 candidates.append(("Bearer", bearer))
         elif auth_header.startswith("Basic "):
             try:
-                decoded = base64.b64decode(auth_header[6:].encode()).decode(
-                    "utf-8", errors="replace"
-                )
+                decoded = base64.b64decode(auth_header[6:].encode()).decode("utf-8", errors="replace")
                 if ":" in decoded:
                     _, basic_pw = decoded.split(":", 1)
                     if basic_pw:
@@ -133,8 +129,7 @@ def _authenticate_webhook(f):
 
         if not candidates:
             logger.warning(
-                "Webhook: authentication failed (no token provided) — "
-                "Remote={}, Path={}, Method={}",
+                "Webhook: authentication failed (no token provided) — Remote={}, Path={}, Method={}",
                 request.remote_addr,
                 request.path,
                 request.method,
@@ -151,8 +146,7 @@ def _authenticate_webhook(f):
                 return f(*args, **kwargs)
 
         logger.warning(
-            "Webhook: authentication failed (invalid token via {}) — "
-            "Remote={}, Path={}",
+            "Webhook: authentication failed (invalid token via {}) — Remote={}, Path={}",
             candidates[0][0],
             request.remote_addr,
             request.path,
@@ -378,9 +372,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     safe_title = str(title or "Unknown")
     normalized_input_path = str(file_path or "").strip()
     if not normalized_input_path:
-        logger.warning(
-            f"Webhook: {safe_source} Download for '{safe_title}' ignored (missing file path)"
-        )
+        logger.warning(f"Webhook: {safe_source} Download for '{safe_title}' ignored (missing file path)")
         return False
 
     settings = get_settings_manager()
@@ -393,21 +385,14 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         now_ts = datetime.now(timezone.utc).timestamp()
 
         # Opportunistically prune expired dedup entries — keeps the dict bounded.
-        expired = [
-            key
-            for key, ts in _recent_dispatches.items()
-            if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS
-        ]
+        expired = [key for key, ts in _recent_dispatches.items() if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS]
         for key in expired:
             _recent_dispatches.pop(key, None)
 
         recent_ts = _recent_dispatches.get(dedup_key)
         if recent_ts is not None:
             age = int(now_ts - recent_ts)
-            logger.info(
-                f"Webhook: {safe_source} duplicate of '{safe_title}' ignored "
-                f"(already dispatched {age}s ago)"
-            )
+            logger.info(f"Webhook: {safe_source} duplicate of '{safe_title}' ignored (already dispatched {age}s ago)")
             dedup_skip = True
         else:
             dedup_skip = False
@@ -442,8 +427,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         return False
 
     logger.info(
-        f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with "
-        f"{path_count} path(s) in {delay}s"
+        f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with {path_count} path(s) in {delay}s"
     )
     return True
 
@@ -468,15 +452,9 @@ def _execute_webhook_job(debounce_key: str) -> None:
     batch_titles = batch.get("titles") or []
 
     try:
-        webhook_paths = sorted(
-            path
-            for path in batch.get("file_paths", set())
-            if isinstance(path, str) and path
-        )
+        webhook_paths = sorted(path for path in batch.get("file_paths", set()) if isinstance(path, str) and path)
         if not webhook_paths:
-            logger.warning(
-                f"Webhook: debounced batch for source '{source}' had no valid paths"
-            )
+            logger.warning(f"Webhook: debounced batch for source '{source}' had no valid paths")
             _add_history_entry(source, "Download", "", "ignored_no_paths")
             return
 
@@ -502,9 +480,7 @@ def _execute_webhook_job(debounce_key: str) -> None:
         selected_libraries = settings.get("selected_libraries", [])
         if not isinstance(selected_libraries, list):
             selected_libraries = []
-        selected_libraries = [
-            str(name).strip() for name in selected_libraries if str(name).strip()
-        ]
+        selected_libraries = [str(name).strip() for name in selected_libraries if str(name).strip()]
         retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
         retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
@@ -567,9 +543,7 @@ def radarr_webhook():
 
     if event_type == "Test":
         _add_history_entry("radarr", "Test", "", "test")
-        return jsonify(
-            {"success": True, "message": "Radarr webhook configured successfully"}
-        )
+        return jsonify({"success": True, "message": "Radarr webhook configured successfully"})
 
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
@@ -589,8 +563,7 @@ def radarr_webhook():
     was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
     if not was_queued:
         logger.debug(
-            "Webhook: Radarr payload had no extractable file path. "
-            "Structure: {}\nFull payload: {}",
+            "Webhook: Radarr payload had no extractable file path. Structure: {}\nFull payload: {}",
             _summarize_payload(data),
             json.dumps(data, default=str, ensure_ascii=False),
         )
@@ -640,16 +613,12 @@ def _handle_sonarr_compatible_webhook(source: str):
 
     if event_type == "Test":
         _add_history_entry(source, "Test", "", "test")
-        return jsonify(
-            {"success": True, "message": f"{label} webhook configured successfully"}
-        )
+        return jsonify({"success": True, "message": f"{label} webhook configured successfully"})
 
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry(source, event_type, "", "disabled")
-        logger.info(
-            f"Webhook: {label} event '{event_type}' ignored (webhooks disabled)"
-        )
+        logger.info(f"Webhook: {label} event '{event_type}' ignored (webhooks disabled)")
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type not in ("Download", "OnDownload"):
@@ -661,19 +630,14 @@ def _handle_sonarr_compatible_webhook(source: str):
     series_title = str(series.get("title", "")).strip()
     # Sportarr uses eventTitle / instanceName instead of series.title
     if not series_title:
-        series_title = (
-            str(data.get("eventTitle", "")).strip()
-            or str(data.get("instanceName", "")).strip()
-            or "Unknown"
-        )
+        series_title = str(data.get("eventTitle", "")).strip() or str(data.get("instanceName", "")).strip() or "Unknown"
     display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
     episode_file_path = _extract_sonarr_file_path(data)
 
     was_queued = _schedule_webhook_job(source, display_title, episode_file_path)
     if not was_queued:
         logger.debug(
-            "Webhook: {} payload had no extractable file path. "
-            "Structure: {}\nFull payload: {}",
+            "Webhook: {} payload had no extractable file path. Structure: {}\nFull payload: {}",
             label,
             _summarize_payload(data),
             json.dumps(data, default=str, ensure_ascii=False),
@@ -692,9 +656,7 @@ def _handle_sonarr_compatible_webhook(source: str):
     _add_history_entry(source, "Download", display_title, "queued")
 
     return (
-        jsonify(
-            {"success": True, "message": f"Processing queued for '{display_title}'"}
-        ),
+        jsonify({"success": True, "message": f"Processing queued for '{display_title}'"}),
         202,
     )
 
@@ -847,9 +809,7 @@ def plex_webhook():
         return jsonify({"success": True, "message": "Plex webhook endpoint reachable"})
 
     settings = get_settings_manager()
-    if not settings.get("webhook_enabled", True) or not settings.get(
-        "plex_webhook_enabled", False
-    ):
+    if not settings.get("webhook_enabled", True) or not settings.get("plex_webhook_enabled", False):
         _add_history_entry("plex", event or "Plex", "", "disabled")
         logger.info("Webhook: Plex event '{}' ignored (Plex webhook disabled)", event)
         return jsonify({"success": True, "message": "Plex webhook disabled"})
@@ -871,9 +831,7 @@ def plex_webhook():
             "Webhook: Plex library.new payload missing ratingKey. Structure: {}",
             _summarize_payload(data),
         )
-        _add_history_entry(
-            "plex", "library.new", display_title or raw_title, "ignored_no_path"
-        )
+        _add_history_entry("plex", "library.new", display_title or raw_title, "ignored_no_path")
         return jsonify({"success": False, "error": "Missing Metadata.ratingKey"}), 400
 
     # Try the cheap path first: file paths embedded in the payload's
@@ -914,10 +872,7 @@ def plex_webhook():
             jsonify(
                 {
                     "success": True,
-                    "message": (
-                        f"No file paths found for '{display_title}' "
-                        f"(ratingKey={rating_key})"
-                    ),
+                    "message": (f"No file paths found for '{display_title}' (ratingKey={rating_key})"),
                 }
             ),
             200,
@@ -942,9 +897,7 @@ def plex_webhook():
 
     _add_history_entry("plex", "library.new", display_title, "queued")
     return (
-        jsonify(
-            {"success": True, "message": f"Processing queued for '{display_title}'"}
-        ),
+        jsonify({"success": True, "message": f"Processing queued for '{display_title}'"}),
         202,
     )
 
@@ -978,9 +931,7 @@ def custom_webhook():
 
     if event_type == "Test":
         _add_history_entry("custom", "Test", "", "test")
-        return jsonify(
-            {"success": True, "message": "Custom webhook configured successfully"}
-        )
+        return jsonify({"success": True, "message": "Custom webhook configured successfully"})
 
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
@@ -991,8 +942,7 @@ def custom_webhook():
     paths = _extract_custom_paths(data)
     if not paths:
         logger.debug(
-            "Webhook: Custom payload had no extractable file path. "
-            "Structure: {}\nFull payload: {}",
+            "Webhook: Custom payload had no extractable file path. Structure: {}\nFull payload: {}",
             _summarize_payload(data),
             json.dumps(data, default=str, ensure_ascii=False),
         )
@@ -1089,11 +1039,7 @@ def get_pending_webhooks():
                     "source": batch.get("source", key),
                     "file_count": len(batch.get("file_paths", set())),
                     "first_title": titles[0] if titles else "",
-                    "fire_at": datetime.fromtimestamp(
-                        fire_at, tz=timezone.utc
-                    ).isoformat()
-                    if fire_at
-                    else None,
+                    "fire_at": datetime.fromtimestamp(fire_at, tz=timezone.utc).isoformat() if fire_at else None,
                     "remaining_seconds": round(remaining, 1),
                 }
             )

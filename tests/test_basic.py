@@ -98,9 +98,7 @@ class TestGPUDetection:
         assert "cuda" in nvidia_info.lower()
 
         # Test AMD formatting
-        amd_info = format_gpu_info(
-            "vaapi", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT"
-        )
+        amd_info = format_gpu_info("vaapi", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT")
         assert "AMD" in amd_info
         assert "RX 6800 XT" in amd_info
         assert "vaapi" in amd_info.lower()
@@ -114,16 +112,12 @@ class TestGPUDetection:
 
         # Test version parsing
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="ffmpeg version 7.1.1-1ubuntu1.2 Copyright..."
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.1.1-1ubuntu1.2 Copyright...")
             version = _get_ffmpeg_version()
             assert version == (7, 1, 1)
 
         # Test version checking
-        with patch(
-            "plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version"
-        ) as mock_get_version:
+        with patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version") as mock_get_version:
             mock_get_version.return_value = (7, 1, 0)
             assert _check_ffmpeg_version() is True
 

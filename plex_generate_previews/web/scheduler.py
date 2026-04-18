@@ -7,8 +7,8 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -22,10 +22,10 @@ from loguru import logger
 # Must be at module level to be picklable
 def execute_scheduled_job(
     schedule_id: str,
-    library_id: Optional[str] = None,
+    library_id: str | None = None,
     library_name: str = "",
-    config: Optional[dict] = None,
-    priority: Optional[int] = None,
+    config: dict | None = None,
+    priority: int | None = None,
 ) -> None:
     """Execute a scheduled job — module-level function for APScheduler pickling.
 
@@ -61,8 +61,7 @@ def execute_scheduled_job(
             lookback = 1.0
         lookback = max(0.25, min(720.0, lookback))
         logger.info(
-            "Executing scheduled recently-added scan: {} "
-            "(library={}, lookback={:.2g}h)",
+            "Executing scheduled recently-added scan: {} (library={}, lookback={:.2g}h)",
             schedule_id,
             library_name or "all libraries",
             lookback,
@@ -103,15 +102,13 @@ class ScheduleManager:
     and persistent storage via SQLite.
     """
 
-    def __init__(
-        self, config_dir: str = "/config", run_job_callback: Optional[Callable] = None
-    ):
+    def __init__(self, config_dir: str = "/config", run_job_callback: Callable | None = None):
         """Initialize schedule manager with config directory and optional callback."""
         self.config_dir = config_dir
         self.db_path = os.path.join(config_dir, "scheduler.db")
         self.schedules_file = os.path.join(config_dir, "schedules.json")
         self.run_job_callback = run_job_callback
-        self._schedules: Dict[str, dict] = {}
+        self._schedules: dict[str, dict] = {}
 
         # Ensure config directory exists
         os.makedirs(config_dir, exist_ok=True)
@@ -140,11 +137,11 @@ class ScheduleManager:
         """Load schedule metadata from persistent storage."""
         if os.path.exists(self.schedules_file):
             try:
-                with open(self.schedules_file, "r") as f:
+                with open(self.schedules_file) as f:
                     data = json.load(f)
                     self._schedules = data.get("schedules", {})
                 logger.info(f"Loaded {len(self._schedules)} schedule configurations")
-            except (json.JSONDecodeError, IOError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"Failed to load schedules: {e}")
 
     def _save_schedules(self) -> None:
@@ -153,7 +150,7 @@ class ScheduleManager:
             from ..utils import atomic_json_save
 
             atomic_json_save(self.schedules_file, {"schedules": self._schedules})
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Failed to save schedules: {e}")
 
     def _on_job_executed(self, event) -> None:
@@ -187,9 +184,7 @@ class ScheduleManager:
     def _update_last_run(self, schedule_id: str) -> None:
         """Update the last run time for a schedule."""
         if schedule_id in self._schedules:
-            self._schedules[schedule_id]["last_run"] = datetime.now(
-                timezone.utc
-            ).isoformat()
+            self._schedules[schedule_id]["last_run"] = datetime.now(timezone.utc).isoformat()
             self._save_schedules()
 
     def create_schedule(
@@ -197,11 +192,11 @@ class ScheduleManager:
         name: str,
         cron_expression: str = None,
         interval_minutes: int = None,
-        library_id: Optional[str] = None,
+        library_id: str | None = None,
         library_name: str = "",
-        config: Optional[dict] = None,
+        config: dict | None = None,
         enabled: bool = True,
-        priority: Optional[int] = None,
+        priority: int | None = None,
     ) -> dict:
         """Create a new schedule.
 
@@ -231,9 +226,7 @@ class ScheduleManager:
             trigger_type = "interval"
             trigger_value = str(interval_minutes)
         else:
-            raise ValueError(
-                "Either cron_expression or interval_minutes must be provided"
-            )
+            raise ValueError("Either cron_expression or interval_minutes must be provided")
 
         # Store metadata
         schedule_meta = {
@@ -264,9 +257,7 @@ class ScheduleManager:
                 args=[schedule_id, library_id, library_name, config, priority],
                 replace_existing=True,
             )
-            schedule_meta["next_run"] = (
-                job.next_run_time.isoformat() if job.next_run_time else None
-            )
+            schedule_meta["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
 
         self._schedules[schedule_id] = schedule_meta
         self._save_schedules()
@@ -285,7 +276,7 @@ class ScheduleManager:
         config: dict = None,
         enabled: bool = None,
         priority: int = None,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update an existing schedule."""
         if schedule_id not in self._schedules:
             return None
@@ -340,9 +331,7 @@ class ScheduleManager:
                 ],
                 replace_existing=True,
             )
-            schedule["next_run"] = (
-                job.next_run_time.isoformat() if job.next_run_time else None
-            )
+            schedule["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
         else:
             schedule["next_run"] = None
 
@@ -367,7 +356,7 @@ class ScheduleManager:
         logger.info(f"Deleted schedule {schedule_id}")
         return True
 
-    def get_schedule(self, schedule_id: str) -> Optional[dict]:
+    def get_schedule(self, schedule_id: str) -> dict | None:
         """Get a schedule by ID."""
         schedule = self._schedules.get(schedule_id)
         if schedule:
@@ -379,7 +368,7 @@ class ScheduleManager:
                 logger.debug(f"Could not fetch next_run for schedule {schedule_id}")
         return schedule
 
-    def get_all_schedules(self) -> List[dict]:
+    def get_all_schedules(self) -> list[dict]:
         """Get all schedules."""
         schedules = []
         for schedule_id, schedule in self._schedules.items():
@@ -392,11 +381,11 @@ class ScheduleManager:
             schedules.append(schedule)
         return schedules
 
-    def enable_schedule(self, schedule_id: str) -> Optional[dict]:
+    def enable_schedule(self, schedule_id: str) -> dict | None:
         """Enable a schedule."""
         return self.update_schedule(schedule_id, enabled=True)
 
-    def disable_schedule(self, schedule_id: str) -> Optional[dict]:
+    def disable_schedule(self, schedule_id: str) -> dict | None:
         """Disable a schedule."""
         return self.update_schedule(schedule_id, enabled=False)
 
@@ -418,16 +407,14 @@ class ScheduleManager:
 
 
 # Global scheduler instance
-_schedule_manager: Optional[ScheduleManager] = None
+_schedule_manager: ScheduleManager | None = None
 _schedule_lock = threading.Lock()
 
 # Default config directory from environment
 DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
 
 
-def get_schedule_manager(
-    config_dir: Optional[str] = None, run_job_callback: Optional[Callable] = None
-) -> ScheduleManager:
+def get_schedule_manager(config_dir: str | None = None, run_job_callback: Callable | None = None) -> ScheduleManager:
     """Get or create the global ScheduleManager instance (thread-safe)."""
     global _schedule_manager
     with _schedule_lock:

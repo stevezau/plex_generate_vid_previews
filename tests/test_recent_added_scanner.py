@@ -24,9 +24,7 @@ def _reset_singletons():
     wh._webhook_history.clear()
 
 
-def _make_item(
-    title, paths, added_at, item_type="movie", grandparent=None, season_ep=None
-):
+def _make_item(title, paths, added_at, item_type="movie", grandparent=None, season_ep=None):
     item = MagicMock()
     item.title = title
     item.type = item_type
@@ -62,12 +60,8 @@ def test_scan_submits_in_window_items(mock_schedule, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
     now = datetime.now(timezone.utc)
-    in_window = _make_item(
-        "New Movie", ["/data/movies/New.mkv"], now - timedelta(minutes=30)
-    )
-    out_of_window = _make_item(
-        "Old Movie", ["/data/movies/Old.mkv"], now - timedelta(hours=4)
-    )
+    in_window = _make_item("New Movie", ["/data/movies/New.mkv"], now - timedelta(minutes=30))
+    out_of_window = _make_item("Old Movie", ["/data/movies/Old.mkv"], now - timedelta(hours=4))
     section = _make_section("Movies", "movie", "1", [in_window, out_of_window])
     plex = _make_plex([section])
 
@@ -103,9 +97,7 @@ def test_scan_handles_episode_titles(mock_schedule, tmp_path, monkeypatch):
 
 
 @patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
-def test_scan_with_explicit_library_ids_scans_only_those_sections(
-    mock_schedule, tmp_path, monkeypatch
-):
+def test_scan_with_explicit_library_ids_scans_only_those_sections(mock_schedule, tmp_path, monkeypatch):
     """When library_ids=[...], only sections with matching keys are scanned."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
@@ -132,9 +124,7 @@ def test_scan_with_explicit_library_ids_scans_only_those_sections(
 
 
 @patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
-def test_scan_empty_library_ids_falls_back_to_global_selected_libraries(
-    mock_schedule, tmp_path, monkeypatch
-):
+def test_scan_empty_library_ids_falls_back_to_global_selected_libraries(mock_schedule, tmp_path, monkeypatch):
     """An empty library_ids falls back to the global selected_libraries."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
@@ -160,12 +150,8 @@ def test_scan_fractional_lookback_hours(mock_schedule, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
     now = datetime.now(timezone.utc)
-    in_window = _make_item(
-        "Just added", ["/data/movies/New.mkv"], now - timedelta(minutes=5)
-    )
-    out_of_window = _make_item(
-        "20 min ago", ["/data/movies/Old.mkv"], now - timedelta(minutes=20)
-    )
+    in_window = _make_item("Just added", ["/data/movies/New.mkv"], now - timedelta(minutes=5))
+    out_of_window = _make_item("20 min ago", ["/data/movies/Old.mkv"], now - timedelta(minutes=20))
     section = _make_section("Movies", "movie", "1", [in_window, out_of_window])
     plex = _make_plex([section])
 
@@ -233,13 +219,7 @@ def test_scan_skips_items_with_existing_bifs(mock_schedule, tmp_path, monkeypatc
     # see our mocked MediaPart.hash attribute.
     bundle_hash = "abcdef1234567890"
     bif_dir = (
-        plex_config
-        / "Media"
-        / "localhost"
-        / bundle_hash[0]
-        / f"{bundle_hash[1:]}.bundle"
-        / "Contents"
-        / "Indexes"
+        plex_config / "Media" / "localhost" / bundle_hash[0] / f"{bundle_hash[1:]}.bundle" / "Contents" / "Indexes"
     )
     bif_dir.mkdir(parents=True)
     (bif_dir / "index-sd.bif").write_bytes(b"fake bif")
@@ -304,7 +284,4 @@ def test_scan_logs_history_when_items_submitted(mock_schedule, tmp_path, monkeyp
 
     import plex_generate_previews.web.webhooks as wh
 
-    assert any(
-        e.get("source") == "recently_added" and e.get("status") == "queued"
-        for e in wh._webhook_history
-    )
+    assert any(e.get("source") == "recently_added" and e.get("status") == "queued" for e in wh._webhook_history)

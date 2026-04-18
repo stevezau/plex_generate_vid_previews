@@ -94,11 +94,7 @@ class TestPreviewSettingsAfterUpdate:
         base = sm.get_all()
         merged = preview_settings_after_update(base, {"gpu_threads": 3})
         assert validate_processing_thread_totals(merged)[0] is True
-        total = sum(
-            e["workers"]
-            for e in merged["gpu_config"]
-            if isinstance(e, dict) and e.get("enabled", True)
-        )
+        total = sum(e["workers"] for e in merged["gpu_config"] if isinstance(e, dict) and e.get("enabled", True))
         assert total == 3
 
 

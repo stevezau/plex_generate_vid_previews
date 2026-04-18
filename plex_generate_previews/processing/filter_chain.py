@@ -72,20 +72,9 @@ def build_dv5_vf(
             f":peak=100:desat=0,"
             f"hwdownload,format=nv12,format=yuv420p,{base_scale}"
         )
-    libplacebo_opts = (
-        f"libplacebo=tonemapping={tonemap_algorithm}"
-        f":format=yuv420p"
-        f":contrast=1.3:saturation=1.3"
-    )
+    libplacebo_opts = f"libplacebo=tonemapping={tonemap_algorithm}:format=yuv420p:contrast=1.3:saturation=1.3"
     if path_kind == DV5_PATH_VAAPI_VULKAN:
-        return (
-            f"{fps},"
-            f"hwmap=derive_device=vulkan,"
-            f"{libplacebo_opts},"
-            f"hwdownload,format=yuv420p,{base_scale}"
-        )
+        return f"{fps},hwmap=derive_device=vulkan,{libplacebo_opts},hwdownload,format=yuv420p,{base_scale}"
     if path_kind == DV5_PATH_LIBPLACEBO:
-        return (
-            f"{fps},hwupload,{libplacebo_opts},hwdownload,format=yuv420p,{base_scale}"
-        )
+        return f"{fps},hwupload,{libplacebo_opts},hwdownload,format=yuv420p,{base_scale}"
     raise ValueError(f"Unknown DV5 path_kind: {path_kind!r}")

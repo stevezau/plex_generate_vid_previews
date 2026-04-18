@@ -63,18 +63,14 @@ class TestGPUFormattingCI:
 
     def test_format_gpu_info_amd(self):
         """Test AMD GPU info formatting."""
-        info = format_gpu_info(
-            "AMD", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT", "VAAPI"
-        )
+        info = format_gpu_info("AMD", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT", "VAAPI")
         assert "AMD" in info
         assert "RX 6800 XT" in info
         assert "VAAPI" in info
 
     def test_format_gpu_info_intel(self):
         """Test Intel GPU info formatting."""
-        info = format_gpu_info(
-            "INTEL", "/dev/dri/renderD128", "Intel UHD Graphics 770", "VAAPI"
-        )
+        info = format_gpu_info("INTEL", "/dev/dri/renderD128", "Intel UHD Graphics 770", "VAAPI")
         assert "Intel" in info
         assert "UHD Graphics 770" in info
         assert "VAAPI" in info

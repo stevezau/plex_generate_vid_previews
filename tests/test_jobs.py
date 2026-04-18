@@ -73,9 +73,7 @@ class TestJobLogPersistence:
         assert len(logs) == 1
         assert "persisted line" in logs[0]
 
-    def test_get_logs_returns_retention_message_when_file_missing_but_job_exists(
-        self, config_dir
-    ):
+    def test_get_logs_returns_retention_message_when_file_missing_but_job_exists(self, config_dir):
         """get_logs returns retention message when log file is gone but job still in jobs.json."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
@@ -112,9 +110,7 @@ class TestLogRetentionEnforcement:
         jm._jobs[job.id].completed_at = old_time
         jm._save_jobs()
 
-        with patch(
-            "plex_generate_previews.web.settings_manager.get_settings_manager"
-        ) as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -132,9 +128,7 @@ class TestLogRetentionEnforcement:
 
         log_path = os.path.join(config_dir, "logs", "jobs", f"{job.id}.log")
 
-        with patch(
-            "plex_generate_previews.web.settings_manager.get_settings_manager"
-        ) as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -153,9 +147,7 @@ class TestLogRetentionEnforcement:
         old_time = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         jm._jobs[job.id].created_at = old_time
 
-        with patch(
-            "plex_generate_previews.web.settings_manager.get_settings_manager"
-        ) as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -170,9 +162,7 @@ class TestLogRetentionEnforcement:
             f.write("orphaned\n")
 
         jm = JobManager(config_dir=config_dir)
-        with patch(
-            "plex_generate_previews.web.settings_manager.get_settings_manager"
-        ) as m:
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -368,9 +358,7 @@ class TestRequeueInterruptedJobs:
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(library_name="Long Runner")
         job.created_at = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
-        job.started_at = (
-            datetime.now(timezone.utc) - timedelta(minutes=10)
-        ).isoformat()
+        job.started_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         job.status = JobStatus.FAILED
         job.error = "Job was interrupted by server restart"
         jm._interrupted_jobs = [job]
@@ -400,9 +388,7 @@ class TestRequeueInterruptedJobs:
         """Pending jobs are returned as-is, still pending."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
-        job = jm.create_job(
-            library_name="Pending Job", config={"selected_libraries": ["1"]}
-        )
+        job = jm.create_job(library_name="Pending Job", config={"selected_libraries": ["1"]})
         jm._interrupted_jobs = [job]
 
         result = jm.requeue_interrupted_jobs()

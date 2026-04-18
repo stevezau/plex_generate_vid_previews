@@ -15,8 +15,8 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from enum import Enum
-from typing import Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
@@ -110,14 +110,12 @@ FFMPEG_STALL_TIMEOUT_SEC = 300
 # generate_images / _run_ffmpeg land in the right bucket.
 
 _failure_lock = threading.Lock()
-_failures_by_job: Dict[str, List[dict]] = {}
-_failure_job_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "failure_job_id", default=None
-)
+_failures_by_job: dict[str, list[dict]] = {}
+_failure_job_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("failure_job_id", default=None)
 
 
 @contextlib.contextmanager
-def failure_scope(job_id: Optional[str]) -> Iterator[None]:
+def failure_scope(job_id: str | None) -> Iterator[None]:
     """Bind the current thread's failure-tracking scope to ``job_id``.
 
     Any ``record_failure``/``get_failures``/``clear_failures``/
@@ -137,9 +135,7 @@ def failure_scope(job_id: Optional[str]) -> Iterator[None]:
         _failure_job_id_var.reset(token)
 
 
-def record_failure(
-    file_path: str, exit_code: int, reason: str, worker_type: str = ""
-) -> None:
+def record_failure(file_path: str, exit_code: int, reason: str, worker_type: str = "") -> None:
     """Record an FFmpeg / processing failure for the end-of-run summary.
 
     The failure is attributed to the job whose ``failure_scope`` is
@@ -172,7 +168,7 @@ def record_failure(
         )
 
 
-def get_failures() -> List[dict]:
+def get_failures() -> list[dict]:
     """Return a copy of the current scope's failure list (thread-safe)."""
     job_id = _failure_job_id_var.get()
     if job_id is None:
@@ -216,9 +212,7 @@ def set_file_result_callback(callback) -> None:
         _file_result_callback = callback
 
 
-def _notify_file_result(
-    file_path: str, outcome: "ProcessingResult", reason: str = "", worker: str = ""
-) -> None:
+def _notify_file_result(file_path: str, outcome: "ProcessingResult", reason: str = "", worker: str = "") -> None:
     """Invoke the file-result callback if one is set."""
     with _file_result_callback_lock:
         cb = _file_result_callback
@@ -240,9 +234,7 @@ def log_failure_summary() -> None:
     logger.warning(f"{'=' * 80}")
     for i, f in enumerate(failures, 1):
         wt = f"[{f['worker_type']}] " if f["worker_type"] else ""
-        logger.warning(
-            f"  {i:3d}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}"
-        )
+        logger.warning(f"  {i:3d}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}")
     logger.warning(f"{'=' * 80}")
 
 
@@ -252,9 +244,7 @@ try:
     # Test that native library is available
     MediaInfo.can_parse()
 except ImportError:
-    logger.error(
-        "pymediainfo Python package not found. Please install: pip install pymediainfo"
-    )
+    logger.error("pymediainfo Python package not found. Please install: pip install pymediainfo")
     sys.exit(1)
 except OSError as e:
     if "libmediainfo" in str(e).lower():
@@ -262,9 +252,7 @@ except OSError as e:
         if sys.platform == "darwin":
             logger.error("  macOS: brew install media-info")
         elif sys.platform.startswith("linux"):
-            logger.error(
-                "  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev"
-            )
+            logger.error("  Ubuntu/Debian: sudo apt-get install mediainfo libmediainfo-dev")
             logger.error("  Fedora/RHEL: sudo dnf install mediainfo mediainfo-devel")
         else:
             logger.error("  See: https://mediaarea.net/en/MediaInfo/Download")
@@ -339,7 +327,7 @@ def _is_signal_killed(returncode: int) -> bool:
     return _diagnose_ffmpeg_exit_code(returncode).startswith("signal:")
 
 
-def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
+def _extract_ffmpeg_error_summary(stderr_lines: list[str]) -> str:
     """Extract a concise, human-readable error summary from FFmpeg stderr.
 
     Scans the last lines for the most informative error messages (e.g.
@@ -369,7 +357,7 @@ def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
         "corrupt",
     )
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     for line in stderr_lines[-10:]:
         stripped = line.strip()
         if not stripped:
@@ -397,9 +385,7 @@ def _extract_ffmpeg_error_summary(stderr_lines: List[str]) -> str:
     return candidates[-1]
 
 
-def _save_ffmpeg_failure_log(
-    video_file: str, returncode: int, stderr_lines: List[str]
-) -> None:
+def _save_ffmpeg_failure_log(video_file: str, returncode: int, stderr_lines: list[str]) -> None:
     """Save full FFmpeg stderr output to a per-file log for post-mortem debugging.
 
     Files are written to {CONFIG_DIR}/logs/ffmpeg_failures/ with a sanitised
@@ -412,9 +398,7 @@ def _save_ffmpeg_failure_log(
         stderr_lines: Complete FFmpeg stderr output lines.
 
     """
-    log_dir = os.path.join(
-        os.environ.get("CONFIG_DIR", "/config"), "logs", "ffmpeg_failures"
-    )
+    log_dir = os.path.join(os.environ.get("CONFIG_DIR", "/config"), "logs", "ffmpeg_failures")
     try:
         os.makedirs(log_dir, exist_ok=True)
     except OSError:
@@ -452,9 +436,7 @@ def _save_ffmpeg_failure_log(
         pass
 
 
-def _verify_tmp_folder_health(
-    path: str, min_free_mb: int = 512
-) -> Tuple[bool, List[str]]:
+def _verify_tmp_folder_health(path: str, min_free_mb: int = 512) -> tuple[bool, list[str]]:
     """Verify that a temporary directory is writable and has free space.
 
     Args:
@@ -466,7 +448,7 @@ def _verify_tmp_folder_health(
         and error diagnostics suitable for logging.
 
     """
-    messages: List[str] = []
+    messages: list[str] = []
 
     if not path:
         return False, ["Temporary directory path is empty"]
@@ -493,20 +475,14 @@ def _verify_tmp_folder_health(
         usage = shutil.disk_usage(path)
         free_mb = usage.free / (1024 * 1024)
         if free_mb < min_free_mb:
-            messages.append(
-                f"Temporary directory {path} has low free space ({free_mb:.1f} MB < {min_free_mb} MB)"
-            )
+            messages.append(f"Temporary directory {path} has low free space ({free_mb:.1f} MB < {min_free_mb} MB)")
     except OSError as error:
-        messages.append(
-            f"Unable to read disk usage for temporary directory {path}: {error}"
-        )
+        messages.append(f"Unable to read disk usage for temporary directory {path}: {error}")
 
     return True, messages
 
 
-def parse_ffmpeg_progress_line(
-    line: str, total_duration: float, progress_callback=None
-):
+def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callback=None):
     """Parse a single FFmpeg progress line and call progress callback if provided.
 
     Args:
@@ -550,18 +526,14 @@ def parse_ffmpeg_progress_line(
             # Update progress (1 decimal place for UI; Issue #144)
             progress_percent = 0
             if total_duration and total_duration > 0:
-                progress_percent = min(
-                    100.0, round((current_time / total_duration) * 100, 1)
-                )
+                progress_percent = min(100.0, round((current_time / total_duration) * 100, 1))
 
             # Calculate remaining wall-clock time using ffmpeg speed
             remaining_time = 0
             if total_duration and total_duration > 0 and current_time < total_duration:
                 remaining_media = total_duration - current_time
                 speed_val = float(speed_match.group(1)) if speed_match else 0
-                remaining_time = (
-                    remaining_media / speed_val if speed_val > 0 else remaining_media
-                )
+                remaining_time = remaining_media / speed_val if speed_val > 0 else remaining_media
 
             # Call progress callback with all FFmpeg data
             if progress_callback:
@@ -582,7 +554,7 @@ def parse_ffmpeg_progress_line(
     return total_duration
 
 
-def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
+def _detect_codec_error(returncode: int, stderr_lines: list[str]) -> bool:
     """Detect if FFmpeg failure is due to unsupported codec/hardware decoder error.
 
     Checks exit codes and stderr patterns to identify codec-related errors.
@@ -640,7 +612,7 @@ def _detect_codec_error(returncode: int, stderr_lines: List[str]) -> bool:
     return False
 
 
-def _detect_hwaccel_runtime_error(stderr_lines: List[str]) -> bool:
+def _detect_hwaccel_runtime_error(stderr_lines: list[str]) -> bool:
     """Detect GPU hardware accelerator runtime errors in FFmpeg output.
 
     These errors indicate that the hardware decoder started successfully but
@@ -702,13 +674,13 @@ def _clean_output_images(output_folder: str) -> None:
 def generate_images(
     video_file: str,
     output_folder: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config: Config,
     progress_callback=None,
-    ffmpeg_threads_override: Optional[int] = None,
+    ffmpeg_threads_override: int | None = None,
     cancel_check=None,
-) -> Tuple[bool, int, str, float, float, Optional[str]]:
+) -> tuple[bool, int, str, float, float, str | None]:
     """Generate thumbnail images from a video using FFmpeg.
 
     Runs FFmpeg with hardware acceleration when configured. Attempts with
@@ -770,7 +742,7 @@ def generate_images(
     # Pre-assembled filter chain for the libplacebo / OpenCL paths (they
     # already contain hwupload/hwmap/hwdownload and do not need GPU-scale
     # rewriting).
-    libplacebo_vf: Optional[str] = None
+    libplacebo_vf: str | None = None
 
     # Track whether the filter chain requires Vulkan (libplacebo) or OpenCL.
     use_libplacebo = False
@@ -877,11 +849,7 @@ def generate_images(
                     # in :func:`build_dv5_vf` at module top.  The reasoning
                     # about fps-first placement, contrast/saturation, and
                     # per-vendor hwmap/hwupload choices is documented there.
-                    if (
-                        gpu == "INTEL"
-                        and gpu_device_path is not None
-                        and gpu_device_path.startswith("/dev/dri/")
-                    ):
+                    if gpu == "INTEL" and gpu_device_path is not None and gpu_device_path.startswith("/dev/dri/"):
                         use_intel_opencl_dv5_path = True
                         path_kind = DV5_PATH_INTEL_OPENCL
                     else:
@@ -891,11 +859,7 @@ def generate_images(
                             and gpu_device_path is not None
                             and gpu_device_path.startswith("/dev/dri/")
                         )
-                        path_kind = (
-                            DV5_PATH_VAAPI_VULKAN
-                            if use_vaapi_dv5_path
-                            else DV5_PATH_LIBPLACEBO
-                        )
+                        path_kind = DV5_PATH_VAAPI_VULKAN if use_vaapi_dv5_path else DV5_PATH_LIBPLACEBO
                     libplacebo_vf = build_dv5_vf(
                         path_kind=path_kind,
                         tonemap_algorithm=config.tonemap_algorithm,
@@ -960,10 +924,8 @@ def generate_images(
     os.makedirs(output_folder, exist_ok=True)
 
     # First attempt
-    rc, seconds, speed, stderr_lines = _run_ffmpeg(
-        use_skip_initial, init_vulkan=use_libplacebo
-    )
-    stderr_lines_all: List[str] = list(stderr_lines) if stderr_lines else []
+    rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip_initial, init_vulkan=use_libplacebo)
+    stderr_lines_all: list[str] = list(stderr_lines) if stderr_lines else []
 
     # Retry once without skip_frame only if FFmpeg returned non-zero and we tried with skip
     # (If we didn't use skip initially, retrying without skip would just repeat the same command)
@@ -975,14 +937,10 @@ def generate_images(
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_retry = True
-        logger.warning(
-            f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame"
-        )
+        logger.warning(f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame")
         # Clean up any partial files from first attempt (no need to rename if we're retrying)
         _clean_output_images(output_folder)
-        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(
-            use_skip=False, init_vulkan=use_libplacebo
-        )
+        retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False, init_vulkan=use_libplacebo)
         # Update rc and stderr_lines to retry results for codec error detection
         rc = retry_rc
         stderr_lines = retry_stderr_lines
@@ -1009,33 +967,21 @@ def generate_images(
     # at ~5-10× (CPU-bound HEVC) — preferable to falling through to the
     # DV-safe fps+scale chain (~1.7× and dim output).
     did_sw_libplacebo_retry = False
-    if (
-        rc != 0
-        and image_count == 0
-        and (use_vaapi_dv5_path or use_intel_opencl_dv5_path)
-    ):
+    if rc != 0 and image_count == 0 and (use_vaapi_dv5_path or use_intel_opencl_dv5_path):
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_sw_libplacebo_retry = True
         hw_name = "Intel OpenCL" if use_intel_opencl_dv5_path else "VAAPI+Vulkan"
         if use_intel_opencl_dv5_path:
-            reason = (
-                "Intel OpenCL init failed — uncommon, usually a "
-                "container runtime / ICD conflict"
-            )
+            reason = "Intel OpenCL init failed — uncommon, usually a container runtime / ICD conflict"
         else:
-            reason = (
-                "VAAPI→Vulkan libplacebo interop upstream bug "
-                "(Mesa ANV / amdvlk on some driver+GPU combos)"
-            )
+            reason = "VAAPI→Vulkan libplacebo interop upstream bug (Mesa ANV / amdvlk on some driver+GPU combos)"
         logger.warning(
             f"Hardware {hw_name} DV5 path unavailable for {video_file} "
             f"({reason}); falling back to software decode + libplacebo "
             f"(correct DV tonemapping, ~5-10× typical)"
         )
-        stderr_excerpt = (
-            "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
-        )
+        stderr_excerpt = "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
         logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
         _clean_output_images(output_folder)
         # Same filter shape as the NVIDIA/software primary DV5 path; run
@@ -1067,22 +1013,14 @@ def generate_images(
     if rc != 0 and image_count == 0:
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
-        diag_label = classify_dv_safe_retry_reason(
-            stderr_lines_all, use_libplacebo=use_libplacebo
-        )
+        diag_label = classify_dv_safe_retry_reason(stderr_lines_all, use_libplacebo=use_libplacebo)
         if diag_label is not None:
             did_dv_safe_retry = True
-            stderr_excerpt_source = (
-                stderr_lines_all if stderr_lines_all else stderr_lines
-            )
+            stderr_excerpt_source = stderr_lines_all if stderr_lines_all else stderr_lines
             stderr_excerpt = (
-                "\n".join(stderr_excerpt_source[-5:])
-                if len(stderr_excerpt_source) > 0
-                else "No stderr output"
+                "\n".join(stderr_excerpt_source[-5:]) if len(stderr_excerpt_source) > 0 else "No stderr output"
             )
-            logger.warning(
-                f"{diag_label} detected for {video_file}; retrying with DV-safe filter chain (fps+scale)"
-            )
+            logger.warning(f"{diag_label} detected for {video_file}; retrying with DV-safe filter chain (fps+scale)")
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
 
             # Clean up any partial files before retrying
@@ -1094,9 +1032,7 @@ def generate_images(
             # scale_cuda / scale_vaapi + hwdownload when GPU decode is
             # still active — so the retry doesn't choke on -hwaccel_output_format
             # surfaces feeding a CPU-only scale filter.
-            rc, seconds, speed, stderr_lines = _run_ffmpeg(
-                use_skip=False, path_kind_override="sdr"
-            )
+            rc, seconds, speed, stderr_lines = _run_ffmpeg(use_skip=False, path_kind_override="sdr")
             if stderr_lines:
                 stderr_lines_all.extend(stderr_lines)
             image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
@@ -1105,9 +1041,7 @@ def generate_images(
                 if gpu is not None:
                     # Still failing on GPU even with DV-safe filter -> hand off to CPU worker.
                     _clean_output_images(output_folder)
-                    raise CodecNotSupportedError(
-                        f"{diag_label} in GPU context for {video_file}"
-                    )
+                    raise CodecNotSupportedError(f"{diag_label} in GPU context for {video_file}")
                 else:
                     # Already on CPU: no further fallback available without remuxing/bitstream filtering.
                     logger.error(
@@ -1137,11 +1071,7 @@ def generate_images(
 
         if should_fallback:
             # Log relevant stderr excerpt for debugging
-            stderr_excerpt = (
-                "\n".join(stderr_lines[-5:])
-                if len(stderr_lines) > 0
-                else "No stderr output"
-            )
+            stderr_excerpt = "\n".join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
             logger.warning(
                 f"GPU processing failed with {fallback_reason} (exit code {rc}) for {video_file}; will hand off to CPU worker"
             )
@@ -1149,9 +1079,7 @@ def generate_images(
             # Clean up any partial files from GPU attempts
             _clean_output_images(output_folder)
             # Raise exception to signal worker pool to re-queue for CPU worker
-            raise CodecNotSupportedError(
-                f"GPU processing failed ({fallback_reason}) for {video_file} (exit code {rc})"
-            )
+            raise CodecNotSupportedError(f"GPU processing failed ({fallback_reason}) for {video_file} (exit code {rc})")
 
     if rc != 0 and image_count == 0 and gpu is None:
         if _detect_codec_error(rc, stderr_lines):
@@ -1175,11 +1103,7 @@ def generate_images(
         fallback_suffix = (
             " (DV-safe retry)"
             if did_dv_safe_retry
-            else (
-                " (sw libplacebo retry)"
-                if did_sw_libplacebo_retry
-                else (" (retry no-skip)" if did_retry else "")
-            )
+            else (" (sw libplacebo retry)" if did_sw_libplacebo_retry else (" (retry no-skip)" if did_retry else ""))
         )
         logger.info(
             f"Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}"
@@ -1188,15 +1112,9 @@ def generate_images(
         fallback_suffix = (
             " after DV-safe retry"
             if did_dv_safe_retry
-            else (
-                " after sw libplacebo retry"
-                if did_sw_libplacebo_retry
-                else (" after retry" if did_retry else "")
-            )
+            else (" after sw libplacebo retry" if did_sw_libplacebo_retry else (" after retry" if did_retry else ""))
         )
-        logger.error(
-            f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}"
-        )
+        logger.error(f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}")
         error_summary = _extract_ffmpeg_error_summary(stderr_lines_all)
         worker_ctx = "GPU" if gpu is not None else "CPU"
         reason = (
@@ -1211,7 +1129,7 @@ def generate_images(
     return success, image_count, hw, seconds, speed, error_summary
 
 
-def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str]:
+def _setup_bundle_paths(bundle_hash: str, config: Config) -> tuple[str, str, str]:
     """Set up all bundle-related paths.
 
     Args:
@@ -1223,9 +1141,7 @@ def _setup_bundle_paths(bundle_hash: str, config: Config) -> Tuple[str, str, str
 
     """
     bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1::1]}.bundle")
-    bundle_path = sanitize_path(
-        os.path.join(config.plex_config_folder, "Media", "localhost", bundle_file)
-    )
+    bundle_path = sanitize_path(os.path.join(config.plex_config_folder, "Media", "localhost", bundle_file))
     indexes_path = sanitize_path(os.path.join(bundle_path, "Contents", "Indexes"))
     index_bif = sanitize_path(os.path.join(indexes_path, "index-sd.bif"))
     tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
@@ -1248,12 +1164,8 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
         try:
             os.makedirs(indexes_path)
         except PermissionError as e:
-            logger.error(
-                f"Permission denied creating index path {indexes_path} for {media_file}: {e}"
-            )
-            logger.info(
-                f"Please check directory permissions for: {os.path.dirname(indexes_path)}"
-            )
+            logger.error(f"Permission denied creating index path {indexes_path} for {media_file}: {e}")
+            logger.info(f"Please check directory permissions for: {os.path.dirname(indexes_path)}")
             return False
         except OSError as e:
             logger.error(
@@ -1265,12 +1177,8 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
         try:
             os.makedirs(tmp_path)
         except PermissionError as e:
-            logger.error(
-                f"Permission denied creating tmp path {tmp_path} for {media_file}: {e}"
-            )
-            logger.info(
-                f"Please check directory permissions for: {os.path.dirname(tmp_path)}"
-            )
+            logger.error(f"Permission denied creating tmp path {tmp_path} for {media_file}: {e}")
+            logger.info(f"Please check directory permissions for: {os.path.dirname(tmp_path)}")
             return False
         except OSError as e:
             logger.error(
@@ -1303,11 +1211,11 @@ def _generate_and_save_bif(
     media_file: str,
     tmp_path: str,
     index_bif: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config: Config,
     progress_callback=None,
-    ffmpeg_threads_override: Optional[int] = None,
+    ffmpeg_threads_override: int | None = None,
     cancel_check=None,
 ) -> None:
     """Generate images and create BIF file.
@@ -1366,9 +1274,7 @@ def _generate_and_save_bif(
         logger.error(f"No thumbnails generated for {media_file}; skipping BIF creation")
         _cleanup_temp_directory(tmp_path)
         detail = f" ({ffmpeg_error})" if ffmpeg_error else ""
-        raise RuntimeError(
-            f"Thumbnail generation produced 0 images for {media_file}{detail}"
-        )
+        raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}{detail}")
 
     # Generate BIF file
     try:
@@ -1379,12 +1285,8 @@ def _generate_and_save_bif(
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
-            logger.warning(
-                f"Failed to remove failed BIF file {index_bif}: {remove_error}"
-            )
-        logger.error(
-            f"Permission denied generating BIF file {index_bif} for {media_file}: {e}"
-        )
+            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
+        logger.error(f"Permission denied generating BIF file {index_bif} for {media_file}: {e}")
         logger.info(f"Please check write permissions for: {os.path.dirname(index_bif)}")
         raise
     except Exception as e:
@@ -1397,9 +1299,7 @@ def _generate_and_save_bif(
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
-            logger.warning(
-                f"Failed to remove failed BIF file {index_bif}: {remove_error}"
-            )
+            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
         raise
 
 
@@ -1419,9 +1319,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     version = 0
 
     try:
-        images = [
-            img for img in os.listdir(images_path) if os.path.splitext(img)[1] == ".jpg"
-        ]
+        images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == ".jpg"]
     except PermissionError as e:
         logger.error(f"Permission denied reading images directory {images_path}: {e}")
         logger.info(f"Please check read permissions for: {images_path}")
@@ -1432,9 +1330,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
         f = open(bif_filename, "wb")
     except PermissionError as e:
         logger.error(f"Permission denied writing BIF file {bif_filename}: {e}")
-        logger.info(
-            f"Please check write permissions for: {os.path.dirname(bif_filename)}"
-        )
+        logger.info(f"Please check write permissions for: {os.path.dirname(bif_filename)}")
         raise
 
     try:
@@ -1454,9 +1350,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
                 try:
                     statinfo = os.stat(os.path.join(images_path, image))
                 except PermissionError as e:
-                    logger.error(
-                        f"Permission denied reading image file {os.path.join(images_path, image)}: {e}"
-                    )
+                    logger.error(f"Permission denied reading image file {os.path.join(images_path, image)}: {e}")
                     logger.info(f"Please check read permissions for: {images_path}")
                     raise
                 f.write(struct.pack("<I", timestamp))
@@ -1473,9 +1367,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
                     with open(os.path.join(images_path, image), "rb") as img_file:
                         data = img_file.read()
                 except PermissionError as e:
-                    logger.error(
-                        f"Permission denied reading image file {os.path.join(images_path, image)}: {e}"
-                    )
+                    logger.error(f"Permission denied reading image file {os.path.join(images_path, image)}: {e}")
                     logger.info(f"Please check read permissions for: {images_path}")
                     raise
                 f.write(data)
@@ -1487,12 +1379,12 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
 
 def process_item(
     item_key: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config: Config,
     plex,
     progress_callback=None,
-    ffmpeg_threads_override: Optional[int] = None,
+    ffmpeg_threads_override: int | None = None,
     cancel_check=None,
     worker_name: str = "",
 ) -> ProcessingResult:
@@ -1533,10 +1425,7 @@ def process_item(
         if hasattr(e, "request") and e.request:
             logger.error(f"Request URL: {e.request.url}")
             logger.error(f"Request method: {e.request.method}")
-            safe_headers = {
-                k: ("****" if "token" in k.lower() else v)
-                for k, v in e.request.headers.items()
-            }
+            safe_headers = {k: ("****" if "token" in k.lower() else v) for k, v in e.request.headers.items()}
             logger.error(f"Request headers: {safe_headers}")
         _notify_file_result(
             f"item:{item_key}",
@@ -1600,13 +1489,9 @@ def process_item(
                 continue
 
             try:
-                indexes_path, index_bif, tmp_path = _setup_bundle_paths(
-                    bundle_hash, config
-                )
+                indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
             except Exception as e:
-                logger.error(
-                    f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}"
-                )
+                logger.error(f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}")
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,
@@ -1617,15 +1502,11 @@ def process_item(
                 continue
 
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
-                logger.debug(
-                    f"Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}"
-                )
+                logger.debug(f"Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}")
                 try:
                     os.remove(index_bif)
                 except Exception as e:
-                    logger.error(
-                        f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}"
-                    )
+                    logger.error(f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}")
                     _update_best(ProcessingResult.FAILED)
                     _notify_file_result(
                         media_file,
@@ -1636,9 +1517,7 @@ def process_item(
                     continue
 
             if os.path.isfile(index_bif):
-                logger.info(
-                    f"Skipping {media_file} — BIF already exists at {index_bif}"
-                )
+                logger.info(f"Skipping {media_file} — BIF already exists at {index_bif}")
                 _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
                 _notify_file_result(
                     media_file,
@@ -1692,9 +1571,7 @@ def process_item(
                 )
                 continue
             except Exception as e:
-                logger.error(
-                    f"Error processing {media_file}: {type(e).__name__}: {str(e)}"
-                )
+                logger.error(f"Error processing {media_file}: {type(e).__name__}: {str(e)}")
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,

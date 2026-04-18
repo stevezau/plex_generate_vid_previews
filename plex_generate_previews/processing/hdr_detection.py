@@ -16,10 +16,9 @@ keep working.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
 
 
-def is_dolby_vision(hdr_format: Optional[str]) -> bool:
+def is_dolby_vision(hdr_format: str | None) -> bool:
     """Detect any Dolby Vision content (any profile).
 
     Used to identify DV content so the caller can choose the correct
@@ -41,7 +40,7 @@ def is_dolby_vision(hdr_format: Optional[str]) -> bool:
     return "dolby vision" in hdr_format.lower()
 
 
-def is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
+def is_dv_no_backward_compat(hdr_format: str | None) -> bool:
     """Detect Dolby Vision content without a backward-compatible HDR base layer.
 
     DV Profile 5 (and similar) uses IPT-PQ transfer characteristics with
@@ -85,7 +84,7 @@ def is_dv_no_backward_compat(hdr_format: Optional[str]) -> bool:
     return not any(kw in hdr_lower for kw in backward_compat_keywords)
 
 
-def detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
+def detect_dolby_vision_rpu_error(stderr_lines: list[str]) -> bool:
     """Detect FFmpeg Dolby Vision RPU parsing failures that can abort processing.
 
     This is intentionally narrow to avoid false positives. It matches a small
@@ -112,7 +111,7 @@ def detect_dolby_vision_rpu_error(stderr_lines: List[str]) -> bool:
     return any(sig in stderr_text for sig in fatal_signatures)
 
 
-def detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
+def detect_zscale_colorspace_error(stderr_lines: list[str]) -> bool:
     """Detect zscale filter failures caused by unsupported colorspace conversions.
 
     Dolby Vision Profile 5 (and some other HDR flavours) use IPT-PQ or
@@ -143,9 +142,7 @@ def detect_zscale_colorspace_error(stderr_lines: List[str]) -> bool:
     # [Parsed_zscale_1 @ 0x55eb] Generic error in an external library
     # [vf#0:0/zscale @ 0x5f3a] Generic error in an external library
     # Match these even when "zscale:" doesn't appear as a bare prefix.
-    if re.search(
-        r"parsed_zscale_\d+.*generic error in an external library", stderr_text
-    ):
+    if re.search(r"parsed_zscale_\d+.*generic error in an external library", stderr_text):
         return True
     if re.search(
         r"zscale\s*@\s*0x[0-9a-f]+\].*generic error in an external library",

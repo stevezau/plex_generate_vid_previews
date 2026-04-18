@@ -8,7 +8,6 @@ and thread safety of progress updates.
 
 import threading
 import time
-from typing import List, Tuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,7 +20,7 @@ from plex_generate_previews.worker import Worker, WorkerPool
 # ---------------------------------------------------------------------------
 
 
-def _make_gpu_list(n: int = 1) -> List[Tuple[str, str, dict]]:
+def _make_gpu_list(n: int = 1) -> list[tuple[str, str, dict]]:
     """Create a dummy GPU selection list."""
     return [("nvidia", f"/dev/nvidia{i}", {"name": f"RTX 4090 #{i}"}) for i in range(n)]
 
@@ -160,9 +159,7 @@ class TestWorker:
     def test_assign_task_marks_busy(self, mock_config, mock_plex):
         w = Worker(0, "CPU")
         with patch("plex_generate_previews.worker.process_item", _fake_process_item):
-            w.assign_task(
-                "/key/1", mock_config, mock_plex, media_title="Test", media_type="movie"
-            )
+            w.assign_task("/key/1", mock_config, mock_plex, media_title="Test", media_type="movie")
         assert w.is_busy
 
     def test_assign_task_raises_if_busy(self, mock_config, mock_plex):
@@ -176,9 +173,7 @@ class TestWorker:
     def test_check_completion_after_task_done(self, mock_config, mock_plex):
         w = Worker(0, "CPU")
         with patch("plex_generate_previews.worker.process_item", _fake_process_item):
-            w.assign_task(
-                "/key/1", mock_config, mock_plex, media_title="Test", media_type="movie"
-            )
+            w.assign_task("/key/1", mock_config, mock_plex, media_title="Test", media_type="movie")
             # Wait for tiny sleep
             w.current_thread.join(timeout=2)
             assert w.check_completion() is True
@@ -188,9 +183,7 @@ class TestWorker:
     def test_failed_task_increments_failed(self, mock_config, mock_plex):
         w = Worker(0, "CPU")
         with patch("plex_generate_previews.worker.process_item", _failing_process_item):
-            w.assign_task(
-                "/key/1", mock_config, mock_plex, media_title="Bad", media_type="movie"
-            )
+            w.assign_task("/key/1", mock_config, mock_plex, media_title="Bad", media_type="movie")
             w.current_thread.join(timeout=2)
             w.check_completion()
         assert w.failed == 1
@@ -348,9 +341,7 @@ class TestInPlaceCpuFallback:
 
     def test_codec_error_retries_on_cpu_in_place(self, mock_config, mock_plex):
         """GPU worker catches CodecNotSupportedError, retries with gpu=None, succeeds."""
-        mock_config.cpu_threads = (
-            0  # No dedicated CPU workers — retry stays in GPU worker.
-        )
+        mock_config.cpu_threads = 0  # No dedicated CPU workers — retry stays in GPU worker.
 
         pool = WorkerPool(gpu_workers=1, cpu_workers=0, selected_gpus=_make_gpu_list(1))
         gpu_worker = [w for w in pool.workers if w.worker_type == "GPU"][0]
@@ -522,9 +513,7 @@ class TestWorkerCallback:
         def worker_cb(statuses):
             worker_updates.append(statuses)
 
-        with patch(
-            "plex_generate_previews.worker.process_item", _very_slow_process_item
-        ):
+        with patch("plex_generate_previews.worker.process_item", _very_slow_process_item):
             pool.process_items_headless(
                 items,
                 mock_config,
@@ -534,13 +523,10 @@ class TestWorkerCallback:
 
         assert worker_updates, "Expected at least one worker status callback"
         flat_updates = [ws for update in worker_updates for ws in update]
-        processing_updates = [
-            ws for ws in flat_updates if ws.get("status") == "processing"
-        ]
+        processing_updates = [ws for ws in flat_updates if ws.get("status") == "processing"]
         assert processing_updates, "Expected at least one processing worker update"
         assert any("remaining_time" in ws for ws in processing_updates)
         assert any(
-            isinstance(ws.get("remaining_time"), (int, float))
-            and ws.get("remaining_time", 0) > 0
+            isinstance(ws.get("remaining_time"), int | float) and ws.get("remaining_time", 0) > 0
             for ws in processing_updates
         )

@@ -31,7 +31,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Callable, List, Optional, Tuple
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -46,20 +46,20 @@ def create_ffmpeg_runner(
     *,
     video_file: str,
     output_folder: str,
-    gpu: Optional[str],
-    gpu_device_path: Optional[str],
+    gpu: str | None,
+    gpu_device_path: str | None,
     config,
-    progress_callback: Optional[Callable],
-    ffmpeg_threads_override: Optional[int],
-    cancel_check: Optional[Callable],
+    progress_callback: Callable | None,
+    ffmpeg_threads_override: int | None,
+    cancel_check: Callable | None,
     path_kind: str,
-    libplacebo_vf: Optional[str],
+    libplacebo_vf: str | None,
     use_libplacebo: bool,
     dv5_software_fallback: bool,
     base_scale: str,
     fps_filter: str,
     hdr10_zscale_chain: str,
-) -> Callable[..., Tuple[int, float, float, List[str]]]:
+) -> Callable[..., tuple[int, float, float, list[str]]]:
     """Factory: return a configured ffmpeg-runner closure for one media item.
 
     The returned callable has the same signature as the original nested
@@ -82,9 +82,7 @@ def create_ffmpeg_runner(
         parse_ffmpeg_progress_line,
     )
 
-    def _gpu_scale_segment(
-        effective_gpu: Optional[str], hw_decode_active: bool, fmt: str
-    ) -> Optional[str]:
+    def _gpu_scale_segment(effective_gpu: str | None, hw_decode_active: bool, fmt: str) -> str | None:
         """GPU-side scale + hwdownload segment for the active vendor,
         or None to keep CPU scale in place (software decode, DV5
         libplacebo paths, unsupported vendor).  ``fmt`` is ``nv12`` for
@@ -113,7 +111,7 @@ def create_ffmpeg_runner(
         return None
 
     def _assemble_vf(
-        effective_gpu: Optional[str],
+        effective_gpu: str | None,
         hw_decode_active: bool,
         effective_kind: str,
     ) -> str:
@@ -156,13 +154,13 @@ def create_ffmpeg_runner(
 
     def _run_ffmpeg(
         use_skip: bool,
-        gpu_override: Optional[str] = None,
-        gpu_device_path_override: Optional[str] = None,
-        vf_override: Optional[str] = None,
+        gpu_override: str | None = None,
+        gpu_device_path_override: str | None = None,
+        vf_override: str | None = None,
         init_vulkan: bool = False,
         disable_vaapi_dv5: bool = False,
-        path_kind_override: Optional[str] = None,
-    ) -> Tuple[int, float, float, List[str]]:
+        path_kind_override: str | None = None,
+    ) -> tuple[int, float, float, list[str]]:
         """Run FFmpeg once and return (returncode, seconds, speed, stderr_lines)."""
         # Build FFmpeg command with proper argument ordering
         # Hardware acceleration flags must come BEFORE the input file (-i)
@@ -183,9 +181,7 @@ def create_ffmpeg_runner(
         # decode can use all available cores.
         effective_gpu = gpu_override if gpu_override is not None else gpu
         effective_ffmpeg_threads = (
-            ffmpeg_threads_override
-            if ffmpeg_threads_override is not None
-            else config.ffmpeg_threads
+            ffmpeg_threads_override if ffmpeg_threads_override is not None else config.ffmpeg_threads
         )
         if effective_gpu is not None and effective_ffmpeg_threads > 0:
             args += [
@@ -217,9 +213,7 @@ def create_ffmpeg_runner(
         # NVIDIA keeps CUDA.  Non-Linux platforms don't reach the
         # libplacebo branch and are unaffected.
         effective_gpu_device_path = (
-            gpu_device_path_override
-            if gpu_device_path_override is not None
-            else gpu_device_path
+            gpu_device_path_override if gpu_device_path_override is not None else gpu_device_path
         )
         use_gpu = effective_gpu is not None
         use_intel_opencl_dv5 = (
@@ -312,9 +306,7 @@ def create_ffmpeg_runner(
             elif effective_gpu == "APPLE":
                 args += ["-hwaccel", "videotoolbox"]
                 hw_decode_active = True
-            elif effective_gpu_device_path and effective_gpu_device_path.startswith(
-                "/dev/dri/"
-            ):
+            elif effective_gpu_device_path and effective_gpu_device_path.startswith("/dev/dri/"):
                 # -hwaccel_device (not the deprecated -vaapi_device)
                 # pairs with -hwaccel_output_format vaapi so decoded
                 # frames stay in VAAPI surfaces for scale_vaapi.  Pre-
@@ -412,8 +404,7 @@ def create_ffmpeg_runner(
                 ffmpeg_env = os.environ.copy()
                 ffmpeg_env.update(vulkan_overrides)
                 logger.debug(
-                    f"FFmpeg libplacebo path: injecting Vulkan env overrides "
-                    f"{vulkan_overrides} into subprocess"
+                    f"FFmpeg libplacebo path: injecting Vulkan env overrides {vulkan_overrides} into subprocess"
                 )
 
         # Use file polling approach for non-blocking, high-frequency progress monitoring
@@ -478,9 +469,7 @@ def create_ffmpeg_runner(
             time.sleep(0.02)
             while proc.poll() is None:
                 if cancel_check and cancel_check():
-                    logger.info(
-                        f"Cancellation requested, terminating FFmpeg for {video_file}"
-                    )
+                    logger.info(f"Cancellation requested, terminating FFmpeg for {video_file}")
                     proc.terminate()
                     try:
                         proc.wait(timeout=5)
@@ -490,7 +479,7 @@ def create_ffmpeg_runner(
                     raise CancellationError(f"Processing cancelled for {video_file}")
                 if os.path.exists(output_file):
                     try:
-                        with open(output_file, "r", encoding="utf-8") as f:
+                        with open(output_file, encoding="utf-8") as f:
                             lines = f.readlines()
                             if len(lines) > line_count:
                                 for i in range(line_count, len(lines)):
@@ -502,7 +491,7 @@ def create_ffmpeg_runner(
                                         )
                                 line_count = len(lines)
                                 last_progress_time = time.time()
-                    except (OSError, IOError):
+                    except OSError:
                         pass
                 if time.time() - last_progress_time > FFMPEG_STALL_TIMEOUT_SEC:
                     logger.warning(
@@ -517,7 +506,7 @@ def create_ffmpeg_runner(
             # Process any remaining data
             if os.path.exists(output_file):
                 try:
-                    with open(output_file, "r", encoding="utf-8") as f:
+                    with open(output_file, encoding="utf-8") as f:
                         lines = f.readlines()
                         if len(lines) > line_count:
                             for i in range(line_count, len(lines)):
@@ -527,7 +516,7 @@ def create_ffmpeg_runner(
                                     total_duration = parse_ffmpeg_progress_line(
                                         line, total_duration, speed_capture_callback
                                     )
-                except (OSError, IOError):
+                except OSError:
                     pass
         finally:
             # Ensure stderr file handle is always closed
@@ -540,16 +529,12 @@ def create_ffmpeg_runner(
         # Error logging (skip generic failure log when we killed due to stall; already logged above)
         if proc.returncode != 0 and not stalled:
             exit_diagnosis = _diagnose_ffmpeg_exit_code(proc.returncode)
-            logger.error(
-                f"FFmpeg failed with return code {proc.returncode} ({exit_diagnosis}) for {video_file}"
-            )
+            logger.error(f"FFmpeg failed with return code {proc.returncode} ({exit_diagnosis}) for {video_file}")
 
             # Log last few stderr lines at WARNING level so users can diagnose
             # failures without needing DEBUG mode (especially for crashes/signals)
             if _is_signal_killed(proc.returncode):
-                signal_detail = _diagnose_ffmpeg_exit_code(proc.returncode).split(
-                    ":", 1
-                )[1]
+                signal_detail = _diagnose_ffmpeg_exit_code(proc.returncode).split(":", 1)[1]
                 logger.warning(
                     f"FFmpeg exited with code {proc.returncode} due to signal {signal_detail} for {video_file}"
                 )
@@ -565,9 +550,7 @@ def create_ffmpeg_runner(
                 )
             if ffmpeg_output_lines:
                 tail = ffmpeg_output_lines[-5:]
-                logger.warning(
-                    f"FFmpeg stderr (last {len(tail)} lines) for {video_file}:"
-                )
+                logger.warning(f"FFmpeg stderr (last {len(tail)} lines) for {video_file}:")
                 for line in tail:
                     logger.warning(f"  {line}")
 
@@ -586,14 +569,10 @@ def create_ffmpeg_runner(
             # Log permission errors at INFO level so users can see them without DEBUG
             if permission_errors:
                 logger.info(f"Permission error detected while processing {video_file}:")
-                for error_line in permission_errors[
-                    :3
-                ]:  # Show up to 3 permission error lines
+                for error_line in permission_errors[:3]:  # Show up to 3 permission error lines
                     logger.info(f"  {error_line}")
                 if len(permission_errors) > 3:
-                    logger.info(
-                        f"  ... and {len(permission_errors) - 3} more permission-related error(s)"
-                    )
+                    logger.info(f"  ... and {len(permission_errors) - 3} more permission-related error(s)")
 
             # Log full FFmpeg output at DEBUG level for detailed troubleshooting.
             # When config.log_level=DEBUG, FFmpeg itself is invoked with
@@ -610,12 +589,7 @@ def create_ffmpeg_runner(
         end_local = time.time()
         seconds_local = round(end_local - start_local, 1)
         # Calculate fallback speed if needed
-        if (
-            speed_local == "0.0x"
-            and total_duration
-            and total_duration > 0
-            and seconds_local > 0
-        ):
+        if speed_local == "0.0x" and total_duration and total_duration > 0 and seconds_local > 0:
             calculated_speed = total_duration / seconds_local
             speed_local = f"{calculated_speed:.0f}x"
 

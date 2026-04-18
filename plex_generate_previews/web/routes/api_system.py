@@ -264,10 +264,7 @@ def _get_vulkan_info() -> dict:
 
     result: dict = {"device": device}
     if not is_software:
-        logger.debug(
-            f"Vulkan warning: device={device!r} is_software=False; "
-            "no DV5 warning will be shown."
-        )
+        logger.debug(f"Vulkan warning: device={device!r} is_software=False; no DV5 warning will be shown.")
         return result
 
     try:
@@ -276,8 +273,7 @@ def _get_vulkan_info() -> dict:
             gpus = list(_gpu_cache["result"] or [])
     except Exception as exc:
         logger.warning(
-            f"Vulkan warning: GPU cache lookup raised {exc!r}; "
-            "proceeding with an empty GPU list for the warning body."
+            f"Vulkan warning: GPU cache lookup raised {exc!r}; proceeding with an empty GPU list for the warning body."
         )
         gpus = []
 
@@ -303,9 +299,7 @@ def _get_vulkan_info() -> dict:
     mesa_name = _vendor_display_name(gpus, mesa_vendor_code) if mesa_vendor_code else ""
     mesa_vendor_label = {"INTEL": "Intel", "AMD": "AMD"}.get(mesa_vendor_code, "Mesa")
     all_names_escaped = ", ".join(
-        html_escape.escape(g.get("name") or g.get("type") or "GPU")
-        for g in gpus
-        if g.get("name") or g.get("type")
+        html_escape.escape(g.get("name") or g.get("type") or "GPU") for g in gpus if g.get("name") or g.get("type")
     )
 
     header = (
@@ -532,10 +526,7 @@ def _get_vulkan_info() -> dict:
         )
     elif has_mesa_vendor and not has_nvidia and not dri_mapped:
         # Intel/AMD only, no render node: straight mount fix.
-        logger.info(
-            f"Vulkan warning: selected Case C (Mesa only, /dev/dri "
-            f"not mapped) for {mesa_name!r}"
-        )
+        logger.info(f"Vulkan warning: selected Case C (Mesa only, /dev/dri not mapped) for {mesa_name!r}")
         body = (
             f"<strong>Your GPU:</strong> {html_escape.escape(mesa_name)}"
             "<br><br>"
@@ -643,9 +634,7 @@ def get_vulkan_debug():
         gpus = list(_gpu_cache["result"] or [])
 
     gpu_lines = [
-        f"  - type={g.get('type', '?')} name={g.get('name', '?')} "
-        f"device={g.get('device', '?')}"
-        for g in gpus
+        f"  - type={g.get('type', '?')} name={g.get('name', '?')} device={g.get('device', '?')}" for g in gpus
     ] or ["  (none detected)"]
 
     bundle_lines = [
@@ -685,18 +674,12 @@ def get_vulkan_debug():
         for k, v in env_overrides.items():
             bundle_lines.append(f"  {k}={v}")
     else:
-        bundle_lines.append(
-            "  (none — the default probe found a working Vulkan device,"
-            " or the retry did not succeed)"
-        )
+        bundle_lines.append("  (none — the default probe found a working Vulkan device, or the retry did not succeed)")
     bundle_lines.append("")
 
     bundle_lines.append("--- VK_LOADER_DEBUG=all capture ---")
     if debug_buffer:
-        bundle_lines.append(
-            f"(last {len(debug_buffer)} bytes of ffmpeg stderr from the"
-            " Strategy-3 diagnostic probe)"
-        )
+        bundle_lines.append(f"(last {len(debug_buffer)} bytes of ffmpeg stderr from the Strategy-3 diagnostic probe)")
         bundle_lines.append("")
         bundle_lines.append(debug_buffer)
     else:
@@ -728,10 +711,7 @@ def list_notifications():
     try:
         dismissed = get_settings_manager().dismissed_notifications
     except Exception as exc:
-        logger.warning(
-            f"Notifications: settings lookup failed ({exc!r}); "
-            "treating dismissal list as empty."
-        )
+        logger.warning(f"Notifications: settings lookup failed ({exc!r}); treating dismissal list as empty.")
         dismissed = []
 
     notifications = build_active_notifications(dismissed_permanent=dismissed)
@@ -750,9 +730,7 @@ def dismiss_notification_session(notification_id: str):
     return jsonify({"ok": True, "id": notification_id, "persisted": False})
 
 
-@api.route(
-    "/system/notifications/<notification_id>/dismiss-permanent", methods=["POST"]
-)
+@api.route("/system/notifications/<notification_id>/dismiss-permanent", methods=["POST"])
 def dismiss_notification_permanent(notification_id: str):
     """Dismiss a notification permanently (persist to ``settings.json``).
 
@@ -763,9 +741,7 @@ def dismiss_notification_permanent(notification_id: str):
     try:
         get_settings_manager().dismiss_notification_permanent(notification_id)
     except Exception as exc:
-        logger.error(
-            f"Notifications: failed to persist dismissal for {notification_id}: {exc}"
-        )
+        logger.error(f"Notifications: failed to persist dismissal for {notification_id}: {exc}")
         return (
             jsonify({"ok": False, "error": "Failed to persist dismissal"}),
             500,
@@ -868,8 +844,7 @@ def get_config():
             "plex_token": "****" if config.plex_token else "",
             "plex_config_folder": config.plex_config_folder or "",
             "plex_verify_ssl": config.plex_verify_ssl,
-            "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping
-            or "",
+            "plex_local_videos_path_mapping": config.plex_local_videos_path_mapping or "",
             "plex_videos_path_mapping": config.plex_videos_path_mapping or "",
             "thumbnail_interval": config.plex_bif_frame_interval,
             "thumbnail_quality": config.thumbnail_quality,
@@ -882,8 +857,7 @@ def get_config():
         }
         if config.gpu_threads == 0 and config.cpu_threads == 0:
             resp["config_warning"] = (
-                "No workers configured — jobs will remain pending "
-                "until GPU or CPU workers are added."
+                "No workers configured — jobs will remain pending until GPU or CPU workers are added."
             )
         return jsonify(resp)
     except Exception as e:
@@ -949,9 +923,7 @@ def _get_version_info() -> dict:
             latest_version = get_latest_github_release()
             if latest_version:
                 try:
-                    update_available = parse_version(latest_version) > parse_version(
-                        current_version
-                    )
+                    update_available = parse_version(latest_version) > parse_version(current_version)
                 except ValueError:
                     logger.debug("Could not compare versions for update check")
         except ValueError:
@@ -970,9 +942,7 @@ def _get_version_info() -> dict:
         latest_version = get_latest_github_release()
         if latest_version:
             try:
-                update_available = parse_version(latest_version) > parse_version(
-                    current_version
-                )
+                update_available = parse_version(latest_version) > parse_version(current_version)
             except ValueError:
                 logger.debug("Could not compare versions for update check")
 
@@ -1102,9 +1072,7 @@ def get_log_history():
     )
 
 
-_GITHUB_RELEASES_URL = (
-    "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases"
-)
+_GITHUB_RELEASES_URL = "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases"
 _RELEASES_CACHE: dict = {"result": None, "fetched_at": 0.0}
 _RELEASES_CACHE_TTL = 3600
 
@@ -1119,10 +1087,7 @@ def _fetch_github_releases(limit: int = 10) -> list:
         List of dicts with version, date, and body (markdown).
     """
     now = time.monotonic()
-    if (
-        _RELEASES_CACHE["result"] is not None
-        and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL
-    ):
+    if _RELEASES_CACHE["result"] is not None and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL:
         return _RELEASES_CACHE["result"][:limit]
 
     import requests as req
@@ -1322,9 +1287,7 @@ def get_libraries():
 
         plex_url = request.args.get("url")
         plex_token = request.args.get("token")
-        verify_ssl = _param_to_bool(
-            request.args.get("verify_ssl"), settings.plex_verify_ssl
-        )
+        verify_ssl = _param_to_bool(request.args.get("verify_ssl"), settings.plex_verify_ssl)
 
         # Track whether explicit overrides were provided (setup wizard)
         has_overrides = bool(plex_url or plex_token)
@@ -1359,9 +1322,7 @@ def get_libraries():
                                 "name": section.title,
                                 "type": section.type,
                                 "agent": agent,
-                                "display_type": classify_library_type(
-                                    section.type, agent
-                                ),
+                                "display_type": classify_library_type(section.type, agent),
                             }
                         )
 
@@ -1430,6 +1391,4 @@ def get_libraries():
         return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except Exception as e:
         logger.error(f"Failed to get libraries: {e}")
-        return jsonify(
-            {"error": f"Failed to retrieve libraries: {e}", "libraries": []}
-        ), 500
+        return jsonify({"error": f"Failed to retrieve libraries: {e}", "libraries": []}), 500

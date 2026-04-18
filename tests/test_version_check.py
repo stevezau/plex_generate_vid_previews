@@ -114,9 +114,7 @@ class TestGetLatestGitHubRelease:
         """Test rate limit handling."""
         mock_response = MagicMock()
         mock_response.status_code = 429
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            response=mock_response
-        )
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response)
         mock_get.return_value = mock_response
 
         version = get_latest_github_release()
@@ -127,9 +125,7 @@ class TestGetLatestGitHubRelease:
         """Test 404 error handling."""
         mock_response = MagicMock()
         mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            response=mock_response
-        )
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response)
         mock_get.return_value = mock_response
 
         version = get_latest_github_release()
@@ -193,9 +189,7 @@ class TestCheckForUpdates:
     @patch("plex_generate_previews.utils.is_docker_environment")
     @patch("plex_generate_previews.version_check.get_latest_github_release")
     @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_docker_message(
-        self, mock_current, mock_latest, mock_docker
-    ):
+    def test_check_for_updates_docker_message(self, mock_current, mock_latest, mock_docker):
         """Test Docker-specific update instructions."""
         mock_docker.return_value = True
         mock_current.return_value = "2.0.0"
@@ -207,9 +201,7 @@ class TestCheckForUpdates:
     @patch("plex_generate_previews.utils.is_docker_environment")
     @patch("plex_generate_previews.version_check.get_latest_github_release")
     @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_non_docker_message(
-        self, mock_current, mock_latest, mock_docker
-    ):
+    def test_check_for_updates_non_docker_message(self, mock_current, mock_latest, mock_docker):
         """Test non-Docker update instructions."""
         mock_docker.return_value = False
         mock_current.return_value = "2.0.0"
@@ -259,9 +251,7 @@ class TestCheckForUpdates:
     @patch("plex_generate_previews.version_check.get_git_branch")
     @patch("plex_generate_previews.version_check.get_git_commit_sha")
     @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_git_checkout_up_to_date(
-        self, mock_head, mock_sha, mock_branch
-    ):
+    def test_check_for_updates_git_checkout_up_to_date(self, mock_head, mock_sha, mock_branch):
         """Git checkout up to date with remote."""
         mock_sha.return_value = "abc1234567890abcdef1234567890abcdef123456"
         mock_branch.return_value = "main"
@@ -272,9 +262,7 @@ class TestCheckForUpdates:
     @patch("plex_generate_previews.version_check.get_git_branch")
     @patch("plex_generate_previews.version_check.get_git_commit_sha")
     @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_git_checkout_behind(
-        self, mock_head, mock_sha, mock_branch
-    ):
+    def test_check_for_updates_git_checkout_behind(self, mock_head, mock_sha, mock_branch):
         """Git checkout behind remote."""
         mock_sha.return_value = "abc1234567890abcdef1234567890abcdef123456"
         mock_branch.return_value = "main"
@@ -366,9 +354,7 @@ class TestGetBranchHeadSha:
         from plex_generate_previews.version_check import get_branch_head_sha
 
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "commit": {"sha": "abc1234567890abcdef1234567890abcdef123456"}
-        }
+        mock_response.json.return_value = {"commit": {"sha": "abc1234567890abcdef1234567890abcdef123456"}}
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
 
@@ -431,9 +417,7 @@ class TestGetLatestGitHubReleaseExtra:
         """Test handling of generic HTTP error (not 404/429)."""
         mock_response = MagicMock()
         mock_response.status_code = 500
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            response=mock_response
-        )
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response)
         mock_get.return_value = mock_response
         assert get_latest_github_release() is None
 

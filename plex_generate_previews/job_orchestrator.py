@@ -171,12 +171,9 @@ def run_processing(
                 progress_callback(
                     0,
                     0,
-                    f"Looking up {path_count} file path(s) in Plex — "
-                    "this can take a while...",
+                    f"Looking up {path_count} file path(s) in Plex — this can take a while...",
                 )
-            webhook_resolution = get_media_items_by_paths(
-                plex, config, config.webhook_paths
-            )
+            webhook_resolution = get_media_items_by_paths(plex, config, config.webhook_paths)
             return_data = {
                 "webhook_resolution": {
                     "unresolved_paths": list(webhook_resolution.unresolved_paths),
@@ -187,9 +184,7 @@ def run_processing(
                 }
             }
             if not webhook_resolution.items:
-                logger.warning(
-                    "No Plex items matched webhook file paths; skipping processing"
-                )
+                logger.warning("No Plex items matched webhook file paths; skipping processing")
             else:
                 result = _dispatch_items(webhook_resolution.items, "Webhook Targets")
                 total_successful += result["completed"]
@@ -207,34 +202,26 @@ def run_processing(
                 progress_callback=progress_callback,
             ):
                 if cancel_check and cancel_check():
-                    logger.info(
-                        "Cancellation requested during library enumeration "
-                        "— skipping remaining libraries"
-                    )
+                    logger.info("Cancellation requested during library enumeration — skipping remaining libraries")
                     cancellation_requested = True
                     break
                 count = len(media_items)
                 if count <= 0:
-                    logger.info(
-                        f"No media items found in library '{section.title}', skipping"
-                    )
+                    logger.info(f"No media items found in library '{section.title}', skipping")
                     continue
                 logger.info(f"Queued library '{section.title}' with {count} items")
                 all_media_items.extend(media_items)
                 library_item_counts.append((section.title, count))
 
             if cancel_check and cancel_check():
-                logger.info(
-                    "Cancellation requested before dispatch — skipping processing"
-                )
+                logger.info("Cancellation requested before dispatch — skipping processing")
                 cancellation_requested = True
             elif not all_media_items:
                 logger.info("No media items found across selected libraries")
             else:
                 total_items = len(all_media_items)
                 logger.info(
-                    f"Processing {total_items} items across "
-                    f"{len(library_item_counts)} libraries in a shared queue"
+                    f"Processing {total_items} items across {len(library_item_counts)} libraries in a shared queue"
                 )
                 for library_name, count in library_item_counts:
                     logger.info(f"Library queued: {library_name} ({count} items)")
@@ -284,8 +271,7 @@ def run_processing(
                 "because the media file was not found locally."
             )
             logger.warning(
-                "This usually means your path mappings are incorrect. "
-                "Check your path mapping settings in the web UI."
+                "This usually means your path mappings are incorrect. Check your path mapping settings in the web UI."
             )
             logger.warning("=" * 80)
 
@@ -318,11 +304,6 @@ def run_processing(
         try:
             if os.path.isdir(config.working_tmp_folder):
                 shutil.rmtree(config.working_tmp_folder)
-                logger.debug(
-                    f"Cleaned up working temp folder: {config.working_tmp_folder}"
-                )
+                logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
         except Exception as cleanup_error:
-            logger.warning(
-                f"Failed to clean up working temp folder "
-                f"{config.working_tmp_folder}: {cleanup_error}"
-            )
+            logger.warning(f"Failed to clean up working temp folder {config.working_tmp_folder}: {cleanup_error}")

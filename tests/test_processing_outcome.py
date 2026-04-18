@@ -60,33 +60,25 @@ class TestProcessItemReturnsResult:
         assert result == ProcessingResult.NO_MEDIA_PARTS
 
     @patch("os.path.isfile")
-    def test_missing_file_returns_skipped_file_not_found(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_missing_file_returns_skipped_file_not_found(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """File that doesn't exist locally returns SKIPPED_FILE_NOT_FOUND."""
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
         mock_isfile.return_value = False
         mock_config.plex_config_folder = "/config/plex"
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_FILE_NOT_FOUND
 
     @patch("os.path.isfile")
-    def test_excluded_path_returns_skipped_excluded(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_excluded_path_returns_skipped_excluded(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """Path matching exclude_paths returns SKIPPED_EXCLUDED."""
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
         mock_config.plex_config_folder = "/config/plex"
         mock_config.exclude_paths = [{"value": "/data/movies", "type": "path"}]
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_EXCLUDED
 
     def test_invalid_hash_returns_skipped_invalid_hash(self, mock_config):
@@ -107,9 +99,7 @@ class TestProcessItemReturnsResult:
         assert result == ProcessingResult.SKIPPED_INVALID_HASH
 
     @patch("os.path.isfile")
-    def test_bif_exists_returns_skipped_bif_exists(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_bif_exists_returns_skipped_bif_exists(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """Existing BIF file returns SKIPPED_BIF_EXISTS."""
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
@@ -117,9 +107,7 @@ class TestProcessItemReturnsResult:
         mock_config.plex_config_folder = "/config/plex"
         mock_config.regenerate_thumbnails = False
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_BIF_EXISTS
 
     @patch("plex_generate_previews.media_processing.generate_bif")
@@ -153,9 +141,7 @@ class TestProcessItemReturnsResult:
         mock_config.regenerate_thumbnails = False
         mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
 
-        result = process_item(
-            "/library/metadata/54321", None, None, mock_config, mock_plex
-        )
+        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.GENERATED
 
 

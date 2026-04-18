@@ -94,9 +94,7 @@ def get_settings():
             "selected_libraries": settings.selected_libraries,
             "media_path": settings.media_path or "",
             "plex_videos_path_mapping": settings.get("plex_videos_path_mapping", ""),
-            "plex_local_videos_path_mapping": settings.get(
-                "plex_local_videos_path_mapping", ""
-            ),
+            "plex_local_videos_path_mapping": settings.get("plex_local_videos_path_mapping", ""),
             "path_mappings": settings.get("path_mappings", []),
             "exclude_paths": settings.get("exclude_paths", []),
             "gpu_config": settings.gpu_config,
@@ -118,8 +116,7 @@ def get_settings():
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
             "plex_webhook_enabled": bool(settings.get("plex_webhook_enabled", False)),
-            "plex_webhook_public_url": settings.get("plex_webhook_public_url", "")
-            or "",
+            "plex_webhook_public_url": settings.get("plex_webhook_public_url", "") or "",
         }
     )
 
@@ -170,9 +167,7 @@ def save_settings():
     updates = {k: v for k, v in data.items() if k in allowed_fields}
 
     if "plex_webhook_public_url" in updates:
-        updates["plex_webhook_public_url"] = str(
-            updates.get("plex_webhook_public_url") or ""
-        ).strip()
+        updates["plex_webhook_public_url"] = str(updates.get("plex_webhook_public_url") or "").strip()
     if "plex_webhook_enabled" in updates:
         updates["plex_webhook_enabled"] = bool(updates["plex_webhook_enabled"])
 
@@ -224,15 +219,11 @@ def save_settings():
                 from .. import plex_webhook_registration as pwh
 
                 plex_token = settings.plex_token or ""
-                public_url = (
-                    settings.get("plex_webhook_public_url") or ""
-                ).strip() or _default_plex_webhook_url()
+                public_url = (settings.get("plex_webhook_public_url") or "").strip() or _default_plex_webhook_url()
                 new_auth = _plex_webhook_auth_token()
                 if plex_token and new_auth:
                     pwh.register(plex_token, public_url, auth_token=new_auth)
-                    logger.info(
-                        "Plex webhook re-registered with new auth token after secret rotation"
-                    )
+                    logger.info("Plex webhook re-registered with new auth token after secret rotation")
             except Exception:
                 logger.warning(
                     "Failed to re-register Plex webhook after secret change",
@@ -267,9 +258,7 @@ def update_log_level():
 
     valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     if level not in valid_levels:
-        return jsonify(
-            {"error": f"Invalid log level. Must be one of {valid_levels}"}
-        ), 400
+        return jsonify({"error": f"Invalid log level. Must be one of {valid_levels}"}), 400
 
     sm = get_settings_manager()
     sm.set("log_level", level)
@@ -570,10 +559,7 @@ def plex_webhook_test_reachability():
     settings = get_settings_manager()
     data = request.get_json() or {}
     raw_url = (data.get("public_url") or "").strip()
-    public_url = raw_url or (
-        (settings.get("plex_webhook_public_url") or "").strip()
-        or _default_plex_webhook_url()
-    )
+    public_url = raw_url or ((settings.get("plex_webhook_public_url") or "").strip() or _default_plex_webhook_url())
 
     auth_token = _plex_webhook_auth_token()
     if not auth_token:
@@ -581,10 +567,7 @@ def plex_webhook_test_reachability():
             jsonify(
                 {
                     "success": False,
-                    "error": (
-                        "No webhook secret or API token available to authenticate "
-                        "the test request."
-                    ),
+                    "error": ("No webhook secret or API token available to authenticate the test request."),
                 }
             ),
             400,
@@ -750,25 +733,19 @@ def validate_paths():
 
         if resolved_plex_data_path is None:
             canonical_root = os.path.realpath(PLEX_DATA_ROOT)
-            result["errors"].append(
-                f"Plex Data Path must be within the configured root: {canonical_root}"
-            )
+            result["errors"].append(f"Plex Data Path must be within the configured root: {canonical_root}")
             result["valid"] = False
             return jsonify(result)
 
         if not os.path.exists(resolved_plex_data_path):
-            result["errors"].append(
-                f"Plex data folder not found: {resolved_plex_data_path}"
-            )
+            result["errors"].append(f"Plex data folder not found: {resolved_plex_data_path}")
             result["valid"] = False
         else:
             media_path = os.path.join(resolved_plex_data_path, "Media")
             localhost_path = os.path.join(media_path, "localhost")
 
             if not os.path.exists(media_path):
-                result["errors"].append(
-                    f'Plex data folder ({resolved_plex_data_path}): missing "Media" subfolder'
-                )
+                result["errors"].append(f'Plex data folder ({resolved_plex_data_path}): missing "Media" subfolder')
                 result["valid"] = False
             elif not os.path.exists(localhost_path):
                 result["errors"].append(
@@ -778,9 +755,7 @@ def validate_paths():
             else:
                 try:
                     contents = os.listdir(localhost_path)
-                    hex_dirs = [
-                        d for d in contents if len(d) == 1 and d in "0123456789abcdef"
-                    ]
+                    hex_dirs = [d for d in contents if len(d) == 1 and d in "0123456789abcdef"]
                     if len(hex_dirs) >= 10:
                         result["info"].append(
                             f"✓ Plex data folder ({resolved_plex_data_path}): valid structure ({len(hex_dirs)} hash directories)"
@@ -796,9 +771,7 @@ def validate_paths():
                     )
 
             if os.access(resolved_plex_data_path, os.W_OK):
-                result["info"].append(
-                    f"✓ Plex data folder ({resolved_plex_data_path}): write permissions OK"
-                )
+                result["info"].append(f"✓ Plex data folder ({resolved_plex_data_path}): write permissions OK")
             else:
                 result["errors"].append(
                     f"Plex data folder ({resolved_plex_data_path}): no write permission — check PUID/PGID"
@@ -811,9 +784,7 @@ def validate_paths():
             plex_prefix = (row.get("plex_prefix") or "").strip()
             local_prefix = (row.get("local_prefix") or "").strip()
             row_label = f"Row {i + 1}"
-            path_desc = (
-                f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
-            )
+            path_desc = f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
             if "\x00" in local_prefix:
                 result["errors"].append(f"{row_label} ({path_desc}): invalid path")
                 result["valid"] = False
@@ -822,9 +793,7 @@ def validate_paths():
                 continue
             resolved = _safe_resolve_within(local_prefix, MEDIA_ROOT)
             if resolved is None:
-                result["errors"].append(
-                    f"{row_label} ({path_desc}): path must be inside the allowed media folder"
-                )
+                result["errors"].append(f"{row_label} ({path_desc}): path must be inside the allowed media folder")
                 result["valid"] = False
             elif not os.path.exists(resolved):
                 result["errors"].append(f"{row_label} ({path_desc}): folder not found")
@@ -832,25 +801,17 @@ def validate_paths():
             else:
                 try:
                     contents = os.listdir(resolved)
-                    result["info"].append(
-                        f"✓ {row_label} ({path_desc}): accessible ({len(contents)} items)"
-                    )
+                    result["info"].append(f"✓ {row_label} ({path_desc}): accessible ({len(contents)} items)")
                 except Exception as e:
                     logger.error(f"Cannot read mapping local path: {e}")
-                    result["errors"].append(
-                        f"{row_label} ({path_desc}): cannot read folder"
-                    )
+                    result["errors"].append(f"{row_label} ({path_desc}): cannot read folder")
                     result["valid"] = False
     elif plex_media_path or local_media_path:
         if plex_media_path and not local_media_path:
-            result["errors"].append(
-                "Local Media Path is required when Plex Media Path is set"
-            )
+            result["errors"].append("Local Media Path is required when Plex Media Path is set")
             result["valid"] = False
         elif local_media_path and not plex_media_path:
-            result["errors"].append(
-                "Plex Media Path is required when Local Media Path is set"
-            )
+            result["errors"].append("Plex Media Path is required when Local Media Path is set")
             result["valid"] = False
         elif local_media_path:
             if "\x00" in local_media_path:
@@ -859,36 +820,26 @@ def validate_paths():
                 return jsonify(result)
             resolved_local_media = _safe_resolve_within(local_media_path, MEDIA_ROOT)
             if resolved_local_media is None:
-                result["errors"].append(
-                    "Invalid Local Media Path (must be within the configured media root)"
-                )
+                result["errors"].append("Invalid Local Media Path (must be within the configured media root)")
                 result["valid"] = False
                 return jsonify(result)
             if not os.path.exists(resolved_local_media):
-                result["errors"].append(
-                    f"Local media path ({resolved_local_media}): folder not found"
-                )
+                result["errors"].append(f"Local media path ({resolved_local_media}): folder not found")
                 result["valid"] = False
             else:
                 try:
                     contents = os.listdir(resolved_local_media)
                     if len(contents) == 0:
-                        result["warnings"].append(
-                            f"Local media path ({resolved_local_media}): folder is empty"
-                        )
+                        result["warnings"].append(f"Local media path ({resolved_local_media}): folder is empty")
                     else:
                         result["info"].append(
                             f"✓ Local media path ({resolved_local_media}): accessible ({len(contents)} items)"
                         )
                 except Exception as e:
                     logger.error(f"Cannot read Local Media Path: {e}")
-                    result["errors"].append(
-                        f"Local media path ({resolved_local_media}): cannot read folder"
-                    )
+                    result["errors"].append(f"Local media path ({resolved_local_media}): cannot read folder")
                     result["valid"] = False
     else:
-        result["info"].append(
-            "No path mapping configured (media mounted at same path as Plex)"
-        )
+        result["info"].append("No path mapping configured (media mounted at same path as Plex)")
 
     return jsonify(result)

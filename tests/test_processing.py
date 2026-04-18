@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.media_processing import ProcessingResult
 from plex_generate_previews.job_orchestrator import run_processing
+from plex_generate_previews.media_processing import ProcessingResult
 
 MODULE = "plex_generate_previews.job_orchestrator"
 
@@ -140,22 +140,16 @@ class TestLibraryScanFlow:
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(
-                completed=2
-            )
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=2)
             run_processing(config, selected_gpus=[], progress_callback=progress)
 
         messages = [call.args[2] for call in progress.call_args_list if call.args]
         assert any("Connecting to Plex" in m for m in messages)
         # Dispatch tick carries the total item count.
         dispatch_calls = [
-            call
-            for call in progress.call_args_list
-            if call.args and call.args[1] == 2 and "Starting" in call.args[2]
+            call for call in progress.call_args_list if call.args and call.args[1] == 2 and "Starting" in call.args[2]
         ]
-        assert dispatch_calls, (
-            "expected a 'Starting <library>' progress call with total=2"
-        )
+        assert dispatch_calls, "expected a 'Starting <library>' progress call with total=2"
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +160,7 @@ class TestLibraryScanFlow:
 class TestWebhookFlow:
     """Tests for the webhook-targeted processing path."""
 
-    def _webhook_resolution(
-        self, items=None, unresolved=None, skipped=None, path_hints=None
-    ):
+    def _webhook_resolution(self, items=None, unresolved=None, skipped=None, path_hints=None):
         return SimpleNamespace(
             items=items or [],
             unresolved_paths=unresolved or [],
@@ -184,15 +176,11 @@ class TestWebhookFlow:
         with (
             patch(
                 f"{MODULE}.get_media_items_by_paths",
-                return_value=self._webhook_resolution(
-                    items=resolved_items, unresolved=["/data/missing.mkv"]
-                ),
+                return_value=self._webhook_resolution(items=resolved_items, unresolved=["/data/missing.mkv"]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(
-                completed=1
-            )
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
             result = run_processing(config, selected_gpus=[])
 
         assert result is not None
@@ -231,18 +219,14 @@ class TestWebhookFlow:
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(
-                completed=1
-            )
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
             run_processing(config, selected_gpus=[], progress_callback=progress)
 
         messages = [call.args[2] for call in progress.call_args_list if call.args]
         assert any("Connecting to Plex" in m for m in messages)
         assert any("Looking up 1 file path" in m for m in messages)
         dispatch_calls = [
-            call
-            for call in progress.call_args_list
-            if call.args and call.args[1] == 1 and "Starting" in call.args[2]
+            call for call in progress.call_args_list if call.args and call.args[1] == 1 and "Starting" in call.args[2]
         ]
         assert dispatch_calls, "expected a 'Starting Webhook Targets' dispatch tick"
 
@@ -274,9 +258,7 @@ class TestCancellation:
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
-            result = run_processing(
-                config, selected_gpus=[], cancel_check=cancel_after_first
-            )
+            result = run_processing(config, selected_gpus=[], cancel_check=cancel_after_first)
 
         assert result is not None
         MockPool.return_value.process_items_headless.assert_not_called()
@@ -378,9 +360,7 @@ class TestSummaryAndWarnings:
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(
-                completed=0, cancelled=True
-            )
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0, cancelled=True)
             result = run_processing(config, selected_gpus=[])
 
         assert result is not None
@@ -552,9 +532,7 @@ class TestJobDispatcherPath:
                 patch.dict(
                     "sys.modules",
                     {
-                        "plex_generate_previews.job_dispatcher": MagicMock(
-                            get_dispatcher=mock_get_disp
-                        ),
+                        "plex_generate_previews.job_dispatcher": MagicMock(get_dispatcher=mock_get_disp),
                         "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                     },
                 ),
@@ -600,9 +578,7 @@ class TestJobDispatcherPath:
             with patch.dict(
                 "sys.modules",
                 {
-                    "plex_generate_previews.job_dispatcher": MagicMock(
-                        get_dispatcher=fake_get_dispatcher
-                    ),
+                    "plex_generate_previews.job_dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
                     "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                 },
             ):

@@ -9,10 +9,11 @@ import os
 import threading
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -87,15 +88,13 @@ class JobProgress:
     processed_items: int = 0
     speed: str = "0.0x"
     current_file: str = ""
-    workers: List[WorkerStatus] = field(default_factory=list)
-    outcome: Optional[Dict[str, int]] = None
+    workers: list[WorkerStatus] = field(default_factory=list)
+    outcome: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         result = asdict(self)
-        result["workers"] = [
-            w.to_dict() if isinstance(w, WorkerStatus) else w for w in self.workers
-        ]
+        result["workers"] = [w.to_dict() if isinstance(w, WorkerStatus) else w for w in self.workers]
         return result
 
 
@@ -106,13 +105,13 @@ class Job:
     id: str
     status: JobStatus = JobStatus.PENDING
     created_at: str = ""
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    library_id: Optional[str] = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    library_id: str | None = None
     library_name: str = ""
     progress: JobProgress = field(default_factory=JobProgress)
-    error: Optional[str] = None
-    config: Dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    config: dict[str, Any] = field(default_factory=dict)
     paused: bool = False
     priority: int = PRIORITY_NORMAL
 
@@ -158,31 +157,29 @@ class JobManager:
         self.config_dir = config_dir
         self.jobs_file = os.path.join(config_dir, "jobs.json")
         self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
-        self._job_file_results_dir = os.path.join(
-            config_dir, "logs", "job_file_results"
-        )
+        self._job_file_results_dir = os.path.join(config_dir, "logs", "job_file_results")
         self.socketio = socketio
-        self._jobs: Dict[str, Job] = {}
+        self._jobs: dict[str, Job] = {}
         self._lock = threading.RLock()
         self._running_job_ids: set = set()
-        self._on_progress_callbacks: List[Callable] = []
+        self._on_progress_callbacks: list[Callable] = []
 
         # Job logs storage (in-memory for running jobs, plus file-backed under _job_logs_dir)
-        self._job_logs: Dict[str, deque] = {}
+        self._job_logs: dict[str, deque] = {}
         self._max_log_lines = 500
 
         # Worker status tracking
-        self._worker_statuses: Dict[str, WorkerStatus] = {}
+        self._worker_statuses: dict[str, WorkerStatus] = {}
 
         # Cancellation flags
-        self._cancellation_flags: Dict[str, bool] = {}
-        self._pause_flags: Dict[str, bool] = {}
-        self._pause_events: Dict[str, threading.Event] = {}
-        self._active_worker_pools: Dict[str, Any] = {}
+        self._cancellation_flags: dict[str, bool] = {}
+        self._pause_flags: dict[str, bool] = {}
+        self._pause_events: dict[str, threading.Event] = {}
+        self._active_worker_pools: dict[str, Any] = {}
 
         # Background retention timer
-        self._retention_timer: Optional[threading.Timer] = None
-        self._interrupted_jobs: List[Job] = []
+        self._retention_timer: threading.Timer | None = None
+        self._interrupted_jobs: list[Job] = []
 
         # Load existing jobs from disk
         self._load_jobs()
@@ -191,9 +188,7 @@ class JobManager:
             os.makedirs(self._job_file_results_dir, exist_ok=True)
             self._enforce_log_retention()
         except OSError as e:
-            logger.warning(
-                f"Could not create job logs directory {self._job_logs_dir}: {e}"
-            )
+            logger.warning(f"Could not create job logs directory {self._job_logs_dir}: {e}")
         self._start_retention_timer()
 
     def set_socketio(self, socketio) -> None:
@@ -204,7 +199,7 @@ class JobManager:
         """Load jobs from persistent storage."""
         if os.path.exists(self.jobs_file):
             try:
-                with open(self.jobs_file, "r") as f:
+                with open(self.jobs_file) as f:
                     data = json.load(f)
                     needs_save = False
                     for job_data in data.get("jobs", []):
@@ -213,14 +208,10 @@ class JobManager:
                             # Mark any "running" jobs as failed on startup
                             # (they were interrupted by restart/crash)
                             if job.status == JobStatus.RUNNING:
-                                logger.warning(
-                                    f"Job {job.id} was running when server stopped - marking as failed"
-                                )
+                                logger.warning(f"Job {job.id} was running when server stopped - marking as failed")
                                 job.status = JobStatus.FAILED
                                 job.error = "Job was interrupted by server restart"
-                                job.completed_at = datetime.now(
-                                    timezone.utc
-                                ).isoformat()
+                                job.completed_at = datetime.now(timezone.utc).isoformat()
                                 needs_save = True
                                 self._interrupted_jobs.append(job)
                             elif job.status == JobStatus.PENDING:
@@ -232,13 +223,10 @@ class JobManager:
                             continue
                 logger.info(f"Loaded {len(self._jobs)} jobs from {self.jobs_file}")
                 if self._interrupted_jobs:
-                    logger.info(
-                        f"Found {len(self._interrupted_jobs)} interrupted/pending job(s) "
-                        f"from previous run"
-                    )
+                    logger.info(f"Found {len(self._interrupted_jobs)} interrupted/pending job(s) from previous run")
                 if needs_save:
                     self._save_jobs()
-            except (json.JSONDecodeError, IOError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"Failed to load jobs file: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error loading jobs: {e}")
@@ -250,7 +238,7 @@ class JobManager:
 
             jobs_data = {"jobs": [job.to_dict() for job in self._jobs.values()]}
             atomic_json_save(self.jobs_file, jobs_data)
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Failed to save jobs: {e}")
 
     def _emit_event(self, event: str, data: dict) -> None:
@@ -324,9 +312,7 @@ class JobManager:
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             self._save_jobs()
-            logger.info(
-                f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)"
-            )
+            logger.info(f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)")
 
         # Clean orphaned job log files
         if os.path.isdir(self._job_logs_dir):
@@ -383,9 +369,9 @@ class JobManager:
 
     def create_job(
         self,
-        library_id: Optional[str] = None,
+        library_id: str | None = None,
         library_name: str = "",
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         priority: int = PRIORITY_NORMAL,
     ) -> Job:
         """Create a new job.
@@ -410,7 +396,7 @@ class JobManager:
         logger.info(f"Created job {job.id} for library {library_name}")
         return job
 
-    def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> List[Job]:
+    def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> list[Job]:
         """Revive jobs that were interrupted by the last restart.
 
         Each interrupted job is restored to ``PENDING`` in place (same
@@ -434,7 +420,7 @@ class JobManager:
 
         max_age_minutes = max(5, min(1440, max_age_minutes))
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
-        revived: List[Job] = []
+        revived: list[Job] = []
 
         for job in self._interrupted_jobs:
             # Check age — skip stale jobs.  Use started_at (when
@@ -446,9 +432,7 @@ class JobManager:
                 if ref_time.tzinfo is None:
                     ref_time = ref_time.replace(tzinfo=timezone.utc)
                 if ref_time < cutoff:
-                    logger.debug(
-                        f"Skipping revive of job {job.id[:8]} — too old (ref={ref_str})"
-                    )
+                    logger.debug(f"Skipping revive of job {job.id[:8]} — too old (ref={ref_str})")
                     continue
             except (ValueError, AttributeError):
                 # Can't parse date — skip to be safe
@@ -477,19 +461,19 @@ class JobManager:
         self._interrupted_jobs = []
         return revived
 
-    def get_job(self, job_id: str) -> Optional[Job]:
+    def get_job(self, job_id: str) -> Job | None:
         """Get a job by ID."""
         return self._jobs.get(job_id)
 
-    def get_all_jobs(self) -> List[Job]:
+    def get_all_jobs(self) -> list[Job]:
         """Get all jobs."""
         return list(self._jobs.values())
 
-    def get_pending_jobs(self) -> List[Job]:
+    def get_pending_jobs(self) -> list[Job]:
         """Get all pending jobs."""
         return [j for j in self._jobs.values() if j.status == JobStatus.PENDING]
 
-    def get_running_job(self) -> Optional[Job]:
+    def get_running_job(self) -> Job | None:
         """Get a currently running job (first found).
 
         For backward compatibility. Prefer ``get_running_jobs`` when
@@ -502,7 +486,7 @@ class JobManager:
                     return job
         return None
 
-    def get_running_jobs(self) -> List[Job]:
+    def get_running_jobs(self) -> list[Job]:
         """Get all currently running jobs."""
         with self._lock:
             return [
@@ -511,7 +495,7 @@ class JobManager:
                 if jid in self._jobs and self._jobs[jid].status == JobStatus.RUNNING
             ]
 
-    def update_job_config(self, job_id: str, config: Dict[str, Any]) -> None:
+    def update_job_config(self, job_id: str, config: dict[str, Any]) -> None:
         """Update stored config for a job (e.g. when start is deferred due to pause)."""
         with self._lock:
             job = self._jobs.get(job_id)
@@ -519,7 +503,7 @@ class JobManager:
                 job.config = dict(config)
                 self._save_jobs()
 
-    def update_job_priority(self, job_id: str, priority: int) -> Optional[Job]:
+    def update_job_priority(self, job_id: str, priority: int) -> Job | None:
         """Update the dispatch priority of a job.
 
         Args:
@@ -539,7 +523,7 @@ class JobManager:
             self._emit_event("job_updated", job.to_dict())
         return job
 
-    def start_job(self, job_id: str) -> Optional[Job]:
+    def start_job(self, job_id: str) -> Job | None:
         """Mark a job as started.
 
         Idempotent: if the job is already running, this is a no-op.  The
@@ -574,7 +558,7 @@ class JobManager:
         processed_items: int = None,
         speed: str = None,
         current_file: str = None,
-    ) -> Optional[Job]:
+    ) -> Job | None:
         """Update job progress."""
         with self._lock:
             job = self._jobs.get(job_id)
@@ -599,7 +583,7 @@ class JobManager:
                 )
             return job
 
-    def set_job_outcome(self, job_id: str, outcome: Dict[str, int]) -> Optional["Job"]:
+    def set_job_outcome(self, job_id: str, outcome: dict[str, int]) -> Optional["Job"]:
         """Store the processing outcome breakdown on a job.
 
         Args:
@@ -616,9 +600,9 @@ class JobManager:
     def complete_job(
         self,
         job_id: str,
-        error: Optional[str] = None,
-        warning: Optional[str] = None,
-    ) -> Optional[Job]:
+        error: str | None = None,
+        warning: str | None = None,
+    ) -> Job | None:
         """Mark a job as completed, completed-with-warning, or failed.
 
         Args:
@@ -639,9 +623,7 @@ class JobManager:
                     self.clear_cancellation_flag(job_id)
                     self.clear_active_worker_pool(job_id)
                     self._save_jobs()
-                    log_msg = (
-                        f"Job {job_id} already cancelled; skipping completion update"
-                    )
+                    log_msg = f"Job {job_id} already cancelled; skipping completion update"
                     # Early return after logging outside the lock
                 else:
                     job.completed_at = datetime.now(timezone.utc).isoformat()
@@ -676,7 +658,7 @@ class JobManager:
             getattr(logger, log_level)(log_msg)
         return job
 
-    def cancel_job(self, job_id: str) -> Optional[Job]:
+    def cancel_job(self, job_id: str) -> Job | None:
         """Cancel a job."""
         cancelled = False
         with self._lock:
@@ -717,7 +699,7 @@ class JobManager:
             logger.info(f"Deleted job {job_id}")
         return deleted
 
-    def clear_completed_jobs(self, statuses: Optional[List[str]] = None) -> int:
+    def clear_completed_jobs(self, statuses: list[str] | None = None) -> int:
         """Clear jobs by status.
 
         Args:
@@ -727,16 +709,12 @@ class JobManager:
         """
         valid_terminal = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
         if statuses:
-            target = {
-                JobStatus(s) for s in statuses if s in {e.value for e in valid_terminal}
-            }
+            target = {JobStatus(s) for s in statuses if s in {e.value for e in valid_terminal}}
         else:
             target = valid_terminal
 
         with self._lock:
-            to_delete = [
-                job_id for job_id, job in self._jobs.items() if job.status in target
-            ]
+            to_delete = [job_id for job_id, job in self._jobs.items() if job.status in target]
             for job_id in to_delete:
                 self._delete_job_log_file(job_id)
                 self._delete_file_results(job_id)
@@ -781,7 +759,7 @@ class JobManager:
             except OSError as e:
                 logger.debug(f"Could not append to job log {log_path}: {e}")
 
-    def get_logs(self, job_id: str, last_n: int = None) -> List[str]:
+    def get_logs(self, job_id: str, last_n: int = None) -> list[str]:
         """Get logs for a job (from memory if present, else from file; retention message if cleared)."""
         with self._lock:
             if job_id in self._job_logs:
@@ -792,7 +770,7 @@ class JobManager:
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             if os.path.isfile(log_path):
                 try:
-                    with open(log_path, "r") as f:
+                    with open(log_path) as f:
                         logs = [line.rstrip("\n") for line in f if line]
                     if last_n:
                         return logs[-last_n:]
@@ -808,9 +786,7 @@ class JobManager:
                 return [LOG_RETENTION_CLEARED_MESSAGE]
             return []
 
-    def get_logs_paginated(
-        self, job_id: str, offset: int = 0, limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+    def get_logs_paginated(self, job_id: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
         """Get a slice of log lines with total count for pagination.
 
         Args:
@@ -825,17 +801,13 @@ class JobManager:
             if job_id in self._job_logs:
                 logs = list(self._job_logs[job_id])
                 total = len(logs)
-                sliced = (
-                    logs[offset : offset + limit]
-                    if limit is not None
-                    else logs[offset:]
-                )
+                sliced = logs[offset : offset + limit] if limit is not None else logs[offset:]
                 return {"lines": sliced, "total_lines": total, "offset": offset}
 
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             if os.path.isfile(log_path):
                 try:
-                    with open(log_path, "r") as f:
+                    with open(log_path) as f:
                         all_lines = [line.rstrip("\n") for line in f if line]
                     total = len(all_lines)
                     end = offset + limit if limit is not None else total
@@ -908,7 +880,7 @@ class JobManager:
         job_id: str,
         outcome_filter: str = "",
         search: str = "",
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Read per-file results for a job from its JSONL file.
 
         Args:
@@ -922,10 +894,10 @@ class JobManager:
         path = self._file_results_path(job_id)
         if not os.path.isfile(path):
             return []
-        results: List[dict] = []
+        results: list[dict] = []
         search_lower = search.lower() if search else ""
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -936,10 +908,7 @@ class JobManager:
                         continue
                     if outcome_filter and record.get("outcome") != outcome_filter:
                         continue
-                    if (
-                        search_lower
-                        and search_lower not in record.get("file", "").lower()
-                    ):
+                    if search_lower and search_lower not in record.get("file", "").lower():
                         continue
                     results.append(record)
         except OSError as e:
@@ -964,7 +933,7 @@ class JobManager:
         with self._lock:
             self._worker_statuses[worker_key] = status
 
-    def get_worker_statuses(self) -> List[WorkerStatus]:
+    def get_worker_statuses(self) -> list[WorkerStatus]:
         """Get all worker statuses."""
         with self._lock:
             return list(self._worker_statuses.values())
@@ -1036,9 +1005,7 @@ class JobManager:
             self._emit_event("job_paused", {"job_id": job_id, "paused": True})
             paused = True
         if paused:
-            logger.info(
-                f"Pause audit: job_id={job_id}, status={status_val}, paused=True"
-            )
+            logger.info(f"Pause audit: job_id={job_id}, status={status_val}, paused=True")
             self.add_log(
                 job_id,
                 "INFO - Pause requested; no new tasks will be dispatched until resume.",
@@ -1065,9 +1032,7 @@ class JobManager:
             self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
             resumed = True
         if resumed:
-            logger.info(
-                f"Resume audit: job_id={job_id}, status={status_val}, paused=False"
-            )
+            logger.info(f"Resume audit: job_id={job_id}, status={status_val}, paused=False")
             self.add_log(job_id, "INFO - Resume requested; dispatch will continue.")
         return resumed
 
@@ -1094,7 +1059,7 @@ class JobManager:
         with self._lock:
             self._active_worker_pools[job_id] = worker_pool
 
-    def get_active_worker_pool(self, job_id: str = "") -> Optional[Any]:
+    def get_active_worker_pool(self, job_id: str = "") -> Any | None:
         """Get active worker pool for a job, or any running pool.
 
         Args:
@@ -1117,14 +1082,14 @@ class JobManager:
 
 
 # Global job manager instance
-_job_manager: Optional[JobManager] = None
+_job_manager: JobManager | None = None
 _job_lock = threading.Lock()
 
 # Default config directory from environment
 DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
 
 
-def get_job_manager(config_dir: Optional[str] = None, socketio=None) -> JobManager:
+def get_job_manager(config_dir: str | None = None, socketio=None) -> JobManager:
     """Get or create the global JobManager instance (thread-safe).
 
     When ``config_dir`` is explicitly provided and differs from the
@@ -1146,9 +1111,7 @@ def get_job_manager(config_dir: Optional[str] = None, socketio=None) -> JobManag
     global _job_manager
     with _job_lock:
         if _job_manager is None:
-            _job_manager = JobManager(
-                config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio
-            )
+            _job_manager = JobManager(config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio)
         else:
             if config_dir and _job_manager.config_dir != config_dir:
                 _job_manager = JobManager(config_dir=config_dir, socketio=socketio)

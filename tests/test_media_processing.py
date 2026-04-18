@@ -96,9 +96,7 @@ class TestBIFGeneration:
             f.seek(64)  # Start of index table
 
             # Check each index entry
-            expected_offset = 64 + (
-                8 * 6
-            )  # Header + index table (5 entries + end marker)
+            expected_offset = 64 + (8 * 6)  # Header + index table (5 entries + end marker)
             for timestamp in range(5):
                 ts = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<I", f.read(4))[0]
@@ -391,9 +389,7 @@ class TestDetectCodecError:
         stderr_lines = ["UNSUPPORTED CODEC", "Codec Not Supported", "unsupported codec"]
         for line in stderr_lines:
             result = _detect_codec_error(1, [line])
-            assert result is True, (
-                f"Should detect codec error case-insensitively: {line}"
-            )
+            assert result is True, f"Should detect codec error case-insensitively: {line}"
 
 
 class TestDetectHwaccelRuntimeError:
@@ -639,9 +635,7 @@ class TestGenerateImages:
         mock_exists.return_value = False
         mock_glob.return_value = []
 
-        generate_images(
-            "/test/video.mp4", temp_dir, "AMD", "/dev/dri/renderD128", mock_config
-        )
+        generate_images("/test/video.mp4", temp_dir, "AMD", "/dev/dri/renderD128", mock_config)
 
         args = mock_popen.call_args[0][0]
         assert "-hwaccel" in args
@@ -823,9 +817,7 @@ class TestGenerateImages:
         mock_glob.return_value = []
 
         # Mock reading FFmpeg output
-        mock_file.return_value.readlines.return_value = [
-            "frame= 100 fps=30.0 time=00:00:10.00 speed=1.0x\n"
-        ]
+        mock_file.return_value.readlines.return_value = ["frame= 100 fps=30.0 time=00:00:10.00 speed=1.0x\n"]
 
         callback_called = [False]
 
@@ -900,9 +892,7 @@ class TestGenerateImages:
 
         assert "GPU processing failed" in str(exc_info.value)
         assert mock_detect.called
-        assert (
-            mock_popen.call_count == 2
-        )  # GPU with skip_frame + GPU without skip_frame (no CPU fallback)
+        assert mock_popen.call_count == 2  # GPU with skip_frame + GPU without skip_frame (no CPU fallback)
 
         # Verify cleanup was attempted
         assert mock_remove.called
@@ -975,9 +965,7 @@ class TestGenerateImages:
             generate_images("/test/video.mp4", temp_dir, "NVIDIA", None, mock_config)
 
         assert mock_detect.called
-        assert (
-            mock_popen.call_count == 2
-        )  # Initial attempt + skip_frame retry, no CPU fallback (exception raised)
+        assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback (exception raised)
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -1050,9 +1038,7 @@ class TestGenerateImages:
         assert success is False
         assert image_count == 0
         assert mock_detect.called
-        assert (
-            mock_popen.call_count == 2
-        )  # Initial attempt + skip_frame retry, no CPU fallback
+        assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
@@ -1477,9 +1463,7 @@ class TestProcessItem:
         import os as _os
 
         expected_prefix = _os.path.normpath("/data")
-        assert called_path.startswith(expected_prefix), (
-            f"Expected path under /data, got {called_path}"
-        )
+        assert called_path.startswith(expected_prefix), f"Expected path under /data, got {called_path}"
 
     @patch("plex_generate_previews.media_processing.generate_bif")
     @patch("plex_generate_previews.media_processing.generate_images")
@@ -1534,14 +1518,10 @@ class TestProcessItem:
 
         # Should still be /database/... (no mapping applied)
         expected_prefix = _os.path.normpath("/database")
-        assert called_path.startswith(expected_prefix), (
-            f"Expected path under /database, got {called_path}"
-        )
+        assert called_path.startswith(expected_prefix), f"Expected path under /database, got {called_path}"
 
     @patch("os.path.isfile")
-    def test_process_item_missing_file(
-        self, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
+    def test_process_item_missing_file(self, mock_isfile, mock_config, plex_xml_movie_tree):
         """Test handling of missing video file."""
         mock_plex = MagicMock()
 
@@ -1766,9 +1746,7 @@ class TestProactiveDVSkip:
         # Accept either a dict (legacy test shape) or a VulkanProbeResult,
         # normalising to VulkanProbeResult for the production contract.
         if vulkan_device_info is None:
-            default_vulkan = VulkanProbeResult(
-                device="Quadro P4000 (NVIDIA)", is_software=False
-            )
+            default_vulkan = VulkanProbeResult(device="Quadro P4000 (NVIDIA)", is_software=False)
         elif isinstance(vulkan_device_info, VulkanProbeResult):
             default_vulkan = vulkan_device_info
         else:
@@ -1848,9 +1826,7 @@ class TestProactiveDVSkip:
         # Intel DV5 path initialises VAAPI on the render node and an
         # OpenCL context derived from that VAAPI device (ocl@va).
         init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
-        assert len(init_indices) == 2, (
-            "Intel DV5 path must initialise VAAPI + derived OpenCL (2 devices)"
-        )
+        assert len(init_indices) == 2, "Intel DV5 path must initialise VAAPI + derived OpenCL (2 devices)"
         assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD128"
         assert args[init_indices[1] + 1] == "opencl=ocl@va"
         assert "-filter_hw_device" in args
@@ -1882,9 +1858,7 @@ class TestProactiveDVSkip:
         assert "hwmap=derive_device=vulkan" not in vf, (
             "Intel DV5 uses OpenCL, not Vulkan (libplacebo interop is broken)"
         )
-        assert "libplacebo=" not in vf, (
-            "Intel DV5 path uses tonemap_opencl, not libplacebo"
-        )
+        assert "libplacebo=" not in vf, "Intel DV5 path uses tonemap_opencl, not libplacebo"
         assert "hwupload" not in vf
         assert "hwdownload" in vf
         assert "zscale" not in vf
@@ -1893,8 +1867,7 @@ class TestProactiveDVSkip:
         fps_pos = vf.find("fps=fps=")
         hwmap_pos = vf.find("hwmap=")
         assert 0 <= fps_pos < hwmap_pos, (
-            "fps filter must run BEFORE hwmap so we drop frames at the "
-            "VAAPI surface and don't waste tonemap cycles"
+            "fps filter must run BEFORE hwmap so we drop frames at the VAAPI surface and don't waste tonemap cycles"
         )
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
@@ -2087,14 +2060,10 @@ class TestProactiveDVSkip:
 
         # The pre-flight guard must bypass libplacebo entirely — no
         # Vulkan init, no hwupload, no libplacebo filter.
-        assert "-init_hw_device" not in args, (
-            "Software Vulkan must not initialise a Vulkan device for DV5"
-        )
+        assert "-init_hw_device" not in args, "Software Vulkan must not initialise a Vulkan device for DV5"
         assert "-filter_hw_device" not in args
         vf = args[args.index("-vf") + 1]
-        assert "libplacebo" not in vf, (
-            "Software Vulkan must not run libplacebo on DV5 (green overlay bug)"
-        )
+        assert "libplacebo" not in vf, "Software Vulkan must not run libplacebo on DV5 (green overlay bug)"
         assert "hwupload" not in vf
         # Zscale is also wrong on DV5 (no HDR10 base layer) — the
         # fallback must use the plain fps+scale chain, same as the
@@ -2486,9 +2455,7 @@ class TestLibplaceboFallback:
 
         # MediaInfo: DV Profile 5
         mock_info = MagicMock()
-        mock_info.video_tracks = [
-            MagicMock(hdr_format="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU")
-        ]
+        mock_info.video_tracks = [MagicMock(hdr_format="Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU")]
         mock_mediainfo.parse.return_value = mock_info
 
         # First FFmpeg call (libplacebo) fails, second (DV-safe) succeeds
@@ -2720,9 +2687,7 @@ class TestDVSafeRetryGpuFailure:
 
         # Act & Assert — GPU path raises CodecNotSupportedError
         with pytest.raises(CodecNotSupportedError):
-            generate_images(
-                "/test/always_fails.mkv", temp_dir, "NVIDIA", None, mock_config
-            )
+            generate_images("/test/always_fails.mkv", temp_dir, "NVIDIA", None, mock_config)
 
         assert mock_popen.call_count == 3
 
@@ -2786,9 +2751,7 @@ class TestDynamicNpl:
 
         mock_glob.side_effect = glob_side_effect
 
-        success, *_ = generate_images(
-            "/test/hdr10_1000nit.mkv", temp_dir, None, None, mock_config
-        )
+        success, *_ = generate_images("/test/hdr10_1000nit.mkv", temp_dir, None, None, mock_config)
 
         assert success is True
         first_args = mock_popen.call_args_list[0][0][0]
@@ -2853,9 +2816,7 @@ class TestDynamicNpl:
 
         mock_glob.side_effect = glob_side_effect
 
-        success, *_ = generate_images(
-            "/test/hdr10_no_maxcll.mkv", temp_dir, None, None, mock_config
-        )
+        success, *_ = generate_images("/test/hdr10_no_maxcll.mkv", temp_dir, None, None, mock_config)
 
         assert success is True
         first_args = mock_popen.call_args_list[0][0][0]
@@ -2919,9 +2880,7 @@ class TestDynamicNpl:
 
         mock_glob.side_effect = glob_side_effect
 
-        success, *_ = generate_images(
-            "/test/hdr10_bad_maxcll.mkv", temp_dir, None, None, mock_config
-        )
+        success, *_ = generate_images("/test/hdr10_bad_maxcll.mkv", temp_dir, None, None, mock_config)
 
         assert success is True
         first_args = mock_popen.call_args_list[0][0][0]
@@ -2963,9 +2922,7 @@ class TestSaveFFmpegFailureLog:
         log_dir = str(tmp_path)
         monkeypatch.setenv("CONFIG_DIR", log_dir)
 
-        _save_ffmpeg_failure_log(
-            "/media/test.mkv", 187, ["error line 1", "error line 2"]
-        )
+        _save_ffmpeg_failure_log("/media/test.mkv", 187, ["error line 1", "error line 2"])
 
         ffmpeg_log_dir = tmp_path / "logs" / "ffmpeg_failures"
         log_files = list(ffmpeg_log_dir.glob("*.log"))
@@ -3042,9 +2999,7 @@ class TestVerifyTmpFolderHealth:
         assert "not writable" in messages[0].lower()
 
     def test_warns_when_disk_space_low(self, tmp_path) -> None:
-        with patch(
-            "plex_generate_previews.media_processing.shutil.disk_usage"
-        ) as mock_usage:
+        with patch("plex_generate_previews.media_processing.shutil.disk_usage") as mock_usage:
             mock_usage.return_value = MagicMock(free=0)
             ok, messages = _verify_tmp_folder_health(str(tmp_path), min_free_mb=1)
         assert ok is True
@@ -3108,9 +3063,7 @@ class TestHdrFormatNoneString:
 
         mock_glob.side_effect = glob_side_effect
 
-        success, *_ = generate_images(
-            "/test/sdr_none_string.mkv", temp_dir, None, None, mock_config
-        )
+        success, *_ = generate_images("/test/sdr_none_string.mkv", temp_dir, None, None, mock_config)
 
         assert success is True
         first_args = mock_popen.call_args_list[0][0][0]
@@ -3148,9 +3101,7 @@ class TestGpuScaleOptimisation:
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
-    def test_nvidia_sdr_uses_scale_cuda_with_hwaccel_output_format(
-        self, mock_popen, mock_mediainfo, mock_config
-    ):
+    def test_nvidia_sdr_uses_scale_cuda_with_hwaccel_output_format(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
             mock_mediainfo,
             mock_popen,
@@ -3165,9 +3116,7 @@ class TestGpuScaleOptimisation:
         assert args[args.index("-hwaccel_output_format") + 1] == "cuda"
         vf = args[args.index("-vf") + 1]
         assert "scale_cuda=w=320:h=240:force_original_aspect_ratio=decrease" in vf
-        assert "force_divisible_by=2" in vf, (
-            "Letterboxed 2.4:1 content needs even output dims or zscale rejects it"
-        )
+        assert "force_divisible_by=2" in vf, "Letterboxed 2.4:1 content needs even output dims or zscale rejects it"
         assert "format=nv12" in vf
         assert "hwdownload" in vf
         # The old CPU-scale bug must not re-appear.
@@ -3178,9 +3127,7 @@ class TestGpuScaleOptimisation:
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
-    def test_nvidia_hdr10_downscales_on_gpu_before_zscale(
-        self, mock_popen, mock_mediainfo, mock_config
-    ):
+    def test_nvidia_hdr10_downscales_on_gpu_before_zscale(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
             mock_mediainfo,
             mock_popen,
@@ -3201,9 +3148,7 @@ class TestGpuScaleOptimisation:
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
-    def test_vaapi_sdr_uses_scale_vaapi_with_even_parity_safety(
-        self, mock_popen, mock_mediainfo, mock_config
-    ):
+    def test_vaapi_sdr_uses_scale_vaapi_with_even_parity_safety(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
             mock_mediainfo,
             mock_popen,
@@ -3230,9 +3175,7 @@ class TestGpuScaleOptimisation:
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
-    def test_vaapi_hdr10_downscales_on_gpu_before_zscale(
-        self, mock_popen, mock_mediainfo, mock_config
-    ):
+    def test_vaapi_hdr10_downscales_on_gpu_before_zscale(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
             mock_mediainfo,
             mock_popen,
@@ -3253,9 +3196,7 @@ class TestGpuScaleOptimisation:
 
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
-    def test_cpu_path_retains_software_scale(
-        self, mock_popen, mock_mediainfo, mock_config
-    ):
+    def test_cpu_path_retains_software_scale(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
             mock_mediainfo,
             mock_popen,
@@ -3283,9 +3224,7 @@ class TestGpuScaleOptimisation:
     )
     @patch("plex_generate_previews.media_processing.MediaInfo")
     @patch("subprocess.Popen")
-    def test_dv5_libplacebo_vf_unchanged(
-        self, mock_popen, mock_mediainfo, _vk_env, _vk_info, mock_config
-    ):
+    def test_dv5_libplacebo_vf_unchanged(self, mock_popen, mock_mediainfo, _vk_env, _vk_info, mock_config):
         args = self._run(
             mock_mediainfo,
             mock_popen,
@@ -3404,9 +3343,7 @@ class TestFfmpegThreadFlags:
         args = mock_popen.call_args[0][0]
         # No hardware decode on a pure CPU path, so neither the global -threads
         # cap nor the per-stream -threads:v video-decoder cap should be set.
-        assert "-threads:v" not in args, (
-            "CPU path should not cap the video decoder — forces single-threaded SW decode"
-        )
+        assert "-threads:v" not in args, "CPU path should not cap the video decoder — forces single-threaded SW decode"
         bare_threads = [i for i, a in enumerate(args) if a == "-threads"]
         assert len(bare_threads) == 0, "CPU path should not have global -threads cap"
 

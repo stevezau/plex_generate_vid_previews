@@ -35,9 +35,9 @@ def load_auth_config() -> dict:
     """Load authentication configuration from file."""
     if os.path.exists(AUTH_FILE):
         try:
-            with open(AUTH_FILE, "r") as f:
+            with open(AUTH_FILE) as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to load auth config: {e}")
     return {}
 
@@ -49,7 +49,7 @@ def save_auth_config(config: dict) -> None:
     os.makedirs(os.path.dirname(AUTH_FILE), exist_ok=True)
     try:
         atomic_json_save(AUTH_FILE, config, permissions=0o600)
-    except IOError as e:
+    except OSError as e:
         logger.error(f"Failed to save auth config: {e}")
 
 
@@ -69,9 +69,7 @@ def get_auth_token() -> str:
     env_token = os.environ.get("WEB_AUTH_TOKEN")
     if env_token:
         if not _logged_env_token:
-            logger.info(
-                "Using authentication token from WEB_AUTH_TOKEN environment variable"
-            )
+            logger.info("Using authentication token from WEB_AUTH_TOKEN environment variable")
             _logged_env_token = True
         return env_token
 

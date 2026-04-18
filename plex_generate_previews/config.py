@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -45,23 +45,19 @@ if "ROCM_PATH" not in os.environ:
 _JELLYFIN_FFMPEG_PATH = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
 
 
-def _resolve_ffmpeg_path() -> Optional[str]:
+def _resolve_ffmpeg_path() -> str | None:
     """Pick the FFmpeg binary to use.
 
     Returns the path to jellyfin-ffmpeg when installed and executable,
     otherwise whatever ``ffmpeg`` resolves to via ``PATH``.  ``None``
     means no working FFmpeg was found.
     """
-    if os.path.isfile(_JELLYFIN_FFMPEG_PATH) and os.access(
-        _JELLYFIN_FFMPEG_PATH, os.X_OK
-    ):
+    if os.path.isfile(_JELLYFIN_FFMPEG_PATH) and os.access(_JELLYFIN_FFMPEG_PATH, os.X_OK):
         return _JELLYFIN_FFMPEG_PATH
     return shutil.which("ffmpeg")
 
 
-def get_config_value(
-    cli_args, field_name: str, env_key: str, default, value_type: type = str
-):
+def get_config_value(cli_args, field_name: str, env_key: str, default, value_type: type = str):
     """Get configuration value with proper precedence: CLI args > env vars > defaults.
 
     Args:
@@ -106,23 +102,17 @@ def get_config_value(
         return default
 
 
-def get_config_value_str(
-    cli_args, field_name: str, env_key: str, default: str = ""
-) -> str:
+def get_config_value_str(cli_args, field_name: str, env_key: str, default: str = "") -> str:
     """Get string configuration value."""
     return get_config_value(cli_args, field_name, env_key, default, str)
 
 
-def get_config_value_int(
-    cli_args, field_name: str, env_key: str, default: int = 0
-) -> int:
+def get_config_value_int(cli_args, field_name: str, env_key: str, default: int = 0) -> int:
     """Get integer configuration value."""
     return get_config_value(cli_args, field_name, env_key, default, int)
 
 
-def get_path_mapping_pairs(
-    plex_mapping: str, local_mapping: str
-) -> List[Tuple[str, str]]:
+def get_path_mapping_pairs(plex_mapping: str, local_mapping: str) -> list[tuple[str, str]]:
     """Parse path mapping config into (plex_root, local_root) pairs.
 
     Supports: (1) single pair when both are single values; (2) mergefs: multiple
@@ -144,7 +134,7 @@ def get_path_mapping_pairs(
     if len(local_list) == 1:
         return [(plex_root, local_list[0]) for plex_root in plex_list]
     if len(plex_list) == len(local_list):
-        return list(zip(plex_list, local_list))
+        return list(zip(plex_list, local_list, strict=True))
     # Mismatched lengths: use first of each (backward compat)
     return [(plex_list[0], local_list[0])]
 
@@ -161,9 +151,7 @@ def _normalize_prefix(p: str) -> str:
     return p.replace("\\", "/").rstrip("/") or "/"
 
 
-def _legacy_settings_to_path_mappings(
-    plex_mapping: str, local_mapping: str
-) -> List[Dict[str, Any]]:
+def _legacy_settings_to_path_mappings(plex_mapping: str, local_mapping: str) -> list[dict[str, Any]]:
     """Convert legacy semicolon pair config into path_mappings list."""
     pairs = get_path_mapping_pairs(plex_mapping or "", local_mapping or "")
     return [
@@ -172,7 +160,7 @@ def _legacy_settings_to_path_mappings(
     ]
 
 
-def normalize_path_mappings(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+def normalize_path_mappings(settings: dict[str, Any]) -> list[dict[str, Any]]:
     """Build path_mappings list from settings (new format or legacy).
 
     New format: settings["path_mappings"] is a list of dicts with keys
@@ -202,9 +190,7 @@ def normalize_path_mappings(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
                 web = [s.strip() for s in web if s and str(s).strip()]
             else:
                 web = []
-            out.append(
-                {"plex_prefix": plex, "local_prefix": local, "webhook_prefixes": web}
-            )
+            out.append({"plex_prefix": plex, "local_prefix": local, "webhook_prefixes": web})
         if out:
             return out
     # Legacy
@@ -225,8 +211,8 @@ def _path_matches_prefix(path: str, prefix: str) -> bool:
 
 
 def normalize_exclude_paths(
-    raw: Optional[List[Any]],
-) -> List[Dict[str, str]]:
+    raw: list[Any] | None,
+) -> list[dict[str, str]]:
     """Normalize exclude_paths from settings into list of {value, type} dicts.
 
     Accepts list of dicts with value/type or list of strings (treated as path prefix).
@@ -252,7 +238,7 @@ def normalize_exclude_paths(
 
 def is_path_excluded(
     local_path: str,
-    exclude_paths: Optional[List[Dict[str, str]]],
+    exclude_paths: list[dict[str, str]] | None,
 ) -> bool:
     """Return True if local_path is excluded by any rule (path prefix or regex).
 
@@ -290,7 +276,7 @@ def is_path_excluded(
     return False
 
 
-def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
+def path_to_canonical_local(path: str, path_mappings: list[dict[str, Any]]) -> str:
     """Map any path (Plex, webhook, or local) to canonical local path.
 
     Uses the first matching mapping: plex_prefix or any webhook_prefix is
@@ -313,24 +299,16 @@ def path_to_canonical_local(path: str, path_mappings: List[Dict[str, Any]]) -> s
         local_prefix = _normalize_prefix(m.get("local_prefix") or "")
         if plex_prefix and _path_matches_prefix(path, plex_prefix):
             rest = path[len(plex_prefix) :].lstrip("/")
-            return (
-                f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
-            )
+            return f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
         for wp in m.get("webhook_prefixes") or []:
             wp = _normalize_prefix(wp)
             if wp and _path_matches_prefix(path, wp):
                 rest = path[len(wp) :].lstrip("/")
-                return (
-                    f"{local_prefix.rstrip('/')}/{rest}"
-                    if rest
-                    else (local_prefix or "/")
-                )
+                return f"{local_prefix.rstrip('/')}/{rest}" if rest else (local_prefix or "/")
     return path
 
 
-def expand_path_mapping_candidates(
-    path: str, path_mappings: List[Dict[str, Any]]
-) -> List[str]:
+def expand_path_mapping_candidates(path: str, path_mappings: list[dict[str, Any]]) -> list[str]:
     """Return equivalent path candidates across all configured mapping rows.
 
     This helper expands a single input path into every plausible equivalent path
@@ -390,14 +368,12 @@ def expand_path_mapping_candidates(
     return candidates
 
 
-def plex_path_to_local(path: str, path_mappings: List[Dict[str, Any]]) -> str:
+def plex_path_to_local(path: str, path_mappings: list[dict[str, Any]]) -> str:
     """Map a Plex-reported path to local path (for file access)."""
     return path_to_canonical_local(path, path_mappings)
 
 
-def local_path_to_webhook_aliases(
-    path: str, path_mappings: List[Dict[str, Any]]
-) -> List[str]:
+def local_path_to_webhook_aliases(path: str, path_mappings: list[dict[str, Any]]) -> list[str]:
     """Return webhook-style paths that could refer to the same file as the given local path.
 
     Used when matching webhook payloads (e.g. /data/...) to Plex items whose
@@ -436,7 +412,7 @@ def _is_library_id_value(value: str) -> bool:
     return bool(value) and value.isdigit()
 
 
-def split_library_selectors(values: Any) -> Tuple[List[str], List[str]]:
+def split_library_selectors(values: Any) -> tuple[list[str], list[str]]:
     """Split mixed library selectors into section IDs and lowercased titles.
 
     Args:
@@ -450,8 +426,8 @@ def split_library_selectors(values: Any) -> Tuple[List[str], List[str]]:
     if not isinstance(values, list):
         return [], []
 
-    library_ids: List[str] = []
-    library_titles: List[str] = []
+    library_ids: list[str] = []
+    library_titles: list[str] = []
     seen_ids = set()
     seen_titles = set()
 
@@ -474,9 +450,7 @@ def split_library_selectors(values: Any) -> Tuple[List[str], List[str]]:
     return library_ids, library_titles
 
 
-def get_config_value_bool(
-    cli_args, field_name: str, env_key: str, default: bool = False
-) -> bool:
+def get_config_value_bool(cli_args, field_name: str, env_key: str, default: bool = False) -> bool:
     """Get boolean configuration value."""
     return get_config_value(cli_args, field_name, env_key, default, bool)
 
@@ -490,20 +464,20 @@ class Config:
     plex_token: str
     plex_timeout: int
     plex_verify_ssl: bool
-    plex_libraries: List[str]
+    plex_libraries: list[str]
 
     # Media paths
     plex_config_folder: str
     plex_local_videos_path_mapping: str
     plex_videos_path_mapping: str
     # Resolved path mapping rows: [{"plex_prefix", "local_prefix", "webhook_prefixes"}]
-    path_mappings: List[Dict[str, Any]]
+    path_mappings: list[dict[str, Any]]
 
     # Processing configuration
     plex_bif_frame_interval: int
     thumbnail_quality: int
     regenerate_thumbnails: bool
-    sort_by: Optional[str]
+    sort_by: str | None
 
     # Threading configuration
     gpu_threads: int
@@ -524,7 +498,7 @@ class Config:
 
     # Per-GPU configuration: list of dicts with keys
     # device, name, type, enabled, workers, ffmpeg_threads
-    gpu_config: List[Dict[str, Any]] = field(default_factory=list)
+    gpu_config: list[dict[str, Any]] = field(default_factory=list)
 
     # Runtime state (set after construction)
     working_tmp_folder: str = ""
@@ -533,12 +507,12 @@ class Config:
     worker_pool_timeout: int = 30
 
     # When set, filter libraries by Plex section key (ID) instead of plex_libraries (names)
-    plex_library_ids: Optional[List[str]] = None
+    plex_library_ids: list[str] | None = None
 
     # Runtime-only file targets for webhook-triggered single-file processing.
-    webhook_paths: Optional[List[str]] = None
+    webhook_paths: list[str] | None = None
     # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
-    exclude_paths: Optional[List[Dict[str, str]]] = None
+    exclude_paths: list[dict[str, str]] | None = None
 
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
@@ -561,18 +535,12 @@ def show_docker_help():
     logger.info("")
     logger.info("📋 One-time seed environment variables (applied on first startup):")
     logger.info("")
-    logger.info(
-        "  PLEX_URL                    Plex server URL (e.g., http://localhost:32400)"
-    )
+    logger.info("  PLEX_URL                    Plex server URL (e.g., http://localhost:32400)")
     logger.info("  PLEX_TOKEN                  Plex authentication token")
     logger.info("  PLEX_CONFIG_FOLDER          Path to Plex config folder")
-    logger.info(
-        "  PLEX_TIMEOUT                Plex API timeout in seconds (default: 60)"
-    )
+    logger.info("  PLEX_TIMEOUT                Plex API timeout in seconds (default: 60)")
     logger.info("  PLEX_LIBRARIES              Comma-separated library names")
-    logger.info(
-        "  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR"
-    )
+    logger.info("  LOG_LEVEL                   Logging level: DEBUG, INFO, WARNING, ERROR")
     logger.info("")
     logger.info("  These are migrated into settings.json on first run and")
     logger.info("  ignored afterwards. Use the web UI to change them.")
@@ -606,38 +574,24 @@ def _validate_plex_config(
     # Check basic required parameters first
     if not plex_url:
         if is_docker_environment():
-            missing_params.append(
-                "PLEX_URL is required (set PLEX_URL environment variable)"
-            )
+            missing_params.append("PLEX_URL is required (set PLEX_URL environment variable)")
         else:
-            missing_params.append(
-                "PLEX_URL is required (configure via web UI or set PLEX_URL environment variable)"
-            )
+            missing_params.append("PLEX_URL is required (configure via web UI or set PLEX_URL environment variable)")
     elif not plex_url.startswith(("http://", "https://")):
-        validation_errors.append(
-            f"PLEX_URL must start with http:// or https:// (got: {plex_url})"
-        )
+        validation_errors.append(f"PLEX_URL must start with http:// or https:// (got: {plex_url})")
 
     if not plex_token:
         if is_docker_environment():
-            missing_params.append(
-                "PLEX_TOKEN is required (set PLEX_TOKEN environment variable)"
-            )
+            missing_params.append("PLEX_TOKEN is required (set PLEX_TOKEN environment variable)")
         else:
             missing_params.append(
                 "PLEX_TOKEN is required (configure via web UI or set PLEX_TOKEN environment variable)"
             )
 
     # Check PLEX_CONFIG_FOLDER
-    if (
-        not plex_config_folder
-        or plex_config_folder
-        == "/path_to/plex/Library/Application Support/Plex Media Server"
-    ):
+    if not plex_config_folder or plex_config_folder == "/path_to/plex/Library/Application Support/Plex Media Server":
         if is_docker_environment():
-            missing_params.append(
-                "PLEX_CONFIG_FOLDER is required (set PLEX_CONFIG_FOLDER environment variable)"
-            )
+            missing_params.append("PLEX_CONFIG_FOLDER is required (set PLEX_CONFIG_FOLDER environment variable)")
         else:
             missing_params.append(
                 "PLEX_CONFIG_FOLDER is required (configure via web UI or set PLEX_CONFIG_FOLDER environment variable)"
@@ -647,18 +601,12 @@ def _validate_plex_config(
         if not os.path.exists(plex_config_folder):
             # Enhanced debugging for path issues
             debug_info = []
-            debug_info.append(
-                f"PLEX_CONFIG_FOLDER ({plex_config_folder}) does not exist"
-            )
+            debug_info.append(f"PLEX_CONFIG_FOLDER ({plex_config_folder}) does not exist")
 
             # Walk back to find existing parent directories
             current_path = plex_config_folder
             found_existing = False
-            while (
-                current_path
-                and current_path != "/"
-                and current_path != os.path.dirname(current_path)
-            ):
+            while current_path and current_path != "/" and current_path != os.path.dirname(current_path):
                 parent_path = os.path.dirname(current_path)
                 if os.path.exists(parent_path):
                     if not found_existing:
@@ -672,14 +620,10 @@ def _validate_plex_config(
                         if contents:
                             for item in sorted(contents)[:10]:  # Show first 10 items
                                 item_path = os.path.join(parent_path, item)
-                                item_type = (
-                                    "DIR" if os.path.isdir(item_path) else "FILE"
-                                )
+                                item_type = "DIR" if os.path.isdir(item_path) else "FILE"
                                 debug_info.append(f"  {item_type}: {item}")
                             if len(contents) > 10:
-                                debug_info.append(
-                                    f"  ... and {len(contents) - 10} more items"
-                                )
+                                debug_info.append(f"  ... and {len(contents) - 10} more items")
                         else:
                             debug_info.append("  (empty directory)")
                     except PermissionError:
@@ -700,20 +644,14 @@ def _validate_plex_config(
             try:
                 config_contents = os.listdir(plex_config_folder)
                 found_folders = [
-                    item
-                    for item in config_contents
-                    if os.path.isdir(os.path.join(plex_config_folder, item))
+                    item for item in config_contents if os.path.isdir(os.path.join(plex_config_folder, item))
                 ]
 
                 # Check for essential Plex server folders (only require Media)
                 essential_folders = ["Media"]
-                found_essential = [
-                    folder for folder in essential_folders if folder in found_folders
-                ]
+                found_essential = [folder for folder in essential_folders if folder in found_folders]
 
-                if len(found_essential) < len(
-                    essential_folders
-                ):  # Need all essential folders
+                if len(found_essential) < len(essential_folders):  # Need all essential folders
                     debug_info = []
                     debug_info.append(
                         "PLEX_CONFIG_FOLDER exists but does not appear to be a valid Plex Media Server directory"
@@ -721,22 +659,14 @@ def _validate_plex_config(
                     debug_info.append("Are you sure you mapped the right Plex folder?")
                     debug_info.append("Expected: Essential Plex folders (Media)")
                     debug_info.append(f"Found: {sorted(found_folders)}")
-                    debug_info.append(
-                        f"Missing: {sorted([f for f in essential_folders if f not in found_folders])}"
-                    )
+                    debug_info.append(f"Missing: {sorted([f for f in essential_folders if f not in found_folders])}")
                     debug_info.append("💡 Tip: Point to the main Plex directory:")
                     debug_info.append(
                         "   Linux: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server"
                     )
-                    debug_info.append(
-                        "   Docker: /config/plex/Library/Application Support/Plex Media Server"
-                    )
-                    debug_info.append(
-                        "   Windows: C:\\Users\\[Username]\\AppData\\Local\\Plex Media Server"
-                    )
-                    debug_info.append(
-                        "   macOS: ~/Library/Application Support/Plex Media Server"
-                    )
+                    debug_info.append("   Docker: /config/plex/Library/Application Support/Plex Media Server")
+                    debug_info.append("   Windows: C:\\Users\\[Username]\\AppData\\Local\\Plex Media Server")
+                    debug_info.append("   macOS: ~/Library/Application Support/Plex Media Server")
                     validation_errors.append("\n".join(debug_info))
                 else:
                     # Config folder looks good, now check Media/localhost
@@ -744,9 +674,7 @@ def _validate_plex_config(
                     localhost_path = os.path.join(media_path, "localhost")
 
                     if not os.path.exists(media_path):
-                        validation_errors.append(
-                            f"PLEX_CONFIG_FOLDER/Media directory does not exist: {media_path}"
-                        )
+                        validation_errors.append(f"PLEX_CONFIG_FOLDER/Media directory does not exist: {media_path}")
                     elif not os.path.exists(localhost_path):
                         validation_errors.append(
                             f"PLEX_CONFIG_FOLDER/Media/localhost directory does not exist: {localhost_path}"
@@ -756,16 +684,12 @@ def _validate_plex_config(
                         try:
                             localhost_contents = os.listdir(localhost_path)
                             found_localhost_folders = [
-                                item
-                                for item in localhost_contents
-                                if os.path.isdir(os.path.join(localhost_path, item))
+                                item for item in localhost_contents if os.path.isdir(os.path.join(localhost_path, item))
                             ]
 
                             # Check for either hex directories (0-f) or standard Plex folders
                             hex_folders = [
-                                item
-                                for item in localhost_contents
-                                if len(item) == 1 and item in "0123456789abcdef"
+                                item for item in localhost_contents if len(item) == 1 and item in "0123456789abcdef"
                             ]
                             standard_folders = [
                                 "Metadata",
@@ -775,16 +699,12 @@ def _validate_plex_config(
                                 "Plug-in Support",
                             ]
                             found_standard = [
-                                folder
-                                for folder in standard_folders
-                                if folder in found_localhost_folders
+                                folder for folder in standard_folders if folder in found_localhost_folders
                             ]
 
                             # Accept if we have either hex directories OR standard folders
                             has_hex_structure = len(hex_folders) >= 10  # Most of 0-f
-                            has_standard_structure = (
-                                len(found_standard) >= 3
-                            )  # At least 3 standard folders
+                            has_standard_structure = len(found_standard) >= 3  # At least 3 standard folders
 
                             if not has_hex_structure and not has_standard_structure:
                                 debug_info = []
@@ -794,29 +714,19 @@ def _validate_plex_config(
                                 debug_info.append(
                                     "Expected: Either hex directories (0-f) OR standard Plex folders (Metadata, Cache, etc.)"
                                 )
-                                debug_info.append(
-                                    f"Found: {sorted(found_localhost_folders)}"
-                                )
+                                debug_info.append(f"Found: {sorted(found_localhost_folders)}")
                                 if hex_folders:
-                                    debug_info.append(
-                                        f"Hex directories found: {len(hex_folders)}/16 (need 10+)"
-                                    )
+                                    debug_info.append(f"Hex directories found: {len(hex_folders)}/16 (need 10+)")
                                 if found_standard:
-                                    debug_info.append(
-                                        f"Standard folders found: {len(found_standard)}/5 (need 3+)"
-                                    )
+                                    debug_info.append(f"Standard folders found: {len(found_standard)}/5 (need 3+)")
                                 debug_info.append(
                                     "This suggests the path may not point to the correct Plex Media Server database location"
                                 )
                                 validation_errors.append("\n".join(debug_info))
                         except PermissionError:
-                            validation_errors.append(
-                                f"Permission denied reading localhost folder: {localhost_path}"
-                            )
+                            validation_errors.append(f"Permission denied reading localhost folder: {localhost_path}")
             except PermissionError:
-                validation_errors.append(
-                    f"Permission denied reading PLEX_CONFIG_FOLDER: {plex_config_folder}"
-                )
+                validation_errors.append(f"Permission denied reading PLEX_CONFIG_FOLDER: {plex_config_folder}")
 
 
 VALID_TONEMAP_ALGORITHMS = ("reinhard", "mobius", "hable", "clip", "gamma", "linear")
@@ -845,19 +755,14 @@ def _validate_processing_config(
         )
 
     if thumbnail_quality < 1 or thumbnail_quality > 10:
-        validation_errors.append(
-            f"THUMBNAIL_QUALITY must be between 1-10 (got: {thumbnail_quality})"
-        )
+        validation_errors.append(f"THUMBNAIL_QUALITY must be between 1-10 (got: {thumbnail_quality})")
 
     if plex_timeout < 10 or plex_timeout > 3600:
-        validation_errors.append(
-            f"PLEX_TIMEOUT must be between 10-3600 seconds (got: {plex_timeout})"
-        )
+        validation_errors.append(f"PLEX_TIMEOUT must be between 10-3600 seconds (got: {plex_timeout})")
 
     if tonemap_algorithm not in VALID_TONEMAP_ALGORITHMS:
         validation_errors.append(
-            f"TONEMAP_ALGORITHM must be one of {', '.join(VALID_TONEMAP_ALGORITHMS)} "
-            f"(got: {tonemap_algorithm})"
+            f"TONEMAP_ALGORITHM must be one of {', '.join(VALID_TONEMAP_ALGORITHMS)} (got: {tonemap_algorithm})"
         )
 
 
@@ -882,19 +787,13 @@ def _validate_thread_config(
 
     """
     if gpu_threads < 0 or gpu_threads > 32:
-        validation_errors.append(
-            f"gpu_threads must be between 0-32 (got: {gpu_threads})"
-        )
+        validation_errors.append(f"gpu_threads must be between 0-32 (got: {gpu_threads})")
 
     if cpu_threads < 0 or cpu_threads > 32:
-        validation_errors.append(
-            f"cpu_threads must be between 0-32 (got: {cpu_threads})"
-        )
+        validation_errors.append(f"cpu_threads must be between 0-32 (got: {cpu_threads})")
 
     if ffmpeg_threads < 0 or ffmpeg_threads > 32:
-        validation_errors.append(
-            f"ffmpeg_threads must be between 0-32 (got: {ffmpeg_threads})"
-        )
+        validation_errors.append(f"ffmpeg_threads must be between 0-32 (got: {ffmpeg_threads})")
 
     if cpu_threads == 0 and gpu_threads == 0:
         return (
@@ -905,7 +804,7 @@ def _validate_thread_config(
     return False, ""
 
 
-def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, int]:
+def thread_totals_from_ui_settings(ui_settings: dict[str, Any]) -> tuple[int, int]:
     """Compute ``gpu_threads`` and ``cpu_threads`` like ``load_config``.
 
     Uses the same precedence as ``load_config`` (settings.json, then env, then defaults).
@@ -945,20 +844,12 @@ def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, in
 
     gpu_config = ui_settings.get("gpu_config", [])
     if isinstance(gpu_config, list):
-        gpu_config = [
-            entry
-            for entry in gpu_config
-            if isinstance(entry, dict) and entry.get("device")
-        ]
+        gpu_config = [entry for entry in gpu_config if isinstance(entry, dict) and entry.get("device")]
     else:
         gpu_config = []
 
     if gpu_config:
-        gpu_threads = sum(
-            entry.get("workers", 0)
-            for entry in gpu_config
-            if entry.get("enabled", True)
-        )
+        gpu_threads = sum(entry.get("workers", 0) for entry in gpu_config if entry.get("enabled", True))
     else:
         gpu_threads = get_value("gpu_threads", "GPU_THREADS", 1, int)
 
@@ -966,7 +857,7 @@ def thread_totals_from_ui_settings(ui_settings: Dict[str, Any]) -> Tuple[int, in
     return gpu_threads, cpu_threads
 
 
-def validate_processing_thread_totals(ui_settings: Dict[str, Any]) -> Tuple[bool, str]:
+def validate_processing_thread_totals(ui_settings: dict[str, Any]) -> tuple[bool, str]:
     """Check whether settings have any processing workers configured.
 
     Args:
@@ -981,8 +872,7 @@ def validate_processing_thread_totals(ui_settings: Dict[str, Any]) -> Tuple[bool
     if cpu_t == 0 and gpu_t == 0:
         return (
             False,
-            "No workers configured — jobs will remain pending "
-            "until GPU or CPU workers are added.",
+            "No workers configured — jobs will remain pending until GPU or CPU workers are added.",
         )
     return True, ""
 
@@ -1022,22 +912,18 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
             statvfs = os.statvfs(tmp_folder)
             free_space_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
             if free_space_gb < 1:  # Less than 1GB
-                validation_errors.append(
-                    f"TMP_FOLDER has less than 1GB free space ({free_space_gb:.1f}GB available)"
-                )
+                validation_errors.append(f"TMP_FOLDER has less than 1GB free space ({free_space_gb:.1f}GB available)")
         except (OSError, AttributeError):
             # AttributeError: os.statvfs doesn't exist on Windows
             # OSError: Cannot access the folder for other reasons
-            logger.debug(
-                f"Cannot check disk space for TMP_FOLDER ({tmp_folder}) - skipping disk space check"
-            )
+            logger.debug(f"Cannot check disk space for TMP_FOLDER ({tmp_folder}) - skipping disk space check")
 
     return tmp_folder_created_by_us, True
 
 
 # Cache for get_cached_config(); invalidated when settings.json mtime changes or clear_config_cache() is called.
-_cached_config: Optional[Config] = None
-_cached_config_mtime: Optional[float] = None
+_cached_config: Config | None = None
+_cached_config_mtime: float | None = None
 
 
 def get_cached_config():
@@ -1052,9 +938,7 @@ def get_cached_config():
 
     """
     global _cached_config, _cached_config_mtime
-    settings_path = os.path.join(
-        os.environ.get("CONFIG_DIR", "/config"), "settings.json"
-    )
+    settings_path = os.path.join(os.environ.get("CONFIG_DIR", "/config"), "settings.json")
     mtime = os.path.getmtime(settings_path) if os.path.exists(settings_path) else 0.0
     if _cached_config is not None and _cached_config_mtime == mtime:
         return _cached_config
@@ -1140,18 +1024,14 @@ def load_config() -> Config:
 
     # Handle plex_libraries (comma-separated string OR list from settings.json)
     plex_libraries_setting = ui_settings.get("selected_libraries", [])
-    plex_library_ids: Optional[List[str]] = None
+    plex_library_ids: list[str] | None = None
     if isinstance(plex_libraries_setting, list) and plex_libraries_setting:
         selected_ids, selected_titles = split_library_selectors(plex_libraries_setting)
         plex_libraries = selected_titles
         plex_library_ids = selected_ids or None
     else:
         plex_libraries_raw = get_value("selected_libraries", "PLEX_LIBRARIES", "", str)
-        plex_libraries = [
-            library.strip().lower()
-            for library in plex_libraries_raw.split(",")
-            if library.strip()
-        ]
+        plex_libraries = [library.strip().lower() for library in plex_libraries_raw.split(",") if library.strip()]
 
     plex_config_folder = get_value(
         "plex_config_folder",
@@ -1173,26 +1053,14 @@ def load_config() -> Config:
     )
 
     path_mappings = normalize_path_mappings(ui_settings)
-    if not path_mappings and (
-        plex_videos_path_mapping or plex_local_videos_path_mapping
-    ):
-        path_mappings = _legacy_settings_to_path_mappings(
-            plex_videos_path_mapping, plex_local_videos_path_mapping
-        )
+    if not path_mappings and (plex_videos_path_mapping or plex_local_videos_path_mapping):
+        path_mappings = _legacy_settings_to_path_mappings(plex_videos_path_mapping, plex_local_videos_path_mapping)
     exclude_paths = normalize_exclude_paths(ui_settings.get("exclude_paths"))
 
-    plex_bif_frame_interval = get_value(
-        "thumbnail_interval", "PLEX_BIF_FRAME_INTERVAL", 5, int
-    )
+    plex_bif_frame_interval = get_value("thumbnail_interval", "PLEX_BIF_FRAME_INTERVAL", 5, int)
     thumbnail_quality = get_value("thumbnail_quality", "THUMBNAIL_QUALITY", 4, int)
-    tonemap_algorithm = (
-        get_value("tonemap_algorithm", "TONEMAP_ALGORITHM", "hable", str)
-        .strip()
-        .lower()
-    )
-    regenerate_thumbnails = get_value(
-        "regenerate_thumbnails", "REGENERATE_THUMBNAILS", False, bool
-    )
+    tonemap_algorithm = get_value("tonemap_algorithm", "TONEMAP_ALGORITHM", "hable", str).strip().lower()
+    regenerate_thumbnails = get_value("regenerate_thumbnails", "REGENERATE_THUMBNAILS", False, bool)
 
     sort_by_raw = get_value("sort_by", "SORT_BY", "newest", str)
     sort_by = sort_by_raw.strip().lower() if sort_by_raw else "newest"
@@ -1200,26 +1068,14 @@ def load_config() -> Config:
     # Load per-GPU config from settings (populated by settings UI or migration)
     gpu_config = ui_settings.get("gpu_config", [])
     if isinstance(gpu_config, list):
-        gpu_config = [
-            entry
-            for entry in gpu_config
-            if isinstance(entry, dict) and entry.get("device")
-        ]
+        gpu_config = [entry for entry in gpu_config if isinstance(entry, dict) and entry.get("device")]
     else:
         gpu_config = []
 
     # Compute totals from per-GPU config
     if gpu_config:
-        gpu_threads = sum(
-            entry.get("workers", 0)
-            for entry in gpu_config
-            if entry.get("enabled", True)
-        )
-        enabled_ffmpeg = [
-            entry.get("ffmpeg_threads", 2)
-            for entry in gpu_config
-            if entry.get("enabled", True)
-        ]
+        gpu_threads = sum(entry.get("workers", 0) for entry in gpu_config if entry.get("enabled", True))
+        enabled_ffmpeg = [entry.get("ffmpeg_threads", 2) for entry in gpu_config if entry.get("enabled", True)]
         ffmpeg_threads = max(enabled_ffmpeg) if enabled_ffmpeg else 2
     else:
         gpu_threads = get_value("gpu_threads", "GPU_THREADS", 1, int)
@@ -1238,22 +1094,16 @@ def load_config() -> Config:
     # Validate log level
     valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     if log_level not in valid_log_levels:
-        validation_errors.append(
-            f"LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})"
-        )
+        validation_errors.append(f"LOG_LEVEL must be one of {valid_log_levels} (got: {log_level})")
 
     # Validate sort_by
     valid_sort_by = ["newest", "oldest"]
     if sort_by is not None and sort_by not in valid_sort_by:
-        validation_errors.append(
-            f"SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})"
-        )
+        validation_errors.append(f"SORT_BY must be one of {valid_sort_by} or empty (got: {sort_by})")
 
     ffmpeg_path = _resolve_ffmpeg_path()
     if not ffmpeg_path:
-        logger.error(
-            "FFmpeg not found. FFmpeg must be installed and available in PATH."
-        )
+        logger.error("FFmpeg not found. FFmpeg must be installed and available in PATH.")
         sys.exit(1)
 
     # Test FFmpeg actually works and log its version
@@ -1270,33 +1120,24 @@ def load_config() -> Config:
         )
         _ffmpeg_elapsed = time.monotonic() - _ffmpeg_start
         if result.returncode != 0:
-            logger.error(
-                f"FFmpeg exited with code {result.returncode} "
-                f"after {_ffmpeg_elapsed:.1f}s"
-            )
+            logger.error(f"FFmpeg exited with code {result.returncode} after {_ffmpeg_elapsed:.1f}s")
             if result.stderr:
                 logger.error(f"FFmpeg stderr: {result.stderr.strip()[:500]}")
             if result.stdout:
                 logger.debug(f"FFmpeg stdout: {result.stdout.strip()[:500]}")
             validation_errors.append("FFmpeg found but not working properly")
         else:
-            version_line = (
-                result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
-            )
+            version_line = result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
             logger.debug(f"FFmpeg: {version_line} (checked in {_ffmpeg_elapsed:.1f}s)")
     except subprocess.TimeoutExpired:
         logger.error(f"FFmpeg version check timed out after 30s (path: {ffmpeg_path})")
         validation_errors.append("FFmpeg found but cannot execute properly")
     except OSError as exc:
-        logger.error(
-            f"FFmpeg version check failed with OS error: {exc} (path: {ffmpeg_path})"
-        )
+        logger.error(f"FFmpeg version check failed with OS error: {exc} (path: {ffmpeg_path})")
         validation_errors.append("FFmpeg found but cannot execute properly")
 
     # Validate configuration using helper functions
-    _validate_plex_config(
-        plex_url, plex_token, plex_config_folder, missing_params, validation_errors
-    )
+    _validate_plex_config(plex_url, plex_token, plex_config_folder, missing_params, validation_errors)
     _validate_processing_config(
         plex_bif_frame_interval,
         thumbnail_quality,
@@ -1323,8 +1164,7 @@ def load_config() -> Config:
             show_docker_help()
         else:
             logger.info(
-                "💡 Open the web UI at http://localhost:8080 "
-                "and complete the setup wizard to configure these settings."
+                "💡 Open the web UI at http://localhost:8080 and complete the setup wizard to configure these settings."
             )
 
         raise ConfigValidationError(missing_params)
@@ -1340,12 +1180,9 @@ def load_config() -> Config:
     # user adds workers.  Log a visible warning so it's obvious in the container log.
     if no_workers:
         logger.warning(
-            "⚠️  Both cpu_threads and gpu_threads are 0 — "
-            "jobs will remain pending until workers are configured."
+            "⚠️  Both cpu_threads and gpu_threads are 0 — jobs will remain pending until workers are configured."
         )
-        logger.info(
-            "💡 Open the Settings page in the web UI to add GPU or CPU workers."
-        )
+        logger.info("💡 Open the Settings page in the web UI to add GPU or CPU workers.")
 
     config = Config(
         plex_url=plex_url,
@@ -1387,9 +1224,7 @@ def load_config() -> Config:
     logger.debug(f"TMP_FOLDER = {config.tmp_folder}")
     logger.debug(f"PLEX_TIMEOUT = {config.plex_timeout}")
     logger.debug(f"PLEX_VERIFY_SSL = {config.plex_verify_ssl}")
-    logger.debug(
-        f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}"
-    )
+    logger.debug(f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}")
     logger.debug(f"PLEX_VIDEOS_PATH_MAPPING = {config.plex_videos_path_mapping}")
     logger.debug(f"path_mappings = {len(config.path_mappings)} row(s)")
     logger.debug(f"gpu_threads = {config.gpu_threads}")

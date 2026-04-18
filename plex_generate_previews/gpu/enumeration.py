@@ -22,7 +22,6 @@ import os
 import platform
 import re
 import subprocess
-from typing import List, Optional, Tuple
 
 from loguru import logger
 
@@ -63,7 +62,7 @@ def _is_wsl2() -> bool:
         # WSL2 typically contains "microsoft" and "WSL" in /proc/version
         version_file = "/proc/version"
         if os.path.exists(version_file):
-            with open(version_file, "r", encoding="utf-8", errors="replace") as f:
+            with open(version_file, encoding="utf-8", errors="replace") as f:
                 version_text = f.read().lower()
                 if "microsoft" in version_text and "wsl" in version_text:
                     logger.debug("Detected WSL2 environment")
@@ -107,7 +106,7 @@ def _get_apple_gpu_name() -> str:
     return "Apple GPU"
 
 
-def _get_gpu_devices() -> List[Tuple[str, str, str]]:
+def _get_gpu_devices() -> list[tuple[str, str, str]]:
     """Get all GPU devices with their render devices and driver information.
 
     Returns:
@@ -148,9 +147,7 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
                 if not render_entry.startswith("renderD"):
                     continue
                 try:
-                    render_device_path = os.path.realpath(
-                        os.path.join(drm_dir, render_entry, "device")
-                    )
+                    render_device_path = os.path.realpath(os.path.join(drm_dir, render_entry, "device"))
                     if card_device_path == render_device_path:
                         render_device = f"/dev/dri/{render_entry}"
                         break
@@ -163,9 +160,7 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
 
             # Skip GPUs visible in sysfs but not mounted into the container
             if not os.path.exists(render_device):
-                logger.debug(
-                    f"Skipping {entry}: {render_device} not present in /dev/dri"
-                )
+                logger.debug(f"Skipping {entry}: {render_device} not present in /dev/dri")
                 continue
 
             # Get driver information
@@ -184,7 +179,7 @@ def _get_gpu_devices() -> List[Tuple[str, str, str]]:
     return devices
 
 
-def _scan_dev_dri_render_devices() -> List[str]:
+def _scan_dev_dri_render_devices() -> list[str]:
     """Scan /dev/dri directly for render device nodes.
 
     Fallback for container environments (e.g. TrueNAS Scale, Kubernetes) where
@@ -201,8 +196,7 @@ def _scan_dev_dri_render_devices() -> List[str]:
         return sorted(
             os.path.join(dev_dri, entry)
             for entry in os.listdir(dev_dri)
-            if entry.startswith("renderD")
-            and os.access(os.path.join(dev_dri, entry), os.R_OK)
+            if entry.startswith("renderD") and os.access(os.path.join(dev_dri, entry), os.R_OK)
         )
     except OSError as e:
         logger.debug(f"Error scanning {dev_dri}: {e}")
@@ -231,15 +225,9 @@ def _detect_nvidia_via_nvidia_smi() -> str:
 
         if result.returncode == 0 and result.stdout.strip():
             # nvidia-smi successfully returned GPU names
-            gpu_names = [
-                line.strip()
-                for line in result.stdout.strip().split("\n")
-                if line.strip()
-            ]
+            gpu_names = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
             if gpu_names:
-                logger.debug(
-                    f"nvidia-smi detected {len(gpu_names)} NVIDIA GPU(s): {gpu_names}"
-                )
+                logger.debug(f"nvidia-smi detected {len(gpu_names)} NVIDIA GPU(s): {gpu_names}")
                 return "NVIDIA"
 
         # nvidia-smi failed or returned no GPUs
@@ -253,9 +241,7 @@ def _detect_nvidia_via_nvidia_smi() -> str:
         return "UNKNOWN"
     except FileNotFoundError:
         # nvidia-smi not installed
-        logger.debug(
-            "nvidia-smi command not found (NVIDIA driver may not be installed)"
-        )
+        logger.debug("nvidia-smi command not found (NVIDIA driver may not be installed)")
         return "UNKNOWN"
     except subprocess.TimeoutExpired:
         logger.debug("nvidia-smi command timed out after 5 seconds")
@@ -291,11 +277,7 @@ def _detect_gpu_type_from_lspci() -> str:
             return "UNKNOWN"
 
         # Count VGA/Display lines for debugging
-        vga_lines = [
-            line
-            for line in result.stdout.split("\n")
-            if "VGA" in line or "Display" in line
-        ]
+        vga_lines = [line for line in result.stdout.split("\n") if "VGA" in line or "Display" in line]
         if not vga_lines:
             logger.debug("lspci did not find any VGA or Display devices in output")
             logger.debug(f"lspci output (first 500 chars): {result.stdout[:500]}")
@@ -318,9 +300,7 @@ def _detect_gpu_type_from_lspci() -> str:
                 logger.debug("lspci detected ARM GPU")
                 return "ARM"
 
-        logger.debug(
-            "lspci found VGA/Display devices but did not identify known GPU vendor"
-        )
+        logger.debug("lspci found VGA/Display devices but did not identify known GPU vendor")
         logger.debug(f"VGA/Display lines: {[line.strip() for line in vga_lines]}")
         return "UNKNOWN"
     except FileNotFoundError:
@@ -354,21 +334,11 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
         # If lspci failed and we're in WSL2, try nvidia-smi as fallback
         # This helps detect NVIDIA GPUs in WSL2 where lspci doesn't work
         if vendor == "UNKNOWN" and _is_wsl2():
-            logger.debug(
-                "WSL2 detected and lspci failed, attempting nvidia-smi detection"
-            )
-            logger.warning(
-                "⚠️  WSL2 environment detected - GPU vendor detection via lspci is unreliable"
-            )
-            logger.warning(
-                "⚠️  NVIDIA GPUs are unofficially supported in WSL2 (via CUDA passthrough)"
-            )
-            logger.warning(
-                "⚠️  Other GPU vendors (AMD, Intel) are NOT supported in WSL2"
-            )
-            logger.warning(
-                "⚠️  For non-NVIDIA GPUs in WSL2, please use CPU-only processing (disable GPUs in Settings)"
-            )
+            logger.debug("WSL2 detected and lspci failed, attempting nvidia-smi detection")
+            logger.warning("⚠️  WSL2 environment detected - GPU vendor detection via lspci is unreliable")
+            logger.warning("⚠️  NVIDIA GPUs are unofficially supported in WSL2 (via CUDA passthrough)")
+            logger.warning("⚠️  Other GPU vendors (AMD, Intel) are NOT supported in WSL2")
+            logger.warning("⚠️  For non-NVIDIA GPUs in WSL2, please use CPU-only processing (disable GPUs in Settings)")
             nvidia_vendor = _detect_nvidia_via_nvidia_smi()
             if nvidia_vendor == "NVIDIA":
                 vendor = "NVIDIA"
@@ -395,12 +365,7 @@ def _parse_lspci_gpu_name(gpu_type: str) -> str:
         result = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             for line in result.stdout.split("\n"):
-                if "VGA" in line and (
-                    gpu_type == "AMD"
-                    and "AMD" in line
-                    or gpu_type == "INTEL"
-                    and "Intel" in line
-                ):
+                if "VGA" in line and (gpu_type == "AMD" and "AMD" in line or gpu_type == "INTEL" and "Intel" in line):
                     parts = line.split(":")
                     if len(parts) > 2:
                         return parts[2].strip()
@@ -414,7 +379,7 @@ def _parse_lspci_gpu_name(gpu_type: str) -> str:
     return f"{gpu_type} GPU"
 
 
-def _get_pci_address_from_drm_device(gpu_device: str) -> Optional[str]:
+def _get_pci_address_from_drm_device(gpu_device: str) -> str | None:
     """Resolve a Linux DRM device (e.g., /dev/dri/renderD128) to its PCI address.
 
     This uses sysfs and works even when multiple GPUs share the same driver/API.
@@ -449,7 +414,7 @@ def _get_pci_address_from_drm_device(gpu_device: str) -> Optional[str]:
     return None
 
 
-def _get_lspci_device_name_for_pci_address(pci_address: str) -> Optional[str]:
+def _get_lspci_device_name_for_pci_address(pci_address: str) -> str | None:
     """Get a user-friendly GPU device name for a specific PCI address via lspci.
 
     Args:
@@ -464,9 +429,7 @@ def _get_lspci_device_name_for_pci_address(pci_address: str) -> Optional[str]:
 
     try:
         # Use -s to query exactly one device. This prevents incorrect names when multiple GPUs exist.
-        result = subprocess.run(
-            ["lspci", "-s", pci_address], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["lspci", "-s", pci_address], capture_output=True, text=True, timeout=5)
         if result.returncode != 0 or not result.stdout.strip():
             return None
 
@@ -505,11 +468,7 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
                 timeout=5,
             )
             if result.returncode == 0:
-                gpu_names = [
-                    line.strip()
-                    for line in result.stdout.strip().split("\n")
-                    if line.strip()
-                ]
+                gpu_names = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
                 if gpu_names:
                     return gpu_names[0]  # Return first GPU name
             return "NVIDIA GPU"

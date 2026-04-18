@@ -603,9 +603,7 @@ class TestDispatchLoopOrdering:
         worker_snapshots = []
 
         def capture_workers(workers_list):
-            worker_snapshots.append(
-                [(w["status"], w.get("current_title", "")) for w in workers_list]
-            )
+            worker_snapshots.append([(w["status"], w.get("current_title", "")) for w in workers_list])
 
         tracker = dispatcher.submit_items(
             job_id="order-test",
@@ -834,9 +832,7 @@ class TestInflightJobGuard:
                 calls.append("spawned")
                 super().__init__(*a, **kw)
 
-        with patch(
-            "plex_generate_previews.web.routes.job_runner.threading.Thread", SpyThread
-        ):
+        with patch("plex_generate_previews.web.routes.job_runner.threading.Thread", SpyThread):
             with _inflight_lock:
                 _inflight_jobs.add(fake_id)
 

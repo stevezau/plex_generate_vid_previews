@@ -32,13 +32,12 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 from loguru import logger
 
 from .ffmpeg_capabilities import _is_hwaccel_available
 
-_VULKAN_DEVICE_CACHE: Optional[str] = None
+_VULKAN_DEVICE_CACHE: str | None = None
 _VULKAN_DEVICE_PROBED: bool = False
 _VULKAN_ENV_OVERRIDES: dict = {}
 _VULKAN_DEBUG_BUFFER: str = ""
@@ -84,7 +83,7 @@ _NVIDIA_EGL_VENDOR_JSON_PATHS = (
 _VULKAN_DEBUG_BUFFER_CAP = 20_000
 
 
-def _is_software_vulkan_device(device: Optional[str]) -> bool:
+def _is_software_vulkan_device(device: str | None) -> bool:
     """Return True if ``device`` is a software rasterizer (llvmpipe/lavapipe)."""
     if not device:
         return False
@@ -115,7 +114,7 @@ class VulkanProbeResult:
                      fps+scale retry.
     """
 
-    device: Optional[str]
+    device: str | None
     is_software: bool
 
 
@@ -155,7 +154,7 @@ _NON_NVIDIA_VENDOR_PREFIXES = (
 )
 
 
-def _is_nvidia_vulkan_device(device: Optional[str]) -> bool:
+def _is_nvidia_vulkan_device(device: str | None) -> bool:
     """Return True if ``device`` is an NVIDIA GPU.
 
     Uses a two-step check to guard against hypothetical brand-string
@@ -176,7 +175,7 @@ def _is_nvidia_vulkan_device(device: Optional[str]) -> bool:
     return any(hint in d for hint in _NVIDIA_DEVICE_NAME_HINTS)
 
 
-def _find_nvidia_icd_json() -> Optional[str]:
+def _find_nvidia_icd_json() -> str | None:
     """Return the path to ``nvidia_icd.json`` if present at a standard location.
 
     Checks both the nvidia-container-toolkit mount path
@@ -189,7 +188,7 @@ def _find_nvidia_icd_json() -> Optional[str]:
     return None
 
 
-def _find_nvidia_egl_vendor_json() -> Optional[str]:
+def _find_nvidia_egl_vendor_json() -> str | None:
     """Return the path to the GLVND NVIDIA EGL vendor JSON if present.
 
     Checks both the nvidia-container-toolkit mount path
@@ -215,7 +214,7 @@ _LIBEGL_NVIDIA_GLOBS = (
 )
 
 
-def _find_libegl_nvidia() -> Optional[str]:
+def _find_libegl_nvidia() -> str | None:
     """Return the first path to ``libEGL_nvidia.so*`` if the library is present.
 
     Searches the standard Debian multiarch paths plus the classic
@@ -234,8 +233,8 @@ def _find_libegl_nvidia() -> Optional[str]:
 
 
 def _run_vulkan_probe(
-    env_overrides: Optional[dict] = None,
-) -> Tuple[Optional[str], str]:
+    env_overrides: dict | None = None,
+) -> tuple[str | None, str]:
     """Run a single Vulkan init probe and return ``(device, full_stderr)``.
 
     Runs a trivial FFmpeg command with ``-init_hw_device vulkan=vk`` at
@@ -280,8 +279,7 @@ def _run_vulkan_probe(
         env = os.environ.copy()
         env.update(env_overrides)
     logger.debug(
-        f"Vulkan probe: running {' '.join(cmd)}"
-        + (f" with env overrides {env_overrides}" if env_overrides else "")
+        f"Vulkan probe: running {' '.join(cmd)}" + (f" with env overrides {env_overrides}" if env_overrides else "")
     )
     try:
         result = subprocess.run(
@@ -293,14 +291,12 @@ def _run_vulkan_probe(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         logger.warning(
-            f"Vulkan probe failed (subprocess error: {exc}); "
-            "falling back to 'no Vulkan device' for DV5 diagnosis."
+            f"Vulkan probe failed (subprocess error: {exc}); falling back to 'no Vulkan device' for DV5 diagnosis."
         )
         return None, str(exc)
     except Exception as exc:
         logger.warning(
-            f"Vulkan probe raised unexpected exception: {exc}; "
-            "falling back to 'no Vulkan device' for DV5 diagnosis."
+            f"Vulkan probe raised unexpected exception: {exc}; falling back to 'no Vulkan device' for DV5 diagnosis."
         )
         return None, str(exc)
     stderr = result.stderr or ""
@@ -312,7 +308,7 @@ def _run_vulkan_probe(
     return None, stderr
 
 
-def _probe_vulkan_device() -> Optional[str]:
+def _probe_vulkan_device() -> str | None:
     """Return the Vulkan device libplacebo will use, running up to three strategies.
 
     **Strategy 1** — default probe with inherited environment. Lets the
@@ -381,9 +377,7 @@ def _probe_vulkan_device() -> Optional[str]:
         # NVIDIA ICD is present but strategy 1 didn't select NVIDIA,
         # fall through to the NVIDIA-specific retries.
         if _is_nvidia_vulkan_device(device) or _find_nvidia_icd_json() is None:
-            logger.debug(
-                f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}"
-            )
+            logger.debug(f"Vulkan probe (strategy 1): FFmpeg selected hardware device: {device}")
             return device
         logger.debug(
             f"Vulkan probe (strategy 1): selected {device!r} but NVIDIA "
@@ -391,15 +385,9 @@ def _probe_vulkan_device() -> Optional[str]:
             f"retries to avoid cross-GPU libplacebo on NVIDIA workers."
         )
     elif device:
-        logger.debug(
-            f"Vulkan probe (strategy 1): got software device {device!r}; "
-            "will attempt NVIDIA-specific retries"
-        )
+        logger.debug(f"Vulkan probe (strategy 1): got software device {device!r}; will attempt NVIDIA-specific retries")
     else:
-        logger.debug(
-            "Vulkan probe (strategy 1): no 'Device N selected:' line; "
-            "will attempt NVIDIA-specific retries"
-        )
+        logger.debug("Vulkan probe (strategy 1): no 'Device N selected:' line; will attempt NVIDIA-specific retries")
 
     nvidia_egl_vendor = _find_nvidia_egl_vendor_json()
     nvidia_icd = _find_nvidia_icd_json()
@@ -411,7 +399,7 @@ def _probe_vulkan_device() -> Optional[str]:
     # is the combination that actually gets NVIDIA.
     require_nvidia = nvidia_icd is not None
 
-    def _retry_is_useful(retry_device: Optional[str]) -> bool:
+    def _retry_is_useful(retry_device: str | None) -> bool:
         if not retry_device or _is_software_vulkan_device(retry_device):
             return False
         if require_nvidia and not _is_nvidia_vulkan_device(retry_device):
@@ -429,10 +417,7 @@ def _probe_vulkan_device() -> Optional[str]:
     # present filters out non-NVIDIA hits so we still fall through to
     # Strategy 2b in that case.
     if nvidia_egl_vendor:
-        logger.debug(
-            f"Vulkan probe (strategy 2): forcing "
-            f"__EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}"
-        )
+        logger.debug(f"Vulkan probe (strategy 2): forcing __EGL_VENDOR_LIBRARY_FILENAMES={nvidia_egl_vendor}")
         retry_env = {"__EGL_VENDOR_LIBRARY_FILENAMES": nvidia_egl_vendor}
         retry_device, _ = _run_vulkan_probe(retry_env)
         if _retry_is_useful(retry_device):
@@ -482,9 +467,7 @@ def _probe_vulkan_device() -> Optional[str]:
     if nvidia_egl_vendor is None:
         libegl_nvidia = _find_libegl_nvidia()
         if libegl_nvidia:
-            synth_vendor_path = os.path.join(
-                tempfile.gettempdir(), "plex_previews_nvidia_egl_vendor.json"
-            )
+            synth_vendor_path = os.path.join(tempfile.gettempdir(), "plex_previews_nvidia_egl_vendor.json")
             synth_payload = {
                 "file_format_version": "1.0.0",
                 "ICD": {"library_path": "libEGL_nvidia.so.0"},
@@ -513,8 +496,7 @@ def _probe_vulkan_device() -> Optional[str]:
                 )
             except OSError as exc:
                 logger.debug(
-                    f"Vulkan probe (strategy 2c): could not write "
-                    f"{synth_vendor_path}: {exc}; trying Strategy 2b."
+                    f"Vulkan probe (strategy 2c): could not write {synth_vendor_path}: {exc}; trying Strategy 2b."
                 )
         else:
             logger.debug(
@@ -527,9 +509,7 @@ def _probe_vulkan_device() -> Optional[str]:
     # vendor config is not (nvidia-container-toolkit#1559 / partial CDI
     # manifests), and for general belt-and-suspenders coverage.
     if nvidia_icd:
-        logger.debug(
-            f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd}"
-        )
+        logger.debug(f"Vulkan probe (strategy 2b): forcing VK_DRIVER_FILES={nvidia_icd}")
         # If Strategy 2 ran and found an EGL vendor, carry it through
         # the 2b retry as well so the two fixes stack.
         retry_env = {"VK_DRIVER_FILES": nvidia_icd}
@@ -537,10 +517,7 @@ def _probe_vulkan_device() -> Optional[str]:
             retry_env["__EGL_VENDOR_LIBRARY_FILENAMES"] = nvidia_egl_vendor
         retry_device, _ = _run_vulkan_probe(retry_env)
         if _retry_is_useful(retry_device):
-            logger.debug(
-                f"Vulkan probe (strategy 2b): success with {retry_device!r} "
-                f"via {retry_env}"
-            )
+            logger.debug(f"Vulkan probe (strategy 2b): success with {retry_device!r} via {retry_env}")
             _VULKAN_ENV_OVERRIDES = dict(retry_env)
             return retry_device
         logger.debug(
@@ -548,10 +525,7 @@ def _probe_vulkan_device() -> Optional[str]:
             f"still returned {retry_device!r}; running diagnostic capture."
         )
     else:
-        logger.debug(
-            "Vulkan probe: no NVIDIA ICD JSON found at "
-            f"{_NVIDIA_ICD_JSON_PATHS}; skipping Strategy 2b."
-        )
+        logger.debug(f"Vulkan probe: no NVIDIA ICD JSON found at {_NVIDIA_ICD_JSON_PATHS}; skipping Strategy 2b.")
 
     # Strategy 3: VK_LOADER_DEBUG=all capture for issue reports.
     diag_overrides: dict = {"VK_LOADER_DEBUG": "all"}
@@ -634,10 +608,7 @@ def get_vulkan_device_info() -> VulkanProbeResult:
             if _VULKAN_ENV_OVERRIDES:
                 override_keys = ", ".join(sorted(_VULKAN_ENV_OVERRIDES))
                 via = f" (via {override_keys} override)"
-            logger.debug(
-                f"Vulkan ready for Dolby Vision Profile 5 tone-mapping: "
-                f"{probe_device}{via}"
-            )
+            logger.debug(f"Vulkan ready for Dolby Vision Profile 5 tone-mapping: {probe_device}{via}")
 
     device = _VULKAN_DEVICE_CACHE
     if device is None:

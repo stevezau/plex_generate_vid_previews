@@ -20,10 +20,9 @@ cleared on restart); permanent dismissals live in ``settings.json``.
 from __future__ import annotations
 
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
-
 
 VULKAN_SOFTWARE_FALLBACK_ID = "vulkan_software_fallback"
 TIMEZONE_MISCONFIGURED_ID = "timezone_misconfigured"
@@ -62,7 +61,7 @@ def reset_session() -> None:
         _SESSION_DISMISSED.clear()
 
 
-def _build_vulkan_software_fallback_notification() -> Optional[Dict[str, Any]]:
+def _build_vulkan_software_fallback_notification() -> dict[str, Any] | None:
     """Return a notification dict when the Vulkan probe fell back to software.
 
     Returns ``None`` when Vulkan is healthy (no warning needed).  When
@@ -90,7 +89,7 @@ def _build_vulkan_software_fallback_notification() -> Optional[Dict[str, Any]]:
     }
 
 
-def _build_timezone_misconfigured_notification() -> Optional[Dict[str, Any]]:
+def _build_timezone_misconfigured_notification() -> dict[str, Any] | None:
     """Return a notification dict when the container is running UTC without TZ.
 
     Reuses the warning HTML produced by ``api_system._get_timezone_info``
@@ -113,7 +112,7 @@ def _build_timezone_misconfigured_notification() -> Optional[Dict[str, Any]]:
     }
 
 
-def _notification_sources() -> List[Optional[Dict[str, Any]]]:
+def _notification_sources() -> list[dict[str, Any] | None]:
     """All notification builders.  Add new sources here as they arrive."""
     return [
         _build_vulkan_software_fallback_notification(),
@@ -122,8 +121,8 @@ def _notification_sources() -> List[Optional[Dict[str, Any]]]:
 
 
 def build_active_notifications(
-    dismissed_permanent: Optional[List[str]] = None,
-) -> List[Dict[str, Any]]:
+    dismissed_permanent: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return the list of notifications the UI should currently display.
 
     Filters out any notification whose ID is in ``dismissed_permanent``
@@ -139,7 +138,7 @@ def build_active_notifications(
         ``id``, ``severity``, ``title``, ``body_html``, ``dismissable``.
     """
     persisted = set(dismissed_permanent or [])
-    notifications: List[Dict[str, Any]] = []
+    notifications: list[dict[str, Any]] = []
     for entry in _notification_sources():
         if entry is None:
             continue
@@ -147,9 +146,7 @@ def build_active_notifications(
         if not notif_id:
             continue
         if notif_id in persisted:
-            logger.debug(
-                f"notifications: {notif_id} suppressed (permanently dismissed)"
-            )
+            logger.debug(f"notifications: {notif_id} suppressed (permanently dismissed)")
             continue
         if _session_is_dismissed(notif_id):
             logger.debug(f"notifications: {notif_id} suppressed (session dismissed)")

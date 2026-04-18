@@ -34,7 +34,6 @@ and gain little readability over the current in-line form.
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional, Tuple
 
 from .hdr_detection import (
     detect_dolby_vision_rpu_error,
@@ -62,10 +61,10 @@ class RetryTier(Enum):
 
 
 def classify_dv_safe_retry_reason(
-    stderr_lines_all: List[str],
+    stderr_lines_all: list[str],
     *,
     use_libplacebo: bool,
-) -> Optional[str]:
+) -> str | None:
     """Decide whether to retry with the DV-safe fps+scale filter chain.
 
     Fires on any of the three error shapes that are specific to the
@@ -105,13 +104,13 @@ def classify_dv_safe_retry_reason(
 
 def classify_cpu_fallback_reason(
     returncode: int,
-    stderr_lines: List[str],
-    stderr_lines_all: List[str],
+    stderr_lines: list[str],
+    stderr_lines_all: list[str],
     *,
     detect_codec_error,
     detect_hwaccel_runtime_error,
     is_signal_killed,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Decide whether a GPU-context failure should fall back to CPU.
 
     Ordered check across three distinct failure shapes, all of which

@@ -10,7 +10,6 @@ import time
 import urllib.parse
 import xml.etree.ElementTree
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 import urllib3
@@ -55,16 +54,12 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
         except xml.etree.ElementTree.ParseError as e:
             last_exception = e
             if attempt < max_retries:
-                logger.warning(
-                    f"XML parsing error on attempt {attempt + 1}/{max_retries + 1}: {e}"
-                )
+                logger.warning(f"XML parsing error on attempt {attempt + 1}/{max_retries + 1}: {e}")
                 logger.info(f"Retrying in {retry_delay} seconds... (Plex may be busy)")
                 time.sleep(retry_delay)
                 retry_delay *= 1.5  # Exponential backoff
             else:
-                logger.error(
-                    f"XML parsing failed after {max_retries + 1} attempts: {e}"
-                )
+                logger.error(f"XML parsing failed after {max_retries + 1} attempts: {e}")
         except (
             ConnectionError,
             TimeoutError,
@@ -74,16 +69,12 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
         ) as e:
             last_exception = e
             if attempt < max_retries:
-                logger.warning(
-                    f"Network error on attempt {attempt + 1}/{max_retries + 1}: {e}"
-                )
+                logger.warning(f"Network error on attempt {attempt + 1}/{max_retries + 1}: {e}")
                 logger.info(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 retry_delay *= 1.5
             else:
-                logger.error(
-                    f"Network error failed after {max_retries + 1} attempts: {e}"
-                )
+                logger.error(f"Network error failed after {max_retries + 1} attempts: {e}")
         except Exception:
             # For other errors, don't retry
             raise
@@ -120,8 +111,7 @@ def plex_server(config: Config):
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         logger.warning(
-            "SSL verification is DISABLED for Plex connections. "
-            "Set PLEX_VERIFY_SSL=true (default) to re-enable."
+            "SSL verification is DISABLED for Plex connections. Set PLEX_VERIFY_SSL=true (default) to re-enable."
         )
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -152,9 +142,7 @@ def plex_server(config: Config):
         logger.error("  - Plex URL is correct (including http:// or https://)")
         logger.error("  - Network connectivity to Plex server")
         logger.error("  - Firewall settings allow connections to port 32400")
-        raise ConnectionError(
-            f"Unable to connect to Plex server at {config.plex_url}: {e}"
-        ) from e
+        raise ConnectionError(f"Unable to connect to Plex server at {config.plex_url}: {e}") from e
 
 
 def filter_duplicate_locations(media_items):
@@ -181,14 +169,12 @@ def filter_duplicate_locations(media_items):
 
         # Add all locations to seen set and keep this item
         seen_locations.update(locations)
-        filtered_items.append(
-            (key, title, media_type)
-        )  # Return tuple with key, title, and media_type
+        filtered_items.append((key, title, media_type))  # Return tuple with key, title, and media_type
 
     return filtered_items
 
 
-def _filter_excluded_by_path(media_items: List[tuple], config: Config) -> List[tuple]:
+def _filter_excluded_by_path(media_items: list[tuple], config: Config) -> list[tuple]:
     """Drop items whose first location (mapped to local) is in config.exclude_paths."""
     exclude = getattr(config, "exclude_paths", None) or []
     if not exclude:
@@ -212,9 +198,7 @@ def _filter_excluded_by_path(media_items: List[tuple], config: Config) -> List[t
     return out
 
 
-def get_library_sections(
-    plex, config: Config, cancel_check=None, progress_callback=None
-):
+def get_library_sections(plex, config: Config, cancel_check=None, progress_callback=None):
     """Get all library sections from Plex server.
 
     Args:
@@ -246,15 +230,11 @@ def get_library_sections(
     ) as e:
         logger.error(f"Failed to get Plex library sections after retries: {e}")
         logger.error(f"Exception type: {type(e).__name__}")
-        logger.error(
-            "Cannot proceed without library access. Please check your Plex server status."
-        )
+        logger.error("Cannot proceed without library access. Please check your Plex server status.")
         return
 
     sections_time = time.time() - start_time
-    logger.info(
-        f"Retrieved {len(sections)} library sections in {sections_time:.2f} seconds"
-    )
+    logger.info(f"Retrieved {len(sections)} library sections in {sections_time:.2f} seconds")
 
     # Pre-filter sections so pre-dispatch progress reporting can show
     # "library i of N" using the count of libraries we'll actually scan,
@@ -279,23 +259,15 @@ def get_library_sections(
         if getattr(config, "plex_library_ids", None):
             if str(section.key) not in config.plex_library_ids:
                 logger.info(
-                    "Skipping library '{}' (id={}) as it's not in the configured library IDs list".format(
-                        section.title, section.key
-                    )
+                    f"Skipping library '{section.title}' (id={section.key}) as it's not in the configured library IDs list"
                 )
                 continue
-        elif (
-            config.plex_libraries and section.title.lower() not in config.plex_libraries
-        ):
-            logger.info(
-                "Skipping library '{}' as it's not in the configured libraries list".format(
-                    section.title
-                )
-            )
+        elif config.plex_libraries and section.title.lower() not in config.plex_libraries:
+            logger.info(f"Skipping library '{section.title}' as it's not in the configured libraries list")
             continue
 
         scoped_index += 1
-        logger.info("Getting media files from library '{}'...".format(section.title))
+        logger.info(f"Getting media files from library '{section.title}'...")
         if progress_callback:
             progress_callback(
                 0,
@@ -326,12 +298,8 @@ def get_library_sections(
                     show_title = m.grandparentTitle
                     season_episode = m.seasonEpisode.upper()
                     formatted_title = f"{show_title} {season_episode}"
-                    media_with_locations.append(
-                        (m.key, m.locations, formatted_title, "episode")
-                    )
-                media_with_locations = _filter_excluded_by_path(
-                    media_with_locations, config
-                )
+                    media_with_locations.append((m.key, m.locations, formatted_title, "episode"))
+                media_with_locations = _filter_excluded_by_path(media_with_locations, config)
                 # Filter out multi episode files based on file locations
                 media = filter_duplicate_locations(media_with_locations)
             elif section.METADATA_TYPE == "movie":
@@ -340,43 +308,28 @@ def get_library_sections(
                     search_kwargs["sort"] = sort_param
                 search_results = retry_plex_call(section.search, **search_kwargs)
                 media_with_locations = [
-                    (m.key, getattr(m, "locations", []) or [], m.title, "movie")
-                    for m in search_results
+                    (m.key, getattr(m, "locations", []) or [], m.title, "movie") for m in search_results
                 ]
-                media_with_locations = _filter_excluded_by_path(
-                    media_with_locations, config
-                )
+                media_with_locations = _filter_excluded_by_path(media_with_locations, config)
                 media = [(k, t, "movie") for k, _loc, t, _ in media_with_locations]
             else:
-                logger.info(
-                    "Skipping library {} as '{}' is unsupported".format(
-                        section.title, section.METADATA_TYPE
-                    )
-                )
+                logger.info(f"Skipping library {section.title} as '{section.METADATA_TYPE}' is unsupported")
                 continue
         except (
             requests.exceptions.RequestException,
             http.client.BadStatusLine,
             xml.etree.ElementTree.ParseError,
         ) as e:
-            logger.error(
-                f"Failed to search library '{section.title}' after retries: {e}"
-            )
+            logger.error(f"Failed to search library '{section.title}' after retries: {e}")
             logger.error(f"Exception type: {type(e).__name__}")
             logger.warning(f"Skipping library '{section.title}' due to error")
             continue
 
         library_time = time.time() - library_start_time
-        logger.info(
-            "Retrieved {} media files from library '{}' in {:.2f} seconds".format(
-                len(media), section.title, library_time
-            )
-        )
+        logger.info(f"Retrieved {len(media)} media files from library '{section.title}' in {library_time:.2f} seconds")
 
         if cancel_check and cancel_check():
-            logger.info(
-                f"Cancellation detected after retrieving library '{section.title}' — aborting"
-            )
+            logger.info(f"Cancellation detected after retrieving library '{section.title}' — aborting")
             return
 
         media_with_lib = [(k, t, mt, section.title) for k, t, mt in media]
@@ -397,23 +350,21 @@ def _map_plex_path_to_local(path: str, config: Config) -> str:
 
 def _build_episode_title(item) -> str:
     """Build display title for episode media items."""
-    show_title = getattr(item, "grandparentTitle", "") or getattr(
-        item, "title", "Unknown"
-    )
+    show_title = getattr(item, "grandparentTitle", "") or getattr(item, "title", "Unknown")
     season_episode = str(getattr(item, "seasonEpisode", "")).upper()
     return f"{show_title} {season_episode}".strip()
 
 
-def _extract_item_locations(item) -> List[str]:
+def _extract_item_locations(item) -> list[str]:
     """Extract non-empty locations from a Plex item."""
     locations = getattr(item, "locations", None) or []
     return [str(location).strip() for location in locations if str(location).strip()]
 
 
 def _detect_path_prefix_mismatches(
-    unresolved_paths: List[str],
-    plex_locations: List[str],
-) -> List[Tuple[str, str]]:
+    unresolved_paths: list[str],
+    plex_locations: list[str],
+) -> list[tuple[str, str]]:
     """Detect likely prefix mismatches between webhook paths and Plex library roots.
 
     For each unresolved path, checks whether any Plex library location appears
@@ -439,8 +390,8 @@ def _detect_path_prefix_mismatches(
         reverse=True,
     )
 
-    seen: set[Tuple[str, str]] = set()
-    results: List[Tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    results: list[tuple[str, str]] = []
 
     for upath in unresolved_paths:
         upath_norm = upath.replace("\\", "/")
@@ -484,7 +435,7 @@ def _detect_path_prefix_mismatches(
 def _mismatch_covered_by_mappings(
     webhook_pfx: str,
     plex_pfx: str,
-    path_mappings: List[Dict],
+    path_mappings: list[dict],
 ) -> bool:
     """Check whether a detected prefix mismatch is already handled by a configured mapping.
 
@@ -509,9 +460,7 @@ def _mismatch_covered_by_mappings(
         row_plex = (row.get("plex_prefix") or "").strip().rstrip("/").lower()
         row_local = (row.get("local_prefix") or "").strip().rstrip("/").lower()
         row_webhooks = [
-            w.strip().rstrip("/").lower()
-            for w in (row.get("webhook_prefixes") or [])
-            if w and str(w).strip()
+            w.strip().rstrip("/").lower() for w in (row.get("webhook_prefixes") or []) if w and str(w).strip()
         ]
         plex_side = {row_plex, row_local}
         webhook_side = set(row_webhooks) | plex_side
@@ -520,7 +469,7 @@ def _mismatch_covered_by_mappings(
     return False
 
 
-def _resolve_item_media_type(section_type: str) -> Optional[str]:
+def _resolve_item_media_type(section_type: str) -> str | None:
     """Map Plex section metadata type to internal media type."""
     if section_type == "movie":
         return "movie"
@@ -532,10 +481,10 @@ def _resolve_item_media_type(section_type: str) -> Optional[str]:
 def trigger_plex_partial_scan(
     plex_url: str,
     plex_token: str,
-    unresolved_paths: List[str],
-    path_mappings: Optional[List[Dict]] = None,
+    unresolved_paths: list[str],
+    path_mappings: list[dict] | None = None,
     verify_ssl: bool = True,
-) -> List[str]:
+) -> list[str]:
     """Trigger targeted Plex library scans for unresolved webhook paths.
 
     When webhook paths cannot be resolved to Plex items (because Plex hasn't
@@ -564,7 +513,7 @@ def trigger_plex_partial_scan(
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    scanned: List[str] = []
+    scanned: list[str] = []
 
     try:
         resp = requests.get(
@@ -581,7 +530,7 @@ def trigger_plex_partial_scan(
 
     # Build lookup: normalised location prefix -> (section_key, raw_location),
     # sorted longest-first so more-specific mounts match before broader ones.
-    section_locations: List[Tuple[str, str, str]] = []
+    section_locations: list[tuple[str, str, str]] = []
     for section in sections:
         section_key = str(section.get("key", ""))
         for loc in section.get("Location", []):
@@ -592,12 +541,8 @@ def trigger_plex_partial_scan(
     section_locations.sort(key=lambda t: len(t[0]), reverse=True)
 
     for unresolved in unresolved_paths:
-        candidates = (
-            expand_path_mapping_candidates(unresolved, path_mappings)
-            if path_mappings
-            else [unresolved]
-        )
-        scan_targets: Set[Tuple[str, str]] = set()
+        candidates = expand_path_mapping_candidates(unresolved, path_mappings) if path_mappings else [unresolved]
+        scan_targets: set[tuple[str, str]] = set()
 
         for candidate in candidates:
             norm_candidate = candidate.rstrip("/") + "/"
@@ -608,18 +553,12 @@ def trigger_plex_partial_scan(
                 # Use the top-level subfolder (series or movie folder).
                 rel = candidate[len(loc_prefix.rstrip("/")) :]
                 parts = [p for p in rel.split("/") if p]
-                scan_folder = (
-                    loc_prefix.rstrip("/") + "/" + parts[0]
-                    if len(parts) >= 2
-                    else loc_prefix.rstrip("/")
-                )
+                scan_folder = loc_prefix.rstrip("/") + "/" + parts[0] if len(parts) >= 2 else loc_prefix.rstrip("/")
                 scan_targets.add((section_key, scan_folder))
                 break  # First prefix match is best (sorted longest-first)
 
         if not scan_targets:
-            logger.debug(
-                f"No matching Plex library section found for unresolved path: {unresolved}"
-            )
+            logger.debug(f"No matching Plex library section found for unresolved path: {unresolved}")
             continue
 
         triggered = False
@@ -633,9 +572,7 @@ def trigger_plex_partial_scan(
                     verify=verify_ssl,
                 )
                 if scan_resp.status_code == 200:
-                    logger.info(
-                        f"Triggered Plex partial scan for section {section_key}: {scan_folder}"
-                    )
+                    logger.info(f"Triggered Plex partial scan for section {section_key}: {scan_folder}")
                     triggered = True
                 else:
                     logger.warning(
@@ -643,34 +580,26 @@ def trigger_plex_partial_scan(
                         f"for section {section_key}, path {scan_folder}"
                     )
             except requests.RequestException as e:
-                logger.warning(
-                    f"Failed to trigger Plex partial scan for {scan_folder}: {e}"
-                )
+                logger.warning(f"Failed to trigger Plex partial scan for {scan_folder}: {e}")
 
         if triggered:
             scanned.append(unresolved)
         else:
-            logger.debug(
-                f"Matching Plex sections found but partial scans did not succeed for: {unresolved}"
-            )
+            logger.debug(f"Matching Plex sections found but partial scans did not succeed for: {unresolved}")
 
     if scanned:
-        logger.info(
-            f"Triggered Plex partial scans for {len(scanned)}/{len(unresolved_paths)} unresolved path(s)"
-        )
+        logger.info(f"Triggered Plex partial scans for {len(scanned)}/{len(unresolved_paths)} unresolved path(s)")
 
     return scanned
 
 
-VIDEO_EXTENSIONS = frozenset(
-    {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov", ".flv", ".webm"}
-)
+VIDEO_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov", ".flv", ".webm"})
 
 
 def _expand_directory_to_media_files(
-    paths: List[str],
-    path_mappings: Optional[List[Dict]] = None,
-) -> List[str]:
+    paths: list[str],
+    path_mappings: list[dict] | None = None,
+) -> list[str]:
     """Expand directory paths into contained media files; pass file paths through unchanged.
 
     When a user submits a directory (e.g. a TV series root folder) via the
@@ -690,17 +619,13 @@ def _expand_directory_to_media_files(
     Returns:
         Flat list of file paths with directories replaced by their media files.
     """
-    expanded: List[str] = []
+    expanded: list[str] = []
     for path in paths:
         if not isinstance(path, str):
             expanded.append(path)
             continue
 
-        candidates = (
-            expand_path_mapping_candidates(path, path_mappings)
-            if path_mappings
-            else [path]
-        )
+        candidates = expand_path_mapping_candidates(path, path_mappings) if path_mappings else [path]
         resolved_dir = None
         for candidate in candidates:
             if os.path.isdir(candidate):
@@ -717,10 +642,7 @@ def _expand_directory_to_media_files(
             if media_files:
                 if resolved_dir != path:
                     logger.info(f"Mapped directory '{path}' -> '{resolved_dir}'")
-                logger.info(
-                    f"Expanded directory '{resolved_dir}' into "
-                    f"{len(media_files)} media file(s)"
-                )
+                logger.info(f"Expanded directory '{resolved_dir}' into {len(media_files)} media file(s)")
                 expanded.extend(media_files)
             else:
                 logger.warning(
@@ -737,15 +659,13 @@ def _expand_directory_to_media_files(
 class WebhookResolutionResult:
     """Result of resolving webhook file paths to Plex media items."""
 
-    items: List[Tuple[str, str, str]]  # (key, title, media_type)
-    unresolved_paths: List[str]
-    skipped_paths: List[str]
-    path_hints: List[str]
+    items: list[tuple[str, str, str]]  # (key, title, media_type)
+    unresolved_paths: list[str]
+    skipped_paths: list[str]
+    path_hints: list[str]
 
 
-def get_media_items_by_paths(
-    plex, config: Config, file_paths: List[str]
-) -> WebhookResolutionResult:
+def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> WebhookResolutionResult:
     """Resolve webhook file paths into Plex media tuples.
 
     We need Plex because preview BIF files must be written to a path derived from
@@ -767,31 +687,23 @@ def get_media_items_by_paths(
     mappings = getattr(config, "path_mappings", None) or []
     file_paths = _expand_directory_to_media_files(file_paths or [], mappings)
     normalized_targets = set()
-    input_paths: List[str] = []
-    input_to_candidates: Dict[str, List[str]] = {}
-    input_to_targets: Dict[str, Set[str]] = {}
-    basename_plex_locations: Dict[str, List[str]] = {}
+    input_paths: list[str] = []
+    input_to_candidates: dict[str, list[str]] = {}
+    input_to_targets: dict[str, set[str]] = {}
+    basename_plex_locations: dict[str, list[str]] = {}
     for path in file_paths or []:
         if path is None:
             continue
         if not isinstance(path, str):
-            logger.warning(
-                "Webhook path resolution received non-string path value; skipping invalid entry"
-            )
+            logger.warning("Webhook path resolution received non-string path value; skipping invalid entry")
             continue
         cleaned_path = path.strip()
         if not cleaned_path:
             continue
         # Expand into all equivalent mapped paths so webhook matching can fan out
         # across multi-disk roots until one matches.
-        candidate_paths = (
-            expand_path_mapping_candidates(cleaned_path, mappings)
-            if mappings
-            else [cleaned_path]
-        )
-        input_targets = {
-            _normalize_path_for_match(candidate) for candidate in candidate_paths
-        }
+        candidate_paths = expand_path_mapping_candidates(cleaned_path, mappings) if mappings else [cleaned_path]
+        input_targets = {_normalize_path_for_match(candidate) for candidate in candidate_paths}
         if cleaned_path not in input_to_targets:
             input_paths.append(cleaned_path)
             input_to_targets[cleaned_path] = set()
@@ -800,9 +712,7 @@ def get_media_items_by_paths(
         normalized_targets.update(input_targets)
     if not normalized_targets:
         logger.info("Webhook path resolution skipped (no valid file paths provided)")
-        return WebhookResolutionResult(
-            items=[], unresolved_paths=[], skipped_paths=[], path_hints=[]
-        )
+        return WebhookResolutionResult(items=[], unresolved_paths=[], skipped_paths=[], path_hints=[])
 
     num_input_files = len(input_paths)
     logger.info(f"Received {num_input_files} webhook input file(s) to resolve")
@@ -815,26 +725,22 @@ def get_media_items_by_paths(
         xml.etree.ElementTree.ParseError,
     ) as e:
         logger.error(f"Failed to get Plex library sections for webhook paths: {e}")
-        return WebhookResolutionResult(
-            items=[], unresolved_paths=[], skipped_paths=[], path_hints=[]
-        )
+        return WebhookResolutionResult(items=[], unresolved_paths=[], skipped_paths=[], path_hints=[])
 
     matched_items = []
     seen_keys = set()
     matched_targets = set()
-    excluded_by_path_targets: Set[str] = set()
-    matched_target_to_plex_path: Dict[str, str] = {}
-    selected_match_libraries_by_target: Dict[str, Set[str]] = {}
-    excluded_match_libraries_by_target: Dict[str, Set[str]] = {}
+    excluded_by_path_targets: set[str] = set()
+    matched_target_to_plex_path: dict[str, str] = {}
+    selected_match_libraries_by_target: dict[str, set[str]] = {}
+    excluded_match_libraries_by_target: dict[str, set[str]] = {}
     selected_library_ids = {
         str(section_id).strip()
         for section_id in (getattr(config, "plex_library_ids", None) or [])
         if str(section_id).strip()
     }
     selected_library_titles = {
-        str(name).strip().lower()
-        for name in (getattr(config, "plex_libraries", None) or [])
-        if str(name).strip()
+        str(name).strip().lower() for name in (getattr(config, "plex_libraries", None) or []) if str(name).strip()
     }
 
     def _is_selected_section(section) -> bool:
@@ -842,10 +748,7 @@ def get_media_items_by_paths(
         if selected_library_ids:
             return str(getattr(section, "key", "")).strip() in selected_library_ids
         if selected_library_titles:
-            return (
-                str(getattr(section, "title", "")).strip().lower()
-                in selected_library_titles
-            )
+            return str(getattr(section, "title", "")).strip().lower() in selected_library_titles
         return True
 
     def _collect_item_targets(item) -> set[str]:
@@ -859,7 +762,7 @@ def get_media_items_by_paths(
                 item_targets.add(_normalize_path_for_match(alias))
         return item_targets
 
-    def _section_type_id(media_type: Optional[str]) -> Optional[int]:
+    def _section_type_id(media_type: str | None) -> int | None:
         """Return Plex API type id for library section query (1=movie, 4=episode)."""
         if media_type == "movie":
             return 1
@@ -870,12 +773,8 @@ def get_media_items_by_paths(
     def _search_by_file_path(target_paths: set[str]) -> set[str]:
         """Resolve paths by querying Plex with file= basename filter. Returns matched targets."""
         pass_matches = set()
-        unresolved_inputs = [
-            p
-            for p in input_paths
-            if not input_to_targets.get(p, set()).intersection(matched_targets)
-        ]
-        basename_to_targets: Dict[str, Set[str]] = {}
+        unresolved_inputs = [p for p in input_paths if not input_to_targets.get(p, set()).intersection(matched_targets)]
+        basename_to_targets: dict[str, set[str]] = {}
         for p in unresolved_inputs:
             bn = os.path.basename(p)
             targets_for_path = input_to_targets.get(p, set()) & target_paths
@@ -894,31 +793,23 @@ def get_media_items_by_paths(
             section_key = getattr(section, "key", None)
             if section_key is None:
                 continue
-            section_title = (
-                str(getattr(section, "title", "Unknown")).strip() or "Unknown"
-            )
+            section_title = str(getattr(section, "title", "Unknown")).strip() or "Unknown"
             for basename, targets_for_basename in basename_to_targets.items():
                 if not targets_for_basename.intersection(target_paths - pass_matches):
                     continue
                 try:
-                    ekey = (
-                        f"/library/sections/{section_key}/all"
-                        f"?type={type_id}&file={urllib.parse.quote(basename)}"
-                    )
+                    ekey = f"/library/sections/{section_key}/all?type={type_id}&file={urllib.parse.quote(basename)}"
                     items = retry_plex_call(plex.fetchItems, ekey)
                 except (
                     requests.exceptions.RequestException,
                     http.client.BadStatusLine,
                     xml.etree.ElementTree.ParseError,
                 ) as e:
-                    logger.warning(
-                        f"Skipping library '{section_title}' file-path search: {e}"
-                    )
+                    logger.warning(f"Skipping library '{section_title}' file-path search: {e}")
                     continue
                 if not items:
                     logger.debug(
-                        f"Plex file query returned 0 items for basename '{basename}' "
-                        f"in library '{section_title}'"
+                        f"Plex file query returned 0 items for basename '{basename}' in library '{section_title}'"
                     )
                 for item in items:
                     item_targets = _collect_item_targets(item)
@@ -931,26 +822,18 @@ def get_media_items_by_paths(
                             f"Plex item '{getattr(item, 'title', '?')}' matched basename "
                             f"but paths differ — Plex locations: {plex_locs}"
                         )
-                        basename_plex_locations.setdefault(basename, []).extend(
-                            plex_locs
-                        )
+                        basename_plex_locations.setdefault(basename, []).extend(plex_locs)
                         continue
                     plex_locations = _extract_item_locations(item)
                     plex_path = plex_locations[0] if plex_locations else ""
                     item_key = getattr(item, "key", None)
                     if not item_key:
-                        logger.warning(
-                            "Skipping matched Plex item without metadata key during webhook path resolution"
-                        )
+                        logger.warning("Skipping matched Plex item without metadata key during webhook path resolution")
                         continue
                     if item_key in seen_keys:
                         continue
-                    local_path = (
-                        plex_path_to_local(plex_path, mappings) if plex_path else ""
-                    )
-                    if local_path and is_path_excluded(
-                        local_path, getattr(config, "exclude_paths", None)
-                    ):
+                    local_path = plex_path_to_local(plex_path, mappings) if plex_path else ""
+                    if local_path and is_path_excluded(local_path, getattr(config, "exclude_paths", None)):
                         excluded_by_path_targets.update(matched_for_item)
                         continue
                     seen_keys.add(item_key)
@@ -958,29 +841,21 @@ def get_media_items_by_paths(
                     for target in matched_for_item:
                         if target not in matched_target_to_plex_path and plex_path:
                             matched_target_to_plex_path[target] = plex_path
-                        selected_match_libraries_by_target.setdefault(
-                            target, set()
-                        ).add(section_title)
+                        selected_match_libraries_by_target.setdefault(target, set()).add(section_title)
                     title = (
                         str(getattr(item, "title", "Unknown")).strip() or "Unknown"
                         if media_type == "movie"
                         else _build_episode_title(item)
                     )
-                    matched_items.append(
-                        (item_key, plex_locations or [], title, media_type)
-                    )
+                    matched_items.append((item_key, plex_locations or [], title, media_type))
         return pass_matches
 
     def _search_excluded_sections_by_file_path(target_paths: set[str]):
         """Return target paths that match Plex items in excluded libraries (file-path search)."""
         excluded_matches = set()
         excluded_sections = set()
-        unresolved_inputs = [
-            p
-            for p in input_paths
-            if not input_to_targets.get(p, set()).intersection(matched_targets)
-        ]
-        basename_to_targets: Dict[str, Set[str]] = {}
+        unresolved_inputs = [p for p in input_paths if not input_to_targets.get(p, set()).intersection(matched_targets)]
+        basename_to_targets: dict[str, set[str]] = {}
         for p in unresolved_inputs:
             bn = os.path.basename(p)
             targets_for_path = input_to_targets.get(p, set()) & target_paths
@@ -999,19 +874,12 @@ def get_media_items_by_paths(
             section_key = getattr(section, "key", None)
             if section_key is None:
                 continue
-            section_title = (
-                str(getattr(section, "title", "Unknown")).strip() or "Unknown"
-            )
+            section_title = str(getattr(section, "title", "Unknown")).strip() or "Unknown"
             for basename, targets_for_basename in basename_to_targets.items():
-                if not targets_for_basename.intersection(
-                    target_paths - excluded_matches
-                ):
+                if not targets_for_basename.intersection(target_paths - excluded_matches):
                     continue
                 try:
-                    ekey = (
-                        f"/library/sections/{section_key}/all"
-                        f"?type={type_id}&file={urllib.parse.quote(basename)}"
-                    )
+                    ekey = f"/library/sections/{section_key}/all?type={type_id}&file={urllib.parse.quote(basename)}"
                     items = retry_plex_call(plex.fetchItems, ekey)
                 except (
                     requests.exceptions.RequestException,
@@ -1028,9 +896,7 @@ def get_media_items_by_paths(
                         excluded_matches.update(matched_for_item)
                         excluded_sections.add(section_title)
                         for target in matched_for_item:
-                            excluded_match_libraries_by_target.setdefault(
-                                target, set()
-                            ).add(section_title)
+                            excluded_match_libraries_by_target.setdefault(target, set()).add(section_title)
         return excluded_matches, excluded_sections
 
     logger.info("Querying Plex by file path...")
@@ -1040,17 +906,13 @@ def get_media_items_by_paths(
     skipped_by_library_targets = set()
     skipped_library_names = set()
     if unresolved_targets and (selected_library_ids or selected_library_titles):
-        skipped_by_library_targets, skipped_library_names = (
-            _search_excluded_sections_by_file_path(unresolved_targets)
-        )
+        skipped_by_library_targets, skipped_library_names = _search_excluded_sections_by_file_path(unresolved_targets)
         if skipped_by_library_targets:
             unresolved_targets = unresolved_targets - skipped_by_library_targets
             skipped_input_paths = [
                 input_path
                 for input_path in input_paths
-                if input_to_targets.get(input_path, set()).intersection(
-                    skipped_by_library_targets
-                )
+                if input_to_targets.get(input_path, set()).intersection(skipped_by_library_targets)
             ]
             selected_scope = (
                 ", ".join(sorted(selected_library_titles))
@@ -1063,9 +925,7 @@ def get_media_items_by_paths(
     skipped_input_paths = [
         input_path
         for input_path in input_paths
-        if input_to_targets.get(input_path, set()).intersection(
-            skipped_by_library_targets
-        )
+        if input_to_targets.get(input_path, set()).intersection(skipped_by_library_targets)
     ]
 
     # Per-file outcome blocks (chronological, easy to follow).
@@ -1073,10 +933,10 @@ def get_media_items_by_paths(
     skipped_count = 0
     excluded_count = 0
     unresolved_count = 0
-    resolved_input_paths_from_loop: Set[str] = set()
-    skipped_input_paths_from_loop: Set[str] = set()
-    excluded_input_paths_from_loop: Set[str] = set()
-    unresolved_input_paths_from_loop: List[str] = []
+    resolved_input_paths_from_loop: set[str] = set()
+    skipped_input_paths_from_loop: set[str] = set()
+    excluded_input_paths_from_loop: set[str] = set()
+    unresolved_input_paths_from_loop: list[str] = []
     max_detail_logs = 50
     total_for_index = len(input_paths)
     logger.info(f"Resolving {total_for_index} webhook file(s):")
@@ -1086,8 +946,7 @@ def get_media_items_by_paths(
         mapped_candidates = [
             candidate
             for candidate in candidate_paths
-            if _normalize_path_for_match(candidate)
-            != _normalize_path_for_match(input_path)
+            if _normalize_path_for_match(candidate) != _normalize_path_for_match(input_path)
         ]
         mapping_applied = bool(mapped_candidates)
         skipped_candidates = [
@@ -1096,18 +955,10 @@ def get_media_items_by_paths(
             if _normalize_path_for_match(candidate) in skipped_by_library_targets
         ]
         selected_libraries = sorted(
-            {
-                lib
-                for target in input_targets
-                for lib in selected_match_libraries_by_target.get(target, set())
-            }
+            {lib for target in input_targets for lib in selected_match_libraries_by_target.get(target, set())}
         )
         excluded_libraries = sorted(
-            {
-                lib
-                for target in input_targets
-                for lib in excluded_match_libraries_by_target.get(target, set())
-            }
+            {lib for target in input_targets for lib in excluded_match_libraries_by_target.get(target, set())}
         )
 
         if input_targets.intersection(excluded_by_path_targets):
@@ -1125,33 +976,19 @@ def get_media_items_by_paths(
             if not direct_match and mapping_applied:
                 logger.info("        Direct path not found in Plex")
                 mapping_prefixes = sorted(
-                    set(
-                        "/" + p.split("/")[1]
-                        for p in mapped_candidates
-                        if p.startswith("/") and len(p.split("/")) > 1
-                    )
+                    set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
                 )
-                logger.info(
-                    f"        Trying path mappings: {', '.join(mapping_prefixes)}"
-                )
+                logger.info(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
                 matched_norm = next(
                     iter(input_targets & matched_targets),
                     None,
                 )
-                plex_path = (
-                    matched_target_to_plex_path.get(matched_norm)
-                    if matched_norm
-                    else None
-                )
+                plex_path = matched_target_to_plex_path.get(matched_norm) if matched_norm else None
                 if plex_path:
                     logger.info(f"        Found via mapping: {plex_path}")
             logger.info(
                 "        Result: resolved"
-                + (
-                    f" (library: {', '.join(selected_libraries)})"
-                    if selected_libraries
-                    else ""
-                )
+                + (f" (library: {', '.join(selected_libraries)})" if selected_libraries else "")
             )
             continue
 
@@ -1161,22 +998,12 @@ def get_media_items_by_paths(
             logger.warning(f"  [{file_index}/{total_for_index}] {input_path}")
             if mapping_applied:
                 mapping_prefixes = sorted(
-                    set(
-                        "/" + p.split("/")[1]
-                        for p in mapped_candidates
-                        if p.startswith("/") and len(p.split("/")) > 1
-                    )
+                    set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
                 )
-                logger.warning(
-                    f"        Trying path mappings: {', '.join(mapping_prefixes)}"
-                )
+                logger.warning(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
             if skipped_candidates:
-                logger.warning(
-                    f"        Found in excluded library: {skipped_candidates[0]}"
-                )
-            result_suffix = (
-                f": {', '.join(excluded_libraries)})" if excluded_libraries else ")"
-            )
+                logger.warning(f"        Found in excluded library: {skipped_candidates[0]}")
+            result_suffix = f": {', '.join(excluded_libraries)})" if excluded_libraries else ")"
             logger.warning("        Result: skipped (excluded library" + result_suffix)
             continue
 
@@ -1186,24 +1013,16 @@ def get_media_items_by_paths(
         logger.warning("        Direct path not found in Plex")
         if mapping_applied:
             mapping_prefixes = sorted(
-                set(
-                    "/" + p.split("/")[1]
-                    for p in mapped_candidates
-                    if p.startswith("/") and len(p.split("/")) > 1
-                )
+                set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
             )
-            logger.warning(
-                f"        Trying path mappings: {', '.join(mapping_prefixes)}"
-            )
+            logger.warning(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
         bn = os.path.basename(input_path)
         plex_locs = basename_plex_locations.get(bn)
         if plex_locs:
             logger.warning(f"        Plex has file with same name at: {plex_locs[0]}")
             if mapped_candidates:
                 logger.warning(f"        Webhook mapped to: {mapped_candidates[0]}")
-            logger.warning(
-                "        Result: not found (file exists in Plex but full paths differ)"
-            )
+            logger.warning("        Result: not found (file exists in Plex but full paths differ)")
         else:
             logger.warning("        Result: not found")
 
@@ -1222,9 +1041,7 @@ def get_media_items_by_paths(
     unresolved_input_paths = unresolved_input_paths_from_loop
 
     if len(input_paths) > max_detail_logs:
-        logger.info(
-            f"Webhook path detail truncated to first {max_detail_logs} of {len(input_paths)} file(s)."
-        )
+        logger.info(f"Webhook path detail truncated to first {max_detail_logs} of {len(input_paths)} file(s).")
 
     # Summary (input-file counts first).
     summary_parts = [
@@ -1234,13 +1051,9 @@ def get_media_items_by_paths(
     ]
     if excluded_count > 0:
         summary_parts.insert(1, f"excluded={excluded_count} (path rule)")
-    logger.info(
-        f"Resolution summary: {len(input_paths)} file(s) — " + ", ".join(summary_parts)
-    )
+    logger.info(f"Resolution summary: {len(input_paths)} file(s) — " + ", ".join(summary_parts))
     if excluded_count > 0:
-        logger.info(
-            f"Excluded {excluded_count} file(s) by path rule (see Settings → Exclude paths)"
-        )
+        logger.info(f"Excluded {excluded_count} file(s) by path rule (see Settings → Exclude paths)")
     if skipped_input_paths:
         logger.warning(
             f"Skipped {len(skipped_input_paths)} input file(s): matched Plex items in unselected "
@@ -1252,7 +1065,7 @@ def get_media_items_by_paths(
                 else ", ".join(sorted(selected_library_ids))
             )
         )
-    path_hints: List[str] = []
+    path_hints: list[str] = []
     if unresolved_input_paths:
         cap = 10
         paths_to_log = unresolved_input_paths[:cap]
@@ -1305,9 +1118,7 @@ def get_media_items_by_paths(
             f"{len(matched_items)} item(s) queued ({excluded_count} excluded by path rule)"
         )
     else:
-        logger.info(
-            f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)"
-        )
+        logger.info(f"Resolved {len(matched_targets)} webhook path(s) into {len(matched_items)} Plex item(s)")
     # Deduplicate by file location so multi-episode files are queued once (same as library scan).
     matched_items = filter_duplicate_locations(matched_items)
     return WebhookResolutionResult(

@@ -95,9 +95,7 @@ class TestFullPipeline:
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
         # Process items
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify all items were processed
         assert mock_process.call_count == 4
@@ -140,9 +138,7 @@ class TestFullPipeline:
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
         # Process items (should handle errors gracefully)
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify some succeeded and some failed
         total_completed = sum(w.completed for w in pool.workers)
@@ -211,9 +207,7 @@ class TestWorkerPoolIntegration:
         # Each item simulates successful image generation
         mock_gen_images.return_value = (True, 1, False, 0.8, "1.0x")
         # Process
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify all completed
         total_completed = sum(w.completed for w in pool.workers)
@@ -250,9 +244,7 @@ class TestWorkerPoolIntegration:
         worker_progress.add_task = MagicMock(side_effect=list(range(20)))
 
         # Process
-        pool.process_items(
-            items, mock_config, mock_plex, worker_progress, main_progress
-        )
+        pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
         # Verify work was distributed (each worker should have processed some items)
         for worker in pool.workers:

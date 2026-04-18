@@ -16,8 +16,7 @@ runtime and multiple startup log sites probe the same device.
 from __future__ import annotations
 
 import subprocess
-from functools import lru_cache
-from typing import Optional
+from functools import cache
 
 # Kernel drivers that correspond to Intel GPUs (worth probing vainfo for
 # the user-space VA-API driver identity, since the kernel driver name
@@ -25,8 +24,8 @@ from typing import Optional
 _INTEL_KERNEL_DRIVERS = frozenset({"i915", "xe"})
 
 
-@lru_cache(maxsize=None)
-def _probe_vaapi_driver(render_device: str) -> Optional[str]:
+@cache
+def _probe_vaapi_driver(render_device: str) -> str | None:
     """Return the user-space VA-API driver version string for a render node.
 
     Runs ``vainfo --display drm --device <render_device>`` and extracts

@@ -176,9 +176,7 @@ class TestWindowsTempDirectory:
 
         # Should use Windows temp directory from tempfile.gettempdir()
         assert config is not None
-        assert (
-            config.tmp_folder == "C:\\Temp"
-        )  # Should use the mocked gettempdir() value
+        assert config.tmp_folder == "C:\\Temp"  # Should use the mocked gettempdir() value
 
 
 class TestWindowsSignalHandling:
@@ -262,9 +260,7 @@ class TestWindowsFFmpegLogPath:
         pid = 12345
         thread_id = 67890
         timestamp = 1234567890123456789
-        output_file = os.path.join(
-            tempfile.gettempdir(), f"ffmpeg_output_{pid}_{thread_id}_{timestamp}.log"
-        )
+        output_file = os.path.join(tempfile.gettempdir(), f"ffmpeg_output_{pid}_{thread_id}_{timestamp}.log")
 
         # Verify the path format is valid (actual temp path depends on environment)
         assert "ffmpeg_output_" in output_file

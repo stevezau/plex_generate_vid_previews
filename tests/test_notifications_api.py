@@ -20,7 +20,6 @@ from unittest.mock import patch
 import pytest
 
 from plex_generate_previews.gpu_detection import VulkanProbeResult
-
 from plex_generate_previews.web.app import create_app
 from plex_generate_previews.web.notifications import (
     VULKAN_SOFTWARE_FALLBACK_ID,
@@ -133,9 +132,7 @@ class TestNotificationsAPI:
             first = client.get("/api/system/notifications").get_json()
             assert len(first["notifications"]) == 1
 
-            dismiss_resp = client.post(
-                f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss"
-            )
+            dismiss_resp = client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss")
             assert dismiss_resp.status_code == 200
             assert dismiss_resp.get_json() == {
                 "ok": True,
@@ -146,9 +143,7 @@ class TestNotificationsAPI:
             second = client.get("/api/system/notifications").get_json()
             assert second == {"notifications": []}
 
-    def test_session_dismiss_does_not_touch_settings_file(
-        self, client, app_with_config
-    ):
+    def test_session_dismiss_does_not_touch_settings_file(self, client, app_with_config):
         """Session dismissal must not write to settings.json."""
         _, config_dir = app_with_config
         settings_path = os.path.join(config_dir, "settings.json")
@@ -159,9 +154,7 @@ class TestNotificationsAPI:
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
-            client.post(
-                f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss"
-            )
+            client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss")
 
         with open(settings_path) as fh:
             after = json.load(fh)
@@ -176,10 +169,7 @@ class TestNotificationsAPI:
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
-            resp = client.post(
-                f"/api/system/notifications/"
-                f"{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent"
-            )
+            resp = client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["ok"] is True
@@ -196,14 +186,8 @@ class TestNotificationsAPI:
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
-            client.post(
-                f"/api/system/notifications/"
-                f"{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent"
-            )
-            client.post(
-                f"/api/system/notifications/"
-                f"{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent"
-            )
+            client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
+            client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
         with open(os.path.join(config_dir, "settings.json")) as fh:
             stored = json.load(fh)
         assert stored["dismissed_notifications"].count(VULKAN_SOFTWARE_FALLBACK_ID) == 1
@@ -214,10 +198,7 @@ class TestNotificationsAPI:
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
-            client.post(
-                f"/api/system/notifications/"
-                f"{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent"
-            )
+            client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
             resp = client.get("/api/system/notifications")
         assert resp.get_json() == {"notifications": []}
 
@@ -227,10 +208,7 @@ class TestNotificationsAPI:
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
-            client.post(
-                f"/api/system/notifications/"
-                f"{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent"
-            )
+            client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
             reset_resp = client.post(
                 "/api/system/notifications/reset-dismissed",
                 headers={"Authorization": "Bearer test-token-12345678"},
@@ -268,9 +246,7 @@ class TestBuildActiveNotifications:
             "plex_generate_previews.gpu_detection.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
-            notifications = build_active_notifications(
-                dismissed_permanent=[VULKAN_SOFTWARE_FALLBACK_ID]
-            )
+            notifications = build_active_notifications(dismissed_permanent=[VULKAN_SOFTWARE_FALLBACK_ID])
         assert notifications == []
 
 

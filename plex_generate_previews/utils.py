@@ -33,14 +33,7 @@ def calculate_title_width():
     speed_display = 8  # " 2.5x "
     progress_bar = 20  # Approximate progress bar width
 
-    reserved_space = (
-        worker_prefix
-        + percentage
-        + time_elapsed
-        + count_display
-        + speed_display
-        + progress_bar
-    )
+    reserved_space = worker_prefix + percentage + time_elapsed + count_display + speed_display + progress_bar
     available_width = terminal_width - reserved_space
 
     # Set reasonable limits: minimum 20 chars, maximum 50 chars
@@ -81,9 +74,7 @@ def format_display_title(title: str, media_type: str, title_max_width: int) -> s
 
         # Regular truncation for movies
         if len(display_title) > title_max_width:
-            display_title = (
-                display_title[: title_max_width - 3] + "..."
-            )  # Leave room for "..."
+            display_title = display_title[: title_max_width - 3] + "..."  # Leave room for "..."
 
     # Add padding to prevent progress bar jumping (only if not already truncated)
     if len(display_title) <= title_max_width:

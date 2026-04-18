@@ -91,9 +91,7 @@ class TestLoggingConfig:
         assert app_log_call.kwargs.get("rotation") == "5 MB"
         assert app_log_call.kwargs.get("retention") == 4
 
-    @patch(
-        "plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError
-    )
+    @patch("plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError)
     @patch("plex_generate_previews.logging_config.logger")
     def test_setup_logging_handles_permission_error(self, mock_logger, mock_makedirs):
         """Test that setup_logging handles permission errors for log directory."""
@@ -193,9 +191,7 @@ class TestJSONLogging:
             if "hello structured world" in parsed.get("message", ""):
                 record = parsed
                 break
-        assert record is not None, (
-            f"Expected JSON line with 'hello structured world' in output:\n{output}"
-        )
+        assert record is not None, f"Expected JSON line with 'hello structured world' in output:\n{output}"
         assert record["level"] == "INFO"
         assert "timestamp" in record
         assert "function" in record

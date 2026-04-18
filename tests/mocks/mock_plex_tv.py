@@ -97,9 +97,7 @@ def create_pin():
         "clientIdentifier": request.headers.get("X-Plex-Client-Identifier", "unknown"),
         "expiresIn": 1800,
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "expiresAt": time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1800)
-        ),
+        "expiresAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1800)),
         "authToken": None,  # Not authenticated yet
         "newRegistration": None,
     }

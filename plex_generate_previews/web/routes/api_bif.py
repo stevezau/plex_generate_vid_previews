@@ -52,10 +52,7 @@ def _validate_bif_path(user_path: str) -> str | None:
 
     allowed_root = os.path.normpath(_get_plex_config_folder())
     if not (normalized == allowed_root or normalized.startswith(allowed_root + os.sep)):
-        logger.debug(
-            f"BIF path rejected: not under plex config folder "
-            f"(path={normalized}, root={allowed_root})"
-        )
+        logger.debug(f"BIF path rejected: not under plex config folder (path={normalized}, root={allowed_root})")
         return None
 
     if not os.path.isfile(normalized):
@@ -146,9 +143,7 @@ def _resolve_bif_for_item(
                     stat = os.stat(bif_path)
                     bif_info = {
                         "file_size": stat.st_size,
-                        "created_at": datetime.fromtimestamp(
-                            stat.st_mtime, tz=timezone.utc
-                        ).isoformat(),
+                        "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                     }
                 except OSError:
                     pass
@@ -278,9 +273,7 @@ def bif_search():
 
     query = (request.args.get("q") or "").strip()
     if not query or len(query) < 2:
-        return jsonify(
-            {"error": "Query must be at least 2 characters", "results": []}
-        ), 400
+        return jsonify({"error": "Query must be at least 2 characters", "results": []}), 400
 
     from ..settings_manager import get_settings_manager
 
@@ -327,9 +320,7 @@ def bif_search():
         if not item_key or item_key in seen_keys:
             return True
         seen_keys.add(item_key)
-        results.append(
-            _item_to_result(item, plex_url, plex_token, plex_config, verify_ssl, req)
-        )
+        results.append(_item_to_result(item, plex_url, plex_token, plex_config, verify_ssl, req))
         return True
 
     # --- Phase 1: expand "show" hubs into individual episodes -----------
@@ -357,9 +348,7 @@ def bif_search():
                     if not _add_item(ep):
                         break
             except req.RequestException as e:
-                logger.debug(
-                    f"BIF viewer: Failed to fetch episodes for {show_key}: {e}"
-                )
+                logger.debug(f"BIF viewer: Failed to fetch episodes for {show_key}: {e}")
 
     # --- Phase 2: direct movie/episode hub hits (no SxxExx filter) ------
     if season_filter is None:
@@ -408,9 +397,7 @@ def bif_info():
             "frame_count": meta.frame_count,
             "frame_interval_ms": meta.frame_interval_ms,
             "file_size": meta.file_size,
-            "created_at": datetime.fromtimestamp(
-                meta.created_at, tz=timezone.utc
-            ).isoformat(),
+            "created_at": datetime.fromtimestamp(meta.created_at, tz=timezone.utc).isoformat(),
             "avg_frame_size": round(avg_size),
             "min_frame_size": min_size,
             "max_frame_size": max_size,

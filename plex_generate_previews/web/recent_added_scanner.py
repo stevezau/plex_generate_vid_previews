@@ -18,11 +18,10 @@ clock skew.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Optional
 
 from loguru import logger
-
 
 _SUPPORTED_LIBTYPES: tuple[tuple[str, str], ...] = (
     ("movie", "movie"),
@@ -158,8 +157,7 @@ def _iter_window_items(section, libtype: str, cutoff: datetime):
         )
     except Exception as exc:
         logger.debug(
-            "Recently Added: addedAt filter failed on '{}' ({}); "
-            "falling back to client-side filter",
+            "Recently Added: addedAt filter failed on '{}' ({}); falling back to client-side filter",
             getattr(section, "title", "?"),
             exc,
         )
@@ -203,7 +201,7 @@ def _format_item_title(item) -> str:
 
 def scan_recently_added(
     lookback_hours: float,
-    library_ids: Optional[list[str]] = None,
+    library_ids: list[str] | None = None,
     *,
     plex=None,
     settings=None,
@@ -275,7 +273,7 @@ def scan_recently_added(
             continue
 
         section_type = getattr(section, "type", None) or getattr(section, "TYPE", None)
-        libtype: Optional[str] = None
+        libtype: str | None = None
         for raw_type, lt in _SUPPORTED_LIBTYPES:
             if str(section_type) == raw_type:
                 libtype = lt
