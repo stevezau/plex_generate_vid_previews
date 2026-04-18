@@ -14,8 +14,8 @@ from plex_generate_previews.media_processing import ProcessingResult
 class TestFullPipeline:
     """Test complete processing pipeline."""
 
-    @patch("plex_generate_previews.media_processing.generate_bif")
-    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
+    @patch("plex_generate_previews.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
     @patch("os.path.isdir")
     @patch("os.makedirs")
@@ -152,8 +152,8 @@ class TestFullPipeline:
 class TestWorkerPoolIntegration:
     """Test worker pool integration with processing."""
 
-    @patch("plex_generate_previews.media_processing.generate_bif")
-    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
+    @patch("plex_generate_previews.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
     @patch("os.path.isdir")
     @patch("os.makedirs")

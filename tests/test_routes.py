@@ -1116,7 +1116,7 @@ class TestJobConfigPathMappings:
             ),
             patch("plex_generate_previews.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.media_processing._verify_tmp_folder_health",
+                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1175,7 +1175,7 @@ class TestJobConfigPathMappings:
             ),
             patch("plex_generate_previews.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.media_processing._verify_tmp_folder_health",
+                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1230,7 +1230,7 @@ class TestJobConfigPathMappings:
             ),
             patch("plex_generate_previews.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.media_processing._verify_tmp_folder_health",
+                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1276,7 +1276,7 @@ class TestJobConfigPathMappings:
             ),
             patch("plex_generate_previews.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.media_processing._verify_tmp_folder_health",
+                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1321,7 +1321,7 @@ class TestJobConfigPathMappings:
             ),
             patch("plex_generate_previews.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.media_processing._verify_tmp_folder_health",
+                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(

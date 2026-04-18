@@ -110,8 +110,8 @@ class TestProcessItemReturnsResult:
         result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_BIF_EXISTS
 
-    @patch("plex_generate_previews.media_processing.generate_bif")
-    @patch("plex_generate_previews.media_processing.generate_images")
+    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
+    @patch("plex_generate_previews.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
     @patch("os.path.isdir")
     @patch("os.makedirs")

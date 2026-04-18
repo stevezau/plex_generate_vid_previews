@@ -44,7 +44,7 @@ class TestWorker:
         worker.is_busy = True
         assert worker.is_available() is False
 
-    @patch("plex_generate_previews.media_processing.process_item")
+    @patch("plex_generate_previews.processing.orchestrator.process_item")
     def test_worker_assign_task(self, mock_process):
         """Test task assignment."""
         worker = Worker(0, "CPU")
@@ -83,7 +83,7 @@ class TestWorker:
         with pytest.raises(RuntimeError):
             worker.assign_task("test_key", config, plex)
 
-    @patch("plex_generate_previews.media_processing.process_item")
+    @patch("plex_generate_previews.processing.orchestrator.process_item")
     def test_worker_check_completion(self, mock_process):
         """Test completion detection."""
         worker = Worker(0, "CPU")
@@ -645,7 +645,7 @@ class TestWorkerPool:
         assert second_result["completed"] == 1
         assert second_result["failed"] == 0
 
-    @patch("plex_generate_previews.media_processing.process_item")
+    @patch("plex_generate_previews.processing.orchestrator.process_item")
     def test_worker_pool_task_completion(self, mock_process):
         """Test that all tasks complete."""
 
@@ -715,7 +715,7 @@ class TestWorkerPool:
         total_failed = sum(w.failed for w in pool.workers)
         assert total_failed > 0
 
-    @patch("plex_generate_previews.media_processing.process_item")
+    @patch("plex_generate_previews.processing.orchestrator.process_item")
     def test_worker_pool_progress_updates(self, mock_process):
         """Test that progress callbacks work correctly."""
         mock_process.return_value = ProcessingResult.GENERATED
