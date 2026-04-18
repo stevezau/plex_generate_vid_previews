@@ -46,6 +46,59 @@ def fixtures_dir():
 
 
 @pytest.fixture
+def media_fixture():
+    """Return a resolver that maps a content-type key to a real on-disk
+    test clip under ``tests/fixtures/media/``.
+
+    Usage:
+        def test_hdr10_probe(media_fixture):
+            path = media_fixture("hdr10")
+            info = MediaInfo.parse(str(path))
+            ...
+
+    Available keys (see ``tests/fixtures/media/generate.sh``):
+      - ``"sdr"``     — H.264 BT.709 SDR
+      - ``"hdr10"``   — HEVC Main10 with HDR10 metadata (BT.2020 + PQ)
+      - ``"dv8"``     — DV Profile 8.1 (HDR10 base layer)
+      - ``"dv_p5_hdr_format"`` — NOT a file: the ``hdr_format`` string
+        that pymediainfo returns for a DV Profile 5 clip, suitable for
+        mocking in unit tests that don't need real bytes.
+
+    Fail-loud if the requested key is missing — tests should call
+    ``pytest.importorskip`` or mark themselves skipped when the fixture
+    file isn't present, rather than silently pass.
+    """
+    base = Path(__file__).parent / "fixtures" / "media"
+
+    paths = {
+        "sdr": base / "sdr_tiny.mkv",
+        "hdr10": base / "hdr10_tiny.mkv",
+        "dv8": base / "dv_profile8_tiny.mkv",
+    }
+    sentinels = {
+        "dv_p5_hdr_format": "Dolby Vision, Version 1.0, dvhe.05.06, BL+EL+RPU",
+    }
+
+    def resolve(key: str):
+        if key in sentinels:
+            return sentinels[key]
+        path = paths.get(key)
+        if path is None:
+            raise KeyError(
+                f"Unknown media_fixture key: {key!r}. "
+                f"Known: {sorted(list(paths) + list(sentinels))}"
+            )
+        if not path.exists():
+            pytest.skip(
+                f"Media fixture {path} missing — run "
+                f"tests/fixtures/media/generate.sh to rebuild it."
+            )
+        return path
+
+    return resolve
+
+
+@pytest.fixture
 def mock_config():
     """Create a mock Config object with sensible defaults."""
     config = MagicMock()
