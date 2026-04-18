@@ -556,9 +556,23 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
 | Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | libplacebo via Vulkan; NVDEC on NVIDIA, software decode elsewhere ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
+| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178), [#212](https://github.com/stevezau/plex_generate_vid_previews/issues/212)) |
 
-**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires `libplacebo` for tone mapping because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. libplacebo's `apply_dolbyvision` (enabled by default in FFmpeg 8+) handles this correctly. On NVIDIA hosts, the HEVC decode step runs on NVDEC before libplacebo picks up the frames — this is about 3× faster than software decode on 4K DV5 content with identical visual output. Other vendors (Intel VAAPI, QSV, AMD, Apple VideoToolbox, D3D11VA) stay on software decode for this path because NVDEC is the only HW decoder currently validated with libplacebo's DV5 tone map; Intel VAAPI specifically benchmarked slower than software decode. If libplacebo/Vulkan is unavailable, the tool falls back to a basic filter chain without tone mapping.
+**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires a DV-aware tone-map filter because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. The tool picks the fastest working path per GPU vendor:
+
+| Vendor | DV5 path | Typical speed on 4K |
+|---|---|---|
+| Intel (iGPU / Arc via VAAPI) | VAAPI decode → OpenCL `tonemap_opencl` (Jellyfin-patched, DV-RPU-aware) | **~17×** (UHD 770) |
+| NVIDIA | NVDEC decode → Vulkan `libplacebo` via hwupload | ~10–16× (Turing), faster on Ada/Hopper |
+| AMD Radeon | VAAPI decode → Vulkan `libplacebo` via DMA-BUF hwmap | untested locally; same flags as NVIDIA |
+| CPU-only / software fallback | libx265 decode → Vulkan `libplacebo` | ~5–10× (CPU-bound) |
+
+The image ships **jellyfin-ffmpeg 7.1.3** as the preferred FFmpeg binary because Jellyfin's fork carries the `tonemap_opencl` DV-aware patch upstream FFmpeg still lacks. Falls back to the base image's FFmpeg 8.0.1 automatically on non-amd64 builds.
+
+**Container edge cases we handle automatically:**
+
+* **`/dev/dri/by-path` fixup.** Intel's OpenCL runtime (NEO) discovers GPUs by scanning `/dev/dri/by-path/*-render`. Under `--runtime=nvidia`, NVIDIA Container Toolkit populates that directory only for NVIDIA cards — leaving the Intel iGPU invisible to OpenCL. The container runs a oneshot s6 init (`init-dri-by-path`) that adds the missing symlinks for every DRM render node in `/dev/dri/`. No-op on bare metal / single-vendor hosts.
+* **NVIDIA Vulkan on dual-GPU hosts.** The Vulkan probe runs up to four retry strategies to get NVIDIA's ICD working (standard ICD, `__EGL_VENDOR_LIBRARY_FILENAMES`, synthesised GLVND vendor JSON, `VK_DRIVER_FILES`+EGL combined). On dual-GPU hosts (Intel iGPU + NVIDIA dGPU) the default probe picks Intel ANV first; the combined `VK_DRIVER_FILES` + `__EGL_VENDOR_LIBRARY_FILENAMES` retry forces NVIDIA so libplacebo runs on the NVIDIA card instead of ping-ponging frames across PCIe.
 
 > [!IMPORTANT]
 > **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
@@ -599,7 +613,10 @@ For **standard (SDR) content**, GPU does nearly all the work and CPU usage is mi
 For **Dolby Vision content**, CPU usage is noticeably higher because frames must be moved between CPU and GPU memory for the libplacebo tone map. Expected speeds on 4K DV content:
 
 - **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60x+ across all GPU vendors. Uses HW decode + GPU downscale + zscale tonemap on the 320×240 frame.
-- **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker) — about 12x on NVIDIA (NVDEC decode + libplacebo), about 4x on Intel / AMD / Apple / CPU (software decode + libplacebo).
+- **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker):
+  - **Intel** (iGPU, Arc): ~17× via VAAPI decode + OpenCL tonemap. Requires `intel-opencl-icd` (already in the image) and a render node (`--device /dev/dri:/dev/dri`).
+  - **NVIDIA**: ~10–16× via NVDEC + Vulkan libplacebo.  Needs `NVIDIA_DRIVER_CAPABILITIES=all` (or at minimum `compute,video,utility,graphics`) so the NVIDIA Vulkan ICD reaches the container.
+  - **AMD / Apple / CPU-only**: ~5–10× via software decode + libplacebo.
 
 The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
 
