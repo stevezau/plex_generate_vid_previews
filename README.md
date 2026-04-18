@@ -128,23 +128,16 @@ For Docker Compose, Unraid, and GPU-specific setup:
 
 ## GPU Support
 
-| GPU Type | Platform | Acceleration | Docker |
-|----------|----------|--------------|--------|
-| **NVIDIA** | Linux | CUDA/NVENC | `--gpus all` |
-| **AMD** | Linux | VAAPI | `--device /dev/dri` |
-| **Intel** | Linux | QuickSync/VAAPI | `--device /dev/dri` |
-| **NVIDIA** | Windows | CUDA | Native only |
-| **AMD/Intel** | Windows | D3D11VA | Native only |
-| **Apple Silicon** | macOS | VideoToolbox | Native only |
+| Platform | Supported GPUs | Via |
+|---|---|---|
+| **Linux (Docker)** | NVIDIA, AMD, Intel | CUDA/NVENC, VAAPI, QuickSync |
+| **Windows (native)** | NVIDIA, AMD, Intel | CUDA, D3D11VA |
+| **macOS (native)** | Apple Silicon, Intel | VideoToolbox |
+| **Linux / Windows / macOS** | No GPU | CPU workers only |
 
-> **"Native only"** means GPU acceleration requires running the app from source on that platform. Docker on Windows (WSL2) and macOS runs a Linux VM — D3D11VA and VideoToolbox are not available inside Docker. Docker on these platforms will use CPU-only processing. Apple Silicon users benefit from the native ARM64 Docker image (no Rosetta overhead).
+On Docker Desktop (Windows/WSL2 and macOS) the container runs inside a Linux VM, so D3D11VA and VideoToolbox aren't reachable — Docker on those platforms processes on CPU. For GPU acceleration on Windows or macOS, install from source.
 
-For complete GPU setup, tuning, and troubleshooting:
-
-- [Getting Started — GPU Acceleration](docs/getting-started.md#gpu-acceleration)
-- [Guides & Troubleshooting](docs/guides.md#troubleshooting)
-
-**Check detected GPUs:** Open the web UI (http://YOUR_IP:8080) and go to **Settings** or **Setup** — detected GPUs are shown there.
+See [Getting Started — GPU Acceleration](docs/getting-started.md#gpu-acceleration) for per-vendor setup, tuning, and detection. Detected GPUs are shown in the web UI under **Settings** or **Setup**.
 
 ### GPU + CPU Fallback
 
@@ -158,12 +151,13 @@ See [Automatic GPU → CPU Fallback](docs/guides.md#automatic-gpu--cpu-fallback)
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Documentation Hub](docs/README.md) | Start here — architecture diagrams |
-| [Getting Started](docs/getting-started.md) | Docker, GPU, Unraid |
-| [Reference](docs/reference.md) | Configuration options & REST API |
-| [Guides](docs/guides.md) | Web interface, webhooks, FAQ, troubleshooting |
+| Document | What's there |
+|---|---|
+| [Documentation Hub](docs/README.md) | Pick the right doc for your task |
+| [Getting Started](docs/getting-started.md) | Install with Docker, GPU setup, Unraid, networking |
+| [Guides](docs/guides.md) | Web UI, schedules, webhooks, HDR handling, troubleshooting |
+| [Reference](docs/reference.md) | Config options, env vars, REST API, WebSocket events |
+| [FAQ](docs/faq.md) | Common questions about setup, performance, and compatibility |
 
 ---
 
@@ -183,13 +177,7 @@ See [Automatic GPU → CPU Fallback](docs/guides.md#automatic-gpu--cpu-fallback)
 
 ## Contributing
 
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, tests, code style, and the PR workflow.
 
 ---
 

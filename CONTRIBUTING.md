@@ -133,31 +133,45 @@ def test_config_loads_from_env(monkeypatch, mock_config):
     assert config.plex_url == 'http://test:32400'
 ```
 
+### Load Testing
+
+A Locust scenario for stress-testing the web API lives in `tests/load/`:
+
+```bash
+# Interactive mode — open http://localhost:8089 to configure and start
+locust -f tests/load/locustfile.py
+
+# Headless mode
+locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
+```
+
+Locust is a dev dependency — install with `pip install -e ".[dev]"`.
+
 ---
 
 ## Project Structure
 
 ```
 plex_generate_previews/
-├── config.py              # Configuration management
-├── worker.py              # Thread pool workers
-├── media_processing.py    # FFmpeg, BIF generation
-├── processing.py          # Core processing workflow orchestration
-├── bif_reader.py          # BIF file parsing for viewer
-├── plex_client.py         # Plex API client
-├── gpu_detection.py       # GPU discovery
-├── upgrade.py             # Settings migration and schema upgrades
-├── utils.py               # Path sanitization, Docker detection
-├── logging_config.py      # Loguru + Rich console setup
-├── version_check.py       # GitHub release version checking
-└── web/                   # Flask web app
-    ├── wsgi.py            # Gunicorn entry point
-    ├── app.py             # App factory, SocketIO init
-    ├── routes/            # HTTP routes + API endpoints (modular package)
-    ├── auth.py            # Token authentication
-    ├── jobs.py            # Job state management + SocketIO events
-    ├── settings_manager.py# Persistent settings (JSON)
-    └── scheduler.py       # APScheduler cron/interval jobs
+├── config/               # Config dataclass, paths, validation
+├── gpu/                  # GPU discovery + FFmpeg capability probing
+├── jobs/                 # Orchestrator, dispatcher, worker pool
+├── processing/           # FFmpeg runner, HDR detection, retry cascade
+├── plex_client.py        # Plex API client
+├── bif_reader.py         # BIF parsing (used by the viewer)
+├── upgrade.py            # Settings migrations / schema upgrades
+├── utils.py              # Path sanitization, Docker detection
+├── logging_config.py     # Loguru + Rich console setup
+├── version_check.py      # GitHub release version check
+└── web/
+    ├── wsgi.py              # Gunicorn entry point
+    ├── app.py               # App factory, SocketIO init
+    ├── auth.py              # Token authentication
+    ├── jobs.py              # Job state + SocketIO events
+    ├── settings_manager.py  # Persistent settings (settings.json)
+    ├── scheduler.py         # APScheduler cron/interval jobs
+    ├── webhooks.py          # Radarr/Sonarr/Tdarr/Plex webhook handlers
+    └── routes/              # Modular HTTP + REST API routes
 ```
 
 ---
@@ -178,9 +192,9 @@ plex_generate_previews/
 
 ### Adding a Configuration Option
 
-1. Add field to `Config` dataclass in `config.py`
-2. Add loading logic in `load_config()`
-3. Add to `SettingsManager` if web-configurable
+1. Add field to the `Config` dataclass in `config/__init__.py`
+2. Add loading / defaulting logic in `load_config()` (also in `config/__init__.py`); path/validation helpers live in `config/paths.py` and `config/validation.py`
+3. Add to `web/settings_manager.py` if the option is web-configurable
 4. Update `mock_config` fixture in `tests/conftest.py`
 5. Document in `docs/reference.md`
 
@@ -204,16 +218,21 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 ## Customizing CI/CD for Forks
 
-### docker-publish.yml
+The repository has three GitHub Actions workflows:
 
-Change the `DOCKER_IMAGE` env var (line 11) to your Docker Hub image name. Set `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as repository secrets in **GitHub Settings → Secrets and variables → Actions**.
+| Workflow | Purpose | Fork action |
+|---|---|---|
+| `.github/workflows/ci.yml` | Lint, test, and build/push Docker images for `main`, `dev`, and tags | Change `DOCKER_IMAGE` (line 30) to your Docker Hub namespace |
+| `.github/workflows/docker-pr.yml` | Builds per-PR Docker previews | Works as-is |
+| `.github/workflows/docker-pr-cleanup.yml` | Removes PR-preview images when PRs close | Works as-is |
 
-### test.yml
+Required repository secrets (**Settings → Secrets and variables → Actions**):
 
-Works as-is for any fork — no changes needed.
-
-> [!NOTE]
-> `docker-publish.yml` triggers after the "Tests" workflow succeeds on `main`. The `workflows: [Tests]` name must match the `name:` in `test.yml`. For Codecov coverage reporting, set the `CODECOV_TOKEN` repository secret.
+| Secret | Used by | Purpose |
+|---|---|---|
+| `DOCKER_USERNAME` / `DOCKER_PASSWORD` | `ci.yml`, `docker-pr.yml` | Push to Docker Hub |
+| `DOCKERHUB_TOKEN` | `ci.yml` (main only) | Sync `DOCKERHUB_README.md` to the Docker Hub description |
+| `CODECOV_TOKEN` | `ci.yml` | Upload test coverage to Codecov (drives the README coverage badge) |
 
 ---
 

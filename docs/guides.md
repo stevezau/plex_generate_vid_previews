@@ -2,17 +2,27 @@
 
 > [Back to Docs](README.md)
 
-User guides for the web interface, webhooks, load testing, and answers to common questions.
+Guides for the web interface, automation and webhooks, HDR handling, and troubleshooting.
 
 > [!IMPORTANT]
 > This page is the source of truth for web operations, webhook workflows, and troubleshooting.
 > For installation and first-time setup, use [Getting Started](getting-started.md).
 > For exact configuration values and API contracts, use [Configuration & API Reference](reference.md).
 
+## Contents
+
+- [Web Interface](#web-interface)
+- [Webhook Integration](#webhook-integration)
+- [Auto-trigger from Plex (no Sonarr/Radarr)](#auto-trigger-from-plex-no-sonarrradarr)
+- [HDR & Dolby Vision](#hdr--dolby-vision)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](faq.md)
+
 ## Related Docs
 
 - [Getting Started](getting-started.md)
 - [Configuration & API Reference](reference.md)
+- [FAQ](faq.md)
 - [Main README](../README.md)
 
 ---
@@ -229,31 +239,11 @@ curl -H "X-Auth-Token: YOUR_TOKEN" http://localhost:8080/api/jobs
 
 ### Rate Limiting
 
-Protection against brute force:
-
-| Endpoint | Limit |
-|----------|-------|
-| `/login` POST | 5 per minute |
-| `/api/auth/login` | 10 per minute |
-| Default | 200 per day, 50 per hour |
-
-For multi-worker deployments, configure Redis:
-
-```bash
-RATELIMIT_STORAGE_URL=redis://localhost:6379
-```
+Login and API endpoints are rate-limited to protect against brute force. See [Reference — Rate Limiting](reference.md#rate-limiting) for the exact limits and the `RATELIMIT_STORAGE_URL` env var for multi-worker deployments.
 
 ### Real-Time Updates
 
-The dashboard uses Flask-SocketIO with WebSocket for real-time job progress updates. The client connects to the `/jobs` namespace.
-
-| Event | Description |
-|-------|-------------|
-| `job_created` | New job was started |
-| `job_progress` | Progress update (percentage, current item) |
-| `job_complete` | Job finished successfully |
-| `job_error` | Job encountered an error |
-| `worker_update` | Worker status changed |
+The dashboard streams live job progress over WebSocket (Flask-SocketIO, `/jobs` namespace). See [Reference — WebSocket Events](reference.md#websocket-events) for the event table and payloads.
 
 ---
 
@@ -468,93 +458,9 @@ You can enable **both** if you want belt-and-suspenders behavior — the recentl
 
 ---
 
-## Load Testing
+## HDR & Dolby Vision
 
-A Locust load test is available for stress testing the web API.
-
-### Running Load Tests
-
-```bash
-# Interactive mode (opens browser UI)
-locust -f tests/load/locustfile.py
-
-# Open http://localhost:8089 to configure and start
-```
-
-```bash
-# Headless mode
-locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
-```
-
-> [!NOTE]
-> Locust is a dev dependency. Install with `pip install -e ".[dev]"`.
-
----
-
-## FAQ
-
-### General
-
-**What does this tool do?**
-
-Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos. Plex's built-in generation is slow — this tool makes it 5-10x faster using GPU acceleration.
-
-**What Plex settings should I use?**
-
-In Plex Settings → Library, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation. Disabling it in Plex avoids duplicate work and prevents Plex from using CPU for thumbnails when you want this app to handle them.
-
-**Does this generate chapter thumbnails?**
-
-No. This tool only generates **video preview thumbnails** (BIF files for timeline scrubbing). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
-
-**Does this work on Windows?**
-
-Yes! Windows supports GPU acceleration: NVIDIA GPUs use CUDA, and AMD/Intel GPUs use D3D11VA. Install the latest GPU drivers and it just works.
-
-**Can I use this without a GPU?**
-
-Yes! In **Settings** → **Processing Options**, disable all GPUs (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `4` or `8`).
-
-**Is Docker required? Is there a standalone .exe?**
-
-Docker is the recommended and supported way to run this tool. There is no standalone executable. Advanced users can install from source on Linux (requires Python 3.10+, FFmpeg, and mediainfo), but this is not officially supported. See [Getting Started](getting-started.md) for Docker setup.
-
-**Does Plex need to run in Docker too?**
-
-No. Plex can run bare-metal, in Docker, or any other way. This tool just needs network access to the Plex API and read/write access to the Plex application data directory (where BIF files are stored).
-
-**Can I run this on a different machine than my Plex server?**
-
-Yes, as long as the tool can reach the Plex API over the network and both machines have access to the media files and Plex config directory (e.g. via NFS or SMB mounts). See [Networking](getting-started.md#networking) for setup details.
-
-**Does this work with Jellyfin or Emby?**
-
-No. This tool is Plex-only — it generates Plex-specific BIF files and uses the Plex API to discover libraries and media items.
-
-### GPUs
-
-**How do I know which GPUs are detected?**
-
-Open **Settings** → **Processing Options**. The GPU panel lists all detected GPUs with their device IDs, names, and types.
-
-**Can I use multiple GPUs?**
-
-Yes! In **Settings** → **Processing Options**, enable individual GPUs and set workers and FFmpeg threads per GPU. Each GPU can be enabled/disabled independently.
-
-**Which GPU should I use?**
-
-| GPU Type | Best For |
-|----------|----------|
-| NVIDIA | Fastest for video processing |
-| Intel iGPU | Great for low-power setups, common on Unraid |
-| AMD | Good VAAPI support on Linux |
-| CPU-only | Works everywhere, slower |
-
-### HDR / Tone Mapping
-
-**Does it handle HDR content correctly?**
-
-Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating thumbnails:
+The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbnails. Behavior depends on the HDR format:
 
 | Format | Method |
 |--------|--------|
@@ -564,7 +470,13 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 | Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
 | Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178), [#212](https://github.com/stevezau/plex_generate_vid_previews/issues/212)) |
 
-**Dolby Vision Profile 5** (no backward-compatible HDR10 layer) requires a DV-aware tone-map filter because the zscale/tonemap chain cannot read DV RPU reshaping metadata and produces dark or blank thumbnails. The tool picks the fastest working path per GPU vendor:
+### Tone-map algorithm
+
+Non-DV HDR content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. Change it in **Settings → Thumbnail Settings → HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` env var. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If HDR thumbnails look too dark, try `reinhard`. Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
+
+### Dolby Vision Profile 5
+
+Profile 5 has no backward-compatible HDR10 layer, so the zscale/tonemap chain can't read its RPU reshaping metadata and produces dark or blank thumbnails. The tool picks the fastest working path per GPU vendor:
 
 | Vendor | DV5 path | Typical speed on 4K |
 |---|---|---|
@@ -575,10 +487,12 @@ Yes. The tool auto-detects HDR metadata and tone maps to SDR before generating t
 
 The image ships **jellyfin-ffmpeg 7.1.3** as the preferred FFmpeg binary because Jellyfin's fork carries the `tonemap_opencl` DV-aware patch upstream FFmpeg still lacks. Falls back to the base image's FFmpeg 8.0.1 automatically on non-amd64 builds.
 
-**Container edge cases we handle automatically:**
+Profile 7/8 (with HDR10 fallback) uses the standard zscale/tonemap chain — FFmpeg reads the HDR10 base layer, so no libplacebo or special handling is needed.
 
-* **`/dev/dri/by-path` fixup.** Intel's OpenCL runtime (NEO) discovers GPUs by scanning `/dev/dri/by-path/*-render`. Under `--runtime=nvidia`, NVIDIA Container Toolkit populates that directory only for NVIDIA cards — leaving the Intel iGPU invisible to OpenCL. The container runs a oneshot s6 init (`init-dri-by-path`) that adds the missing symlinks for every DRM render node in `/dev/dri/`. No-op on bare metal / single-vendor hosts.
-* **NVIDIA Vulkan on dual-GPU hosts.** The Vulkan probe runs up to four retry strategies to get NVIDIA's ICD working (standard ICD, `__EGL_VENDOR_LIBRARY_FILENAMES`, synthesised GLVND vendor JSON, `VK_DRIVER_FILES`+EGL combined). On dual-GPU hosts (Intel iGPU + NVIDIA dGPU) the default probe picks Intel ANV first; the combined `VK_DRIVER_FILES` + `__EGL_VENDOR_LIBRARY_FILENAMES` retry forces NVIDIA so libplacebo runs on the NVIDIA card instead of ping-ponging frames across PCIe.
+### Container edge cases handled automatically
+
+- **`/dev/dri/by-path` fixup.** Intel's OpenCL runtime (NEO) discovers GPUs by scanning `/dev/dri/by-path/*-render`. Under `--runtime=nvidia`, NVIDIA Container Toolkit populates that directory only for NVIDIA cards — leaving the Intel iGPU invisible to OpenCL. The container runs a oneshot s6 init (`init-dri-by-path`) that adds the missing symlinks for every DRM render node in `/dev/dri/`. No-op on bare metal / single-vendor hosts.
+- **NVIDIA Vulkan on dual-GPU hosts.** The Vulkan probe runs up to four retry strategies to get NVIDIA's ICD working (standard ICD, `__EGL_VENDOR_LIBRARY_FILENAMES`, synthesised GLVND vendor JSON, `VK_DRIVER_FILES`+EGL combined). On dual-GPU hosts (Intel iGPU + NVIDIA dGPU) the default probe picks Intel ANV first; the combined `VK_DRIVER_FILES` + `__EGL_VENDOR_LIBRARY_FILENAMES` retry forces NVIDIA so libplacebo runs on the NVIDIA card instead of ping-ponging frames across PCIe.
 
 > [!IMPORTANT]
 > **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
@@ -588,126 +502,11 @@ The image ships **jellyfin-ffmpeg 7.1.3** as the preferred FFmpeg binary because
 >
 > If the warning banner persists after the restart, your setup may be hitting one of the less-common causes (driver 570–579 regression, CDI manifest missing `libnvidia-glvkspirv.so`, or ICD JSON at the wrong path). The in-app warning will name the specific cause it detected. You can also open `GET /api/system/vulkan/debug` to fetch a plain-text diagnostic bundle to attach to a GitHub issue.
 
-**Dolby Vision Profile 7/8** (with HDR10 fallback) uses the standard zscale/tonemap chain. FFmpeg reads the HDR10 base layer by default, so no libplacebo or special handling is needed.
+---
 
-**Non-DV HDR** content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. The tone mapping algorithm can be changed in **Settings > Thumbnail Settings > HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` environment variable. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If your HDR thumbnails look too dark, try `reinhard`.
+## FAQ
 
-Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
-
-### Performance
-
-**How many threads should I use?**
-
-Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Options**. The GPU panel lets you set workers and FFmpeg threads per GPU.
-
-| Scenario | GPU Workers (per GPU) | CPU Threads |
-|----------|-------------|-------------|
-| Default | 1 | 1 |
-| Balanced | 4 total | 2 |
-| High-end | 8 total | 4 |
-| CPU-only | 0 | 8 |
-
-> [!TIP]
-> Start with the defaults and increase gradually while monitoring system load.
-
-**Why is CPU usage high when I have a GPU configured?**
-
-GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding (via NVDEC, VAAPI, etc.), downscaling to thumbnail size (via `scale_cuda` / `scale_vaapi`), and tone mapping for Dolby Vision Profile 5 (via Vulkan/libplacebo). The CPU handles frame selection, the final HDR10 tone-map pass (if applicable), and JPEG encoding.
-
-For **standard (SDR) content**, GPU does nearly all the work and CPU usage is minimal — you'll see speeds of 500x or higher.
-
-For **Dolby Vision content**, CPU usage is noticeably higher because frames must be moved between CPU and GPU memory for the libplacebo tone map. Expected speeds on 4K DV content:
-
-- **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60x+ across all GPU vendors. Uses HW decode + GPU downscale + zscale tonemap on the 320×240 frame.
-- **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker):
-  - **Intel** (iGPU, Arc): ~17× via VAAPI decode + OpenCL tonemap. Requires `intel-opencl-icd` (already in the image) and a render node (`--device /dev/dri:/dev/dri`).
-  - **NVIDIA**: ~10–16× via NVDEC + Vulkan libplacebo.  Needs `NVIDIA_DRIVER_CAPABILITIES=all` (or at minimum `compute,video,utility,graphics`) so the NVIDIA Vulkan ICD reaches the container.
-  - **AMD / Apple / CPU-only**: ~5–10× via software decode + libplacebo.
-
-The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
-
-**How much RAM does each worker use?**
-
-Typical per-worker RSS with hardware decode:
-
-| Content | Per-worker RSS |
-|---|---|
-| SDR 1080p | ~90–200 MB |
-| 4K HDR10 / DV P7+8 | ~250–300 MB |
-| 4K DV Profile 5 (libplacebo) | ~350–500 MB |
-
-Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix (issue #218), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
-
-**What's thumbnail quality 1-10?**
-
-Lower numbers = higher quality but larger file sizes.
-
-- Quality 2 = highest quality
-- Quality 4 = default (good balance)
-- Quality 10 = lowest quality
-
-### Docker
-
-**Why does my container fail to start?**
-
-Most common cause: using `init: true` in docker-compose. Remove it -- this container uses s6-overlay (a built-in process manager) and `init: true` conflicts with it.
-
-**Why can't the container find my files?**
-
-Path mapping issue. See [Path Mappings](reference.md#path-mappings).
-
-**How do I get the authentication token?**
-
-Use [Authentication Token](getting-started.md#authentication-token).
-
-**Does GPU passthrough work with Docker Desktop on Windows?**
-
-Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, run natively (CUDA for NVIDIA, D3D11VA for AMD/Intel) instead of Docker.
-
-**Windows: paths in config must use forward slashes**
-
-On Windows, use forward slashes (`/`) in all path configuration (environment variables, `.env` files, Settings). Backslashes (`\`) will cause path resolution failures.
-
-### Processing
-
-**Can I process specific libraries only?**
-
-Yes! In **Settings** → **Libraries**, select which libraries to process.
-
-**How do I regenerate existing thumbnails?**
-
-When starting a job, use the **Regenerate** option to force regeneration of existing thumbnails.
-
-**Why is it "skipping" some files?**
-
-Possible causes:
-
-- Thumbnails already exist (use the **Regenerate** option when starting a job to force)
-- File not found (check [path mappings](reference.md#path-mappings))
-- Invalid file format
-
-**Why does ETA show "Calculating..." for so long?**
-
-The ETA calculation is designed to be **accurate, not fast**:
-
-1. **Initial skip burst (0-30 seconds)**: shows "Calculating..." — many files may already have thumbnails and are skipped instantly
-2. **First few items processed (30s-5 min)**: still shows "Calculating..." — real FFmpeg encoding is underway, but not enough data yet
-3. **Realistic estimate appears (5+ min)**: shows time like "8h 30m" — calculated from actual per-item processing time, updates every 3 seconds
-4. **During processing**: ETA counts down and adjusts in real-time as processing rate varies
-
-Early ETA guesses based on incomplete data are wildly inaccurate. The "Calculating..." phase filters out this noise.
-
-**What is the Sonarr/Radarr path column for?**
-
-Only relevant if you use [webhook integration](guides.md#webhook-integration). When Sonarr/Radarr fire a webhook, they include the file path as *they* see it inside their container, which may differ from the path inside this tool's container. The path column translates between them. For example:
-
-| Container | Might see the file as |
-|-----------|----------------------|
-| Plex | `/data/tv/Show/episode.mkv` |
-| Sonarr | `/tv/Show/episode.mkv` |
-| This tool | `/mnt/media/tv/Show/episode.mkv` |
-
-If you are not using webhooks, or all containers use the same media paths, leave it blank.
+Common questions have moved to their own page — see [FAQ](faq.md).
 
 ---
 
