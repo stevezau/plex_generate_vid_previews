@@ -282,12 +282,87 @@ def test_plex_connection():
                 "error": None,
             }
         )
+    except requests.exceptions.SSLError as e:
+        logger.error(f"Plex connection test failed (SSL): {e}")
+        return jsonify(
+            {
+                "success": False,
+                "server_name": None,
+                "error": (
+                    f"SSL certificate verification failed: {e}. "
+                    "If you're using a self-signed certificate or an internal CA, "
+                    "uncheck 'Verify SSL'."
+                ),
+            }
+        )
+    except requests.exceptions.Timeout:
+        logger.error(f"Plex connection test failed: timed out contacting {plex_url}")
+        return jsonify(
+            {
+                "success": False,
+                "server_name": None,
+                "error": (
+                    f"Connection to {plex_url} timed out after 10s. The server may be unreachable or overloaded."
+                ),
+            }
+        )
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Plex connection test failed: {e}")
+        return jsonify(
+            {
+                "success": False,
+                "server_name": None,
+                "error": (
+                    f"Could not connect to Plex at {plex_url}. "
+                    "Check the URL and that the server is running and reachable from this host."
+                ),
+            }
+        )
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status == 401:
+            detail = "Plex rejected the authentication token (401). Re-authenticate with Plex or check your token."
+        elif status == 403:
+            detail = "Access denied by Plex server (403). Ensure your account has access."
+        elif status == 404:
+            detail = f"URL reachable but did not return Plex server identity (404). Check '{plex_url}' is your Plex base URL."
+        else:
+            detail = f"Plex returned HTTP {status}."
+        logger.error(f"Plex connection test failed: HTTP {status}")
+        return jsonify({"success": False, "server_name": None, "error": detail})
+    except requests.exceptions.MissingSchema:
+        return jsonify(
+            {
+                "success": False,
+                "server_name": None,
+                "error": f"Invalid URL '{plex_url}'. Include the scheme, e.g. http://plex:32400.",
+            }
+        )
+    except requests.exceptions.InvalidURL as e:
+        return jsonify(
+            {
+                "success": False,
+                "server_name": None,
+                "error": f"Invalid URL '{plex_url}': {e}",
+            }
+        )
     except requests.RequestException as e:
         logger.error(f"Plex connection test failed: {e}")
         return jsonify(
             {
                 "success": False,
                 "server_name": None,
-                "error": "Connection test failed",
+                "error": f"Connection test failed: {e}",
+            }
+        )
+    except ValueError as e:
+        logger.error(f"Plex connection test failed (invalid JSON): {e}")
+        return jsonify(
+            {
+                "success": False,
+                "server_name": None,
+                "error": (
+                    "Server responded but did not return valid Plex data. The URL may not be pointing at a Plex server."
+                ),
             }
         )

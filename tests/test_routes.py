@@ -2447,7 +2447,127 @@ class TestPlexTestConnection:
             json={"url": "http://plex:32400", "token": "test-token"},
         )
         assert resp.status_code == 200
-        assert resp.get_json()["success"] is False
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "Could not connect" in body["error"]
+        assert "http://plex:32400" in body["error"]
+
+    @patch("requests.get")
+    def test_plex_test_timeout_returns_specific_message(self, mock_get, client):
+        import requests as req_mod
+
+        mock_get.side_effect = req_mod.exceptions.Timeout("timed out")
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "test-token")
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "http://plex:32400", "token": "test-token"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "timed out" in body["error"]
+
+    @patch("requests.get")
+    def test_plex_test_ssl_error_returns_specific_message(self, mock_get, client):
+        import requests as req_mod
+
+        mock_get.side_effect = req_mod.exceptions.SSLError("bad cert")
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "https://plex:32400")
+        sm.set("plex_token", "test-token")
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "https://plex:32400", "token": "test-token"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "SSL" in body["error"]
+        assert "Verify SSL" in body["error"]
+
+    @patch("requests.get")
+    def test_plex_test_http_401_returns_auth_message(self, mock_get, client):
+        import requests as req_mod
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        err = req_mod.exceptions.HTTPError("401 Unauthorized")
+        err.response = mock_response
+        mock_response.raise_for_status.side_effect = err
+        mock_get.return_value = mock_response
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex:32400")
+        sm.set("plex_token", "bad-token")
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "http://plex:32400", "token": "bad-token"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "401" in body["error"]
+        assert "token" in body["error"].lower()
+
+    @patch("requests.get")
+    def test_plex_test_http_404_returns_not_plex_message(self, mock_get, client):
+        import requests as req_mod
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        err = req_mod.exceptions.HTTPError("404 Not Found")
+        err.response = mock_response
+        mock_response.raise_for_status.side_effect = err
+        mock_get.return_value = mock_response
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://example.com")
+        sm.set("plex_token", "test-token")
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "http://example.com", "token": "test-token"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "404" in body["error"]
+
+    @patch("requests.get")
+    def test_plex_test_invalid_json_returns_not_plex_message(self, mock_get, client):
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.side_effect = ValueError("not json")
+        mock_get.return_value = mock_response
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://example.com")
+        sm.set("plex_token", "test-token")
+        resp = client.post(
+            "/api/plex/test",
+            headers=_api_headers(),
+            json={"url": "http://example.com", "token": "test-token"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "not a Plex server" in body["error"] or "Plex server" in body["error"]
+        assert "valid Plex data" in body["error"]
 
 
 # ---------------------------------------------------------------------------
