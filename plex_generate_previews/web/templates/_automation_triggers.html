@@ -82,7 +82,7 @@
                 <ul class="mb-3">
                     <li><strong>Plex Pass</strong> active on your server-owner account.</li>
                     <li>
-                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → Server → Notifications.
+                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → General (toggle <em>Enable mobile push notifications</em>).
                         <div class="text-muted small mt-1">
                             This is a Plex quirk: the <code>library.new</code> webhook is delivered through the same code path as mobile push notifications, so with push notifications off, library events never fire. You don't have to actually use mobile push on a phone — they just need to be turned on.
                         </div>
@@ -94,6 +94,7 @@
                     Your Plex account doesn't appear to have an active Plex Pass subscription. Plex's webhook feature is Plex-Pass-only — use the Recently Added Scanner below instead.
                 </div>
                 <div id="plexWebhookError" class="alert alert-danger small d-none"></div>
+                <div id="plexWebhookWarning" class="alert alert-warning small d-none"></div>
 
                 <h6 class="mb-2">Setup</h6>
                 <ol class="mb-3">
@@ -833,10 +834,19 @@ function applyPlexWebhookStatus(data) {
     var unregisterBtn = document.getElementById('plexWebhookUnregisterBtn');
     var noPassWarn = document.getElementById('plexWebhookNoPlexPass');
     var errBox = document.getElementById('plexWebhookError');
+    var warnBox = document.getElementById('plexWebhookWarning');
 
     noPassWarn.classList.add('d-none');
     errBox.classList.add('d-none');
     errBox.textContent = '';
+    if (warnBox) {
+        warnBox.classList.add('d-none');
+        warnBox.textContent = '';
+        if (data.warning) {
+            warnBox.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + data.warning;
+            warnBox.classList.remove('d-none');
+        }
+    }
 
     if (data.has_plex_pass === false) {
         badge.className = 'badge badge-status bg-warning text-dark';

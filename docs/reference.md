@@ -684,7 +684,7 @@ When `Media[].Part[].file` is missing from the payload (Plex doesn't always incl
 **Authentication:** same as the other webhook endpoints — `X-Auth-Token` header, `Authorization: Bearer`, or HTTP Basic password.
 
 > [!IMPORTANT]
-> Plex's `library.new` webhook is wired through the same code path as mobile push notifications. If push notifications are disabled on your Plex server, library events are silently dropped — enable them under Plex Web → Settings → Server → Notifications. See the [Auto-trigger from Plex guide](guides.md#auto-trigger-from-plex-no-sonarrradarr) for full details.
+> Plex's `library.new` webhook is wired through the same code path as mobile push notifications. If push notifications are disabled on your Plex server, library events are silently dropped — enable them under Plex Web → Settings → General (toggle *Enable mobile push notifications*). See the [Auto-trigger from Plex guide](guides.md#auto-trigger-from-plex-no-sonarrradarr) for full details.
 
 #### POST /api/settings/plex_webhook/register
 

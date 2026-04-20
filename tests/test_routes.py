@@ -2571,6 +2571,121 @@ class TestPlexTestConnection:
 
 
 # ---------------------------------------------------------------------------
+# Plex Webhook Test Reachability — loopback-in-Docker guard
+# ---------------------------------------------------------------------------
+
+
+class TestPlexWebhookLoopbackGuard:
+    """Ensure the webhook self-test short-circuits for localhost URLs in Docker.
+
+    Inside a container, `localhost` is the container itself — so a scary
+    ConnectionRefused stack trace is the usual symptom when users leave the
+    auto-filled default URL unchanged. The guard produces actionable text
+    instead of attempting the doomed network call.
+    """
+
+    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("requests.post")
+    def test_loopback_in_docker_short_circuits_with_guidance(self, mock_post, mock_is_docker, client):
+        mock_is_docker.return_value = True
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_token", "plex-token")
+        sm.set("webhook_secret", "secret-value")
+
+        resp = client.post(
+            "/api/settings/plex_webhook/test",
+            headers=_api_headers(),
+            json={"public_url": "http://localhost:9191/api/webhooks/plex"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "localhost" in body["error"]
+        assert "Docker" in body["error"]
+        assert body["public_url"] == "http://localhost:9191/api/webhooks/plex"
+        # Guard must prevent any actual outbound request.
+        mock_post.assert_not_called()
+
+    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("requests.post")
+    def test_loopback_outside_docker_proceeds_with_network_call(self, mock_post, mock_is_docker, client):
+        mock_is_docker.return_value = False
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "ok"
+        mock_post.return_value = mock_response
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_token", "plex-token")
+        sm.set("webhook_secret", "secret-value")
+
+        resp = client.post(
+            "/api/settings/plex_webhook/test",
+            headers=_api_headers(),
+            json={"public_url": "http://localhost:9191/api/webhooks/plex"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        mock_post.assert_called_once()
+
+    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("requests.post")
+    def test_non_loopback_in_docker_proceeds(self, mock_post, mock_is_docker, client):
+        mock_is_docker.return_value = True
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "ok"
+        mock_post.return_value = mock_response
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_token", "plex-token")
+        sm.set("webhook_secret", "secret-value")
+
+        resp = client.post(
+            "/api/settings/plex_webhook/test",
+            headers=_api_headers(),
+            json={"public_url": "http://192.168.1.50:9191/api/webhooks/plex"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_post.assert_called_once()
+
+    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    def test_loopback_guard_covers_ipv4_and_ipv6(self, mock_is_docker, client):
+        mock_is_docker.return_value = True
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_token", "plex-token")
+        sm.set("webhook_secret", "secret-value")
+
+        for url in (
+            "http://127.0.0.1:9191/api/webhooks/plex",
+            "http://[::1]:9191/api/webhooks/plex",
+        ):
+            resp = client.post(
+                "/api/settings/plex_webhook/test",
+                headers=_api_headers(),
+                json={"public_url": url},
+            )
+            assert resp.status_code == 200
+            body = resp.get_json()
+            assert body["success"] is False, f"expected guard to trip for {url}"
+            assert "Docker" in body["error"]
+
+
+# ---------------------------------------------------------------------------
 # Plex Libraries API
 # ---------------------------------------------------------------------------
 

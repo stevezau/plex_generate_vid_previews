@@ -1,11 +1,13 @@
 """Settings and setup wizard API routes."""
 
 import os
+from urllib.parse import urlparse
 
 from flask import jsonify, request
 from loguru import logger
 
 from ...config import validate_processing_thread_totals
+from ...utils import is_docker_environment
 from ..auth import api_token_required, setup_or_auth_required
 from . import api
 from ._helpers import (
@@ -13,6 +15,38 @@ from ._helpers import (
     PLEX_DATA_ROOT,
     _safe_resolve_within,
 )
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _url_has_loopback_host(url: str) -> bool:
+    """True when the URL's hostname resolves to the local loopback interface."""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except (ValueError, AttributeError):
+        return False
+    return host in _LOOPBACK_HOSTS
+
+
+def _loopback_in_docker_warning(url: str) -> str | None:
+    """Return a user-facing warning when `url` points at localhost from a container.
+
+    Inside a Docker container, `localhost` refers to the container itself —
+    not the host — so any URL the user configured against `localhost` will be
+    unreachable from the running app. Outside Docker (native install) we
+    stay out of the way because loopback URLs work fine there.
+    """
+    if _url_has_loopback_host(url) and is_docker_environment():
+        return (
+            f"The webhook URL '{url}' points to localhost, which inside a Docker "
+            "container refers to the container itself — not the host. Use the "
+            "Docker host's LAN IP or a DNS name reachable from both this "
+            "container and your Plex Media Server "
+            "(e.g. http://192.168.1.50:9191/api/webhooks/plex)."
+        )
+    return None
 
 
 def _reconcile_live_gpu_workers(settings) -> None:
@@ -395,6 +429,7 @@ def plex_webhook_status():
             "has_plex_pass": has_pass,
             "error": error,
             "error_reason": error_reason,
+            "warning": _loopback_in_docker_warning(public_url),
         }
     )
 
@@ -571,6 +606,16 @@ def plex_webhook_test_reachability():
                 }
             ),
             400,
+        )
+
+    loopback_warning = _loopback_in_docker_warning(public_url)
+    if loopback_warning:
+        return jsonify(
+            {
+                "success": False,
+                "error": loopback_warning,
+                "public_url": public_url,
+            }
         )
 
     test_url = pwh._build_authenticated_url(public_url, auth_token)

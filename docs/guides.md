@@ -405,7 +405,7 @@ This uses Plex's built-in webhook feature. The app calls Plex's account API to r
 
 **Requirements:**
 - An active **Plex Pass** subscription on the server-owner account. Plex's webhook feature is Plex-Pass-only.
-- **Mobile Push Notifications enabled** on your Plex server. This is the catch: Plex's `library.new` event is delivered through the same code path as mobile push notifications, and if push notifications are off, library events are silently dropped. Enable them under Plex Web → Settings → Server → Notifications. You don't have to actually use mobile push — they just need to be turned on.
+- **Mobile Push Notifications enabled** on your Plex server. This is the catch: Plex's `library.new` event is delivered through the same code path as mobile push notifications, and if push notifications are off, library events are silently dropped. Enable them under Plex Web → Settings → General (toggle *Enable mobile push notifications*). You don't have to actually use mobile push — they just need to be turned on.
 
 **Setup:**
 1. Open the web UI → **Automation** → **Triggers** tab and scroll to (or click) the **Plex Direct** sidebar link.
