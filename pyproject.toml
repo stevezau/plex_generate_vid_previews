@@ -42,7 +42,7 @@ dependencies = [
     "werkzeug>=3.0.0,<3.1.7",  # 3.1.7 rejects underscores in Host header, breaks Docker hostnames (#196)
     "flask-wtf>=1.2.0,<2",
     "flask-socketio>=5.3.0,<6",
-    "flask-cors>=4.0.0,<5",
+    "flask-cors>=6.0.0,<7",  # 6.0.0 patches CVE-2024-6866 (case-insensitive path match)
     "flask-limiter>=3.5.0,<4",
     "apscheduler>=3.10.0,<4",
     "gunicorn>=22.0.0,<24",
@@ -60,7 +60,7 @@ test = [
     "pytest-timeout>=2.3.0",
     "pytest-playwright>=0.4.0",
     "playwright>=1.40.0",
-    "flask-cors>=4.0.0",
+    "flask-cors>=6.0.0,<7",
 ]
 dev = [
     "plex-generate-previews[test]",
