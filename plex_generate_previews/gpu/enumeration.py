@@ -195,52 +195,82 @@ def _scan_dev_dri_render_devices() -> list[str]:
         return []
 
 
-def _detect_nvidia_via_nvidia_smi() -> str:
-    """Detect NVIDIA GPU using nvidia-smi as fallback when driver detection fails.
+def _enumerate_nvidia_gpus_via_smi() -> list[dict[str, str]]:
+    """Enumerate NVIDIA GPUs via nvidia-smi with per-GPU metadata.
 
-    This is useful in WSL2 environments where lspci cannot detect GPU vendors
-    due to hardware virtualization, but nvidia-smi works correctly via the
-    Windows NVIDIA driver passthrough.
+    Runs ``nvidia-smi --query-gpu=index,name,uuid --format=csv,noheader``
+    and parses the CSV output.  This is the primary NVIDIA enumeration
+    source for all environments (bare metal, nvidia-container-runtime,
+    WSL2) because NVIDIA CUDA operates through /dev/nvidia* and does not
+    require /dev/dri render nodes.
 
     Returns:
-        str: 'NVIDIA' if NVIDIA GPU is detected, 'UNKNOWN' otherwise
+        list[dict[str, str]]: One entry per GPU with keys ``index``,
+        ``name``, ``uuid``.  Returns an empty list when nvidia-smi is
+        unavailable, times out, or reports no GPUs.
 
     """
     try:
-        # Check if nvidia-smi is available and can query GPU information
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-gpu=index,name,uuid", "--format=csv,noheader"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-
-        if result.returncode == 0 and result.stdout.strip():
-            # nvidia-smi successfully returned GPU names
-            gpu_names = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
-            if gpu_names:
-                logger.debug(f"nvidia-smi detected {len(gpu_names)} NVIDIA GPU(s): {gpu_names}")
-                return "NVIDIA"
-
-        # nvidia-smi failed or returned no GPUs
-        if result.returncode != 0:
-            logger.debug(f"nvidia-smi failed with return code: {result.returncode}")
-            if result.stderr:
-                logger.debug(f"nvidia-smi stderr: {result.stderr.strip()}")
-        else:
-            logger.debug("nvidia-smi returned no GPU information")
-
-        return "UNKNOWN"
     except FileNotFoundError:
-        # nvidia-smi not installed
         logger.debug("nvidia-smi command not found (NVIDIA driver may not be installed)")
-        return "UNKNOWN"
+        return []
     except subprocess.TimeoutExpired:
         logger.debug("nvidia-smi command timed out after 5 seconds")
-        return "UNKNOWN"
+        return []
     except Exception as e:
         logger.debug(f"Error running nvidia-smi: {e}")
-        return "UNKNOWN"
+        return []
+
+    if result.returncode != 0:
+        logger.debug(f"nvidia-smi failed with return code: {result.returncode}")
+        if result.stderr:
+            logger.debug(f"nvidia-smi stderr: {result.stderr.strip()}")
+        return []
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        logger.debug("nvidia-smi returned no GPU information")
+        return []
+
+    gpus: list[dict[str, str]] = []
+    for line in stdout.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2 or not parts[0]:
+            continue
+        gpus.append(
+            {
+                "index": parts[0],
+                "name": parts[1],
+                "uuid": parts[2] if len(parts) >= 3 else "",
+            }
+        )
+
+    if gpus:
+        logger.debug(f"nvidia-smi detected {len(gpus)} NVIDIA GPU(s): {[g['name'] for g in gpus]}")
+    return gpus
+
+
+def _detect_nvidia_via_nvidia_smi() -> str:
+    """Detect NVIDIA GPU using nvidia-smi (presence check only).
+
+    Thin wrapper around :func:`_enumerate_nvidia_gpus_via_smi` preserved
+    for callers that only need a vendor string (``"NVIDIA"`` /
+    ``"UNKNOWN"``), such as the lspci fallback and vendor-annotation
+    paths.  New code that needs per-GPU metadata should call the
+    enumeration helper directly.
+
+    Returns:
+        str: 'NVIDIA' if at least one NVIDIA GPU is detected, 'UNKNOWN'
+        otherwise.
+
+    """
+    return "NVIDIA" if _enumerate_nvidia_gpus_via_smi() else "UNKNOWN"
 
 
 def _detect_gpu_type_from_lspci() -> str:

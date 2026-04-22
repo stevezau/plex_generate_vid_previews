@@ -753,3 +753,62 @@ class TestMigrateToV4:
             assert sched["trigger_value"] == "30"
         library_ids = {s["library_id"] for s in schedules}
         assert library_ids == {"1", "2"}
+
+
+class TestMigrateToV6:
+    """Tests for the v6 migration that strips stale generic 'cuda' gpu_config entries."""
+
+    def test_no_op_when_gpu_config_missing(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v6
+
+        assert _migrate_to_v6(settings_manager) == []
+
+    def test_no_op_when_no_stale_cuda_entry(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v6
+
+        settings_manager.set(
+            "gpu_config",
+            [
+                {"device": "cuda:0", "name": "NVIDIA", "type": "NVIDIA", "enabled": True, "workers": 1},
+                {"device": "/dev/dri/renderD128", "name": "AMD", "type": "AMD", "enabled": True, "workers": 1},
+            ],
+        )
+
+        notes = _migrate_to_v6(settings_manager)
+        assert notes == []
+        assert len(settings_manager.get("gpu_config")) == 2
+
+    def test_strips_legacy_cuda_entry(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v6
+
+        settings_manager.set(
+            "gpu_config",
+            [
+                {"device": "cuda", "name": "NVIDIA GeForce RTX 3090", "type": "NVIDIA", "enabled": True, "workers": 2},
+                {"device": "/dev/dri/renderD128", "name": "AMD", "type": "AMD", "enabled": True, "workers": 1},
+            ],
+        )
+
+        notes = _migrate_to_v6(settings_manager)
+
+        assert len(notes) == 1
+        assert "removed 1" in notes[0]
+        remaining = settings_manager.get("gpu_config")
+        assert len(remaining) == 1
+        assert remaining[0]["device"] == "/dev/dri/renderD128"
+
+    def test_leaves_indexed_cuda_entries_untouched(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v6
+
+        settings_manager.set(
+            "gpu_config",
+            [
+                {"device": "cuda:0", "type": "NVIDIA", "enabled": True, "workers": 1},
+                {"device": "cuda:1", "type": "NVIDIA", "enabled": True, "workers": 1},
+            ],
+        )
+
+        notes = _migrate_to_v6(settings_manager)
+        assert notes == []
+        devices = [e["device"] for e in settings_manager.get("gpu_config")]
+        assert devices == ["cuda:0", "cuda:1"]

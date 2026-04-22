@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 5
+_CURRENT_SCHEMA_VERSION = 6
 
 # -------------------------------------------------------------------------
 # Env-var-to-settings migration map
@@ -174,6 +174,11 @@ def _migrate_schema(sm) -> None:
               setting was larger than ``cpu_threads``, fold the value
               into ``cpu_threads`` so existing deployments keep the same
               CPU concurrency after the upgrade.
+        v6 -- Strips stale ``{"device": "cuda", ...}`` entries from
+              ``gpu_config``.  NVIDIA GPUs are now enumerated per-device
+              as ``cuda:0``, ``cuda:1``, etc. (issue #221); any legacy
+              generic ``cuda`` entries no longer match detected GPUs and
+              would otherwise stay orphaned in settings.
     """
     current = sm.get("_schema_version", 1)
     if current >= _CURRENT_SCHEMA_VERSION:
@@ -192,6 +197,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 5:
         all_notes += _migrate_to_v5(sm)
+
+    if current < 6:
+        all_notes += _migrate_to_v6(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -420,6 +428,31 @@ def _migrate_to_v5(sm) -> list:
 
     sm.apply_changes(updates=updates or None, deletes=["cpu_fallback_threads"])
     notes.append("v5: removed obsolete cpu_fallback_threads key")
+    return notes
+
+
+def _migrate_to_v6(sm) -> list:
+    """Strip stale generic ``"cuda"`` gpu_config entries (issue #221).
+
+    Prior to the per-device NVIDIA enumeration rewrite, NVIDIA GPUs were
+    registered with a generic ``device: "cuda"`` string.  Multi-GPU
+    hosts silently collapsed onto that single entry.  NVIDIA GPUs are
+    now keyed by their nvidia-smi index (``cuda:0``, ``cuda:1``, ...),
+    so any legacy ``"cuda"`` entry no longer matches a detected GPU and
+    should be dropped so the UI repopulates cleanly on next re-scan.
+    """
+    notes: list[str] = []
+    raw = sm.get("gpu_config")
+    if not isinstance(raw, list):
+        return notes
+
+    kept = [e for e in raw if not (isinstance(e, dict) and e.get("device") == "cuda")]
+    removed = len(raw) - len(kept)
+    if removed == 0:
+        return notes
+
+    sm.set("gpu_config", kept)
+    notes.append(f"v6: removed {removed} stale generic 'cuda' gpu_config entry(ies)")
     return notes
 
 

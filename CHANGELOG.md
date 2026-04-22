@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-GPU NVIDIA detection in Docker (#221)** — containers running the NVIDIA Container Toolkit deliberately omit `/dev/dri/renderD*` nodes, so DRM enumeration saw zero GPUs and the nvidia-smi fallback only ever registered one card. Even on bare-metal hosts, every NVIDIA GPU collapsed onto a single `"cuda"` device path in `gpu_config`. NVIDIA GPUs are now enumerated primarily via `nvidia-smi` (one entry per card, keyed as `cuda:0`, `cuda:1`, …) and each card is independently CUDA-tested and dispatched with FFmpeg's `-hwaccel_device` flag. Legacy generic `"cuda"` gpu_config entries are stripped automatically on upgrade (schema v6).
+
 ---
 
 ## [3.5.0] - 2026-03-22

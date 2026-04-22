@@ -36,6 +36,7 @@ from .enumeration import (  # noqa: F401
     DRIVER_VENDOR_MAP,
     _detect_gpu_type_from_lspci,
     _detect_nvidia_via_nvidia_smi,
+    _enumerate_nvidia_gpus_via_smi,
     _get_apple_gpu_name,
     _get_gpu_devices,
     _get_gpu_vendor_from_driver,

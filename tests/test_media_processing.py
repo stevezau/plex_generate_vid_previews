@@ -600,6 +600,49 @@ class TestGenerateImages:
         args = mock_popen.call_args[0][0]
         assert "-hwaccel" in args
         assert "cuda" in args
+        # Generic "cuda" (no index suffix) must NOT add -hwaccel_device.
+        assert "-hwaccel_device" not in args
+
+    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    @patch("glob.glob")
+    def test_generate_images_gpu_nvidia_indexed_device(
+        self,
+        mock_glob,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """cuda:N device path emits -hwaccel_device N (issue #221)."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, 0]
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+        mock_glob.return_value = []
+
+        generate_images("/test/video.mp4", temp_dir, "NVIDIA", "cuda:1", mock_config)
+
+        args = mock_popen.call_args[0][0]
+        assert args[args.index("-hwaccel") + 1] == "cuda"
+        assert "-hwaccel_device" in args
+        assert args[args.index("-hwaccel_device") + 1] == "1"
 
     @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
     @patch("subprocess.Popen")

@@ -29,22 +29,25 @@ from plex_generate_previews.gpu import (
 class TestDetectAllGPUs:
     """Test comprehensive GPU detection."""
 
-    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._is_hwaccel_available")
     @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
-    @patch("plex_generate_previews.gpu.detect.get_gpu_name")
     @patch("platform.system", return_value="Linux")
-    def test_detect_all_gpus_nvidia(self, mock_platform, mock_name, mock_devices, mock_test):
-        """Test NVIDIA CUDA GPU detection."""
-        mock_devices.return_value = [("card0", "/dev/dri/renderD128", "nvidia")]
-        mock_test.return_value = True
-        mock_name.return_value = "NVIDIA GeForce RTX 3080"
+    def test_detect_all_gpus_nvidia(self, mock_platform, mock_devices, mock_avail, mock_hwtest, mock_enum):
+        """Test NVIDIA CUDA GPU detection via the primary nvidia-smi path."""
+        mock_avail.side_effect = lambda h: h == "cuda"
+        mock_enum.return_value = [
+            {"index": "0", "name": "NVIDIA GeForce RTX 3080", "uuid": "GPU-abc"},
+        ]
+        mock_hwtest.return_value = True
+        mock_devices.return_value = []
 
         gpus = detect_all_gpus()
 
-        # Should detect NVIDIA GPU via CUDA
         nvidia_gpus = [g for g in gpus if g[0] == "NVIDIA"]
-        assert len(nvidia_gpus) > 0
-        assert nvidia_gpus[0][1] == "cuda"
+        assert len(nvidia_gpus) == 1
+        assert nvidia_gpus[0][1] == "cuda:0"
         assert "RTX 3080" in nvidia_gpus[0][2]["name"]
         assert nvidia_gpus[0][2]["acceleration"] == "CUDA"
 
@@ -706,7 +709,10 @@ class TestNvidiaSmiDetection:
     def test_detect_nvidia_via_nvidia_smi_success(self, mock_run):
         from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="NVIDIA GeForce RTX 3080\n")
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="0, NVIDIA GeForce RTX 3080, GPU-abcdef\n",
+        )
         assert _detect_nvidia_via_nvidia_smi() == "NVIDIA"
 
     @patch("subprocess.run")
@@ -1024,22 +1030,17 @@ class TestWSL2NoDRMDevices:
         return_value=["cuda", "vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="NVIDIA",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[{"index": "0", "name": "NVIDIA GeForce RTX 5080", "uuid": "GPU-abc"}],
     )
     @patch(
         "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
     )
-    @patch(
-        "plex_generate_previews.gpu.detect.get_gpu_name",
-        return_value="NVIDIA GeForce RTX 5080",
-    )
     def test_wsl2_no_drm_cuda_detected(
         self,
-        _mock_name,
         _mock_test,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1053,10 +1054,10 @@ class TestWSL2NoDRMDevices:
         assert len(gpus) == 1
         gpu_type, gpu_device, gpu_info = gpus[0]
         assert gpu_type == "NVIDIA"
-        assert gpu_device == "cuda"
+        assert gpu_device == "cuda:0"
         assert gpu_info["acceleration"] == "CUDA"
         assert gpu_info["render_device"] is None
-        assert gpu_info["card"] == "wsl2"
+        assert gpu_info["card"] == "nvidia-0"
         assert "RTX 5080" in gpu_info["name"]
 
     @patch("plex_generate_previews.gpu.detect.is_macos", return_value=False)
@@ -1096,8 +1097,8 @@ class TestWSL2NoDRMDevices:
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="UNKNOWN",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[],
     )
     @patch(
         "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
@@ -1106,7 +1107,7 @@ class TestWSL2NoDRMDevices:
     def test_not_wsl2_no_drm_no_render_devices(
         self,
         _mock_scan,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1304,8 +1305,8 @@ class TestWSL2NoDRMDevices:
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="UNKNOWN",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[],
     )
     @patch(
         "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
@@ -1314,7 +1315,7 @@ class TestWSL2NoDRMDevices:
     def test_wsl2_no_drm_nvidia_smi_fails(
         self,
         _mock_scan,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1322,7 +1323,7 @@ class TestWSL2NoDRMDevices:
         _mock_windows,
         _mock_macos,
     ):
-        """WSL2 + CUDA available + nvidia-smi returns UNKNOWN -> no GPU."""
+        """WSL2 + CUDA available + nvidia-smi returns nothing -> no GPU."""
         gpus = detect_all_gpus()
         assert gpus == []
 
@@ -1336,8 +1337,8 @@ class TestWSL2NoDRMDevices:
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="NVIDIA",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[{"index": "0", "name": "RTX 5080", "uuid": ""}],
     )
     @patch(
         "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
@@ -1351,7 +1352,7 @@ class TestWSL2NoDRMDevices:
         self,
         _mock_scan,
         _mock_test,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1359,7 +1360,7 @@ class TestWSL2NoDRMDevices:
         _mock_windows,
         _mock_macos,
     ):
-        """WSL2 + nvidia-smi confirms + CUDA functional test fails -> no GPU."""
+        """WSL2 + nvidia-smi confirms + CUDA functional test fails -> no GPU (silent skip)."""
         gpus = detect_all_gpus()
         assert gpus == []
 
@@ -1383,16 +1384,12 @@ class TestLinuxContainerNvidiaFallback:
         return_value=["cuda", "vaapi"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="NVIDIA",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[{"index": "0", "name": "NVIDIA GeForce RTX 3080", "uuid": "GPU-xyz"}],
     )
     @patch(
         "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
         return_value=True,
-    )
-    @patch(
-        "plex_generate_previews.gpu.detect.get_gpu_name",
-        return_value="NVIDIA GeForce RTX 3080",
     )
     @patch(
         "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
@@ -1401,9 +1398,8 @@ class TestLinuxContainerNvidiaFallback:
     def test_linux_container_cuda_detected(
         self,
         _mock_scan,
-        _mock_name,
         _mock_test,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1417,10 +1413,10 @@ class TestLinuxContainerNvidiaFallback:
         assert len(gpus) == 1
         gpu_type, gpu_device, gpu_info = gpus[0]
         assert gpu_type == "NVIDIA"
-        assert gpu_device == "cuda"
+        assert gpu_device == "cuda:0"
         assert gpu_info["acceleration"] == "CUDA"
         assert gpu_info["render_device"] is None
-        assert gpu_info["card"] == "nvidia-container"
+        assert gpu_info["card"] == "nvidia-0"
         assert gpu_info["driver"] == "nvidia"
         assert gpu_info["status"] == "ok"
         assert "RTX 3080" in gpu_info["name"]
@@ -1435,8 +1431,8 @@ class TestLinuxContainerNvidiaFallback:
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="UNKNOWN",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[],
     )
     @patch(
         "plex_generate_previews.gpu.detect._scan_dev_dri_render_devices",
@@ -1445,7 +1441,7 @@ class TestLinuxContainerNvidiaFallback:
     def test_linux_container_nvidia_smi_unknown(
         self,
         _mock_scan,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1453,7 +1449,7 @@ class TestLinuxContainerNvidiaFallback:
         _mock_windows,
         _mock_macos,
     ):
-        """Non-WSL2 Linux + CUDA available + nvidia-smi returns UNKNOWN -> no GPU."""
+        """Non-WSL2 Linux + CUDA available + nvidia-smi finds nothing -> no GPU."""
         gpus = detect_all_gpus()
         assert gpus == []
 
@@ -1499,8 +1495,8 @@ class TestLinuxContainerNvidiaFallback:
         return_value=["cuda"],
     )
     @patch(
-        "plex_generate_previews.gpu.detect._detect_nvidia_via_nvidia_smi",
-        return_value="NVIDIA",
+        "plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi",
+        return_value=[{"index": "0", "name": "RTX 3080", "uuid": ""}],
     )
     @patch(
         "plex_generate_previews.gpu.detect._test_hwaccel_functionality",
@@ -1514,7 +1510,7 @@ class TestLinuxContainerNvidiaFallback:
         self,
         _mock_scan,
         _mock_test,
-        _mock_nvidia_smi,
+        _mock_enum,
         _mock_hwaccels,
         _mock_wsl2,
         _mock_devices,
@@ -1522,7 +1518,7 @@ class TestLinuxContainerNvidiaFallback:
         _mock_windows,
         _mock_macos,
     ):
-        """Non-WSL2 Linux + nvidia-smi confirms + CUDA functional test fails -> no GPU.
+        """Non-WSL2 Linux + nvidia-smi confirms + CUDA functional test fails -> no GPU (silent skip).
 
         This is the scenario where the container has nvidia-smi but is missing the
         'video' driver capability (NVIDIA_DRIVER_CAPABILITIES lacks 'video'), so
@@ -2992,3 +2988,300 @@ class TestIsNvidiaVulkanDevice:
         from plex_generate_previews.gpu.vulkan_probe import _is_nvidia_vulkan_device
 
         assert _is_nvidia_vulkan_device(device) is expected
+
+
+class TestEnumerateNvidiaGpusViaSmi:
+    """Test per-GPU nvidia-smi enumeration used by the primary NVIDIA path."""
+
+    @patch("subprocess.run")
+    def test_multi_gpu_parsed(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "0, NVIDIA GeForce RTX 3090, GPU-11111111-2222-3333-4444-555555555555\n"
+                "1, NVIDIA GeForce RTX 3090, GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"
+            ),
+        )
+
+        gpus = _enumerate_nvidia_gpus_via_smi()
+
+        assert len(gpus) == 2
+        assert gpus[0]["index"] == "0"
+        assert gpus[0]["name"] == "NVIDIA GeForce RTX 3090"
+        assert gpus[0]["uuid"].startswith("GPU-11111111")
+        assert gpus[1]["index"] == "1"
+        assert gpus[1]["uuid"].startswith("GPU-aaaaaaaa")
+
+    @patch("subprocess.run")
+    def test_single_gpu_parsed(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="0, NVIDIA GeForce RTX 3080, GPU-abcdef\n",
+        )
+
+        gpus = _enumerate_nvidia_gpus_via_smi()
+        assert len(gpus) == 1
+        assert gpus[0]["index"] == "0"
+        assert gpus[0]["name"] == "NVIDIA GeForce RTX 3080"
+
+    @patch("subprocess.run")
+    def test_uuid_missing_is_tolerated(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="0, NVIDIA GeForce RTX 3080\n",
+        )
+
+        gpus = _enumerate_nvidia_gpus_via_smi()
+        assert len(gpus) == 1
+        assert gpus[0]["uuid"] == ""
+
+    @patch("subprocess.run")
+    def test_empty_output(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        assert _enumerate_nvidia_gpus_via_smi() == []
+
+    @patch("subprocess.run")
+    def test_nonzero_return_code(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.return_value = MagicMock(returncode=1, stderr="error", stdout="")
+        assert _enumerate_nvidia_gpus_via_smi() == []
+
+    @patch("subprocess.run")
+    def test_not_installed(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.side_effect = FileNotFoundError()
+        assert _enumerate_nvidia_gpus_via_smi() == []
+
+    @patch("subprocess.run")
+    def test_timeout(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.side_effect = subprocess.TimeoutExpired("nvidia-smi", 5)
+        assert _enumerate_nvidia_gpus_via_smi() == []
+
+    @patch("subprocess.run")
+    def test_unexpected_exception(self, mock_run):
+        from plex_generate_previews.gpu import _enumerate_nvidia_gpus_via_smi
+
+        mock_run.side_effect = RuntimeError("boom")
+        assert _enumerate_nvidia_gpus_via_smi() == []
+
+    @patch("subprocess.run")
+    def test_delegation_from_detect_nvidia(self, mock_run):
+        """_detect_nvidia_via_nvidia_smi still returns NVIDIA/UNKNOWN for legacy callers."""
+        from plex_generate_previews.gpu import _detect_nvidia_via_nvidia_smi
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="0, RTX 3080, GPU-xyz\n")
+        assert _detect_nvidia_via_nvidia_smi() == "NVIDIA"
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        assert _detect_nvidia_via_nvidia_smi() == "UNKNOWN"
+
+
+class TestDetectLinuxGpusMultiNvidia:
+    """Multi-NVIDIA paths in _detect_linux_gpus (issue #221)."""
+
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi")
+    @patch("plex_generate_previews.gpu.detect._is_hwaccel_available")
+    @patch("plex_generate_previews.gpu.detect._is_wsl2")
+    def test_two_nvidia_gpus_both_pass(self, mock_wsl2, mock_avail, mock_enum, mock_hwtest, mock_devices):
+        """Two NVIDIA GPUs reported by nvidia-smi → two cuda:N entries."""
+        from plex_generate_previews.gpu import _detect_linux_gpus
+
+        mock_wsl2.return_value = False
+        mock_avail.side_effect = lambda h: h == "cuda"
+        mock_enum.return_value = [
+            {"index": "0", "name": "NVIDIA GeForce RTX 3090", "uuid": "GPU-A"},
+            {"index": "1", "name": "NVIDIA GeForce RTX 3090", "uuid": "GPU-B"},
+        ]
+        mock_hwtest.return_value = True
+        mock_devices.return_value = []
+
+        gpus = _detect_linux_gpus()
+
+        ok_gpus = [g for g in gpus if g[2].get("status") == "ok"]
+        assert len(ok_gpus) == 2
+        devices = {g[1] for g in ok_gpus}
+        assert devices == {"cuda:0", "cuda:1"}
+        uuids = {g[2]["uuid"] for g in ok_gpus}
+        assert uuids == {"GPU-A", "GPU-B"}
+        for g in ok_gpus:
+            assert g[0] == "NVIDIA"
+            assert g[2]["acceleration"] == "CUDA"
+            assert g[2]["driver"] == "nvidia"
+        # Each test should have been invoked with a cuda_device_index kwarg
+        idx_values = sorted(
+            call.kwargs.get("cuda_device_index")
+            for call in mock_hwtest.call_args_list
+            if call.args and call.args[0] == "cuda"
+        )
+        assert idx_values == ["0", "1"]
+
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi")
+    @patch("plex_generate_previews.gpu.detect._is_hwaccel_available")
+    @patch("plex_generate_previews.gpu.detect._is_wsl2")
+    def test_two_nvidia_gpus_one_fails(self, mock_wsl2, mock_avail, mock_enum, mock_hwtest, mock_devices):
+        """One GPU passes, the other fails CUDA test → one ok + one failed entry."""
+        from plex_generate_previews.gpu import _detect_linux_gpus
+
+        mock_wsl2.return_value = False
+        mock_avail.side_effect = lambda h: h == "cuda"
+        mock_enum.return_value = [
+            {"index": "0", "name": "RTX 3090", "uuid": "A"},
+            {"index": "1", "name": "RTX 3090", "uuid": "B"},
+        ]
+
+        def hwtest(hw, device_path=None, cuda_device_index=None):
+            return hw == "cuda" and cuda_device_index == "0"
+
+        mock_hwtest.side_effect = hwtest
+        mock_devices.return_value = []
+
+        gpus = _detect_linux_gpus()
+
+        # Silent-skip on failure (matches legacy fallback-path behaviour):
+        # only the GPU that passed its CUDA test registers.
+        assert len(gpus) == 1
+        assert gpus[0][1] == "cuda:0"
+        assert gpus[0][2]["status"] == "ok"
+
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_vendor_from_driver")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi")
+    @patch("plex_generate_previews.gpu.detect._is_hwaccel_available")
+    @patch("plex_generate_previews.gpu.detect._is_wsl2")
+    @patch("plex_generate_previews.gpu.detect.get_gpu_name")
+    def test_nvidia_via_smi_plus_amd_via_drm(
+        self,
+        mock_name,
+        mock_wsl2,
+        mock_avail,
+        mock_enum,
+        mock_hwtest,
+        mock_devices,
+        mock_vendor,
+        mock_accel,
+    ):
+        """NVIDIA enumerated via nvidia-smi and AMD via DRM — both register, no duplicate."""
+        from plex_generate_previews.gpu import _detect_linux_gpus
+
+        mock_wsl2.return_value = False
+        mock_avail.side_effect = lambda h: h in ("cuda", "vaapi")
+        mock_enum.return_value = [{"index": "0", "name": "RTX 3080", "uuid": "N"}]
+        mock_hwtest.return_value = True
+        mock_accel.return_value = True
+        mock_name.return_value = "AMD Radeon"
+        mock_devices.return_value = [
+            ("card0", "/dev/dri/renderD128", "amdgpu"),
+        ]
+        mock_vendor.return_value = "AMD"
+
+        gpus = _detect_linux_gpus()
+
+        nvidia = [g for g in gpus if g[0] == "NVIDIA"]
+        amd = [g for g in gpus if g[0] == "AMD"]
+        assert len(nvidia) == 1
+        assert nvidia[0][1] == "cuda:0"
+        assert len(amd) == 1
+        assert amd[0][1] == "/dev/dri/renderD128"
+
+    @patch("plex_generate_previews.gpu.detect._test_acceleration_method")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_vendor_from_driver")
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi")
+    @patch("plex_generate_previews.gpu.detect._is_hwaccel_available")
+    @patch("plex_generate_previews.gpu.detect._is_wsl2")
+    def test_drm_nvidia_skipped_when_smi_primary_registered(
+        self,
+        mock_wsl2,
+        mock_avail,
+        mock_enum,
+        mock_hwtest,
+        mock_devices,
+        mock_vendor,
+        mock_accel,
+    ):
+        """DRM-enumerated NVIDIA device is skipped when nvidia-smi already claimed it."""
+        from plex_generate_previews.gpu import _detect_linux_gpus
+
+        mock_wsl2.return_value = False
+        mock_avail.side_effect = lambda h: h == "cuda"
+        mock_enum.return_value = [{"index": "0", "name": "RTX 3080", "uuid": "N"}]
+        mock_hwtest.return_value = True
+        # _test_acceleration_method should NOT be called for NVIDIA here —
+        # the primary path already registered it.  Return True to make the
+        # test explicit: if it were wrongly reached we'd get a duplicate.
+        mock_accel.return_value = True
+        mock_devices.return_value = [("card0", "/dev/dri/renderD128", "nvidia")]
+        mock_vendor.return_value = "NVIDIA"
+
+        gpus = _detect_linux_gpus()
+
+        nvidia = [g for g in gpus if g[0] == "NVIDIA"]
+        assert len(nvidia) == 1
+        assert nvidia[0][1] == "cuda:0"
+
+    @patch("plex_generate_previews.gpu.detect._get_gpu_devices")
+    @patch("plex_generate_previews.gpu.detect._test_hwaccel_functionality")
+    @patch("plex_generate_previews.gpu.detect._enumerate_nvidia_gpus_via_smi")
+    @patch("plex_generate_previews.gpu.detect._is_hwaccel_available")
+    @patch("plex_generate_previews.gpu.detect._is_wsl2")
+    def test_single_nvidia_via_smi_regression(self, mock_wsl2, mock_avail, mock_enum, mock_hwtest, mock_devices):
+        """Single-GPU host still produces exactly one cuda:0 entry."""
+        from plex_generate_previews.gpu import _detect_linux_gpus
+
+        mock_wsl2.return_value = False
+        mock_avail.side_effect = lambda h: h == "cuda"
+        mock_enum.return_value = [{"index": "0", "name": "RTX 3080", "uuid": "N"}]
+        mock_hwtest.return_value = True
+        mock_devices.return_value = []
+
+        gpus = _detect_linux_gpus()
+
+        ok = [g for g in gpus if g[2].get("status") == "ok"]
+        assert len(ok) == 1
+        assert ok[0][1] == "cuda:0"
+
+
+class TestHwaccelCudaDeviceIndex:
+    """_test_hwaccel_functionality passes -hwaccel_device when a CUDA index is given."""
+
+    @patch("os.path.exists", return_value=True)
+    @patch("subprocess.run")
+    def test_cuda_index_flag_added(self, mock_run, _mock_exists):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        assert _test_hwaccel_functionality("cuda", cuda_device_index="1") is True
+
+        called_cmd = mock_run.call_args.args[0]
+        assert "-hwaccel" in called_cmd
+        assert called_cmd[called_cmd.index("-hwaccel") + 1] == "cuda"
+        assert "-hwaccel_device" in called_cmd
+        assert called_cmd[called_cmd.index("-hwaccel_device") + 1] == "1"
+
+    @patch("os.path.exists", return_value=True)
+    @patch("subprocess.run")
+    def test_cuda_no_index_omits_flag(self, mock_run, _mock_exists):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        assert _test_hwaccel_functionality("cuda") is True
+
+        called_cmd = mock_run.call_args.args[0]
+        assert "-hwaccel_device" not in called_cmd

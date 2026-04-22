@@ -17,6 +17,7 @@ from ..utils import is_macos, is_windows
 from .enumeration import (
     _detect_gpu_type_from_lspci,
     _detect_nvidia_via_nvidia_smi,
+    _enumerate_nvidia_gpus_via_smi,
     _get_gpu_devices,
     _get_gpu_vendor_from_driver,
     _is_wsl2,
@@ -143,12 +144,19 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
     return True, "accessible"
 
 
-def _test_hwaccel_functionality(hwaccel: str, device_path: str | None = None) -> bool:
+def _test_hwaccel_functionality(
+    hwaccel: str,
+    device_path: str | None = None,
+    cuda_device_index: str | None = None,
+) -> bool:
     """Test if hardware acceleration actually works by running a simple FFmpeg command.
 
     Args:
         hwaccel: Hardware acceleration type to test
         device_path: Optional device path for VAAPI
+        cuda_device_index: Optional CUDA device index (e.g. "0", "1")
+            passed to FFmpeg as ``-hwaccel_device`` so each GPU on a
+            multi-card host can be tested independently.
 
     Returns:
         bool: True if hardware acceleration works, False otherwise
@@ -208,6 +216,8 @@ def _test_hwaccel_functionality(hwaccel: str, device_path: str | None = None) ->
         # Add hardware acceleration flags (before -i)
         if hwaccel == "cuda":
             cmd += ["-hwaccel", "cuda"]
+            if cuda_device_index:
+                cmd += ["-hwaccel_device", cuda_device_index]
         elif hwaccel == "vaapi" and device_path:
             cmd += ["-hwaccel", "vaapi", "-vaapi_device", device_path]
         elif hwaccel == "d3d11va":
@@ -472,6 +482,51 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
     detected_gpus = []
     detected_vendors = set()  # Track which vendors we've already detected
 
+    # NVIDIA CUDA is driven through /dev/nvidia* and does not require
+    # /dev/dri render nodes — nvidia-container-runtime deliberately does
+    # not expose DRM nodes to containers.  Enumerate NVIDIA GPUs via
+    # nvidia-smi first so multi-GPU hosts (issue #221) register one
+    # entry per physical card, each tested with -hwaccel_device <index>.
+    # This covers bare metal, nvidia-container-runtime, and WSL2
+    # uniformly; the DRM loop below handles AMD/Intel only.
+    if _is_hwaccel_available("cuda"):
+        smi_gpus = _enumerate_nvidia_gpus_via_smi()
+        if smi_gpus:
+            logger.debug(f"=== Testing {len(smi_gpus)} NVIDIA GPU(s) via nvidia-smi ===")
+            if _is_wsl2():
+                logger.warning("  ⚠️  WSL2 NVIDIA GPU support is unofficial and may have limitations")
+            for g in smi_gpus:
+                idx = g["index"]
+                device = f"cuda:{idx}"
+                logger.info(f"  Checking NVIDIA GPU {idx} ({g['name']})...")
+                logger.info("    Testing CUDA acceleration...")
+                if _test_hwaccel_functionality("cuda", cuda_device_index=idx):
+                    gpu_info = {
+                        "name": g["name"],
+                        "acceleration": "CUDA",
+                        "device_path": device,
+                        "render_device": None,
+                        "card": f"nvidia-{idx}",
+                        "driver": "nvidia",
+                        "uuid": g.get("uuid", ""),
+                        "status": "ok",
+                    }
+                    detected_gpus.append(("NVIDIA", device, gpu_info))
+                    detected_vendors.add("NVIDIA")
+                    logger.info(f"  ✅ NVIDIA CUDA working: GPU {idx} ({g['name']})")
+                else:
+                    # Silent skip (matches legacy WSL2/container fallback
+                    # behaviour) — the warning below tells the user what
+                    # to check without cluttering the UI with a failed
+                    # row that they can't act on individually.
+                    logger.warning(f"  ⚠️  NVIDIA GPU {idx} ({g['name']}): CUDA test failed")
+                    logger.warning(
+                        "  ⚠️  Container may be missing driver capabilities "
+                        "(set NVIDIA_DRIVER_CAPABILITIES=all; 'graphics' is also "
+                        "required for Dolby Vision Profile 5 thumbnails) or "
+                        "/dev/nvidia* devices"
+                    )
+
     # Enumerate physical GPUs from /dev/dri
     logger.debug("=== Enumerating Physical GPUs ===")
     physical_gpus = _get_gpu_devices()  # Returns: [(card_name, render_device, driver)]
@@ -479,68 +534,10 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
     if not physical_gpus:
         logger.debug("No physical GPUs found in /dev/dri")
 
-        # WSL2 with newer kernels (6.6+) may have no DRM devices in /dev/dri
-        # because CONFIG_DRM_VGEM is a loadable module instead of built-in.
-        # CUDA still works via /dev/dxg paravirtualization, so detect it directly.
-        if _is_wsl2() and _is_hwaccel_available("cuda"):
-            logger.info("  WSL2 detected with no DRM devices - attempting CUDA detection")
-            if _detect_nvidia_via_nvidia_smi() == "NVIDIA":
-                if _test_hwaccel_functionality("cuda"):
-                    gpu_name = get_gpu_name("NVIDIA", "cuda")
-                    gpu_info = {
-                        "name": gpu_name,
-                        "acceleration": "CUDA",
-                        "device_path": "cuda",
-                        "render_device": None,
-                        "card": "wsl2",
-                        "driver": "nvidia",
-                        "status": "ok",
-                    }
-                    detected_gpus.append(("NVIDIA", "cuda", gpu_info))
-                    logger.warning("  WSL2 NVIDIA GPU support is unofficial and may have limitations")
-                    logger.info(f"  WSL2 NVIDIA CUDA working: {gpu_name}")
-                    return detected_gpus
-                else:
-                    logger.debug("  WSL2 CUDA functionality test failed")
-            else:
-                logger.debug("  WSL2 nvidia-smi did not detect NVIDIA GPU")
-
-        # Linux container fallback: nvidia-container-runtime exposes NVIDIA
-        # GPUs via /dev/nvidia* but does NOT mount /dev/dri/renderD* nodes,
-        # so DRM enumeration finds nothing even though CUDA is usable. If
-        # nvidia-smi confirms an NVIDIA GPU and CUDA hwaccel is compiled
-        # into FFmpeg, probe CUDA directly — it doesn't need a DRM node.
-        if (
-            not detected_gpus
-            and not _is_wsl2()
-            and _is_hwaccel_available("cuda")
-            and _detect_nvidia_via_nvidia_smi() == "NVIDIA"
-        ):
-            logger.info("  NVIDIA GPU detected via nvidia-smi with no DRM render nodes — testing CUDA directly")
-            if _test_hwaccel_functionality("cuda"):
-                gpu_name = get_gpu_name("NVIDIA", "cuda")
-                gpu_info = {
-                    "name": gpu_name,
-                    "acceleration": "CUDA",
-                    "device_path": "cuda",
-                    "render_device": None,
-                    "card": "nvidia-container",
-                    "driver": "nvidia",
-                    "status": "ok",
-                }
-                detected_gpus.append(("NVIDIA", "cuda", gpu_info))
-                logger.info(f"  ✅ NVIDIA CUDA working: {gpu_name}")
-            else:
-                logger.debug(
-                    "  CUDA functionality test failed — container may be missing "
-                    "driver capabilities (set NVIDIA_DRIVER_CAPABILITIES=all; the "
-                    "'graphics' capability is also required for Dolby Vision "
-                    "Profile 5 thumbnails) or /dev/nvidia* devices"
-                )
-
         # Container fallback: /sys/class/drm unavailable but /dev/dri render
         # devices may be mounted directly (e.g. TrueNAS Scale, Kubernetes).
-        if not detected_gpus:
+        # Only meaningful for VAAPI (AMD/Intel) — NVIDIA was handled above.
+        if not [g for g in detected_gpus if g[2].get("status") == "ok"]:
             render_devices = _scan_dev_dri_render_devices()
             if render_devices and _is_hwaccel_available("vaapi"):
                 logger.info("  /sys/class/drm unavailable — probing /dev/dri render devices directly")
@@ -593,6 +590,14 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
     for card_name, render_device, driver in physical_gpus:
         vendor = _get_gpu_vendor_from_driver(driver)
 
+        # NVIDIA cards are enumerated authoritatively via nvidia-smi at
+        # the top of this function.  Skip them in the DRM loop so a
+        # two-GPU host doesn't double-register or collapse both cards
+        # onto a single "cuda" device path (issue #221).
+        if (driver == "nvidia" or vendor == "NVIDIA") and "NVIDIA" in detected_vendors:
+            logger.debug(f"Skipping {card_name}: NVIDIA already registered via nvidia-smi")
+            continue
+
         # Handle UNKNOWN vendor with special fallback logic for CUDA
         if vendor == "UNKNOWN":
             # Check if CUDA acceleration is available (useful for WSL2 NVIDIA GPUs)
@@ -638,6 +643,12 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                 # No CUDA available and vendor is unknown, skip
                 logger.debug(f"Skipping {card_name} - unknown vendor '{vendor}' and CUDA not available")
                 continue
+
+        # After UNKNOWN→NVIDIA promotion, skip if nvidia-smi already
+        # registered this GPU at the top of the function (issue #221).
+        if vendor == "NVIDIA" and "NVIDIA" in detected_vendors:
+            logger.debug(f"Skipping {card_name}: NVIDIA already registered via nvidia-smi")
+            continue
 
         if vendor not in GPU_ACCELERATION_MAP:
             logger.debug(f"Skipping {card_name} - vendor '{vendor}' not in GPU acceleration map")

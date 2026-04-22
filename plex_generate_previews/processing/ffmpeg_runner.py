@@ -276,6 +276,14 @@ def create_ffmpeg_runner(
         hw_decode_active = False
         if use_gpu and effective_gpu == "NVIDIA":
             args += ["-hwaccel", "cuda"]
+            # On multi-GPU hosts each NVIDIA card is registered with a
+            # device path of ``cuda:<index>`` (see gpu/detect.py).  Pass
+            # the index through to FFmpeg via ``-hwaccel_device`` so
+            # work actually lands on the selected GPU (issue #221).
+            if effective_gpu_device_path and effective_gpu_device_path.startswith("cuda:"):
+                cuda_idx = effective_gpu_device_path.split(":", 1)[1]
+                if cuda_idx:
+                    args += ["-hwaccel_device", cuda_idx]
             if keep_on_gpu:
                 # Keep decoded CUDA surfaces on the GPU so scale_cuda
                 # can downscale there and only the 320x240 frame is

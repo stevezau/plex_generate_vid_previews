@@ -208,6 +208,8 @@ docker run -d \
 
 > **Why `NVIDIA_DRIVER_CAPABILITIES=all`?** The `graphics` capability (included in `all`) is required for the NVIDIA Container Toolkit to inject the NVIDIA Vulkan driver into the container. Dolby Vision Profile 5 thumbnails use libplacebo Vulkan tone-mapping, so without `graphics` they fall back to software rendering and may show a green overlay. The older `compute,video,utility` trio is enough for NVDEC/NVENC but **not** enough for DV Profile 5 thumbnails.
 
+> **Multi-GPU?** Hosts with two or more NVIDIA cards are detected automatically via `nvidia-smi` — each card appears as a separate row in **Settings → GPUs** with its own enable toggle, worker count, and FFmpeg thread setting. Work is dispatched per-GPU using FFmpeg's `-hwaccel_device` flag, so the load actually spreads across cards.
+
 Docker Compose:
 
 ```yaml
