@@ -120,6 +120,16 @@ def mock_config():
     config.worker_pool_timeout = 30
     # None so get_library_sections filters by plex_libraries (titles), not by ID
     config.plex_library_ids = None
+    # Credits/intro detection defaults
+    config.credits_detection_enabled = False
+    config.credits_detection_overwrite = False
+    config.credits_scan_last_pct = 25.0
+    config.credits_min_duration = 15.0
+    config.intro_detection_enabled = False
+    config.intro_detection_overwrite = False
+    config.intro_scan_duration_sec = 600.0
+    config.intro_min_duration_sec = 15.0
+    config.intro_max_duration_sec = 120.0
     return config
 
 

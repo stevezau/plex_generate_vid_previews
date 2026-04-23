@@ -15,6 +15,7 @@ api = Blueprint("api", __name__, url_prefix="/api")
 # Order doesn't matter; each module imports `main` or `api` from this package.
 from . import (  # noqa: E402
     api_bif,  # noqa: F401
+    api_detection,  # noqa: F401
     api_jobs,  # noqa: F401
     api_plex,  # noqa: F401
     api_schedules,  # noqa: F401

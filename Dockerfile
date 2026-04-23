@@ -64,8 +64,9 @@ ARG GIT_SHA=unknown
 # because it carries the DV RPU-aware tonemap_opencl patches upstream lacks).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      mediainfo python3 python3-pip gosu pciutils git curl gnupg ca-certificates \
-      mesa-va-drivers mesa-vulkan-drivers libva2 libva-drm2 vainfo && \
+    mediainfo python3 python3-pip gosu pciutils git curl gnupg ca-certificates \
+    libchromaprint-tools \
+    mesa-va-drivers mesa-vulkan-drivers libva2 libva-drm2 vainfo && \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       # Jellyfin apt repo (Ubuntu Noble) for jellyfin-ffmpeg7
       curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \

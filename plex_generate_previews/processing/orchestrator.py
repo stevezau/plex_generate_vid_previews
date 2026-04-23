@@ -1343,6 +1343,7 @@ def process_item(
     ffmpeg_threads_override: int | None = None,
     cancel_check=None,
     worker_name: str = "",
+    fingerprint_store=None,
 ) -> ProcessingResult:
     """Process a single media item: generate thumbnails and BIF file.
 
@@ -1392,6 +1393,12 @@ def process_item(
         return ProcessingResult.FAILED
 
     best_result = ProcessingResult.NO_MEDIA_PARTS
+
+    # Extract media type from the XML tree for detection grouping
+    _video_el = data.find(".//Video")
+    _media_type = _video_el.attrib.get("type", "") if _video_el is not None else ""
+
+    # fingerprint_store is passed explicitly through the worker pipeline
 
     def _update_best(result: ProcessingResult) -> None:
         nonlocal best_result
@@ -1481,6 +1488,16 @@ def process_item(
                     f"BIF exists at {index_bif}",
                     worker_name,
                 )
+                # Run detection even when BIF already exists
+                _run_marker_detection(
+                    item_key,
+                    media_file,
+                    _media_type,
+                    plex,
+                    config,
+                    cancel_check,
+                    fingerprint_store,
+                )
                 continue
 
             logger.info(f"Generating BIF for {media_file} -> {index_bif}")
@@ -1514,6 +1531,16 @@ def process_item(
                     "",
                     worker_name,
                 )
+                # Run detection after successful BIF generation
+                _run_marker_detection(
+                    item_key,
+                    media_file,
+                    _media_type,
+                    plex,
+                    config,
+                    cancel_check,
+                    fingerprint_store,
+                )
             except (CancellationError, CodecNotSupportedError):
                 raise
             except RuntimeError as e:
@@ -1540,3 +1567,219 @@ def process_item(
                 _cleanup_temp_directory(tmp_path)
 
     return best_result
+
+
+# ---------------------------------------------------------------------------
+# Marker detection helpers (credits + intro fingerprinting)
+# ---------------------------------------------------------------------------
+
+
+def _run_marker_detection(
+    item_key: str,
+    media_file: str,
+    media_type: str,
+    plex,
+    config: Config,
+    cancel_check=None,
+    fingerprint_store=None,
+    detection_stats: dict = None,
+) -> None:
+    """Run credits detection and/or intro fingerprinting for a media item.
+
+    This is called after BIF generation (or skip).  Failures are logged
+    as warnings and never affect the BIF processing result.
+
+    Args:
+        item_key: Plex metadata key (e.g. ``/library/metadata/12345``).
+        media_file: Local path to the video file.
+        media_type: ``"episode"`` or ``"movie"`` (empty string accepted).
+        plex: Plex server instance.
+        config: Configuration object.
+        cancel_check: Optional cancellation callable.
+        fingerprint_store: Optional IntroFingerprintStore for pass-1
+            intro fingerprinting.
+
+    """
+    if not os.path.isfile(media_file):
+        return
+
+    # Credits detection (movies + episodes)
+    if config.credits_detection_enabled:
+        try:
+            _detect_and_write_credits(item_key, media_file, plex, config, cancel_check, detection_stats)
+        except CancellationError:
+            raise
+        except Exception as exc:
+            logger.warning(f"Credits detection failed for {media_file}: {exc}")
+
+    # Intro fingerprinting pass 1 (episodes only)
+    if config.intro_detection_enabled and fingerprint_store is not None and media_type == "episode":
+        try:
+            _fingerprint_for_intro(item_key, media_file, plex, config, fingerprint_store, cancel_check)
+        except CancellationError:
+            raise
+        except Exception as exc:
+            logger.warning(f"Intro fingerprinting failed for {media_file}: {exc}")
+
+
+def _detect_and_write_credits(
+    item_key: str,
+    media_file: str,
+    plex,
+    config: Config,
+    cancel_check=None,
+    detection_stats: dict = None,
+) -> None:
+    """Detect credits and write marker to Plex database.
+
+    Skips if credits marker already exists (unless overwrite is on).
+    """
+    from .credits_detection import CreditsDetectionConfig, detect_credits
+    from .plex_db import (
+        check_db_write_safety,
+        delete_markers,
+        get_marker_tag_id,
+        get_plex_db_path,
+        write_marker,
+    )
+
+    rating_key = int(item_key.rstrip("/").split("/")[-1])
+
+    # Check existing markers via plexapi
+    if not config.credits_detection_overwrite:
+        try:
+            item = retry_plex_call(plex.fetchItem, rating_key)
+            if getattr(item, "hasCreditsMarker", False):
+                logger.info(f"Credits marker exists for {media_file}, skipping")
+                if detection_stats is not None:
+                    detection_stats["credits_skipped"] = detection_stats.get("credits_skipped", 0) + 1
+                return
+        except Exception as exc:
+            logger.debug(f"Could not check existing markers: {exc}")
+
+    # Check DB safety
+    db_path = get_plex_db_path(config.plex_config_folder)
+    safe, reason = check_db_write_safety(db_path)
+    if not safe:
+        logger.warning(f"Plex DB not safe to write: {reason}")
+        return
+
+    # Get video duration via pymediainfo
+    from pymediainfo import MediaInfo
+
+    mi = MediaInfo.parse(media_file)
+    duration_ms = 0
+    for track in mi.video_tracks:
+        if track.duration:
+            duration_ms = float(track.duration)
+            break
+    if not duration_ms:
+        for track in mi.general_tracks:
+            if track.duration:
+                duration_ms = float(track.duration)
+                break
+    if not duration_ms:
+        logger.warning(f"Cannot determine duration for {media_file}")
+        return
+
+    total_duration_sec = duration_ms / 1000.0
+
+    det_config = CreditsDetectionConfig(
+        enabled=True,
+        scan_last_pct=config.credits_scan_last_pct,
+        min_credits_duration=config.credits_min_duration,
+    )
+
+    segment = detect_credits(
+        media_file=media_file,
+        total_duration_sec=total_duration_sec,
+        ffmpeg_path=config.ffmpeg_path,
+        config=det_config,
+        cancel_check=cancel_check,
+    )
+
+    if segment is None:
+        logger.info(f"No credits detected in {media_file}")
+        return
+
+    # Skip low-confidence detections to reduce false positives
+    if segment.confidence < 0.5:
+        logger.info(f"Credits detection below confidence threshold for {media_file} ({segment.confidence:.0%} < 50%)")
+        return
+
+    tag_id = get_marker_tag_id(db_path)
+
+    # Delete existing credits markers if overwriting
+    if config.credits_detection_overwrite:
+        delete_markers(db_path, rating_key, tag_id, "credits")
+
+    success = write_marker(
+        db_path=db_path,
+        metadata_item_id=rating_key,
+        tag_id=tag_id,
+        marker_type="credits",
+        start_ms=segment.start_ms,
+        end_ms=segment.end_ms,
+        is_final=True,
+    )
+
+    if success:
+        if detection_stats is not None:
+            detection_stats["credits_written"] = detection_stats.get("credits_written", 0) + 1
+        logger.info(
+            f"Credits marker: {media_file} "
+            f"{segment.start_ms}ms–{segment.end_ms}ms "
+            f"({segment.method}, {segment.confidence:.0%})"
+        )
+
+
+def _fingerprint_for_intro(
+    item_key: str,
+    media_file: str,
+    plex,
+    config: Config,
+    fingerprint_store,
+    cancel_check=None,
+) -> None:
+    """Generate a chromaprint fingerprint and store it for later comparison.
+
+    Retrieves show title and season number from the Plex API to group
+    the fingerprint with other episodes of the same season.
+    """
+    from .intro_detection import check_fpcalc_available, fingerprint_episode
+
+    if not check_fpcalc_available():
+        logger.info("fpcalc not available, skipping intro fingerprinting")
+        return
+
+    rating_key = int(item_key.rstrip("/").split("/")[-1])
+
+    # Single fetch for both marker check and metadata extraction
+    try:
+        item = retry_plex_call(plex.fetchItem, rating_key)
+    except Exception as exc:
+        logger.debug(f"Cannot fetch episode metadata for grouping: {exc}")
+        return
+
+    # Check existing markers
+    if not config.intro_detection_overwrite:
+        if getattr(item, "hasIntroMarker", False):
+            logger.info(f"Intro marker exists for {media_file}, skipping")
+            return
+
+    # Get show title and season number for grouping
+    show_title = getattr(item, "grandparentTitle", None)
+    season_number = getattr(item, "parentIndex", None)
+    if not show_title or season_number is None:
+        logger.debug(f"Cannot determine show/season for {media_file}")
+        return
+
+    fp = fingerprint_episode(
+        media_file,
+        duration_limit_sec=config.intro_scan_duration_sec,
+        cancel_check=cancel_check,
+    )
+
+    if fp is not None:
+        fingerprint_store.add(show_title, int(season_number), rating_key, fp)
+        logger.debug(f"Fingerprinted {show_title} S{season_number:02d} (item {rating_key}, {len(fp)} samples)")

@@ -767,6 +767,7 @@ class TestWorkerPool:
             ffmpeg_threads_override=None,
             cancel_check=None,
             worker_name=None,
+            fingerprint_store=None,
         ):
             call_order.append((item_key, gpu))
             time.sleep(0.01)
@@ -815,6 +816,7 @@ class TestWorkerPool:
             ffmpeg_threads_override=None,
             cancel_check=None,
             worker_name=None,
+            fingerprint_store=None,
         ):
             call_order.append((item_key, gpu))
             time.sleep(0.01)
@@ -861,6 +863,7 @@ class TestWorkerPool:
             ffmpeg_threads_override=None,
             cancel_check=None,
             worker_name=None,
+            fingerprint_store=None,
         ):
             time.sleep(0.01)
             if gpu is not None:
@@ -1029,6 +1032,7 @@ class TestWorkerProgressCount:
             ffmpeg_threads_override=None,
             cancel_check=None,
             worker_name=None,
+            fingerprint_store=None,
         ):
             time.sleep(0.01)
             if gpu is not None:

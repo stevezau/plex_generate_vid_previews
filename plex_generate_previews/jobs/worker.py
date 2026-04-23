@@ -223,6 +223,7 @@ class Worker:
         job_id: str | None = None,
         library_name: str = "",
         cancel_check=None,
+        fingerprint_store=None,
     ) -> None:
         """Assign a new task to this worker.
 
@@ -237,6 +238,7 @@ class Worker:
             job_id: Optional job identifier for multi-job dispatch routing
             library_name: Library name the item belongs to
             cancel_check: Optional callable returning True when job is cancelled
+            fingerprint_store: Optional IntroFingerprintStore for intro detection
 
         """
         if self.is_busy:
@@ -292,7 +294,7 @@ class Worker:
         # Start processing in background thread
         self.current_thread = threading.Thread(
             target=self._process_item,
-            args=(item_key, config, plex, progress_callback),
+            args=(item_key, config, plex, progress_callback, fingerprint_store),
             daemon=True,
         )
         self.current_thread.start()
@@ -303,6 +305,7 @@ class Worker:
         config: Config,
         plex,
         progress_callback=None,
+        fingerprint_store=None,
     ) -> None:
         """Process a media item in the background thread.
 
@@ -311,6 +314,7 @@ class Worker:
             config: Configuration object
             plex: Plex server instance
             progress_callback: Callback function for progress updates
+            fingerprint_store: Optional IntroFingerprintStore for intro detection
 
         """
         register_job_thread()
@@ -345,6 +349,7 @@ class Worker:
                     ffmpeg_threads_override=self.ffmpeg_threads,
                     cancel_check=self.cancel_check,
                     worker_name=self.display_name,
+                    fingerprint_store=fingerprint_store,
                 )
                 self.outcome_counts[result.value] += 1
                 if result == ProcessingResult.FAILED:
@@ -803,7 +808,7 @@ class WorkerPool:
 
         """
         try:
-            from .plex_client import retry_plex_call
+            from ..plex_client import retry_plex_call
 
             data = retry_plex_call(plex.query, item_key)
             if data is not None:

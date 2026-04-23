@@ -458,6 +458,67 @@ You can enable **both** if you want belt-and-suspenders behavior — the recentl
 
 ---
 
+## Load Testing
+
+A Locust load test is available for stress testing the web API.
+
+### Running Load Tests
+
+```bash
+# Interactive mode (opens browser UI)
+locust -f tests/load/locustfile.py
+
+# Open http://localhost:8089 to configure and start
+```
+
+```bash
+# Headless mode
+locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
+```
+
+> [!NOTE]
+> Locust is a dev dependency. Install with `pip install -e ".[dev]"`.
+
+---
+
+## Marker Detection (Intro & Credits)
+
+### Enabling Detection
+
+1. Go to **Settings** in the web UI
+2. Scroll to the **Credits Detection** and/or **Intro Detection** cards
+3. Toggle the enable switch
+4. Adjust parameters if needed (defaults work well for most content)
+5. Click **Save Changes**
+6. Run a job — detection runs automatically alongside BIF generation
+
+### How It Works
+
+**Credits detection** scans the last portion of each video with FFmpeg's `blackdetect` and `silencedetect` filters. When it finds a black frame + silence region near the end, it writes a "Skip Credits" marker to the Plex database.
+
+**Intro detection** uses a two-pass approach:
+1. **Pass 1** (parallel): Each episode gets its first ~10 minutes fingerprinted using `fpcalc` (chromaprint audio fingerprinting)
+2. **Pass 2** (after all episodes): Fingerprints are compared across episodes in each season to find the recurring intro theme
+
+### Troubleshooting
+
+**Markers not appearing in Plex clients:**
+- Restart your Plex client (or exit and re-enter the media). Plex clients cache marker data.
+- Verify markers were written: check the job logs for "Credits marker:" or "Intro found for" messages.
+
+**"Database locked" warnings:**
+- Normal when Plex is busy (scanning, analyzing). The tool retries automatically (5-second timeout).
+- If persistent, avoid running detection during Plex library scans.
+
+**Docker on Windows:**
+- Windows Docker volume mounts do not support SQLite file locking. Stop Plex Media Server before running detection, or use a Linux/macOS host.
+- The Settings page shows a warning when this environment is detected.
+
+**"fpcalc not found" for intro detection:**
+- The Docker image includes `fpcalc`. If running from source, install `libchromaprint-tools`.
+
+---
+
 ## HDR & Dolby Vision
 
 The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbnails. Behavior depends on the HDR format:

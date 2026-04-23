@@ -35,6 +35,7 @@ def _fake_process_item(
     ffmpeg_threads_override=None,
     cancel_check=None,
     worker_name=None,
+    fingerprint_store=None,
 ):
     """Simulate FFmpeg processing with a tiny sleep."""
     time.sleep(0.02)
@@ -54,6 +55,7 @@ def _slow_process_item(
     ffmpeg_threads_override=None,
     cancel_check=None,
     worker_name=None,
+    fingerprint_store=None,
 ):
     """Block until ``_SLOW_PROCESS_RELEASE`` is set or a short timeout elapses.
 
@@ -75,6 +77,7 @@ def _very_slow_process_item(
     ffmpeg_threads_override=None,
     cancel_check=None,
     worker_name=None,
+    fingerprint_store=None,
 ):
     """Simulate long processing so headless polling emits worker updates.
 
@@ -105,6 +108,7 @@ def _failing_process_item(
     ffmpeg_threads_override=None,
     cancel_check=None,
     worker_name=None,
+    fingerprint_store=None,
 ):
     """Simulate a processing failure."""
     raise RuntimeError("ffmpeg crashed")
@@ -120,6 +124,7 @@ def _codec_error_process_item(
     ffmpeg_threads_override=None,
     cancel_check=None,
     worker_name=None,
+    fingerprint_store=None,
 ):
     """Simulate a GPU codec error that should fall back to CPU."""
     from plex_generate_previews.processing import CodecNotSupportedError
@@ -358,6 +363,7 @@ class TestInPlaceCpuFallback:
             ffmpeg_threads_override=None,
             cancel_check=None,
             worker_name=None,
+            fingerprint_store=None,
         ):
             call_log.append(gpu)
             if gpu is not None:

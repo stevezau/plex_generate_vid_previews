@@ -85,6 +85,7 @@ class JobTracker:
         self.on_item_complete: Callable | None = cbs.get("on_item_complete")
         self.cancel_check: Callable | None = cbs.get("cancel_check")
         self.pause_check: Callable | None = cbs.get("pause_check")
+        self.fingerprint_store = cbs.get("fingerprint_store")
 
         # Throttle timestamps for callbacks
         self._last_progress_update = 0.0
@@ -426,6 +427,7 @@ class JobDispatcher:
                 job_id=job_id,
                 library_name=library_name,
                 cancel_check=tracker.cancel_check,
+                fingerprint_store=tracker.fingerprint_store,
             )
             logger.info(f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) to {worker.display_name}")
 

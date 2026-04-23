@@ -16,6 +16,8 @@
                 <a class="nav-link" href="#section-libraries"><i class="bi bi-collection me-2"></i>Libraries</a>
                 <a class="nav-link" href="#section-path-config"><i class="bi bi-folder me-2"></i>Path Configuration</a>
                 <a class="nav-link" href="#section-processing"><i class="bi bi-speedometer2 me-2"></i>Processing Options</a>
+                <a class="nav-link" href="#section-credits-detection"><i class="bi bi-skip-forward me-2"></i>Credits Detection</a>
+                <a class="nav-link" href="#section-intro-detection"><i class="bi bi-music-note-beamed me-2"></i>Intro Detection</a>
                 <a class="nav-link" href="#section-logging"><i class="bi bi-journal-text me-2"></i>Logging</a>
                 <a class="nav-link" href="#section-auth"><i class="bi bi-key me-2"></i>Authentication</a>
                 <a class="nav-link" href="#section-about"><i class="bi bi-info-circle me-2"></i>About</a>
@@ -365,6 +367,118 @@
             </div>
         </div>
 
+        <!-- Credits Detection -->
+        <div class="card section-card" id="section-credits-detection">
+            <div class="card-header">
+                <i class="bi bi-skip-forward me-2"></i>Credits Detection
+                <span class="badge bg-info ms-2">Experimental</span>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning py-2 mb-3">
+                    <small><strong>Note:</strong> Writes "Skip Credits" markers directly to the Plex SQLite database.
+                    Back up your database before first use.</small>
+                </div>
+                <div class="alert alert-danger py-2 mb-3 d-none" id="plexDbUnsafeWarning">
+                    <small><strong>Warning:</strong> <span id="plexDbUnsafeReason"></span></small>
+                </div>
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="creditsDetectionEnabled"
+                           onchange="markDirty(); toggleCreditsOptions()">
+                    <label class="form-check-label" for="creditsDetectionEnabled">Enable credits detection</label>
+                </div>
+
+                <div id="creditsOptions" class="d-none">
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="creditsDetectionOverwrite"
+                               onchange="markDirty()">
+                        <label class="form-check-label" for="creditsDetectionOverwrite">
+                            Re-detect even if markers already exist
+                        </label>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="creditsScanLastPct" class="form-label">Scan last % of video</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="creditsScanLastPct"
+                                       min="5" max="50" value="25" step="5" onchange="markDirty()">
+                                <span class="input-group-text">%</span>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="creditsMinDuration" class="form-label">Minimum credits length</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="creditsMinDuration"
+                                       min="5" max="120" value="15" onchange="markDirty()">
+                                <span class="input-group-text">seconds</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Intro Detection -->
+        <div class="card section-card" id="section-intro-detection">
+            <div class="card-header">
+                <i class="bi bi-music-note-beamed me-2"></i>Intro Detection
+                <span class="badge bg-info ms-2">Experimental</span>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning py-2 mb-3">
+                    <small><strong>Note:</strong> Writes "Skip Intro" markers directly to the Plex SQLite database.
+                    Requires <code>fpcalc</code> (included in Docker image).
+                    Back up your database before first use.</small>
+                </div>
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="introDetectionEnabled"
+                           onchange="markDirty(); toggleIntroOptions()">
+                    <label class="form-check-label" for="introDetectionEnabled">Enable intro detection</label>
+                </div>
+
+                <div id="introOptions" class="d-none">
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="introDetectionOverwrite"
+                               onchange="markDirty()">
+                        <label class="form-check-label" for="introDetectionOverwrite">
+                            Re-detect even if markers already exist
+                        </label>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <label for="introScanDuration" class="form-label">Scan first N minutes</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="introScanDuration"
+                                       min="2" max="30" value="10" onchange="markDirty()">
+                                <span class="input-group-text">min</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="introMinDuration" class="form-label">Min intro length</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="introMinDuration"
+                                       min="5" max="60" value="15" onchange="markDirty()">
+                                <span class="input-group-text">sec</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="introMaxDuration" class="form-label">Max intro length</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="introMaxDuration"
+                                       min="30" max="300" value="120" onchange="markDirty()">
+                                <span class="input-group-text">sec</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text">
+                        Compares audio across all episodes in a season to find the recurring intro theme.
+                        Requires at least 2 episodes per season. TV episodes only.
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- About -->
         <div class="card section-card" id="section-about">
             <div class="card-header">
@@ -540,6 +654,20 @@ async function loadSettings() {
         document.getElementById('logRotationSize').value = parseInt(settings.log_rotation_size) || 10;
         document.getElementById('logRetentionCount').value = settings.log_retention_count || 5;
         document.getElementById('jobHistoryDays').value = settings.job_history_days ?? 30;
+
+        // Credits/intro detection
+        document.getElementById('creditsDetectionEnabled').checked = settings.credits_detection_enabled === true;
+        document.getElementById('creditsDetectionOverwrite').checked = settings.credits_detection_overwrite === true;
+        document.getElementById('creditsScanLastPct').value = settings.credits_scan_last_pct ?? 25;
+        document.getElementById('creditsMinDuration').value = settings.credits_min_duration ?? 15;
+        document.getElementById('introDetectionEnabled').checked = settings.intro_detection_enabled === true;
+        document.getElementById('introDetectionOverwrite').checked = settings.intro_detection_overwrite === true;
+        document.getElementById('introScanDuration').value = Math.round((settings.intro_scan_duration_sec ?? 600) / 60);
+        document.getElementById('introMinDuration').value = settings.intro_min_duration_sec ?? 15;
+        document.getElementById('introMaxDuration').value = settings.intro_max_duration_sec ?? 120;
+        toggleCreditsOptions();
+        toggleIntroOptions();
+        loadPlexDbStatus();
 
         // Show server name and auth status
         if (settings.plex_name) {
@@ -1032,6 +1160,16 @@ async function saveAllSettings() {
         log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
         log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
         job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
+        // Credits/intro detection
+        credits_detection_enabled: document.getElementById('creditsDetectionEnabled').checked,
+        credits_detection_overwrite: document.getElementById('creditsDetectionOverwrite').checked,
+        credits_scan_last_pct: parseFloat(document.getElementById('creditsScanLastPct').value) || 25,
+        credits_min_duration: parseFloat(document.getElementById('creditsMinDuration').value) || 15,
+        intro_detection_enabled: document.getElementById('introDetectionEnabled').checked,
+        intro_detection_overwrite: document.getElementById('introDetectionOverwrite').checked,
+        intro_scan_duration_sec: (parseInt(document.getElementById('introScanDuration').value) || 10) * 60,
+        intro_min_duration_sec: parseFloat(document.getElementById('introMinDuration').value) || 15,
+        intro_max_duration_sec: parseFloat(document.getElementById('introMaxDuration').value) || 120,
     };
 
     const result = await new SettingsManager().save(settings);
@@ -1329,5 +1467,26 @@ async function applyLogLevel() {
     }
 }
 
+function toggleCreditsOptions() {
+    const enabled = document.getElementById('creditsDetectionEnabled').checked;
+    document.getElementById('creditsOptions').classList.toggle('d-none', !enabled);
+}
+
+function toggleIntroOptions() {
+    const enabled = document.getElementById('introDetectionEnabled').checked;
+    document.getElementById('introOptions').classList.toggle('d-none', !enabled);
+}
+
+async function loadPlexDbStatus() {
+    try {
+        const data = await apiGet('/api/system/plex-db-status');
+        if (!data.safe && data.reason) {
+            document.getElementById('plexDbUnsafeWarning').classList.remove('d-none');
+            document.getElementById('plexDbUnsafeReason').textContent = data.reason;
+        }
+    } catch (e) {
+        // Non-critical — just don't show the warning
+    }
+}
 </script>
 {% endblock %}

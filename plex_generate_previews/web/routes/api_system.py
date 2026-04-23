@@ -986,6 +986,32 @@ def health_check():
     return jsonify({"status": "healthy"})
 
 
+@api.route("/system/plex-db-status")
+@setup_or_auth_required
+def plex_db_status():
+    """Check if the Plex database is accessible and safe to write.
+
+    Used by the frontend to conditionally show Docker-on-Windows
+    warnings in the credits/intro detection settings.
+    """
+    try:
+        from ...plex_db import check_db_write_safety, get_plex_db_path
+        from ..settings_manager import get_settings_manager
+
+        settings = get_settings_manager()
+        plex_config = settings.plex_config_folder or "/plex"
+
+        try:
+            db_path = get_plex_db_path(plex_config)
+        except FileNotFoundError as exc:
+            return jsonify({"safe": False, "reason": str(exc), "db_path": ""})
+
+        safe, reason = check_db_write_safety(db_path)
+        return jsonify({"safe": safe, "reason": reason, "db_path": db_path})
+    except Exception as exc:
+        return jsonify({"safe": False, "reason": str(exc), "db_path": ""})
+
+
 # ---------------------------------------------------------------------------
 # Log history (reads from the JSONL app.log file)
 # ---------------------------------------------------------------------------

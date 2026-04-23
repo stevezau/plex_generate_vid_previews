@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+
+{% block title %}Detection Debug - Plex Preview Generator{% endblock %}
+
+{% block head %}
+<style>
+    .timeline-bar {
+        position: relative;
+        height: 60px;
+        background: var(--bs-dark);
+        border-radius: 0.375rem;
+        border: 1px solid var(--bs-border-color);
+        overflow: hidden;
+    }
+    .timeline-region {
+        position: absolute;
+        top: 0;
+        height: 100%;
+        opacity: 0.7;
+        cursor: help;
+    }
+    .timeline-region.black { background: #333; border-left: 2px solid #666; }
+    .timeline-region.silence { background: rgba(25,135,84,0.4); border-left: 2px solid rgba(25,135,84,0.8); top: 30px; height: 30px; }
+    .timeline-region.credits { background: rgba(255,193,7,0.3); border: 2px solid var(--bs-warning); }
+    .timeline-region.existing { background: rgba(13,110,253,0.2); border: 2px dashed var(--bs-primary); }
+    .timeline-region:hover { opacity: 1; }
+    .timeline-label { position: absolute; bottom: -18px; font-size: 0.65rem; white-space: nowrap; }
+    .scan-region { position: absolute; top: 0; height: 100%; background: rgba(255,255,255,0.05); border-left: 2px dashed rgba(255,255,255,0.3); }
+    .legend-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+<div class="col-lg-10 mx-auto">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-skip-forward me-2"></i>Detection Debug</h2>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-search me-2"></i>Analyze Media Item</div>
+        <div class="card-body">
+            <p class="text-muted small mb-3">
+                Enter a Plex item key to run credits detection and visualize the raw black frames,
+                silence regions, and resulting credits marker. No markers are written — this is purely diagnostic.
+            </p>
+            <div class="input-group mb-3">
+                <span class="input-group-text">/library/metadata/</span>
+                <input type="text" class="form-control" id="itemId" placeholder="12345" style="max-width: 120px;">
+                <button class="btn btn-primary" id="analyzeBtn" onclick="runAnalysis()">
+                    <i class="bi bi-play-fill me-1"></i>Analyze
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="results" class="d-none">
+        <div class="card mb-4">
+            <div class="card-header"><i class="bi bi-info-circle me-2"></i>Item Info</div>
+            <div class="card-body">
+                <p class="mb-1"><strong>Title:</strong> <span id="resTitle"></span></p>
+                <p class="mb-1"><strong>File:</strong> <code id="resFile" class="small"></code></p>
+                <p class="mb-0"><strong>Duration:</strong> <span id="resDuration"></span></p>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Timeline</div>
+            <div class="card-body">
+                <div class="mb-2 small">
+                    <span class="legend-swatch" style="background: #333; border: 1px solid #666;"></span> Black frames
+                    <span class="legend-swatch ms-3" style="background: rgba(25,135,84,0.6);"></span> Silence regions
+                    <span class="legend-swatch ms-3" style="background: rgba(255,193,7,0.4); border: 2px solid var(--bs-warning);"></span> Detected credits
+                    <span class="legend-swatch ms-3" style="background: rgba(13,110,253,0.3); border: 2px dashed var(--bs-primary);"></span> Existing markers
+                </div>
+                <div class="timeline-bar" id="timeline"></div>
+                <div class="d-flex justify-content-between mt-1 small text-muted">
+                    <span>0:00</span>
+                    <span id="timelineEnd"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header">Black Frames (<span id="blackCount">0</span>)</div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-sm table-striped mb-0">
+                                <thead><tr><th>Start</th><th>End</th><th>Duration</th></tr></thead>
+                                <tbody id="blackTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header">Silence Regions (<span id="silenceCount">0</span>)</div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-sm table-striped mb-0">
+                                <thead><tr><th>Start</th><th>End</th><th>Duration</th></tr></thead>
+                                <tbody id="silenceTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><i class="bi bi-bullseye me-2"></i>Detection Result</div>
+            <div class="card-body" id="resultBody">
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><i class="bi bi-gear me-2"></i>Parameters Used</div>
+            <div class="card-body">
+                <pre id="configJson" class="mb-0 small"></pre>
+            </div>
+        </div>
+    </div>
+
+    <div id="errorMsg" class="alert alert-danger d-none"></div>
+    <div id="loading" class="text-center py-4 d-none">
+        <div class="spinner-border" role="status"></div>
+        <p class="mt-2 text-muted">Running detection analysis (this may take a minute for long videos)...</p>
+    </div>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script>
+function formatTime(seconds) {
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = Math.floor(seconds % 60);
+    if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    return m + ':' + String(s).padStart(2, '0');
+}
+
+function formatMs(ms) {
+    return formatTime(ms / 1000);
+}
+
+async function runAnalysis() {
+    var itemId = document.getElementById('itemId').value.trim();
+    if (!itemId) return;
+
+    var btn = document.getElementById('analyzeBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Analyzing...';
+    document.getElementById('results').classList.add('d-none');
+    document.getElementById('errorMsg').classList.add('d-none');
+    document.getElementById('loading').classList.remove('d-none');
+
+    try {
+        var resp = await apiPost('/api/detection/analyze', {
+            item_key: '/library/metadata/' + itemId
+        });
+
+        document.getElementById('loading').classList.add('d-none');
+
+        if (resp.error) {
+            document.getElementById('errorMsg').textContent = resp.error;
+            document.getElementById('errorMsg').classList.remove('d-none');
+            return;
+        }
+
+        renderResults(resp);
+        document.getElementById('results').classList.remove('d-none');
+    } catch (e) {
+        document.getElementById('loading').classList.add('d-none');
+        document.getElementById('errorMsg').textContent = 'Analysis failed: ' + e.message;
+        document.getElementById('errorMsg').classList.remove('d-none');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Analyze';
+    }
+}
+
+function renderResults(data) {
+    document.getElementById('resTitle').textContent = data.title || '(unknown)';
+    document.getElementById('resFile').textContent = data.file;
+    document.getElementById('resDuration').textContent = formatTime(data.duration_sec);
+    document.getElementById('timelineEnd').textContent = formatTime(data.duration_sec);
+
+    var dur = data.duration_sec;
+    var timeline = document.getElementById('timeline');
+    timeline.innerHTML = '';
+
+    // Scan region indicator
+    var scanStart = data.scan_start_sec / dur * 100;
+    timeline.innerHTML += '<div class="scan-region" style="left:' + scanStart + '%;width:' + (100 - scanStart) + '%" title="Scan region (last ' + data.config.scan_last_pct + '%)"></div>';
+
+    // Existing markers
+    (data.existing_markers || []).forEach(function(m) {
+        var left = (m.start_ms / 1000) / dur * 100;
+        var width = Math.max(0.5, ((m.end_ms - m.start_ms) / 1000) / dur * 100);
+        timeline.innerHTML += '<div class="timeline-region existing" style="left:' + left + '%;width:' + width + '%" title="Existing ' + m.type + ': ' + formatMs(m.start_ms) + ' – ' + formatMs(m.end_ms) + '"></div>';
+    });
+
+    // Black frames
+    data.black_frames.forEach(function(bf) {
+        var left = bf.start / dur * 100;
+        var width = Math.max(0.3, bf.duration / dur * 100);
+        timeline.innerHTML += '<div class="timeline-region black" style="left:' + left + '%;width:' + width + '%" title="Black: ' + formatTime(bf.start) + ' – ' + formatTime(bf.end) + ' (' + bf.duration.toFixed(1) + 's)"></div>';
+    });
+
+    // Silence regions
+    data.silence_regions.forEach(function(sr) {
+        var left = sr.start / dur * 100;
+        var width = Math.max(0.3, sr.duration / dur * 100);
+        timeline.innerHTML += '<div class="timeline-region silence" style="left:' + left + '%;width:' + width + '%" title="Silence: ' + formatTime(sr.start) + ' – ' + formatTime(sr.end) + ' (' + sr.duration.toFixed(1) + 's)"></div>';
+    });
+
+    // Detected credits
+    if (data.credits_segment) {
+        var cs = data.credits_segment;
+        var left = (cs.start_ms / 1000) / dur * 100;
+        var width = Math.max(1, ((cs.end_ms - cs.start_ms) / 1000) / dur * 100);
+        timeline.innerHTML += '<div class="timeline-region credits" style="left:' + left + '%;width:' + width + '%" title="Detected credits: ' + formatMs(cs.start_ms) + ' – ' + formatMs(cs.end_ms) + '"></div>';
+    }
+
+    // Tables
+    document.getElementById('blackCount').textContent = data.black_frames.length;
+    var bt = '';
+    data.black_frames.forEach(function(bf) {
+        bt += '<tr><td>' + formatTime(bf.start) + '</td><td>' + formatTime(bf.end) + '</td><td>' + bf.duration.toFixed(2) + 's</td></tr>';
+    });
+    document.getElementById('blackTable').innerHTML = bt || '<tr><td colspan="3" class="text-muted text-center">None detected</td></tr>';
+
+    document.getElementById('silenceCount').textContent = data.silence_regions.length;
+    var st = '';
+    data.silence_regions.forEach(function(sr) {
+        st += '<tr><td>' + formatTime(sr.start) + '</td><td>' + formatTime(sr.end) + '</td><td>' + sr.duration.toFixed(2) + 's</td></tr>';
+    });
+    document.getElementById('silenceTable').innerHTML = st || '<tr><td colspan="3" class="text-muted text-center">None detected</td></tr>';
+
+    // Result
+    var rb = document.getElementById('resultBody');
+    if (data.credits_segment) {
+        var cs = data.credits_segment;
+        var wouldWrite = cs.confidence >= 0.5;
+        rb.innerHTML =
+            '<div class="alert ' + (wouldWrite ? 'alert-success' : 'alert-warning') + ' mb-0">' +
+            '<strong>Credits detected:</strong> ' + formatMs(cs.start_ms) + ' – ' + formatMs(cs.end_ms) +
+            '<br>Method: <code>' + cs.method + '</code> | Confidence: <strong>' + (cs.confidence * 100).toFixed(0) + '%</strong>' +
+            (wouldWrite ? '<br><span class="text-success">✓ Would write marker (confidence ≥ 50%)</span>' :
+                '<br><span class="text-warning">✗ Would NOT write marker (confidence < 50%)</span>') +
+            '</div>';
+    } else {
+        rb.innerHTML = '<div class="alert alert-secondary mb-0">No credits segment detected.</div>';
+    }
+
+    // Config
+    document.getElementById('configJson').textContent = JSON.stringify(data.config, null, 2);
+}
+
+document.getElementById('itemId').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') runAnalysis();
+});
+</script>
+{% endblock %}
