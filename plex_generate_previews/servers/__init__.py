@@ -17,6 +17,7 @@ from .base import (
     ServerType,
     WebhookEvent,
 )
+from .plex import PlexServer
 
 __all__ = [
     "ConnectionResult",
@@ -24,6 +25,7 @@ __all__ = [
     "LibraryNotYetIndexedError",
     "MediaItem",
     "MediaServer",
+    "PlexServer",
     "ServerConfig",
     "ServerType",
     "WebhookEvent",
