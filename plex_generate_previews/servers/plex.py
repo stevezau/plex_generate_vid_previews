@@ -288,6 +288,34 @@ class PlexServer(MediaServer):
         except Exception as exc:
             logger.debug("Plex partial scan trigger failed for {}: {}", remote_path, exc)
 
+    def get_bundle_metadata(self, item_id: str) -> list[tuple[str, str]]:
+        """Return ``(bundle_hash, remote_path)`` for every MediaPart of an item.
+
+        Plex-specific helper (not part of the abstract :class:`MediaServer`
+        interface) used by :class:`PlexBundleAdapter` to compute the BIF output
+        location. Plex's ``/library/metadata/{id}/tree`` endpoint returns XML;
+        we surface the relevant attributes as plain tuples.
+
+        Returns an empty list when the lookup fails or the item has no parts —
+        the adapter translates that into a
+        :class:`~plex_generate_previews.servers.LibraryNotYetIndexedError`.
+        """
+        from ..plex_client import retry_plex_call
+
+        try:
+            data = retry_plex_call(self._connect().query, f"{item_id}/tree")
+        except Exception as exc:
+            logger.debug("Plex /tree query failed for {}: {}", item_id, exc)
+            return []
+
+        results: list[tuple[str, str]] = []
+        for part in data.findall(".//MediaPart"):
+            bundle_hash = part.attrib.get("hash") or ""
+            file_path = part.attrib.get("file") or ""
+            if bundle_hash and file_path:
+                results.append((bundle_hash, file_path))
+        return results
+
     def parse_webhook(self, payload: dict[str, Any] | bytes, headers: dict[str, str]) -> WebhookEvent | None:
         """Normalise a Plex webhook payload to a :class:`WebhookEvent`.
 

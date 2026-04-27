@@ -6,5 +6,6 @@ defined in :mod:`.base`. Concrete adapters are added in later phases.
 """
 
 from .base import BifBundle, OutputAdapter
+from .plex_bundle import PlexBundleAdapter
 
-__all__ = ["BifBundle", "OutputAdapter"]
+__all__ = ["BifBundle", "OutputAdapter", "PlexBundleAdapter"]
