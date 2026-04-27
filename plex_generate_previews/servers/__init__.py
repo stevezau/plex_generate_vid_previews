@@ -19,6 +19,12 @@ from .base import (
 )
 from .ownership import OwnershipMatch, find_owning_servers, server_owns_path
 from .plex import PlexServer
+from .registry import (
+    ServerRegistry,
+    UnsupportedServerTypeError,
+    server_config_from_dict,
+    server_config_to_dict,
+)
 
 __all__ = [
     "ConnectionResult",
@@ -29,8 +35,12 @@ __all__ = [
     "OwnershipMatch",
     "PlexServer",
     "ServerConfig",
+    "ServerRegistry",
     "ServerType",
+    "UnsupportedServerTypeError",
     "WebhookEvent",
     "find_owning_servers",
+    "server_config_from_dict",
+    "server_config_to_dict",
     "server_owns_path",
 ]
