@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 6
+_CURRENT_SCHEMA_VERSION = 7
 
 # -------------------------------------------------------------------------
 # Env-var-to-settings migration map
@@ -179,6 +179,13 @@ def _migrate_schema(sm) -> None:
               as ``cuda:0``, ``cuda:1``, etc. (issue #221); any legacy
               generic ``cuda`` entries no longer match detected GPUs and
               would otherwise stay orphaned in settings.
+        v7 -- Synthesizes a ``media_servers`` array from the legacy
+              flat ``plex_*`` settings as part of the multi-media-server
+              refactor.  Existing single-Plex deployments get one
+              entry with id ``"plex-default"`` so the new dispatcher
+              has a server to route to.  Legacy ``plex_*`` keys are
+              kept (read-path compatibility) and removed in a later
+              migration once all callers have been updated.
     """
     current = sm.get("_schema_version", 1)
     if current >= _CURRENT_SCHEMA_VERSION:
@@ -200,6 +207,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 6:
         all_notes += _migrate_to_v6(sm)
+
+    if current < 7:
+        all_notes += _migrate_to_v7(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -428,6 +438,95 @@ def _migrate_to_v5(sm) -> list:
 
     sm.apply_changes(updates=updates or None, deletes=["cpu_fallback_threads"])
     notes.append("v5: removed obsolete cpu_fallback_threads key")
+    return notes
+
+
+def _legacy_plex_to_media_server(sm) -> dict[str, Any] | None:
+    """Build a single ``media_servers`` entry from legacy ``plex_*`` keys.
+
+    Returns ``None`` when there is nothing to migrate (e.g. fresh install
+    with no Plex configured). The returned dict matches the JSON shape
+    persisted in ``settings.json`` (not a :class:`ServerConfig` instance);
+    the runtime hydrates it into the dataclass at load time.
+
+    Used by the v7 migration and by tests; exposed so other code paths
+    (e.g. legacy-only deployments hitting the new server registry) can
+    synthesize the same shape on demand.
+    """
+    plex_url = (sm.get("plex_url") or "").strip()
+    plex_token = (sm.get("plex_token") or "").strip()
+    if not plex_url and not plex_token:
+        # Nothing to migrate; fresh install will add servers via the UI.
+        return None
+
+    selected_libraries = sm.get("plex_libraries") or sm.get("selected_libraries") or []
+    selected_library_ids = sm.get("plex_library_ids") or []
+    libraries: list[dict[str, Any]] = []
+    if isinstance(selected_library_ids, list) and selected_library_ids:
+        for lib_id in selected_library_ids:
+            libraries.append(
+                {
+                    "id": str(lib_id),
+                    "name": str(lib_id),
+                    "remote_paths": [],
+                    "enabled": True,
+                }
+            )
+    elif isinstance(selected_libraries, list):
+        for name in selected_libraries:
+            libraries.append(
+                {
+                    "id": str(name),
+                    "name": str(name),
+                    "remote_paths": [],
+                    "enabled": True,
+                }
+            )
+
+    auth: dict[str, Any] = {"method": "token", "token": plex_token} if plex_token else {}
+
+    return {
+        "id": "plex-default",
+        "type": "plex",
+        "name": "Plex",
+        "enabled": True,
+        "url": plex_url,
+        "auth": auth,
+        "verify_ssl": bool(sm.get("plex_verify_ssl", True)),
+        "timeout": int(sm.get("plex_timeout", 60) or 60),
+        "libraries": libraries,
+        "path_mappings": list(sm.get("path_mappings") or []),
+        "output": {
+            "adapter": "plex_bundle",
+            "plex_config_folder": sm.get("plex_config_folder") or "",
+            "frame_interval": int(sm.get("plex_bif_frame_interval") or sm.get("thumbnail_interval") or 10),
+        },
+    }
+
+
+def _migrate_to_v7(sm) -> list:
+    """Add a ``media_servers`` array synthesised from legacy ``plex_*`` keys.
+
+    No-op when ``media_servers`` already exists. Legacy ``plex_*`` keys
+    are *not* removed yet — the read path continues to honour them so
+    Phase 1 ships the schema change without breaking existing single-Plex
+    deployments. A later migration removes them once all callers have
+    been routed through the server registry.
+    """
+    notes: list[str] = []
+    if sm.get("media_servers") is not None:
+        return notes
+
+    entry = _legacy_plex_to_media_server(sm)
+    if entry is None:
+        # Fresh install: write an empty list so callers can rely on the key
+        # always being present.
+        sm.apply_changes(updates={"media_servers": []})
+        notes.append("v7: initialised empty media_servers array")
+        return notes
+
+    sm.apply_changes(updates={"media_servers": [entry]})
+    notes.append("v7: synthesised media_servers[0] from legacy plex_* settings")
     return notes
 
 

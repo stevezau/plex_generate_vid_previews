@@ -812,3 +812,158 @@ class TestMigrateToV6:
         assert notes == []
         devices = [e["device"] for e in settings_manager.get("gpu_config")]
         assert devices == ["cuda:0", "cuda:1"]
+
+
+# ============================================================================
+# v7: Synthesise media_servers[] from legacy plex_* keys
+# ============================================================================
+
+
+class TestMigrateToV7:
+    """Tests for the v7 multi-media-server schema migration."""
+
+    def test_fresh_install_writes_empty_array(self, settings_manager):
+        """No plex_url/token → media_servers initialised to []."""
+        from plex_generate_previews.upgrade import _migrate_to_v7
+
+        notes = _migrate_to_v7(settings_manager)
+
+        assert settings_manager.get("media_servers") == []
+        assert any("empty media_servers" in n for n in notes)
+
+    def test_synthesises_single_plex_entry_from_legacy_settings(self, settings_manager):
+        """Existing single-Plex deployment → one media_servers entry."""
+        from plex_generate_previews.upgrade import _migrate_to_v7
+
+        settings_manager.apply_changes(
+            updates={
+                "plex_url": "http://plex:32400",
+                "plex_token": "secret-token",
+                "plex_verify_ssl": False,
+                "plex_timeout": 90,
+                "plex_libraries": ["Movies", "TV Shows"],
+                "plex_config_folder": "/config/plex",
+                "plex_bif_frame_interval": 5,
+                "path_mappings": [{"plex_prefix": "/media", "local_prefix": "/data"}],
+            }
+        )
+
+        notes = _migrate_to_v7(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert isinstance(servers, list) and len(servers) == 1
+        entry = servers[0]
+        assert entry["id"] == "plex-default"
+        assert entry["type"] == "plex"
+        assert entry["enabled"] is True
+        assert entry["url"] == "http://plex:32400"
+        assert entry["verify_ssl"] is False
+        assert entry["timeout"] == 90
+        assert entry["auth"] == {"method": "token", "token": "secret-token"}
+        assert entry["output"]["adapter"] == "plex_bundle"
+        assert entry["output"]["plex_config_folder"] == "/config/plex"
+        assert entry["output"]["frame_interval"] == 5
+        assert entry["path_mappings"] == [{"plex_prefix": "/media", "local_prefix": "/data"}]
+        # Two enabled libraries derived from plex_libraries
+        names = [lib["name"] for lib in entry["libraries"]]
+        assert names == ["Movies", "TV Shows"]
+        assert all(lib["enabled"] is True for lib in entry["libraries"])
+        assert any("synthesised" in n for n in notes)
+
+    def test_prefers_plex_library_ids_over_titles(self, settings_manager):
+        """When both id and title lists are set, ids win (matches existing filter logic)."""
+        from plex_generate_previews.upgrade import _migrate_to_v7
+
+        settings_manager.apply_changes(
+            updates={
+                "plex_url": "http://plex:32400",
+                "plex_token": "t",
+                "plex_libraries": ["Movies"],
+                "plex_library_ids": ["1", "2"],
+            }
+        )
+
+        _migrate_to_v7(settings_manager)
+        servers = settings_manager.get("media_servers")
+        ids = [lib["id"] for lib in servers[0]["libraries"]]
+        assert ids == ["1", "2"]
+
+    def test_no_op_when_media_servers_already_present(self, settings_manager):
+        """Re-running the migration must not overwrite an existing array."""
+        from plex_generate_previews.upgrade import _migrate_to_v7
+
+        original = [{"id": "custom-id", "type": "plex", "name": "Custom"}]
+        settings_manager.set("media_servers", original)
+
+        notes = _migrate_to_v7(settings_manager)
+
+        assert notes == []
+        assert settings_manager.get("media_servers") == original
+
+    def test_legacy_plex_keys_remain_after_migration(self, settings_manager):
+        """v7 is additive — legacy plex_* keys must keep working for now."""
+        from plex_generate_previews.upgrade import _migrate_to_v7
+
+        settings_manager.apply_changes(
+            updates={
+                "plex_url": "http://plex:32400",
+                "plex_token": "t",
+            }
+        )
+
+        _migrate_to_v7(settings_manager)
+
+        assert settings_manager.get("plex_url") == "http://plex:32400"
+        assert settings_manager.get("plex_token") == "t"
+
+    def test_run_migrations_includes_v7(self, settings_manager, monkeypatch):
+        """End-to-end check: run_migrations bumps schema_version to 7."""
+        from plex_generate_previews.upgrade import _CURRENT_SCHEMA_VERSION, run_migrations
+
+        monkeypatch.setenv("PLEX_URL", "http://plex:32400")
+        monkeypatch.setenv("PLEX_TOKEN", "t")
+
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
+        assert _CURRENT_SCHEMA_VERSION >= 7
+        servers = settings_manager.get("media_servers")
+        assert servers is not None
+        assert len(servers) == 1
+        assert servers[0]["url"] == "http://plex:32400"
+
+
+class TestLegacyPlexToMediaServer:
+    """Tests for the public helper used by the v7 migration."""
+
+    def test_returns_none_when_no_plex_configured(self, settings_manager):
+        from plex_generate_previews.upgrade import _legacy_plex_to_media_server
+
+        assert _legacy_plex_to_media_server(settings_manager) is None
+
+    def test_handles_token_only_install(self, settings_manager):
+        """A token without a URL still produces an entry — user can fix the URL later."""
+        from plex_generate_previews.upgrade import _legacy_plex_to_media_server
+
+        settings_manager.set("plex_token", "t")
+        entry = _legacy_plex_to_media_server(settings_manager)
+        assert entry is not None
+        assert entry["auth"]["token"] == "t"
+        assert entry["url"] == ""
+
+    def test_falls_back_to_selected_libraries_key(self, settings_manager):
+        """The env-migration helper writes to ``selected_libraries``; v7 must read it too."""
+        from plex_generate_previews.upgrade import _legacy_plex_to_media_server
+
+        settings_manager.apply_changes(
+            updates={
+                "plex_url": "http://x:32400",
+                "plex_token": "t",
+                "selected_libraries": ["Anime"],
+            }
+        )
+
+        entry = _legacy_plex_to_media_server(settings_manager)
+        assert entry is not None
+        names = [lib["name"] for lib in entry["libraries"]]
+        assert names == ["Anime"]
