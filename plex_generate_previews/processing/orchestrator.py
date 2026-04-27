@@ -1088,6 +1088,12 @@ def generate_images(
 def _setup_bundle_paths(bundle_hash: str, config: Config) -> tuple[str, str, str]:
     """Set up all bundle-related paths.
 
+    Path computation is centralised in :class:`PlexBundleAdapter` so the
+    multi-server publisher pipeline and the legacy orchestrator share a
+    single source of truth for Plex's bundle layout. This function keeps
+    its tuple return shape for callers that still need the indexes
+    directory and tmp path alongside the BIF path.
+
     Args:
         bundle_hash: Bundle hash from Plex
         config: Configuration object
@@ -1096,10 +1102,11 @@ def _setup_bundle_paths(bundle_hash: str, config: Config) -> tuple[str, str, str
         Tuple of (indexes_path, index_bif, tmp_path)
 
     """
-    bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1::1]}.bundle")
-    bundle_path = sanitize_path(os.path.join(config.plex_config_folder, "Media", "localhost", bundle_file))
-    indexes_path = sanitize_path(os.path.join(bundle_path, "Contents", "Indexes"))
-    index_bif = sanitize_path(os.path.join(indexes_path, "index-sd.bif"))
+    from ..output.plex_bundle import PlexBundleAdapter
+
+    index_bif_path = PlexBundleAdapter.bundle_bif_path(config.plex_config_folder, bundle_hash)
+    index_bif = sanitize_path(str(index_bif_path))
+    indexes_path = sanitize_path(str(index_bif_path.parent))
     tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
     return indexes_path, index_bif, tmp_path
 

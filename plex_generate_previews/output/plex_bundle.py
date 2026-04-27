@@ -114,12 +114,23 @@ class PlexBundleAdapter(OutputAdapter):
         logger.debug("Plex BIF written to {}", index_bif)
 
     # ------------------------------------------------------------------ helpers
-    def _bundle_bif_path(self, bundle_hash: str) -> Path:
-        """Compute ``{plex}/Media/localhost/<h0>/<h[1:]>.bundle/Contents/Indexes/index-sd.bif``."""
+    @staticmethod
+    def bundle_bif_path(plex_config_folder: str, bundle_hash: str) -> Path:
+        """Compute ``{plex}/Media/localhost/<h0>/<h[1:]>.bundle/Contents/Indexes/index-sd.bif``.
+
+        Public so callers that already hold a bundle hash (the orchestrator,
+        which extracts hashes from a single Plex ``/tree`` response while
+        iterating MediaParts) can compute paths without going through an
+        adapter instance or paying for a duplicate API call.
+        """
         bundle_file = sanitize_path(f"{bundle_hash[0]}/{bundle_hash[1:]}.bundle")
-        bundle_path = sanitize_path(os.path.join(self._plex_config_folder, "Media", "localhost", bundle_file))
+        bundle_path = sanitize_path(os.path.join(plex_config_folder, "Media", "localhost", bundle_file))
         indexes_path = sanitize_path(os.path.join(bundle_path, "Contents", "Indexes"))
         return Path(sanitize_path(os.path.join(indexes_path, "index-sd.bif")))
+
+    def _bundle_bif_path(self, bundle_hash: str) -> Path:
+        """Instance-bound shim that calls :meth:`bundle_bif_path`."""
+        return self.bundle_bif_path(self._plex_config_folder, bundle_hash)
 
     @staticmethod
     def _select_hash_for_path(
