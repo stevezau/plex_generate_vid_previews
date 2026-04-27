@@ -17,6 +17,7 @@ from .base import (
     ServerType,
     WebhookEvent,
 )
+from .ownership import OwnershipMatch, find_owning_servers, server_owns_path
 from .plex import PlexServer
 
 __all__ = [
@@ -25,8 +26,11 @@ __all__ = [
     "LibraryNotYetIndexedError",
     "MediaItem",
     "MediaServer",
+    "OwnershipMatch",
     "PlexServer",
     "ServerConfig",
     "ServerType",
     "WebhookEvent",
+    "find_owning_servers",
+    "server_owns_path",
 ]
