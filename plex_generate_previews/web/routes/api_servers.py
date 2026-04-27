@@ -12,6 +12,7 @@ from loguru import logger
 
 from ...servers import (
     ServerRegistry,
+    ServerType,
     UnsupportedServerTypeError,
     server_config_from_dict,
     server_config_to_dict,
@@ -140,5 +141,112 @@ def get_path_owners():
                 }
                 for m in matches
             ],
+        }
+    )
+
+
+@api.route("/servers/<server_id>/refresh-libraries", methods=["POST"])
+@setup_or_auth_required
+def refresh_server_libraries(server_id: str):
+    """Re-fetch a server's library list from its API and persist the snapshot.
+
+    Calls :meth:`MediaServer.list_libraries` on the live client and writes
+    the result back into the persisted ``media_servers`` array. Existing
+    per-library ``enabled`` toggles for libraries that survive the refresh
+    are preserved; new libraries default to enabled.
+
+    Phase 1 only supports the Plex client path; for other server types the
+    endpoint returns 501 with a clear message.
+    """
+    from ...config import load_config
+
+    settings = get_settings_manager()
+    raw_servers = settings.get("media_servers") or []
+    if not isinstance(raw_servers, list):
+        return jsonify({"error": "media_servers not configured"}), 404
+
+    target_index: int | None = None
+    target_entry: dict | None = None
+    for i, entry in enumerate(raw_servers):
+        if isinstance(entry, dict) and str(entry.get("id") or "") == server_id:
+            target_index = i
+            target_entry = entry
+            break
+
+    if target_entry is None or target_index is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target_entry)
+    except UnsupportedServerTypeError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if cfg.type is not ServerType.PLEX:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Refresh for {cfg.type.value} servers is not yet implemented "
+                        "in Phase 1; the client lands in a follow-up commit."
+                    )
+                }
+            ),
+            501,
+        )
+
+    # Plex's live client still needs a legacy Config until the wrapper is
+    # updated to take a ServerConfig. load_config() reads the same settings
+    # we just inspected, so the URL/token/verify_ssl agree.
+    try:
+        legacy_config = load_config()
+    except Exception as exc:
+        logger.warning("Refresh libraries: load_config failed: {}", exc)
+        return jsonify({"error": f"failed to load config: {exc}"}), 500
+
+    registry = ServerRegistry.from_settings(raw_servers, legacy_config=legacy_config)
+    server = registry.get(server_id)
+    if server is None:
+        return jsonify({"error": f"could not instantiate server {server_id!r}"}), 500
+
+    try:
+        new_libraries = server.list_libraries()
+    except Exception as exc:
+        logger.warning("Refresh libraries: list_libraries raised: {}", exc)
+        return jsonify({"error": f"server query failed: {exc}"}), 502
+
+    # Preserve the user's per-library 'enabled' toggle for any library that
+    # also appears in the previous snapshot (matched by id).
+    existing_enabled: dict[str, bool] = {}
+    for raw_lib in target_entry.get("libraries", []) or []:
+        if isinstance(raw_lib, dict):
+            lib_id = str(raw_lib.get("id") or "")
+            if lib_id:
+                existing_enabled[lib_id] = bool(raw_lib.get("enabled", True))
+
+    serialised_libraries: list[dict] = []
+    for lib in new_libraries:
+        enabled = existing_enabled.get(lib.id, lib.enabled)
+        serialised_libraries.append(
+            {
+                "id": lib.id,
+                "name": lib.name,
+                "remote_paths": list(lib.remote_paths),
+                "enabled": enabled,
+                "kind": lib.kind,
+            }
+        )
+
+    # Write the updated entry back into media_servers preserving order.
+    updated_servers = list(raw_servers)
+    updated_entry = dict(target_entry)
+    updated_entry["libraries"] = serialised_libraries
+    updated_servers[target_index] = updated_entry
+    settings.set("media_servers", updated_servers)
+
+    return jsonify(
+        {
+            "server_id": server_id,
+            "libraries": serialised_libraries,
+            "count": len(serialised_libraries),
         }
     )

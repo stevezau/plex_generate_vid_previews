@@ -242,3 +242,117 @@ class TestPathOwners:
     def test_400_when_path_missing(self, client, auth_headers):
         response = client.get("/api/servers/owners", headers=auth_headers)
         assert response.status_code == 400
+
+
+class TestRefreshLibraries:
+    def test_404_when_server_missing(self, client, auth_headers):
+        _seed_media_servers([])
+        response = client.post(
+            "/api/servers/nope/refresh-libraries",
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_501_for_non_plex_servers(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {},
+                }
+            ]
+        )
+        response = client.post(
+            "/api/servers/emby-1/refresh-libraries",
+            headers=auth_headers,
+        )
+        assert response.status_code == 501
+
+    def test_persists_libraries_and_preserves_enabled_toggle(self, client, auth_headers, monkeypatch):
+        from plex_generate_previews.servers import Library
+
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-default",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "t"},
+                    "libraries": [
+                        # User had previously disabled Movies; refresh must
+                        # preserve that.
+                        {
+                            "id": "1",
+                            "name": "Movies",
+                            "remote_paths": ["/old"],
+                            "enabled": False,
+                        }
+                    ],
+                }
+            ]
+        )
+
+        # Avoid touching real plexapi; stub list_libraries on the live client.
+        from plex_generate_previews.servers.plex import PlexServer
+
+        def fake_list_libraries(self):
+            return [
+                Library(id="1", name="Movies", remote_paths=("/data/movies",), enabled=True),
+                Library(id="2", name="TV Shows", remote_paths=("/data/tv",), enabled=True),
+            ]
+
+        monkeypatch.setattr(PlexServer, "list_libraries", fake_list_libraries)
+
+        response = client.post(
+            "/api/servers/plex-default/refresh-libraries",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+
+        data = response.get_json()
+        assert data["count"] == 2
+        libs_by_id = {lib["id"]: lib for lib in data["libraries"]}
+        # Existing user toggle preserved.
+        assert libs_by_id["1"]["enabled"] is False
+        # New library defaults to whatever the server reported (here True).
+        assert libs_by_id["2"]["enabled"] is True
+        # remote_paths were updated.
+        assert libs_by_id["1"]["remote_paths"] == ["/data/movies"]
+
+        # Settings snapshot persisted.
+        settings = get_settings_manager()
+        persisted = settings.get("media_servers")[0]["libraries"]
+        assert {lib["id"] for lib in persisted} == {"1", "2"}
+
+    def test_502_when_server_unreachable(self, client, auth_headers, monkeypatch):
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-default",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "t"},
+                }
+            ]
+        )
+
+        from plex_generate_previews.servers.plex import PlexServer
+
+        def boom(self):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(PlexServer, "list_libraries", boom)
+
+        response = client.post(
+            "/api/servers/plex-default/refresh-libraries",
+            headers=auth_headers,
+        )
+        assert response.status_code == 502
