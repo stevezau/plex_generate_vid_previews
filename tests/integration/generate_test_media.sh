@@ -23,6 +23,8 @@ fi
 mkdir -p \
     "${MEDIA_DIR}/Movies/Test Movie H264 (2024)" \
     "${MEDIA_DIR}/Movies/Test Movie HEVC (2024)" \
+    "${MEDIA_DIR}/Movies/Test Movie VP9 (2024)" \
+    "${MEDIA_DIR}/Movies/Test Movie AV1 (2024)" \
     "${MEDIA_DIR}/TV Shows/Test Show/Season 01"
 
 generate() {
@@ -61,6 +63,31 @@ generate \
 generate \
     "${MEDIA_DIR}/TV Shows/Test Show/Season 01/Test Show - S01E02 - Two.mkv" \
     libx264 1280x720 30
+
+# VP9 (libvpx-vp9) — exercises the WebM container + VP9 codec path.
+# Encoded faster than typical (-deadline good) since we only need a
+# valid stream, not visual quality.
+if [[ ! -f "${MEDIA_DIR}/Movies/Test Movie VP9 (2024)/Test Movie VP9 (2024).mkv" ]]; then
+    echo "generating Test Movie VP9 (2024).mkv (libvpx-vp9, 1280x720, 30s)..."
+    ffmpeg -loglevel error -y \
+        -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=30" \
+        -f lavfi -i "sine=frequency=440:duration=30" \
+        -c:v libvpx-vp9 -deadline good -cpu-used 4 -row-mt 1 -pix_fmt yuv420p \
+        -c:a libopus -b:a 128k \
+        "${MEDIA_DIR}/Movies/Test Movie VP9 (2024)/Test Movie VP9 (2024).mkv"
+fi
+
+# AV1 (libsvtav1) — fast SVT-AV1 encoder, exercises the AV1 decode path.
+# preset 8 is one of the fastest; quality irrelevant for fixture.
+if [[ ! -f "${MEDIA_DIR}/Movies/Test Movie AV1 (2024)/Test Movie AV1 (2024).mkv" ]]; then
+    echo "generating Test Movie AV1 (2024).mkv (libsvtav1, 1280x720, 30s)..."
+    ffmpeg -loglevel error -y \
+        -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=30" \
+        -f lavfi -i "sine=frequency=440:duration=30" \
+        -c:v libsvtav1 -preset 8 -crf 50 -pix_fmt yuv420p \
+        -c:a aac -b:a 128k \
+        "${MEDIA_DIR}/Movies/Test Movie AV1 (2024)/Test Movie AV1 (2024).mkv"
+fi
 
 echo
 echo "Done. Generated files under ${MEDIA_DIR}:"

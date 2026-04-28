@@ -14,6 +14,7 @@ strings into IDs vs. titles.
 
 import os
 import re
+import unicodedata
 from typing import Any
 
 from loguru import logger
@@ -52,10 +53,17 @@ def get_path_mapping_pairs(plex_mapping: str, local_mapping: str) -> list[tuple[
 
 
 def _normalize_prefix(p: str) -> str:
-    """Return path with consistent trailing slash for prefix matching."""
+    """Return path with consistent trailing slash for prefix matching.
+
+    Also Unicode-NFC-normalises the path. Filesystems on Linux store
+    bytes; macOS HFS+ canonicalises to NFD on write. A user on Linux
+    typing a Japanese folder name into settings (NFC) wouldn't match
+    an NFD-encoded path coming from an HFS+ source mount otherwise.
+    NFC is a no-op for ASCII; the cost is negligible.
+    """
     if not p:
         return p
-    return p.replace("\\", "/").rstrip("/") or "/"
+    return unicodedata.normalize("NFC", p.replace("\\", "/").rstrip("/")) or "/"
 
 
 def _legacy_settings_to_path_mappings(plex_mapping: str, local_mapping: str) -> list[dict[str, Any]]:
@@ -109,11 +117,16 @@ def normalize_path_mappings(settings: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _path_matches_prefix(path: str, prefix: str) -> bool:
-    """Return True if path equals prefix or has prefix as a path prefix (no partial segment)."""
+    """Return True if path equals prefix or has prefix as a path prefix (no partial segment).
+
+    Both sides are Unicode-NFC normalised before comparison so paths
+    differing only in Unicode normal form (HFS+ NFD vs Linux/typed NFC)
+    still match.
+    """
     norm = _normalize_prefix(prefix)
     if not norm:
         return False
-    path = (path or "").strip().replace("\\", "/")
+    path = unicodedata.normalize("NFC", (path or "").strip().replace("\\", "/"))
     return path == norm or path.startswith(norm + "/")
 
 

@@ -223,3 +223,52 @@ class TestEdgeCases:
         server = _server(libraries=[Library(id="1", name="Movies", remote_paths=("/data/movies",), enabled=True)])
         # A pseudo-file path under the library still matches.
         assert server_owns_path("/data/movies/Foo (2024)/Foo (2024).mkv", server) is not None
+
+
+class TestUnicodeNormalization:
+    """NFC normalisation lets HFS+ NFD paths match NFC settings entries."""
+
+    def test_japanese_path_in_nfc_matches(self):
+        """Japanese paths in NFC (the typical typed form) match cleanly."""
+        server = _server(
+            libraries=[Library(id="1", name="メディア", remote_paths=("/メディア/Movies",), enabled=True)],
+        )
+        match = server_owns_path("/メディア/Movies/Test (2024)/Test (2024).mkv", server)
+        assert isinstance(match, OwnershipMatch)
+
+    def test_accented_path_nfd_canonical_matches_nfc_setting(self):
+        """User configures NFC ``café``; canonical path arrives as NFD ``café``.
+
+        Without normalisation these differ byte-for-byte and ownership
+        silently fails. With NFC on both sides they collapse to the
+        same string and the match works.
+        """
+        # Settings as NFC (typical of typed input).
+        nfc_setting = "/data/café"
+        # Canonical path as NFD (typical of HFS+ source mounts).
+        nfd_canonical = "/data/café/Movie (2024)/Movie (2024).mkv"
+
+        server = _server(
+            libraries=[Library(id="1", name="café", remote_paths=(nfc_setting,), enabled=True)],
+        )
+        match = server_owns_path(nfd_canonical, server)
+        assert match is not None, "NFD canonical should match NFC setting after normalisation"
+
+    def test_emoji_path_matches(self):
+        """Emoji are multi-codepoint; NFC normalisation is a no-op but the comparison still works."""
+        server = _server(
+            libraries=[Library(id="1", name="🎬", remote_paths=("/data/🎬",), enabled=True)],
+        )
+        assert server_owns_path("/data/🎬/Movie/file.mkv", server) is not None
+
+    def test_case_mismatch_does_not_match(self):
+        """Filesystems can be case-sensitive; we deliberately don't fold case.
+
+        If the user configures ``/Movies`` but the canonical path is
+        ``/movies/...``, that's a real misconfiguration and we want a
+        clean "no owners" rather than silent wrong-publish.
+        """
+        server = _server(
+            libraries=[Library(id="1", name="Movies", remote_paths=("/Movies",), enabled=True)],
+        )
+        assert server_owns_path("/movies/foo/bar.mkv", server) is None

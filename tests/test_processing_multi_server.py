@@ -420,6 +420,149 @@ class TestSkipIfExists:
         assert result.publishers[0].status is PublisherStatus.PUBLISHED
 
 
+class TestPublisherFailureModes:
+    """Disk-full / EACCES scenarios — verify graceful PublisherStatus.FAILED."""
+
+    def test_permission_denied_during_publish_returns_failed(self, mock_config_for_processing, tmp_path):
+        """When the adapter's ``publish`` raises PermissionError, ``_publish_one``
+        catches it (PermissionError is OSError) and reports FAILED.
+
+        Without graceful handling the worker pool would die with an
+        uncaught exception. We simulate by stubbing the EmbyBifAdapter's
+        ``publish`` method to raise.
+        """
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        # Patch the underlying generate_bif call so the publish path
+        # raises PermissionError. The adapter wraps generate_bif which
+        # writes the .bif file; that's where EACCES would happen in
+        # the real world.
+        with (
+            patch(
+                "plex_generate_previews.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+            patch(
+                "plex_generate_previews.processing.orchestrator.generate_bif",
+                side_effect=PermissionError(13, "Permission denied", "/data/movies/Test (2024)-320-10.bif"),
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        # Aggregate status is FAILED because every publisher failed.
+        assert result.status is MultiServerStatus.FAILED
+        # The publisher row is FAILED, not PUBLISHED.
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.FAILED
+        # The error message surfaces the PermissionError so the user
+        # can diagnose. Loose match — PermissionError stringifies as
+        # "[Errno 13] Permission denied: ..." on POSIX.
+        assert "Permission" in result.publishers[0].message or "denied" in result.publishers[0].message
+
+    def test_disk_full_during_publish_returns_failed(self, mock_config_for_processing, tmp_path):
+        """ENOSPC (OSError errno 28) also routes to FAILED, not crash."""
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with (
+            patch(
+                "plex_generate_previews.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+            patch(
+                "plex_generate_previews.processing.orchestrator.generate_bif",
+                side_effect=OSError(28, "No space left on device", "/data/movies/Test.bif"),
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.status is MultiServerStatus.FAILED
+        assert result.publishers[0].status is PublisherStatus.FAILED
+        assert "No space" in result.publishers[0].message or "28" in result.publishers[0].message
+
+    def test_compute_output_paths_oserror_returns_failed(self, mock_config_for_processing, tmp_path):
+        """An OSError raised during ``compute_output_paths`` (e.g. by a
+        Plex bundle adapter unable to query the API for the bundle hash)
+        also produces FAILED, not an unhandled exception."""
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        from plex_generate_previews.output.emby_sidecar import EmbyBifAdapter
+
+        # Patching the instance method by class works because the
+        # adapter is constructed by _adapter_for_server every dispatch.
+        with (
+            patch(
+                "plex_generate_previews.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+            patch.object(
+                EmbyBifAdapter,
+                "compute_output_paths",
+                side_effect=OSError("EIO simulated"),
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.status is MultiServerStatus.FAILED
+        assert result.publishers[0].status is PublisherStatus.FAILED
+
+
 class TestNoFrames:
     def test_returns_no_frames_when_ffmpeg_produces_zero(self, mock_config_for_processing, tmp_path):
         media_dir = tmp_path / "data" / "movies"

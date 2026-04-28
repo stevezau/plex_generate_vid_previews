@@ -310,6 +310,66 @@ class TestHEVCSourceCodec:
 
 
 @pytest.mark.integration
+class TestVP9SourceCodec:
+    """VP9 source goes through the same generic CPU FFmpeg path; smoke-tests it works."""
+
+    def test_vp9_source_publishes_normally(self, emby_credentials, media_root, coverage_config):
+        canonical = str(media_root / "Movies" / "Test Movie VP9 (2024)" / "Test Movie VP9 (2024).mkv")
+        sidecar = Path(canonical).parent / "Test Movie VP9 (2024)-320-5.bif"
+        if sidecar.exists():
+            sidecar.unlink()
+
+        registry = _emby_only_registry(emby_credentials, media_root)
+
+        try:
+            result = process_canonical_path(
+                canonical_path=canonical,
+                registry=registry,
+                config=coverage_config,
+                gpu=None,
+                gpu_device_path=None,
+            )
+            assert result.status is MultiServerStatus.PUBLISHED, result.message
+            assert sidecar.exists()
+            assert _decode_bif_count(sidecar) >= 4
+        finally:
+            if sidecar.exists():
+                sidecar.unlink()
+            for f in sidecar.parent.glob("*.bif.meta"):
+                f.unlink()
+
+
+@pytest.mark.integration
+class TestAV1SourceCodec:
+    """AV1 source goes through the same generic CPU FFmpeg path; smoke-tests it works."""
+
+    def test_av1_source_publishes_normally(self, emby_credentials, media_root, coverage_config):
+        canonical = str(media_root / "Movies" / "Test Movie AV1 (2024)" / "Test Movie AV1 (2024).mkv")
+        sidecar = Path(canonical).parent / "Test Movie AV1 (2024)-320-5.bif"
+        if sidecar.exists():
+            sidecar.unlink()
+
+        registry = _emby_only_registry(emby_credentials, media_root)
+
+        try:
+            result = process_canonical_path(
+                canonical_path=canonical,
+                registry=registry,
+                config=coverage_config,
+                gpu=None,
+                gpu_device_path=None,
+            )
+            assert result.status is MultiServerStatus.PUBLISHED, result.message
+            assert sidecar.exists()
+            assert _decode_bif_count(sidecar) >= 4
+        finally:
+            if sidecar.exists():
+                sidecar.unlink()
+            for f in sidecar.parent.glob("*.bif.meta"):
+                f.unlink()
+
+
+@pytest.mark.integration
 class TestPathMappingPrefixCollision:
     """Two libraries with overlapping remote prefixes — longer prefix wins."""
 

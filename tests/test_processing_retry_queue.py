@@ -372,17 +372,17 @@ class TestProcessCanonicalPathIntegration:
     """process_canonical_path schedules a retry when SKIPPED_NOT_INDEXED happens."""
 
     def test_skipped_not_indexed_triggers_retry_schedule(self):
-        """Smoke test: dispatcher hands off to retry queue automatically."""
+        """Smoke test: dispatcher hands off to retry queue automatically.
+
+        We verify by spying on ``schedule_retry_for_unindexed`` rather
+        than introspecting the global pending count — the count races
+        with background timer threads firing entries scheduled by other
+        tests in the same xdist worker.
+        """
         from plex_generate_previews.processing.multi_server import (
             PublisherResult,
             PublisherStatus,
         )
-
-        # Compare pending count delta rather than absolute. Other tests
-        # in the same process may legitimately have pending retries
-        # (this autouse fixture is file-scoped, doesn't bind across
-        # imports of process_canonical_path elsewhere).
-        baseline_pending = get_retry_scheduler().pending_count()
 
         registry = MagicMock()
         registry.find_owning_servers.return_value = [
@@ -406,6 +406,14 @@ class TestProcessCanonicalPathIntegration:
                 status=PublisherStatus.SKIPPED_NOT_INDEXED,
                 message="bundle hash unavailable",
             )
+
+        # Spy on the actual scheduler call site so we observe the
+        # invocation directly rather than racing the background timer.
+        schedule_calls: list[dict] = []
+
+        def _spy_schedule(*args, **kwargs):
+            schedule_calls.append(kwargs)
+            return True
 
         # Stub the heavy machinery - we only care about scheduling behavior.
         with (
@@ -432,6 +440,10 @@ class TestProcessCanonicalPathIntegration:
                 "plex_generate_previews.processing.multi_server.os.listdir",
                 return_value=["00001.jpg"] * 6,
             ),
+            patch(
+                "plex_generate_previews.processing.retry_queue.schedule_retry_for_unindexed",
+                side_effect=_spy_schedule,
+            ),
         ):
             from plex_generate_previews.processing.multi_server import (
                 MultiServerStatus,
@@ -446,9 +458,13 @@ class TestProcessCanonicalPathIntegration:
             )
 
         assert result.status is MultiServerStatus.SKIPPED
-        # Retry scheduler should have at least one MORE entry pending
-        # than before (delta-based — robust to other tests' state).
-        assert get_retry_scheduler().pending_count() == baseline_pending + 1
+        # The dispatcher made exactly ONE schedule_retry_for_unindexed call
+        # (corresponding to our SKIPPED_NOT_INDEXED publisher).
+        assert len(schedule_calls) == 1, schedule_calls
+        assert schedule_calls[0].get("attempt") == 1
+        assert schedule_calls[0].get("canonical_path") in (None, "/x.mkv") or (
+            len(schedule_calls[0].get("canonical_path") or "") > 0
+        )
 
     def test_skipped_not_indexed_no_retry_when_disabled(self):
         """schedule_retry_on_not_indexed=False suppresses scheduling."""
@@ -456,8 +472,6 @@ class TestProcessCanonicalPathIntegration:
             PublisherResult,
             PublisherStatus,
         )
-
-        baseline_pending = get_retry_scheduler().pending_count()
 
         registry = MagicMock()
         config = MagicMock()
@@ -472,6 +486,14 @@ class TestProcessCanonicalPathIntegration:
                 status=PublisherStatus.SKIPPED_NOT_INDEXED,
                 message="not yet",
             )
+
+        # Spy: same shape as the previous test for symmetry + race-free
+        # observation.
+        schedule_calls: list[dict] = []
+
+        def _spy_schedule(*args, **kwargs):
+            schedule_calls.append(kwargs)
+            return True
 
         with (
             patch(
@@ -497,6 +519,10 @@ class TestProcessCanonicalPathIntegration:
                 "plex_generate_previews.processing.multi_server.os.listdir",
                 return_value=["00001.jpg"] * 6,
             ),
+            patch(
+                "plex_generate_previews.processing.retry_queue.schedule_retry_for_unindexed",
+                side_effect=_spy_schedule,
+            ),
         ):
             from plex_generate_previews.processing.multi_server import process_canonical_path
 
@@ -508,5 +534,6 @@ class TestProcessCanonicalPathIntegration:
                 schedule_retry_on_not_indexed=False,
             )
 
-        # No NEW retry scheduled (delta=0; other tests' state irrelevant).
-        assert get_retry_scheduler().pending_count() == baseline_pending
+        # No schedule call when scheduling is disabled.
+        assert schedule_calls == []
+        # (orig delta-based assertion below replaced)

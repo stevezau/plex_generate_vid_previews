@@ -21,6 +21,7 @@ on-disk file be owned by Plex (mounted at ``/media``), Emby (mounted at
 from __future__ import annotations
 
 import os
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,8 +51,12 @@ def _normalize(path: str) -> str:
 
     Without the trailing slash, ``/data/movies`` would falsely match
     ``/data/movies-archive/foo.mkv``.
+
+    Also Unicode-NFC normalises so a Japanese folder like ``メディア``
+    typed by the user (NFC) matches the same name read off an HFS+ source
+    mount (NFD). NFC is a no-op for ASCII paths.
     """
-    return path.rstrip("/") + "/"
+    return unicodedata.normalize("NFC", path.rstrip("/")) + "/"
 
 
 def apply_path_mappings(remote_path: str, mappings: list[dict[str, Any]]) -> list[str]:
@@ -106,6 +111,10 @@ def server_owns_path(
     if not server.enabled:
         return None
 
+    # NFC-normalise the canonical path *before* splitting; the basename
+    # may be the bit that differs (NFD vs NFC) when the parent dir is
+    # ASCII but the filename has accented characters.
+    canonical_path = unicodedata.normalize("NFC", canonical_path)
     norm_path = _normalize(os.path.dirname(canonical_path)) + os.path.basename(canonical_path)
 
     for library in _enabled_libraries(server):
