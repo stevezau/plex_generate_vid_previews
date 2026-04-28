@@ -47,6 +47,9 @@ dependencies = [
     "apscheduler>=3.10.0,<4",
     "gunicorn>=22.0.0,<24",
     "sqlalchemy>=2.0.0,<3",
+    # Pillow is used by JellyfinTrickplayAdapter to pack frame JPGs into
+    # 10x10 tile sheets (Jellyfin 10.9+ native trickplay format).
+    "pillow>=10.0.0,<13",
 ]
 
 [project.optional-dependencies]
