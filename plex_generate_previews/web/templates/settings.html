@@ -12,9 +12,7 @@
     <div class="col-lg-3 col-xl-2 d-none d-lg-block">
         <nav id="settings-sidebar" class="settings-sidebar sticky-top">
             <div class="nav flex-column nav-pills">
-                <a class="nav-link" href="#section-plex-connection"><i class="bi bi-hdd-network me-2"></i>Plex Connection</a>
-                <a class="nav-link" href="#section-libraries"><i class="bi bi-collection me-2"></i>Libraries</a>
-                <a class="nav-link" href="#section-path-config"><i class="bi bi-folder me-2"></i>Path Configuration</a>
+                <a class="nav-link" href="#section-media-servers"><i class="bi bi-hdd-network me-2"></i>Media Servers</a>
                 <a class="nav-link" href="#section-processing"><i class="bi bi-speedometer2 me-2"></i>Processing Options</a>
                 <a class="nav-link" href="#section-logging"><i class="bi bi-journal-text me-2"></i>Logging</a>
                 <a class="nav-link" href="#section-auth"><i class="bi bi-key me-2"></i>Authentication</a>
@@ -30,138 +28,20 @@
             <span id="saveStatusIndicator" class="autosave-indicator"></span>
         </div>
 
-        <!-- Token Expired Warning -->
-        <div id="tokenWarning" class="alert alert-warning d-none mb-4">
-            <i class="bi bi-exclamation-triangle me-2"></i>
-            <strong>Plex token may be invalid.</strong>
-            <a href="#" onclick="reAuthPlex()" class="alert-link">Re-authenticate with Plex</a>
-        </div>
-
-        <!-- Plex Connection -->
-        <div class="card section-card" id="section-plex-connection">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-hdd-network me-2"></i>Plex Connection</span>
-                <span id="authBadge" class="auth-badge authenticated d-none">
-                    <i class="bi bi-check-circle me-1"></i>Connected
-                </span>
-            </div>
-            <div class="card-body">
-                <div class="row mb-3">
-                    <div class="col-md-8">
-                        <label for="plexUrl" class="form-label">Plex Server URL</label>
-                        <input type="text" class="form-control" id="plexUrl"
-                               placeholder="http://192.168.1.100:32400">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">&nbsp;</label>
-                        <button class="btn btn-outline-secondary w-100" onclick="testConnection()">
-                            <i class="bi bi-plug me-1"></i>Test Connection
-                        </button>
-                    </div>
-                </div>
-
-                <div class="mb-3">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="plexVerifySsl" checked>
-                        <label class="form-check-label" for="plexVerifySsl">
-                            Verify Plex HTTPS certificate
-                        </label>
-                    </div>
-                    <div class="form-text">Disable only if your Plex server uses a self-signed certificate.</div>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">Plex Authentication</label>
-                    <div class="d-flex gap-2">
-                        <button class="btn btn-outline-primary" onclick="reAuthPlex()">
-                            <i class="bi bi-box-arrow-in-right me-1"></i>Sign in with Plex
-                        </button>
-                        <span id="plexServerName" class="align-self-center text-muted"></span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Libraries -->
-        <div class="card section-card" id="section-libraries">
+        <!-- Media Servers (link to dedicated page) -->
+        <div class="card section-card" id="section-media-servers">
             <div class="card-header">
-                <i class="bi bi-collection me-2"></i>Libraries
+                <i class="bi bi-hdd-network me-2"></i>Media Servers
             </div>
             <div class="card-body">
-                <p class="text-muted mb-3">Only process media from these libraries (manual, scheduled, and webhook runs). If none are selected, all libraries are processed:</p>
-
-                <div id="libraryLoading" class="text-center py-3">
-                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                    Loading libraries...
-                </div>
-
-                <div id="libraryList" class="d-none">
-                    <!-- Libraries loaded dynamically -->
-                </div>
-
-                <div id="libraryError" class="text-danger d-none"></div>
-            </div>
-        </div>
-
-        <!-- Path Configuration -->
-        <div class="card section-card" id="section-path-config">
-            <div class="card-header">
-                <i class="bi bi-folder me-2"></i>Path Configuration
-            </div>
-            <div class="card-body">
-                <div class="mb-3">
-                    <label for="plexConfigFolder" class="form-label">Plex Media Server data folder</label>
-                    <input type="text" class="form-control" id="plexConfigFolder"
-                           placeholder="/plex">
-                    <div class="form-text">
-                        The folder where Plex stores its data, as this container sees it. Usually <code>/plex</code>.
-                        <details class="mt-1">
-                            <summary class="text-muted" style="cursor: pointer;">What if my Plex path looks different?</summary>
-                            <div class="mt-1">
-                                Your real Plex server might use a path like
-                                <code>/config/plex/Library/Application Support/Plex Media Server</code>, but
-                                what matters here is the path <strong>inside this container</strong>. If you
-                                mounted that folder as <code>/plex</code>, enter <code>/plex</code>.
-                            </div>
-                        </details>
-                    </div>
-                </div>
-
-                <hr class="my-4">
-                <h6 class="mb-2">Media path mapping</h6>
-                <p class="text-muted small mb-2">Use this only if Plex and this app use <strong>different folder paths</strong> for the same media (e.g. Plex shows <code>/data</code> but this app has the files at <code>/mnt/data</code>). If they’re the same, leave the list empty.</p>
-                <div class="alert alert-info py-2 mb-3 small" role="alert">
-                    <strong>Example:</strong> Plex shows <code>/data</code>, this app has files at <code>/mnt/data</code> → add one row: Path in Plex = <code>/data</code>, Path in this app = <code>/mnt/data</code>. If Sonarr, Radarr, Tdarr, or another app sends a different path, add it in the third column.
-                </div>
-
-                <div id="pathMappingsContainer">
-                    <div class="d-flex gap-2 mb-1 path-mapping-header">
-                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path in Plex</span>
-                        </div>
-                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path in this app</span>
-                        </div>
-                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0 text-muted">Webhook path (if different)</span>
-                        </div>
-                        <div class="flex-shrink-0" style="width: 38px;"></div>
-                    </div>
-                    <div class="path-mapping-rows mb-2"></div>
-                    <button type="button" class="btn btn-outline-secondary btn-sm" id="addPathMappingBtn">
-                        <i class="bi bi-plus-lg me-1"></i>Add another mapping
-                    </button>
-                </div>
-                <div class="form-text">Each row links one Plex path to the path this app uses. Add the “Webhook path” only when Sonarr, Radarr, Tdarr, etc. use a different path than Plex.</div>
-                <hr class="my-4">
-                <h6 class="mb-2">Exclude paths</h6>
-                <p class="text-muted small mb-2">Paths or folders to skip for preview generation (as this app sees them). Add path prefixes for subfolder exclusion, or use regex for pattern matching.</p>
-                <div id="excludePathsContainer">
-                    <div class="exclude-path-rows mb-2"></div>
-                    <button type="button" class="btn btn-outline-secondary btn-sm" id="addExcludePathBtn">
-                        <i class="bi bi-plus-lg me-1"></i>Add exclude path
-                    </button>
-                </div>
+                <p class="mb-2">
+                    Connections, libraries, path mappings, and exclude rules now live on the dedicated
+                    <a href="/servers"><strong>Media Servers</strong></a> page &mdash; one card per Plex,
+                    Emby, or Jellyfin server you configure.
+                </p>
+                <a href="/servers" class="btn btn-outline-primary btn-sm">
+                    <i class="bi bi-box-arrow-up-right me-1"></i>Open Media Servers
+                </a>
             </div>
         </div>
 
@@ -408,38 +288,9 @@
         </div>
     </div>
 </div>
-
-<!-- Plex Server Picker Modal (shown after re-auth when multiple servers
-     or connection URLs are available). -->
-<div class="modal fade" id="plexServerPickerModal" tabindex="-1" aria-labelledby="plexServerPickerLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="plexServerPickerLabel">
-                    <i class="bi bi-hdd-network me-2"></i>Pick a Plex server
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small mb-3">
-                    Your Plex account has more than one server or connection URL. Pick the one this app
-                    should use. If you're running in Docker, prefer the <strong>Local</strong> URL — the
-                    container typically can't reach your Plex server over its public URL.
-                </p>
-                <div id="plexServerPickerList" class="d-flex flex-column gap-3">
-                    <!-- Populated by _renderPlexServerPicker -->
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            </div>
-        </div>
-    </div>
-</div>
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize scrollspy for sidebar navigation
@@ -454,7 +305,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const gpuPromise = fetchGpuStatus();
     Promise.all([
         loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
-        loadLibraries(),
         loadVersionInfo(),
     ]).finally(() => {
         // Refresh scrollspy after dynamic content changes page height
@@ -479,17 +329,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Tonemap algorithm description
     document.getElementById('tonemapAlgorithm').addEventListener('change', updateTonemapDescription);
-
-    document.getElementById('addPathMappingBtn').addEventListener('click', function() {
-        const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
-        if (container) container.appendChild(createPathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
-        markDirty();
-    });
-    document.getElementById('addExcludePathBtn').addEventListener('click', function() {
-        const container = document.querySelector('#excludePathsContainer .exclude-path-rows');
-        if (container) container.appendChild(createExcludePathRow({ value: '', type: 'path' }));
-        markDirty();
-    });
 });
 
 const tonemapDescriptions = {
@@ -519,13 +358,6 @@ async function loadSettings() {
     try {
         const settings = await new SettingsManager().get();
 
-        // Populate form
-        document.getElementById('plexUrl').value = settings.plex_url || '';
-        document.getElementById('plexVerifySsl').checked = settings.plex_verify_ssl !== false;
-        document.getElementById('plexConfigFolder').value = settings.plex_config_folder || '/plex';
-        renderPathMappingRows(settings.path_mappings || legacyToPathMappings(settings));
-        renderExcludePathRows(settings.exclude_paths || []);
-
         // Store gpu_config for the GPU panel
         window._gpuConfig = settings.gpu_config || [];
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
@@ -540,183 +372,10 @@ async function loadSettings() {
         document.getElementById('logRotationSize').value = parseInt(settings.log_rotation_size) || 10;
         document.getElementById('logRetentionCount').value = settings.log_retention_count || 5;
         document.getElementById('jobHistoryDays').value = settings.job_history_days ?? 30;
-
-        // Show server name and auth status
-        if (settings.plex_name) {
-            document.getElementById('plexServerName').textContent = `Connected to: ${settings.plex_name}`;
-        }
-
-        if (settings.plex_token && settings.plex_token !== '') {
-            document.getElementById('authBadge').classList.remove('d-none');
-        }
-
-        // Store selected libraries for comparison
-        window.selectedLibraries = settings.selected_libraries || [];
-
     } catch (error) {
         console.error('Failed to load settings:', error);
         showToast('Failed to load settings', 'danger');
     }
-}
-
-function legacyToPathMappings(settings) {
-    const plex = (settings.plex_videos_path_mapping || '').trim();
-    const local = (settings.plex_local_videos_path_mapping || '').trim();
-    if (!plex || !local) return [];
-    const plexList = plex.split(';').map(s => s.trim()).filter(Boolean);
-    const localList = local.split(';').map(s => s.trim()).filter(Boolean);
-    if (localList.length === 1) {
-        return plexList.map(p => ({ plex_prefix: p, local_prefix: localList[0], webhook_prefixes: [] }));
-    }
-    if (plexList.length === localList.length) {
-        return plexList.map((p, i) => ({ plex_prefix: p, local_prefix: localList[i], webhook_prefixes: [] }));
-    }
-    return plexList.length ? [{ plex_prefix: plexList[0], local_prefix: localList[0] || local, webhook_prefixes: [] }] : [];
-}
-
-function renderPathMappingRows(rows) {
-    const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
-    if (!container) return;
-    container.innerHTML = '';
-    if (!rows || rows.length === 0) {
-        container.appendChild(createPathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
-        return;
-    }
-    rows.forEach(r => container.appendChild(createPathMappingRow(r)));
-}
-
-function createPathMappingRow(row) {
-    const div = document.createElement('div');
-    div.className = 'path-mapping-row d-flex align-items-start gap-2 mb-2';
-    const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
-    div.innerHTML = `
-        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-            <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${escapeHtml(row.plex_prefix || '')}">
-        </div>
-        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-            <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${escapeHtml(row.local_prefix || '')}">
-            <div class="invalid-feedback"></div>
-            <div class="valid-feedback">Path exists</div>
-        </div>
-        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-            <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${escapeHtml(webhookVal)}">
-        </div>
-        <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove flex-shrink-0" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
-    `;
-    div.querySelector('.path-mapping-remove').addEventListener('click', function() {
-        const parent = div.closest('.path-mapping-rows');
-        const rows = parent ? parent.querySelectorAll('.path-mapping-row') : [];
-        if (rows.length > 1) div.remove();
-        markDirty();
-    });
-    const localInput = div.querySelector('.path-mapping-local');
-    localInput.addEventListener('input', debounceValidateLocalPath(localInput));
-    if (row.local_prefix) validateLocalPath(localInput);
-    return div;
-}
-
-let _validateTimers = new WeakMap();
-function debounceValidateLocalPath(input) {
-    return function() {
-        clearTimeout(_validateTimers.get(input));
-        _validateTimers.set(input, setTimeout(() => validateLocalPath(input), 400));
-    };
-}
-
-async function validateLocalPath(input) {
-    const path = (input.value || '').trim();
-    const feedback = input.nextElementSibling;
-    if (!path) {
-        input.classList.remove('is-invalid', 'is-valid');
-        return;
-    }
-    try {
-        const resp = await fetch('/api/settings/validate-local-path', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken()},
-            body: JSON.stringify({path})
-        });
-        const data = await resp.json();
-        if (input.value.trim() !== path) return;
-        if (data.error) {
-            input.classList.remove('is-valid');
-            input.classList.add('is-invalid');
-            feedback.textContent = data.error;
-        } else if (!data.exists) {
-            input.classList.remove('is-valid');
-            input.classList.add('is-invalid');
-            feedback.textContent = 'Directory not found';
-        } else {
-            input.classList.remove('is-invalid');
-            input.classList.add('is-valid');
-        }
-    } catch {
-        input.classList.remove('is-valid', 'is-invalid');
-    }
-}
-
-function collectPathMappingRows() {
-    const container = document.querySelector('#pathMappingsContainer .path-mapping-rows');
-    if (!container) return [];
-    const rows = [];
-    container.querySelectorAll('.path-mapping-row').forEach(rowEl => {
-        const plex = (rowEl.querySelector('.path-mapping-plex')?.value || '').trim();
-        const local = (rowEl.querySelector('.path-mapping-local')?.value || '').trim();
-        if (!plex || !local) return;
-        const webRaw = (rowEl.querySelector('.path-mapping-webhook')?.value || '').trim();
-        const webhook_prefixes = webRaw ? webRaw.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
-        rows.push({ plex_prefix: plex, local_prefix: local, webhook_prefixes });
-    });
-    return rows;
-}
-
-function renderExcludePathRows(rows) {
-    const container = document.querySelector('#excludePathsContainer .exclude-path-rows');
-    if (!container) return;
-    container.innerHTML = '';
-    if (!rows || rows.length === 0) {
-        container.appendChild(createExcludePathRow({ value: '', type: 'path' }));
-        return;
-    }
-    rows.forEach(r => container.appendChild(createExcludePathRow({ value: r.value || '', type: (r.type || 'path') })));
-}
-
-function createExcludePathRow(row) {
-    const div = document.createElement('div');
-    div.className = 'exclude-path-row d-flex align-items-end gap-2 mb-2';
-    const typeVal = (row.type || 'path') === 'regex' ? 'regex' : 'path';
-    div.innerHTML = `
-        <div class="flex-grow-1" style="flex-basis: 0;">
-            <label class="form-label small mb-0">Path or pattern</label>
-            <input type="text" class="form-control form-control-sm exclude-path-value" placeholder="e.g. /mnt/media/foo or .*\\.iso$" value="${escapeHtml(row.value || '')}">
-        </div>
-        <div style="width: 140px;">
-            <label class="form-label small mb-0">Match type</label>
-            <select class="form-select form-select-sm exclude-path-type">
-                <option value="path" ${typeVal === 'path' ? 'selected' : ''}>Path prefix</option>
-                <option value="regex" ${typeVal === 'regex' ? 'selected' : ''}>Regex</option>
-            </select>
-        </div>
-        <button type="button" class="btn btn-outline-danger btn-sm exclude-path-remove flex-shrink-0" title="Remove"><i class="bi bi-dash-lg"></i></button>
-    `;
-    div.querySelector('.exclude-path-remove').addEventListener('click', function() {
-        div.remove();
-        markDirty();
-    });
-    return div;
-}
-
-function collectExcludePathRows() {
-    const container = document.querySelector('#excludePathsContainer .exclude-path-rows');
-    if (!container) return [];
-    const rows = [];
-    container.querySelectorAll('.exclude-path-row').forEach(rowEl => {
-        const value = (rowEl.querySelector('.exclude-path-value')?.value || '').trim();
-        if (!value) return;
-        const type = (rowEl.querySelector('.exclude-path-type')?.value || 'path') === 'regex' ? 'regex' : 'path';
-        rows.push({ value, type });
-    });
-    return rows;
 }
 
 function escapeHtml(str) {
@@ -724,48 +383,6 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
-}
-
-async function loadLibraries() {
-    const loading = document.getElementById('libraryLoading');
-    const list = document.getElementById('libraryList');
-    const error = document.getElementById('libraryError');
-
-    try {
-        const serverManager = new PlexServerManager();
-        const libraries = await serverManager.getLibraries();
-
-        loading.classList.add('d-none');
-
-        if (libraries.length === 0) {
-            error.textContent = 'No libraries found. Make sure Plex is connected.';
-            error.classList.remove('d-none');
-            return;
-        }
-
-        list.innerHTML = '';
-        libraries.forEach(lib => {
-            const isSelected = (window.selectedLibraries || []).includes(lib.id);
-            const div = document.createElement('div');
-            div.className = 'library-checkbox';
-            div.innerHTML = `
-                <input type="checkbox" id="lib-${lib.id}" value="${lib.id}"
-                       ${isSelected ? 'checked' : ''} onchange="markDirty()">
-                <label for="lib-${lib.id}">
-                    <strong>${lib.name}</strong>
-                    <span class="text-muted ms-2">(${libraryTypeLabel(lib)})</span>
-                </label>
-            `;
-            list.appendChild(div);
-        });
-
-        list.classList.remove('d-none');
-
-    } catch (err) {
-        loading.classList.add('d-none');
-        error.textContent = 'Failed to load libraries. ' + err.message;
-        error.classList.remove('d-none');
-    }
 }
 
 function fetchGpuStatus() {
@@ -1010,24 +627,12 @@ async function loadVersionInfo() {
 }
 
 async function saveAllSettings() {
-    // Collect selected libraries
-    const libraries = [];
-    document.querySelectorAll('#libraryList input:checked').forEach(cb => {
-        libraries.push(cb.value);
-    });
-
     const settings = {
-        plex_url: document.getElementById('plexUrl').value,
-        plex_verify_ssl: document.getElementById('plexVerifySsl').checked,
-        plex_config_folder: document.getElementById('plexConfigFolder').value,
-        path_mappings: collectPathMappingRows(),
-        exclude_paths: collectExcludePathRows(),
         gpu_config: collectGpuConfig(),
         cpu_threads: parseInt(document.getElementById('cpuThreads').value),
         thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
         thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
         tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
-        selected_libraries: libraries,
         log_level: document.getElementById('logLevel').value,
         log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
         log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
@@ -1040,253 +645,6 @@ async function saveAllSettings() {
         // Surface non-fatal clamps/validation notes as a toast in addition
         // to the Saved indicator.
         showToast(result.warning, 'warning');
-    }
-}
-
-async function testConnection() {
-    const url = document.getElementById('plexUrl').value;
-
-    if (!url) {
-        showToast('Please enter a Plex URL first', 'warning');
-        return;
-    }
-
-    try {
-        const verifySsl = document.getElementById('plexVerifySsl').checked;
-        const result = await new PlexServerManager().testConnection(url, null, verifySsl);
-
-        if (result.success) {
-            showToast(`Connected to: ${result.server_name}`, 'success');
-            document.getElementById('plexServerName').textContent = `Connected to: ${result.server_name}`;
-            document.getElementById('authBadge').classList.remove('d-none');
-        } else {
-            showToast('Connection failed: ' + result.error, 'danger');
-        }
-    } catch (error) {
-        showToast('Connection test failed: ' + error.message, 'danger');
-    }
-}
-
-// Pick the best Plex server from the list returned by /api/plex/servers.
-// Preference order: owned+local > owned > first.  Returns null if the
-// list is empty.
-function _pickBestPlexServer(servers) {
-    if (!Array.isArray(servers) || servers.length === 0) return null;
-    return (
-        servers.find(s => s && s.owned && s.local) ||
-        servers.find(s => s && s.owned) ||
-        servers[0]
-    );
-}
-
-// Build a connection URL from a server record the same way the setup
-// wizard does: prefer the remote ``uri`` for non-local servers, fall
-// back to ``protocol://host:port`` otherwise.
-function _plexServerToUrl(server) {
-    if (!server) return '';
-    const protocol = server.ssl ? 'https' : 'http';
-    if (server.local) {
-        return `${protocol}://${server.host}:${server.port}`;
-    }
-    return server.uri || `${protocol}://${server.host}:${server.port}`;
-}
-
-// Convert a connection record (from /api/plex/servers .connections[]) to
-// a usable URL.  Mirrors setup.html's "prefer uri, else build it" logic.
-function _plexConnectionToUrl(connection) {
-    if (!connection) return '';
-    if (connection.uri) return connection.uri;
-    const protocol = connection.protocol || (connection.ssl ? 'https' : 'http');
-    return `${protocol}://${connection.address}:${connection.port || 32400}`;
-}
-
-// How many connection rows a server contributes (defaults to 1 when
-// the backend didn't return an explicit .connections array — older
-// deployments).
-function _serverConnectionCount(server) {
-    if (server && Array.isArray(server.connections) && server.connections.length > 0) {
-        return server.connections.length;
-    }
-    return 1;
-}
-
-// Should the picker modal appear instead of auto-selecting?  Answer is
-// yes whenever there's a real choice to make: more than one server OR
-// any single server publishes more than one connection URL.
-function _needsPlexServerPicker(servers) {
-    if (!Array.isArray(servers)) return false;
-    if (servers.length > 1) return true;
-    if (servers.length === 1) return _serverConnectionCount(servers[0]) > 1;
-    return false;
-}
-
-// Commit a chosen (server, connection) pair: persist URL + name + SSL
-// flag via the settings API, update the visible form, close the modal,
-// and refresh the library list.
-async function _useSelectedPlexConnection(server, connection) {
-    const url = _plexConnectionToUrl(connection);
-    if (!url) {
-        showToast('That Plex connection has no usable URL', 'danger');
-        return;
-    }
-    try {
-        const verifySsl = document.getElementById('plexVerifySsl').checked;
-        await new SettingsManager().save({
-            plex_url: url,
-            plex_name: (server && server.name) || '',
-            plex_verify_ssl: verifySsl,
-        });
-        document.getElementById('plexUrl').value = url;
-        document.getElementById('plexServerName').textContent =
-            `Connected to: ${(server && server.name) || url}`;
-
-        const modalEl = document.getElementById('plexServerPickerModal');
-        const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
-        if (modal) modal.hide();
-
-        showToast(`Using ${(server && server.name) || 'Plex server'} · ${url}`, 'success');
-        loadLibraries();
-    } catch (err) {
-        console.error('Failed to save selected Plex connection:', err);
-        showToast('Could not save selection: ' + (err.message || 'unknown error'), 'danger');
-    }
-}
-
-function _renderPlexServerPicker(servers) {
-    const list = document.getElementById('plexServerPickerList');
-    if (!list) return;
-    list.innerHTML = '';
-    servers.forEach((server, serverIdx) => {
-        const card = document.createElement('div');
-        card.className = 'card bg-body-tertiary';
-        const header = document.createElement('div');
-        header.className = 'card-header d-flex align-items-center gap-2';
-        header.innerHTML =
-            '<i class="bi bi-hdd-network me-1"></i>' +
-            `<strong>${escapeHtml(server.name || 'Unnamed server')}</strong>` +
-            (server.owned ? '<span class="badge bg-success">Owned</span>' : '<span class="badge bg-secondary">Shared</span>');
-        card.appendChild(header);
-
-        const body = document.createElement('div');
-        body.className = 'list-group list-group-flush';
-        const connections = (Array.isArray(server.connections) && server.connections.length > 0)
-            ? server.connections
-            : [{
-                uri: server.uri || '',
-                address: server.host || '',
-                port: server.port || 32400,
-                protocol: server.ssl ? 'https' : 'http',
-                ssl: !!server.ssl,
-                local: !!server.local,
-                relay: false,
-            }];
-        connections.forEach((connection, connIdx) => {
-            const url = _plexConnectionToUrl(connection);
-            const kindBadges = [];
-            if (connection.local) kindBadges.push('<span class="badge bg-primary">Local</span>');
-            if (connection.relay) kindBadges.push('<span class="badge bg-warning text-dark">Relay</span>');
-            if (!connection.local && !connection.relay) kindBadges.push('<span class="badge bg-info text-dark">Remote</span>');
-            if (connection.ssl) kindBadges.push('<span class="badge bg-secondary">HTTPS</span>');
-
-            const row = document.createElement('button');
-            row.type = 'button';
-            row.className = 'list-group-item list-group-item-action bg-transparent d-flex justify-content-between align-items-center gap-2';
-            row.innerHTML =
-                '<div class="text-start flex-grow-1">' +
-                `<div class="font-monospace small">${escapeHtml(url)}</div>` +
-                `<div class="mt-1 d-flex gap-1 flex-wrap">${kindBadges.join('')}</div>` +
-                '</div>' +
-                '<i class="bi bi-arrow-right-circle text-muted"></i>';
-            row.addEventListener('click', () => _useSelectedPlexConnection(server, connection));
-            body.appendChild(row);
-        });
-        card.appendChild(body);
-        list.appendChild(card);
-    });
-}
-
-function _showPlexServerPicker(servers) {
-    _renderPlexServerPicker(servers);
-    const modalEl = document.getElementById('plexServerPickerModal');
-    if (!modalEl) return;
-    const modal = new bootstrap.Modal(modalEl);
-    modal.show();
-}
-
-async function reAuthPlex() {
-    const plexAuth = new PlexAuth({
-        onSuccess: async () => {
-            // Auth token is already persisted server-side by
-            // /api/plex/auth/pin/<id>.  From here we still need to make
-            // sure a Plex Server URL is saved — if the field is empty,
-            // loadLibraries has nothing to talk to.  We respect a URL
-            // the user has already typed (e.g. a docker-internal host)
-            // and only auto-select from plex.tv when the field is blank.
-            document.getElementById('authBadge').classList.remove('d-none');
-            document.getElementById('tokenWarning').classList.add('d-none');
-
-            const existingUrl = document.getElementById('plexUrl').value.trim();
-            if (existingUrl) {
-                showToast('Signed in with Plex — reusing the URL you already set.', 'success');
-                loadLibraries();
-                return;
-            }
-
-            try {
-                const serverManager = new PlexServerManager();
-                const servers = await serverManager.getServers();
-                if (!Array.isArray(servers) || servers.length === 0) {
-                    showToast(
-                        'No Plex servers found on this account. Type the Plex Server URL above manually.',
-                        'danger',
-                    );
-                    return;
-                }
-
-                // Whenever there's a real choice to make (more than one
-                // server, or a single server with multiple URLs), let the
-                // user pick — auto-picking in Docker especially tends to
-                // grab the public plex.direct URI when the container
-                // really needs the LAN IP.
-                if (_needsPlexServerPicker(servers)) {
-                    _showPlexServerPicker(servers);
-                    return;
-                }
-
-                // Single server with a single connection — safe to auto-select.
-                const best = _pickBestPlexServer(servers);
-                const only = (best.connections && best.connections[0]) || {
-                    uri: best.uri || '',
-                    address: best.host || '',
-                    port: best.port || 32400,
-                    ssl: !!best.ssl,
-                    local: !!best.local,
-                    relay: false,
-                    protocol: best.ssl ? 'https' : 'http',
-                };
-                await _useSelectedPlexConnection(best, only);
-            } catch (err) {
-                console.error('Post-auth server selection failed:', err);
-                showToast(
-                    'Signed in, but could not fetch the server list: ' +
-                    (err.message || 'unknown error') +
-                    '. You can type the Plex Server URL manually.',
-                    'danger',
-                );
-            }
-        },
-        onError: (error) => {
-            showToast('Authentication failed: ' + error.message, 'danger');
-        },
-        onCancel: () => {
-            showToast('Authentication cancelled', 'warning');
-        }
-    });
-
-    try {
-        await plexAuth.login();
-    } catch (error) {
-        // Handled by callbacks
     }
 }
 
