@@ -1,0 +1,315 @@
+"""Tests for the universal webhook router (auto-detection + dispatch)."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import patch
+
+import pytest
+
+from plex_generate_previews.processing.multi_server import (
+    MultiServerResult,
+    MultiServerStatus,
+    PublisherResult,
+    PublisherStatus,
+)
+from plex_generate_previews.web.settings_manager import get_settings_manager
+
+
+@pytest.fixture
+def mock_auth_config(tmp_path, monkeypatch):
+    auth_file = str(tmp_path / "auth.json")
+    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
+    from plex_generate_previews.web.settings_manager import reset_settings_manager
+
+    reset_settings_manager()
+    from plex_generate_previews.web.routes import clear_gpu_cache
+
+    clear_gpu_cache()
+    return str(tmp_path)
+
+
+@pytest.fixture
+def flask_app(tmp_path, mock_auth_config):
+    from plex_generate_previews.web.app import create_app
+
+    app = create_app(config_dir=str(tmp_path))
+    app.config["TESTING"] = True
+    return app
+
+
+@pytest.fixture
+def client(flask_app):
+    return flask_app.test_client()
+
+
+@pytest.fixture
+def webhook_token():
+    """Configure a known webhook secret and return it.
+
+    The existing webhooks_bp authenticator reads ``webhook_secret``
+    (not ``webhook_token``) from settings — match that key name.
+    """
+    sm = get_settings_manager()
+    sm.set("webhook_secret", "test-token")
+    return "test-token"
+
+
+@pytest.fixture
+def auth_headers(webhook_token):
+    return {"X-Auth-Token": webhook_token}
+
+
+def _published_result() -> MultiServerResult:
+    return MultiServerResult(
+        canonical_path="/data/movies/Foo.mkv",
+        status=MultiServerStatus.PUBLISHED,
+        publishers=[
+            PublisherResult(
+                server_id="emby-1",
+                server_name="Emby",
+                adapter_name="emby_sidecar",
+                status=PublisherStatus.PUBLISHED,
+                message="Published",
+            )
+        ],
+        frame_count=10,
+        message="1 of 1 publisher(s) succeeded",
+    )
+
+
+def _seed_servers(servers: list[dict]) -> None:
+    sm = get_settings_manager()
+    sm.set("media_servers", servers)
+
+
+class TestSonarrWebhook:
+    def test_path_payload_dispatched(self, client, auth_headers):
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
+
+        with patch(
+            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "eventType": "Download",
+                        "series": {"path": "/data/tv/Foo"},
+                        "episodeFile": {"path": "/data/tv/Foo/S01E01.mkv"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["status"] == "published"
+        assert body["kind"] == "sonarr"
+        proc.assert_called_once()
+        assert proc.call_args.kwargs["canonical_path"] == "/data/tv/Foo/S01E01.mkv"
+
+    def test_radarr_payload_classified_correctly(self, client, auth_headers):
+        with patch(
+            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "eventType": "Download",
+                        "movie": {"folderPath": "/data/movies/Bar"},
+                        "movieFile": {"path": "/data/movies/Bar/Bar.mkv"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        assert response.get_json()["kind"] == "radarr"
+        proc.assert_called_once()
+
+
+class TestJellyfinWebhook:
+    def test_itemadded_with_servers_id_match(self, client, auth_headers, monkeypatch):
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
+
+        # Stub Jellyfin's path resolution.
+        from plex_generate_previews.servers.jellyfin import JellyfinServer
+
+        monkeypatch.setattr(
+            JellyfinServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/data/tv/Show/S01E01.mkv",
+        )
+
+        with patch(
+            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "jf-42",
+                        "ItemType": "Episode",
+                        "ServerId": "jelly-1",
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["kind"] == "jellyfin"
+        proc.assert_called_once()
+        assert proc.call_args.kwargs["item_id_by_server"] == {"jelly-1": "jf-42"}
+
+    def test_irrelevant_event_returns_202(self, client, auth_headers):
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                }
+            ]
+        )
+
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps({"NotificationType": "PlaybackStart", "ItemId": "x", "ServerId": "jelly-1"}),
+        )
+
+        assert response.status_code == 202
+        assert response.get_json()["status"] == "ignored"
+
+
+class TestEmbyWebhook:
+    def test_library_new_event(self, client, auth_headers, monkeypatch):
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/em/movies"], "enabled": True}],
+                    "path_mappings": [{"remote_prefix": "/em", "local_prefix": "/data"}],
+                }
+            ]
+        )
+
+        from plex_generate_previews.servers.emby import EmbyServer
+
+        monkeypatch.setattr(
+            EmbyServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/em/movies/Foo.mkv",
+        )
+
+        with patch(
+            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "Event": "library.new",
+                        "Item": {"Id": "em-42"},
+                        "Server": {"Id": "emby-1"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["kind"] == "emby"
+        proc.assert_called_once()
+        # Path mapping translated /em/movies/Foo.mkv -> /data/movies/Foo.mkv.
+        assert proc.call_args.kwargs["canonical_path"] == "/data/movies/Foo.mkv"
+
+
+class TestPathFirstWebhook:
+    def test_simple_path_dispatch(self, client, auth_headers):
+        with patch(
+            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps({"path": "/data/tv/Show/S01E01.mkv"}),
+            )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["kind"] == "path"
+        proc.assert_called_once()
+
+
+class TestUnknownPayload:
+    def test_returns_400(self, client, auth_headers):
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps({"random": "noise"}),
+        )
+        assert response.status_code == 400
+
+
+class TestPerServerFallback:
+    def test_returns_404_for_unconfigured_server(self, client, auth_headers):
+        _seed_servers([])
+        response = client.post(
+            "/api/webhooks/server/nope",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps({"path": "/x.mkv"}),
+        )
+        assert response.status_code == 404
+
+
+class TestAuth:
+    def test_missing_token_rejected(self, client):
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"path": "/x.mkv"}),
+        )
+        assert response.status_code in (401, 403)

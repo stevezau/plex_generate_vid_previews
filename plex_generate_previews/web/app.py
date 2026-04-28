@@ -356,6 +356,10 @@ def create_app(config_dir: str = None) -> Flask:
     schedule_manager.set_run_job_callback(run_scheduled_job)
 
     # Register blueprints
+    # Importing webhook_router registers its routes onto webhooks_bp.
+    # Side-effect import is intentional and matches the pattern routes/__init__.py
+    # uses for its sub-modules.
+    from . import webhook_router  # noqa: F401  (module side effects)
     from .routes import api, limiter, main, register_socketio_handlers
     from .webhooks import _load_history_from_disk, webhooks_bp
 
@@ -404,6 +408,9 @@ def create_app(config_dir: str = None) -> Flask:
         "webhooks_bp.get_webhook_history",
         "webhooks_bp.clear_webhook_history",
         "webhooks_bp.get_pending_webhooks",
+        # Multi-server router — auto-detects vendor by payload shape
+        "webhooks_bp.webhook_incoming",
+        "webhooks_bp.webhook_per_server",
     ]
     for _ep in _csrf_exempt_endpoints:
         _view = app.view_functions.get(_ep)
