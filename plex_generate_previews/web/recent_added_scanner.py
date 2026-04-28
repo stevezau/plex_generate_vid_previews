@@ -379,6 +379,15 @@ def _build_plex_client(settings):
         )
         return None
 
+    if not (config.plex_url and config.plex_token):
+        logger.warning(
+            "Recently Added scan: skipped because no Plex server is configured. "
+            "The Recently Added Scanner is Plex-only — for Emby/Jellyfin, use the Sonarr/Radarr "
+            "or Custom webhook on the Triggers tab. If you do want a Plex scanner, add a Plex "
+            "server on the Servers page first."
+        )
+        return None
+
     try:
         return plex_server(config)
     except Exception as exc:

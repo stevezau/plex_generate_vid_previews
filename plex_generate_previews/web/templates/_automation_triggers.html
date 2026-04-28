@@ -148,19 +148,24 @@
         <div class="card section-card" id="section-webhooks-recently-added">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div>
-                    <i class="bi bi-arrow-repeat me-2"></i>Recently Added Scanner
-                    <span class="badge bg-info ms-2">Universal</span>
+                    <i class="bi bi-arrow-repeat me-2"></i>Plex Recently Added Scanner
+                    <span class="badge bg-warning text-dark ms-2">Plex only</span>
                     <span class="badge bg-success ms-1">No Plex Pass needed</span>
                 </div>
                 <span class="badge badge-status bg-secondary" id="recentlyAddedStatusBadge">Loading…</span>
             </div>
             <div class="card-body">
                 <p class="mb-3">
-                    Polls Plex on a schedule and queues anything new. Use this if you don't have Plex Pass — or
+                    Polls <strong>Plex</strong> on a schedule and queues anything new. Use this if you don't have Plex Pass — or
                     as a safety net alongside the Plex Direct webhook. <strong>The scanner is a regular schedule
                     you can customize</strong> — create multiple scanners with different intervals, lookback
                     windows, or libraries as you need.
                 </p>
+                <div class="alert alert-info small py-2 mb-3">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <strong>Emby/Jellyfin users:</strong> use the *arr or Custom webhooks below — they fire as soon as
+                    new media lands and work for any media server, no polling needed.
+                </div>
 
                 <div id="recentlyAddedNoScanners" class="alert alert-secondary small d-none">
                     <i class="bi bi-info-circle me-1"></i>
