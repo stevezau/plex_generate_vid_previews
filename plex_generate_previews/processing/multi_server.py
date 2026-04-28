@@ -317,6 +317,8 @@ def process_canonical_path(
     cancel_check=None,
     regenerate: bool = False,
     use_frame_cache: bool = True,
+    schedule_retry_on_not_indexed: bool = True,
+    retry_attempt: int = 0,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -576,6 +578,28 @@ def process_canonical_path(
             # not yet indexed). Reserve PUBLISHED for "≥1 wrote" so
             # callers don't conflate the two.
             status = MultiServerStatus.SKIPPED
+
+        # Schedule a retry when at least one publisher is waiting for
+        # the source server to finish indexing. Skipped via
+        # ``schedule_retry_on_not_indexed=False`` from the retry
+        # callback itself (it manages its own scheduling) and from
+        # tests that want to assert the immediate result without
+        # background timers spinning up.
+        if (
+            schedule_retry_on_not_indexed
+            and status is not MultiServerStatus.FAILED
+            and any(r.status is PublisherStatus.SKIPPED_NOT_INDEXED for r in results)
+        ):
+            from .retry_queue import schedule_retry_for_unindexed
+
+            schedule_retry_for_unindexed(
+                canonical_path,
+                registry=registry,
+                config=config,
+                item_id_by_server=item_id_by_server,
+                attempt=retry_attempt + 1,
+            )
+
         return MultiServerResult(
             canonical_path=canonical_path,
             status=status,
