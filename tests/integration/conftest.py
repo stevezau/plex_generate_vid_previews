@@ -45,6 +45,16 @@ def emby_credentials(servers_env: dict[str, str]) -> dict[str, str]:
     return {k: servers_env[k] for k in needed}
 
 
+@pytest.fixture(scope="session")
+def plex_credentials(servers_env: dict[str, str]) -> dict[str, str]:
+    """Captured Plex credentials, or skip if Plex wasn't configured."""
+    needed = ("PLEX_URL", "PLEX_SERVER_ID", "PLEX_ACCESS_TOKEN")
+    missing = [k for k in needed if not servers_env.get(k)]
+    if missing:
+        pytest.skip(f"Plex credentials missing: {missing}")
+    return {k: servers_env[k] for k in needed}
+
+
 @pytest.fixture
 def media_root() -> Path:
     """Local path to the synthetic test fixtures (mounted into containers)."""

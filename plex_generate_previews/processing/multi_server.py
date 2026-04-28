@@ -358,8 +358,14 @@ def process_canonical_path(
     cache = get_frame_cache(base_dir=os.path.join(config.working_tmp_folder, "frame_cache"))
     cache_hit: bool = False
     cleanup_path: str | None = None
+    generation_lock = None
 
     if use_frame_cache and not regenerate:
+        # Acquire per-path lock so simultaneous webhook fires for the
+        # same canonical path serialise. The first thread generates;
+        # the rest wait, then re-check cache and hit it.
+        generation_lock = cache.generation_lock(canonical_path)
+        generation_lock.acquire()
         cached = cache.get(canonical_path)
         if cached is not None:
             tmp_path = str(cached.frame_dir)
@@ -485,3 +491,8 @@ def process_canonical_path(
         # entries persist for TTL so subsequent webhooks hit them.
         if cleanup_path is not None:
             _cleanup_temp_directory(cleanup_path)
+        # Release the generation lock so waiting concurrent dispatchers
+        # for the same canonical path can wake up and hit the now-
+        # populated cache.
+        if generation_lock is not None:
+            generation_lock.release()

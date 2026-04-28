@@ -151,6 +151,52 @@ def setup_emby(*, base_url: str = EMBY_URL) -> ServerCredentials:
     )
 
 
+def setup_plex(*, base_url: str = PLEX_URL) -> ServerCredentials:
+    """Capture Plex's admin token from the running container.
+
+    Assumes the container was started with a valid PLEX_CLAIM env
+    var (the claim token from https://plex.tv/claim, 4-min validity).
+    On first start Plex consumes the claim and persists an admin
+    token in Preferences.xml; we read it via ``docker exec``.
+    """
+    import re
+    import subprocess
+
+    _wait_for_http(f"{base_url}/identity")
+
+    proc = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "previews-test-plex",
+            "grep",
+            "-oP",
+            r'PlexOnlineToken="\K[^"]+',
+            "/config/Library/Application Support/Plex Media Server/Preferences.xml",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(f"Could not extract Plex admin token: {proc.stderr.strip()}")
+    token = proc.stdout.strip()
+
+    resp = requests.get(f"{base_url}/identity", timeout=10)
+    resp.raise_for_status()
+    machine_id_match = re.search(r'machineIdentifier="([^"]+)"', resp.text)
+    machine_id = machine_id_match.group(1) if machine_id_match else ""
+
+    return ServerCredentials(
+        name="plex",
+        server_id=machine_id,
+        access_token=token,
+        user_id="",
+        base_url=base_url,
+        library_remote_path="/media/Movies",
+    )
+
+
 def setup_jellyfin_with_existing_token(
     *,
     base_url: str,
@@ -186,25 +232,42 @@ def setup_jellyfin_with_existing_token(
 
 
 def _write_env_file(credentials: list[ServerCredentials]) -> None:
-    """Persist credentials to ``servers.env`` for the test suite to source."""
-    lines: list[str] = []
+    """Persist credentials to ``servers.env``, merging with any existing entries.
+
+    Calling this with --server emby then --server plex appends Plex's
+    keys without clobbering Emby's. Re-running with the same vendor
+    overwrites that vendor's keys only.
+    """
+    existing: dict[str, str] = {}
+    if SERVERS_ENV.exists():
+        for raw in SERVERS_ENV.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            existing[key.strip()] = value.strip()
+
     for c in credentials:
         prefix = c.name.upper()
-        lines.append(f"{prefix}_URL={c.base_url}")
-        lines.append(f"{prefix}_SERVER_ID={c.server_id}")
-        lines.append(f"{prefix}_ACCESS_TOKEN={c.access_token}")
-        lines.append(f"{prefix}_USER_ID={c.user_id}")
-        lines.append(f"{prefix}_LIBRARY_REMOTE_PATH={c.library_remote_path}")
-    SERVERS_ENV.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        existing[f"{prefix}_URL"] = c.base_url
+        existing[f"{prefix}_SERVER_ID"] = c.server_id
+        existing[f"{prefix}_ACCESS_TOKEN"] = c.access_token
+        existing[f"{prefix}_USER_ID"] = c.user_id
+        existing[f"{prefix}_LIBRARY_REMOTE_PATH"] = c.library_remote_path
+
+    SERVERS_ENV.write_text(
+        "\n".join(f"{k}={v}" for k, v in existing.items()) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--server",
-        choices=("all", "emby", "jellyfin"),
+        choices=("all", "emby", "jellyfin", "plex"),
         default="all",
-        help="Which server(s) to configure (default: all). 'all' attempts both.",
+        help="Which server(s) to configure (default: all).",
     )
     parser.add_argument(
         "--jellyfin-token",
@@ -228,6 +291,15 @@ def main() -> int:
         except Exception as exc:
             print(f"[setup] emby failed: {exc}", file=sys.stderr)
             if args.server == "emby":
+                return 1
+
+    if args.server in ("all", "plex"):
+        print("[setup] configuring plex ...", flush=True)
+        try:
+            captured.append(setup_plex())
+        except Exception as exc:
+            print(f"[setup] plex failed: {exc}", file=sys.stderr)
+            if args.server == "plex":
                 return 1
 
     if args.server in ("all", "jellyfin"):

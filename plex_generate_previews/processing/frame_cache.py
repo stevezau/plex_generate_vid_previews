@@ -85,6 +85,13 @@ class FrameCache:
         self._lock = threading.RLock()
         # ordered insertion: oldest first; values are CacheEntry.
         self._entries: dict[str, CacheEntry] = {}
+        # Per-key generation locks. Concurrent dispatchers for the
+        # same canonical path serialise here — the first one through
+        # generates frames, the rest wait and hit the populated
+        # cache on second look. Without this, simultaneous webhook
+        # fires race on FFmpeg's rename loop in the shared tmp dir.
+        self._generation_locks: dict[str, threading.Lock] = {}
+        self._generation_locks_lock = threading.Lock()
 
     # ---------------------------------------------------------- key helpers
     def _key(self, canonical_path: str) -> str:
@@ -100,6 +107,23 @@ class FrameCache:
         straight into a cache-stable location instead of an ad-hoc tmp).
         """
         return self._base_dir / f"frames-{self._key(canonical_path)}"
+
+    def generation_lock(self, canonical_path: str) -> threading.Lock:
+        """Return the per-path lock used to coalesce concurrent generation.
+
+        The dispatcher acquires this around its cache-miss → generate →
+        cache-put sequence so simultaneous webhook fires for the same
+        file don't race on the shared frame directory. Lazily created
+        and never evicted (the dict grows with the universe of files
+        ever processed; that's bounded by the user's library size).
+        """
+        key = self._key(canonical_path)
+        with self._generation_locks_lock:
+            lock = self._generation_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._generation_locks[key] = lock
+            return lock
 
     # ---------------------------------------------------------- accessors
     def get(self, canonical_path: str) -> CacheEntry | None:

@@ -102,6 +102,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "integration: marks tests as integration tests",
+    "real_plex_server: tests that require a live Plex server (opt out of the global Plex mock)",
+    "real_gpu_detection: tests that require real GPU detection (opt out of the global GPU mock)",
     "gpu: marks tests that require GPU hardware",
     "plex: marks tests that require Plex server connection",
     "slow: marks tests as slow running",

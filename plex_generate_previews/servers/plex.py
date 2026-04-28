@@ -263,6 +263,64 @@ class PlexServer(MediaServer):
                     return str(file_path)
         return None
 
+    def resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
+        """Return the Plex ratingKey for the file at ``remote_path``.
+
+        Walks every enabled library section and searches for an item
+        whose first MediaPart's ``file`` ends with the basename and
+        trailing parent dir of ``remote_path``. Used by the dispatcher
+        when a path-based webhook (Sonarr/Radarr) fires and the
+        :class:`PlexBundleAdapter` needs an item id to look up the
+        bundle hash.
+
+        Returns ``None`` when no match exists or the API call fails;
+        the dispatcher then routes the publisher to the slow-backoff
+        retry queue (the file may not yet be indexed).
+        """
+        import os as _os
+
+        from ..plex_client import retry_plex_call
+
+        if not remote_path:
+            return None
+
+        basename = _os.path.basename(remote_path)
+        if not basename:
+            return None
+        target_tail = "/".join(remote_path.rstrip("/").split("/")[-2:])
+
+        try:
+            plex = self._connect()
+            sections = retry_plex_call(plex.library.sections)
+        except Exception as exc:
+            logger.debug("Plex reverse-lookup: section enumeration failed: {}", exc)
+            return None
+
+        # Search by basename within each section. plexapi's search is
+        # by title/keyword, not filename, so we iterate all() and
+        # match on the part path. Scales with library size, but for
+        # the dispatcher's use this fires once per webhook, and
+        # ratingKey caching upstream means the cost is bounded.
+        for section in sections:
+            try:
+                items = retry_plex_call(section.all)
+            except Exception as exc:
+                logger.debug("Plex reverse-lookup: section.all() failed for {}: {}", section, exc)
+                continue
+            for item in items:
+                for media in getattr(item, "media", None) or []:
+                    for part in getattr(media, "parts", None) or []:
+                        file_path = str(getattr(part, "file", None) or "")
+                        if not file_path:
+                            continue
+                        if _os.path.basename(file_path) == basename and file_path.replace("\\", "/").endswith(
+                            target_tail
+                        ):
+                            rating_key = getattr(item, "ratingKey", None)
+                            if rating_key is not None:
+                                return str(rating_key)
+        return None
+
     def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
         """Trigger a partial Plex library scan for ``remote_path``.
 
@@ -303,7 +361,7 @@ class PlexServer(MediaServer):
         from ..plex_client import retry_plex_call
 
         try:
-            data = retry_plex_call(self._connect().query, f"{item_id}/tree")
+            data = retry_plex_call(self._connect().query, f"/library/metadata/{item_id}/tree")
         except Exception as exc:
             logger.debug("Plex /tree query failed for {}: {}", item_id, exc)
             return []
