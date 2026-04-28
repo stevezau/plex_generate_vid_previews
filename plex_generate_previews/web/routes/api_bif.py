@@ -41,22 +41,22 @@ def _validate_bif_path(user_path: str) -> str | None:
 
     cleaned = user_path.strip()
     if not cleaned.endswith(".bif"):
-        logger.debug(f"BIF path rejected: does not end with .bif: {cleaned}")
+        logger.debug("BIF path rejected: does not end with .bif: {}", cleaned)
         return None
 
     normalized = os.path.normpath(cleaned)
 
     if ".." in normalized.split(os.sep):
-        logger.debug(f"BIF path rejected: contains traversal: {normalized}")
+        logger.debug("BIF path rejected: contains traversal: {}", normalized)
         return None
 
     allowed_root = os.path.normpath(_get_plex_config_folder())
     if not (normalized == allowed_root or normalized.startswith(allowed_root + os.sep)):
-        logger.debug(f"BIF path rejected: not under plex config folder (path={normalized}, root={allowed_root})")
+        logger.debug("BIF path rejected: not under plex config folder (path={}, root={})", normalized, allowed_root)
         return None
 
     if not os.path.isfile(normalized):
-        logger.debug(f"BIF path rejected: file not found: {normalized}")
+        logger.debug("BIF path rejected: file not found: {}", normalized)
         return None
 
     return normalized
@@ -151,7 +151,7 @@ def _resolve_bif_for_item(
                     pass
             break
     except http_mod.RequestException as e:
-        logger.debug(f"BIF viewer: Failed to get tree for {item_key}: {e}")
+        logger.debug("BIF viewer: Failed to get tree for {}: {}", item_key, e)
 
     return bif_path, bif_exists, bif_info
 
@@ -356,7 +356,7 @@ def bif_search():
                     if not _add_item(ep):
                         break
             except req.RequestException as e:
-                logger.debug(f"BIF viewer: Failed to fetch episodes for {show_key}: {e}")
+                logger.debug("BIF viewer: Failed to fetch episodes for {}: {}", show_key, e)
 
     # --- Phase 2: direct movie/episode hub hits (no SxxExx filter) ------
     if season_filter is None:

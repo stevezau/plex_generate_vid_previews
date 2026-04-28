@@ -372,7 +372,7 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
         try:
             os.makedirs(tmp_folder, exist_ok=True)
             tmp_folder_created_by_us = True
-            logger.debug(f"Created TMP_FOLDER: {tmp_folder}")
+            logger.debug("Created TMP_FOLDER: {}", tmp_folder)
         except OSError as e:
             validation_errors.append(f"Failed to create TMP_FOLDER ({tmp_folder}): {e}")
             return tmp_folder_created_by_us, False
@@ -392,6 +392,6 @@ def _validate_paths(tmp_folder: str, validation_errors: list) -> tuple[bool, boo
         except (OSError, AttributeError):
             # AttributeError: os.statvfs doesn't exist on Windows
             # OSError: Cannot access the folder for other reasons
-            logger.debug(f"Cannot check disk space for TMP_FOLDER ({tmp_folder}) - skipping disk space check")
+            logger.debug("Cannot check disk space for TMP_FOLDER ({}) - skipping disk space check", tmp_folder)
 
     return tmp_folder_created_by_us, True

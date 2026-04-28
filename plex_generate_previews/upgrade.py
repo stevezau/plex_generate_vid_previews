@@ -141,7 +141,7 @@ def _migrate_env_vars(sm) -> None:
     sm.apply_changes(updates=updates)
 
     if migrated_keys:
-        logger.info(f"Migrated {len(migrated_keys)} env var(s) into settings.json: " + ", ".join(migrated_keys))
+        logger.info("Migrated {} env var(s) into settings.json: {}", len(migrated_keys), ", ".join(migrated_keys))
 
     for env_name in _DEPRECATED_ENV_VARS:
         if os.environ.get(env_name):
@@ -221,7 +221,7 @@ def _migrate_schema(sm) -> None:
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
     if all_notes:
-        logger.info(f"Settings schema migrated to v{_CURRENT_SCHEMA_VERSION}: " + ", ".join(all_notes))
+        logger.info("Settings schema migrated to v{}: {}", _CURRENT_SCHEMA_VERSION, ", ".join(all_notes))
 
 
 def _migrate_to_v2(sm) -> list:

@@ -133,7 +133,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
         try:
             seed = seed_file.read_bytes()
             if seed:
-                logger.debug(f"Using Flask secret derived from seed in {seed_file}")
+                logger.debug("Using Flask secret derived from seed in {}", seed_file)
                 return _derive_secret(seed, config_dir)
         except OSError as e:
             logger.warning(
@@ -157,7 +157,7 @@ def get_or_create_flask_secret(config_dir: str) -> str:
             os.write(fd, random_seed)
         finally:
             os.close(fd)
-        logger.info(f"Generated new Flask secret seed and saved to {seed_file}")
+        logger.info("Generated new Flask secret seed and saved to {}", seed_file)
     except OSError as e:
         logger.warning(
             "Could not save the Flask secret seed to {} ({}: {}). "
@@ -200,7 +200,7 @@ def _prewarm_caches() -> None:
             _ensure_gpu_cache()
             logger.debug("GPU cache pre-warmed")
         except Exception as exc:
-            logger.debug(f"GPU cache pre-warm failed (non-fatal): {exc}")
+            logger.debug("GPU cache pre-warm failed (non-fatal): {}", exc)
 
     def _warm_version() -> None:
         try:
@@ -209,7 +209,7 @@ def _prewarm_caches() -> None:
             _get_version_info()
             logger.debug("Version cache pre-warmed")
         except Exception as exc:
-            logger.debug(f"Version cache pre-warm failed (non-fatal): {exc}")
+            logger.debug("Version cache pre-warm failed (non-fatal): {}", exc)
 
     # Synchronous: must complete before worker threads start processing
     # jobs on the libplacebo path (see docstring).
@@ -218,7 +218,7 @@ def _prewarm_caches() -> None:
 
         get_vulkan_device_info()
     except Exception as exc:
-        logger.debug(f"Vulkan probe pre-warm failed (non-fatal): {exc}")
+        logger.debug("Vulkan probe pre-warm failed (non-fatal): {}", exc)
 
     threading.Thread(target=_warm_gpu, name="prewarm-gpu", daemon=True).start()
     threading.Thread(target=_warm_version, name="prewarm-version", daemon=True).start()
@@ -262,7 +262,7 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         for job in revived:
             _start_job_async(job.id, job.config)
 
-        logger.info(f"Revived {len(revived)} interrupted job(s) on startup")
+        logger.info("Revived {} interrupted job(s) on startup", len(revived))
     except Exception as e:
         logger.warning(
             "Could not resume jobs that were running when the app last shut down ({}: {}). "
@@ -522,7 +522,7 @@ def create_app(config_dir: str = None) -> Flask:
                 if request.endpoint not in ["main.login", "main.setup_wizard"] and is_authenticated():
                     return redirect(url_for("main.setup_wizard"))
         except Exception as e:
-            logger.debug(f"Setup check error: {e}")
+            logger.debug("Setup check error: {}", e)
 
         return None
 
@@ -560,7 +560,7 @@ def create_app(config_dir: str = None) -> Flask:
     # page load doesn't block on GPU detection or GitHub API calls.
     _prewarm_caches()
 
-    logger.info(f"Flask app created with config_dir: {config_dir}")
+    logger.info("Flask app created with config_dir: {}", config_dir)
 
     return app
 
@@ -581,8 +581,8 @@ def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):  #
     """
     app = create_app()
 
-    logger.info(f"Starting web server on {host}:{port}")
-    logger.info(f"Access the dashboard at: http://{host}:{port}")
+    logger.info("Starting web server on {}:{}", host, port)
+    logger.info("Access the dashboard at: http://{}:{}", host, port)
 
     socketio.run(
         app,

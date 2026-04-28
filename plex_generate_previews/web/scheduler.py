@@ -82,7 +82,7 @@ def execute_scheduled_job(
             )
         return
 
-    logger.info(f"Executing scheduled job: {schedule_id} for library: {library_name}")
+    logger.info("Executing scheduled job: {} for library: {}", schedule_id, library_name)
 
     if manager.run_job_callback:
         try:
@@ -157,7 +157,7 @@ class ScheduleManager:
                 with open(self.schedules_file) as f:
                     data = json.load(f)
                     self._schedules = data.get("schedules", {})
-                logger.info(f"Loaded {len(self._schedules)} schedule configurations")
+                logger.info("Loaded {} schedule configurations", len(self._schedules))
             except (OSError, json.JSONDecodeError) as e:
                 logger.warning(
                     "Could not read saved schedules from {} ({}: {}). "
@@ -186,7 +186,7 @@ class ScheduleManager:
 
     def _on_job_executed(self, event) -> None:
         """Handle successful job execution."""
-        logger.info(f"Scheduled job {event.job_id} executed successfully")
+        logger.info("Scheduled job {} executed successfully", event.job_id)
 
     def _on_job_error(self, event) -> None:
         """Handle job execution error."""
@@ -303,7 +303,7 @@ class ScheduleManager:
         self._schedules[schedule_id] = schedule_meta
         self._save_schedules()
 
-        logger.info(f"Created schedule '{name}' (ID: {schedule_id})")
+        logger.info("Created schedule '{}' (ID: {})", name, schedule_id)
         return schedule_meta
 
     def update_schedule(
@@ -350,7 +350,7 @@ class ScheduleManager:
         try:
             self.scheduler.remove_job(schedule_id)
         except Exception:
-            logger.debug(f"No existing scheduler job to remove for {schedule_id}")
+            logger.debug("No existing scheduler job to remove for {}", schedule_id)
 
         # Re-add job if enabled
         if schedule["enabled"]:
@@ -377,7 +377,7 @@ class ScheduleManager:
             schedule["next_run"] = None
 
         self._save_schedules()
-        logger.info(f"Updated schedule {schedule_id}")
+        logger.info("Updated schedule {}", schedule_id)
         return schedule
 
     def delete_schedule(self, schedule_id: str) -> bool:
@@ -389,12 +389,12 @@ class ScheduleManager:
         try:
             self.scheduler.remove_job(schedule_id)
         except Exception:
-            logger.debug(f"No existing scheduler job to remove for {schedule_id}")
+            logger.debug("No existing scheduler job to remove for {}", schedule_id)
 
         del self._schedules[schedule_id]
         self._save_schedules()
 
-        logger.info(f"Deleted schedule {schedule_id}")
+        logger.info("Deleted schedule {}", schedule_id)
         return True
 
     def get_schedule(self, schedule_id: str) -> dict | None:
@@ -406,7 +406,7 @@ class ScheduleManager:
                 if job and job.next_run_time:
                     schedule["next_run"] = job.next_run_time.isoformat()
             except Exception:
-                logger.debug(f"Could not fetch next_run for schedule {schedule_id}")
+                logger.debug("Could not fetch next_run for schedule {}", schedule_id)
         return schedule
 
     def get_all_schedules(self) -> list[dict]:
@@ -418,7 +418,7 @@ class ScheduleManager:
                 if job and job.next_run_time:
                     schedule["next_run"] = job.next_run_time.isoformat()
             except Exception:
-                logger.debug(f"Could not fetch next_run for schedule {schedule_id}")
+                logger.debug("Could not fetch next_run for schedule {}", schedule_id)
             schedules.append(schedule)
         return schedules
 
@@ -436,7 +436,7 @@ class ScheduleManager:
         if not schedule:
             return False
 
-        logger.info(f"Running schedule '{schedule['name']}' now")
+        logger.info("Running schedule '{}' now", schedule["name"])
         execute_scheduled_job(
             schedule_id,
             schedule.get("library_id"),

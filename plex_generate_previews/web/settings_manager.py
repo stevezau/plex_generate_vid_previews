@@ -89,7 +89,7 @@ class SettingsManager:
             try:
                 with open(self.settings_file) as f:
                     self._settings = json.load(f)
-                logger.debug(f"Loaded settings from {self.settings_file}")
+                logger.debug("Loaded settings from {}", self.settings_file)
             except Exception as e:
                 logger.error(
                     "Could not read settings file at {} ({}: {}). "
@@ -110,7 +110,7 @@ class SettingsManager:
             from ..utils import atomic_json_save
 
             atomic_json_save(str(self.settings_file), self._settings, permissions=0o600)
-            logger.debug(f"Saved settings to {self.settings_file}")
+            logger.debug("Saved settings to {}", self.settings_file)
             try:
                 from ..config import clear_config_cache
 
@@ -134,7 +134,7 @@ class SettingsManager:
             try:
                 with open(self.setup_state_file) as f:
                     self._setup_state = json.load(f)
-                logger.debug(f"Loaded setup state from {self.setup_state_file}")
+                logger.debug("Loaded setup state from {}", self.setup_state_file)
             except Exception as e:
                 logger.error(
                     "Could not read setup-state file at {} ({}: {}). "
@@ -154,7 +154,7 @@ class SettingsManager:
             from ..utils import atomic_json_save
 
             atomic_json_save(str(self.setup_state_file), self._setup_state)
-            logger.debug(f"Saved setup state to {self.setup_state_file}")
+            logger.debug("Saved setup state to {}", self.setup_state_file)
         except Exception as e:
             logger.error(
                 "Could not save setup-state to {} ({}: {}). "
@@ -509,7 +509,7 @@ class SettingsManager:
         try:
             self.config_dir.mkdir(parents=True, exist_ok=True)
             self.client_id_file.write_text(self._client_id)
-            logger.info(f"Generated new client identifier: {self._client_id}")
+            logger.info("Generated new client identifier: {}", self._client_id)
         except Exception as e:
             logger.warning(
                 "Could not save the new client identifier to {} ({}: {}). "

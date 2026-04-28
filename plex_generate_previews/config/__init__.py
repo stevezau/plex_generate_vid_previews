@@ -279,9 +279,9 @@ def load_config() -> Config:
         settings_manager = get_settings_manager()
         ui_settings = settings_manager.get_all()
         if ui_settings:
-            logger.debug(f"Loaded {len(ui_settings)} settings from settings.json")
+            logger.debug("Loaded {} settings from settings.json", len(ui_settings))
     except Exception as e:
-        logger.debug(f"Could not load settings.json: {e}")
+        logger.debug("Could not load settings.json: {}", e)
 
     def get_value(settings_key, env_key, default, value_type=str):
         """Get config value from settings.json, falling back to env then default."""
@@ -406,7 +406,7 @@ def load_config() -> Config:
         sys.exit(1)
 
     # Test FFmpeg actually works and log its version
-    logger.debug(f"FFmpeg path: {ffmpeg_path}")
+    logger.debug("FFmpeg path: {}", ffmpeg_path)
     try:
         _ffmpeg_start = time.monotonic()
         result = subprocess.run(
@@ -432,7 +432,7 @@ def load_config() -> Config:
             validation_errors.append("FFmpeg found but not working properly")
         else:
             version_line = result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
-            logger.debug(f"FFmpeg: {version_line} (checked in {_ffmpeg_elapsed:.1f}s)")
+            logger.debug("FFmpeg: {} (checked in {:.1f}s)", version_line, _ffmpeg_elapsed)
     except subprocess.TimeoutExpired:
         logger.error(
             "FFmpeg didn't respond within 30 seconds when asked for its version (binary at {}). "
@@ -473,7 +473,7 @@ def load_config() -> Config:
     if missing_params:
         logger.error("❌ Configuration Error: Missing required parameters:")
         for i, error_msg in enumerate(missing_params, 1):
-            logger.error(f"   {i}. {error_msg}")
+            logger.error("   {}. {}", i, error_msg)
         logger.info("")
 
         if is_docker_environment():
@@ -489,7 +489,7 @@ def load_config() -> Config:
     if validation_errors:
         logger.error("❌ Configuration Error:")
         for i, error_msg in enumerate(validation_errors, 1):
-            logger.error(f"   {i}. {error_msg}")
+            logger.error("   {}. {}", i, error_msg)
         raise ConfigValidationError(validation_errors)
 
     # Both CPU and GPU workers are 0 — not fatal; jobs will stay pending until the
@@ -531,23 +531,23 @@ def load_config() -> Config:
     os.environ["PLEXAPI_TIMEOUT"] = str(config.plex_timeout)
 
     # Output debug information
-    logger.debug(f"PLEX_URL = {config.plex_url}")
-    logger.debug(f"PLEX_TOKEN = {'*' * 10}...{'*' * 10}")  # Mask token for security
-    logger.debug(f"PLEX_BIF_FRAME_INTERVAL = {config.plex_bif_frame_interval}")
-    logger.debug(f"THUMBNAIL_QUALITY = {config.thumbnail_quality}")
-    logger.debug(f"TONEMAP_ALGORITHM = {config.tonemap_algorithm}")
-    logger.debug(f"PLEX_CONFIG_FOLDER = {config.plex_config_folder}")
-    logger.debug(f"TMP_FOLDER = {config.tmp_folder}")
-    logger.debug(f"PLEX_TIMEOUT = {config.plex_timeout}")
-    logger.debug(f"PLEX_VERIFY_SSL = {config.plex_verify_ssl}")
-    logger.debug(f"PLEX_LOCAL_VIDEOS_PATH_MAPPING = {config.plex_local_videos_path_mapping}")
-    logger.debug(f"PLEX_VIDEOS_PATH_MAPPING = {config.plex_videos_path_mapping}")
-    logger.debug(f"path_mappings = {len(config.path_mappings)} row(s)")
-    logger.debug(f"gpu_threads = {config.gpu_threads}")
-    logger.debug(f"cpu_threads = {config.cpu_threads}")
-    logger.debug(f"ffmpeg_threads = {config.ffmpeg_threads}")
-    logger.debug(f"gpu_config = {len(config.gpu_config)} GPU(s) configured")
-    logger.debug(f"regenerate_thumbnails = {config.regenerate_thumbnails}")
-    logger.debug(f"sort_by = {config.sort_by}")
+    logger.debug("PLEX_URL = {}", config.plex_url)
+    logger.debug("PLEX_TOKEN = {}...{}", "*" * 10, "*" * 10)  # Mask token for security
+    logger.debug("PLEX_BIF_FRAME_INTERVAL = {}", config.plex_bif_frame_interval)
+    logger.debug("THUMBNAIL_QUALITY = {}", config.thumbnail_quality)
+    logger.debug("TONEMAP_ALGORITHM = {}", config.tonemap_algorithm)
+    logger.debug("PLEX_CONFIG_FOLDER = {}", config.plex_config_folder)
+    logger.debug("TMP_FOLDER = {}", config.tmp_folder)
+    logger.debug("PLEX_TIMEOUT = {}", config.plex_timeout)
+    logger.debug("PLEX_VERIFY_SSL = {}", config.plex_verify_ssl)
+    logger.debug("PLEX_LOCAL_VIDEOS_PATH_MAPPING = {}", config.plex_local_videos_path_mapping)
+    logger.debug("PLEX_VIDEOS_PATH_MAPPING = {}", config.plex_videos_path_mapping)
+    logger.debug("path_mappings = {} row(s)", len(config.path_mappings))
+    logger.debug("gpu_threads = {}", config.gpu_threads)
+    logger.debug("cpu_threads = {}", config.cpu_threads)
+    logger.debug("ffmpeg_threads = {}", config.ffmpeg_threads)
+    logger.debug("gpu_config = {} GPU(s) configured", len(config.gpu_config))
+    logger.debug("regenerate_thumbnails = {}", config.regenerate_thumbnails)
+    logger.debug("sort_by = {}", config.sort_by)
 
     return config

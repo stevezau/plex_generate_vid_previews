@@ -242,7 +242,9 @@ class JobDispatcher:
         )
         with self._trackers_lock:
             self._trackers[job_id] = tracker
-        logger.info(f"Dispatcher: submitted {len(items)} items for job {job_id[:8]} ({library_name or 'no library'})")
+        logger.info(
+            "Dispatcher: submitted {} items for job {} ({})", len(items), job_id[:8], library_name or "no library"
+        )
         self._has_work.set()
         self._ensure_dispatch_running()
         return tracker
@@ -253,7 +255,7 @@ class JobDispatcher:
             tracker = self._trackers.get(job_id)
         if tracker:
             tracker.cancel()
-            logger.info(f"Dispatcher: cancelled job {job_id[:8]}")
+            logger.info("Dispatcher: cancelled job {}", job_id[:8])
 
     def get_tracker(self, job_id: str) -> JobTracker | None:
         """Get the tracker for a job, if it exists."""
@@ -344,7 +346,10 @@ class JobDispatcher:
             if tracker.is_cancelled() and not tracker.cancelled:
                 tracker.cancel()
                 logger.info(
-                    f"Dispatcher: job {tracker.job_id[:8]} cancelled ({tracker.completed}/{tracker.total_items} done)"
+                    "Dispatcher: job {} cancelled ({}/{} done)",
+                    tracker.job_id[:8],
+                    tracker.completed,
+                    tracker.total_items,
                 )
 
     def _check_completions(self) -> int:
@@ -375,8 +380,11 @@ class JobDispatcher:
                 success = worker.last_task_succeeded()
                 outcome = "success" if success else "failed"
                 logger.debug(
-                    f"Dispatcher: {worker.display_name} completed {title} "
-                    f"({outcome}) — no active tracker for job_id={job_id}"
+                    "Dispatcher: {} completed {} ({}) — no active tracker for job_id={}",
+                    worker.display_name,
+                    title,
+                    outcome,
+                    job_id,
                 )
 
             # Retire deferred-removal workers
@@ -427,7 +435,7 @@ class JobDispatcher:
                 library_name=library_name,
                 cancel_check=tracker.cancel_check,
             )
-            logger.info(f"Dispatch: assigned {media_title!r} (job {job_id[:8]}) to {worker.display_name}")
+            logger.info("Dispatch: assigned {!r} (job {}) to {}", media_title, job_id[:8], worker.display_name)
 
     def _has_dispatchable_items(self) -> bool:
         """Check if any active (non-paused, non-cancelled) tracker has items."""
@@ -614,7 +622,11 @@ class JobDispatcher:
         for tracker in active:
             pct = int(tracker.completed / tracker.total_items * 100) if tracker.total_items > 0 else 0
             logger.info(
-                f"Dispatcher progress: job {tracker.job_id[:8]} {tracker.completed}/{tracker.total_items} ({pct}%)"
+                "Dispatcher progress: job {} {}/{} ({}%)",
+                tracker.job_id[:8],
+                tracker.completed,
+                tracker.total_items,
+                pct,
             )
 
 

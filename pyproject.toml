@@ -33,7 +33,8 @@ dependencies = [
     # (proxy-auth). python>=3.10 is already required so dropping 1.x
     # support is safe.
     "urllib3>=2.6.3,<3.0.0",
-    "python-dotenv==1.1.1",
+    # python-dotenv >=1.2.2 covers CVE-2026-28684.
+    "python-dotenv>=1.2.2,<2",
     "plexapi==4.17.1",
     "loguru==0.7.3",
     "rich>=13.9,<14",
@@ -49,7 +50,8 @@ dependencies = [
     "sqlalchemy>=2.0.0,<3",
     # Pillow is used by JellyfinTrickplayAdapter to pack frame JPGs into
     # 10x10 tile sheets (Jellyfin 10.9+ native trickplay format).
-    "pillow>=10.0.0,<13",
+    # >=12.2.0 covers CVE-2026-25990 and CVE-2026-40192.
+    "pillow>=12.2.0,<14",
 ]
 
 [project.optional-dependencies]

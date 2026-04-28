@@ -60,7 +60,7 @@ def _is_wsl2() -> bool:
                     logger.debug("Detected WSL2 environment")
                     return True
     except Exception as e:
-        logger.debug(f"Error checking for WSL2: {e}")
+        logger.debug("Error checking for WSL2: {}", e)
 
     return False
 
@@ -85,10 +85,10 @@ def _get_apple_gpu_name() -> str:
             for line in result.stdout.split("\n"):
                 if "Chipset Model:" in line:
                     gpu_name = line.split(":", 1)[1].strip()
-                    logger.debug(f"Detected Apple GPU: {gpu_name}")
+                    logger.debug("Detected Apple GPU: {}", gpu_name)
                     return gpu_name
     except Exception as e:
-        logger.debug(f"Error getting Apple GPU name: {e}")
+        logger.debug("Error getting Apple GPU name: {}", e)
 
     # Fallback - check for Apple Silicon using platform
     machine = platform.machine()
@@ -113,12 +113,12 @@ def _get_gpu_devices() -> list[tuple[str, str, str]]:
         return devices
 
     if not os.path.exists(drm_dir):
-        logger.debug(f"DRM directory {drm_dir} does not exist")
+        logger.debug("DRM directory {} does not exist", drm_dir)
         return devices
 
     try:
         entries = os.listdir(drm_dir)
-        logger.debug(f"Scanning DRM devices: {entries}")
+        logger.debug("Scanning DRM devices: {}", entries)
 
         for entry in entries:
             if not entry.startswith("card") or "-" in entry:
@@ -147,12 +147,12 @@ def _get_gpu_devices() -> list[tuple[str, str, str]]:
                     continue
 
             if not render_device:
-                logger.debug(f"No render device found for {entry}")
+                logger.debug("No render device found for {}", entry)
                 continue
 
             # Skip GPUs visible in sysfs but not mounted into the container
             if not os.path.exists(render_device):
-                logger.debug(f"Skipping {entry}: {render_device} not present in /dev/dri")
+                logger.debug("Skipping {}: {} not present in /dev/dri", entry, render_device)
                 continue
 
             # Get driver information
@@ -163,10 +163,10 @@ def _get_gpu_devices() -> list[tuple[str, str, str]]:
 
             devices.append((entry, render_device, driver))
             label = _format_driver_label(render_device, driver)
-            logger.debug(f"Found GPU: {entry} -> {render_device} ({label})")
+            logger.debug("Found GPU: {} -> {} ({})", entry, render_device, label)
 
     except Exception as e:
-        logger.debug(f"Error scanning GPU devices: {e}")
+        logger.debug("Error scanning GPU devices: {}", e)
 
     return devices
 
@@ -191,7 +191,7 @@ def _scan_dev_dri_render_devices() -> list[str]:
             if entry.startswith("renderD") and os.access(os.path.join(dev_dri, entry), os.R_OK)
         )
     except OSError as e:
-        logger.debug(f"Error scanning {dev_dri}: {e}")
+        logger.debug("Error scanning {}: {}", dev_dri, e)
         return []
 
 
@@ -224,13 +224,13 @@ def _enumerate_nvidia_gpus_via_smi() -> list[dict[str, str]]:
         logger.debug("nvidia-smi command timed out after 5 seconds")
         return []
     except Exception as e:
-        logger.debug(f"Error running nvidia-smi: {e}")
+        logger.debug("Error running nvidia-smi: {}", e)
         return []
 
     if result.returncode != 0:
-        logger.debug(f"nvidia-smi failed with return code: {result.returncode}")
+        logger.debug("nvidia-smi failed with return code: {}", result.returncode)
         if result.stderr:
-            logger.debug(f"nvidia-smi stderr: {result.stderr.strip()}")
+            logger.debug("nvidia-smi stderr: {}", result.stderr.strip())
         return []
 
     stdout = (result.stdout or "").strip()
@@ -252,7 +252,7 @@ def _enumerate_nvidia_gpus_via_smi() -> list[dict[str, str]]:
         )
 
     if gpus:
-        logger.debug(f"nvidia-smi detected {len(gpus)} NVIDIA GPU(s): {[g['name'] for g in gpus]}")
+        logger.debug("nvidia-smi detected {} NVIDIA GPU(s): {}", len(gpus), [g["name"] for g in gpus])
     return gpus
 
 
@@ -286,11 +286,11 @@ def _detect_gpu_type_from_lspci() -> str:
     try:
         result = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
-            logger.debug(f"lspci command failed with return code: {result.returncode}")
+            logger.debug("lspci command failed with return code: {}", result.returncode)
             if result.stderr:
-                logger.debug(f"lspci stderr: {result.stderr.strip()}")
+                logger.debug("lspci stderr: {}", result.stderr.strip())
             if result.stdout:
-                logger.debug(f"lspci stdout (partial): {result.stdout[:200]}")
+                logger.debug("lspci stdout (partial): {}", result.stdout[:200])
             return "UNKNOWN"
 
         # Check if we have any output
@@ -302,12 +302,12 @@ def _detect_gpu_type_from_lspci() -> str:
         vga_lines = [line for line in result.stdout.split("\n") if "VGA" in line or "Display" in line]
         if not vga_lines:
             logger.debug("lspci did not find any VGA or Display devices in output")
-            logger.debug(f"lspci output (first 500 chars): {result.stdout[:500]}")
+            logger.debug("lspci output (first 500 chars): {}", result.stdout[:500])
             return "UNKNOWN"
 
-        logger.debug(f"lspci found {len(vga_lines)} VGA/Display device(s)")
+        logger.debug("lspci found {} VGA/Display device(s)", len(vga_lines))
         for line in vga_lines:
-            logger.debug(f"lspci VGA/Display line: {line.strip()}")
+            logger.debug("lspci VGA/Display line: {}", line.strip())
             line_lower = line.lower()
             if "amd" in line_lower or "radeon" in line_lower:
                 logger.debug("lspci detected AMD GPU")
@@ -323,7 +323,7 @@ def _detect_gpu_type_from_lspci() -> str:
                 return "ARM"
 
         logger.debug("lspci found VGA/Display devices but did not identify known GPU vendor")
-        logger.debug(f"VGA/Display lines: {[line.strip() for line in vga_lines]}")
+        logger.debug("VGA/Display lines: {}", [line.strip() for line in vga_lines])
         return "UNKNOWN"
     except FileNotFoundError:
         # lspci not installed - this is expected in many environments
@@ -333,7 +333,7 @@ def _detect_gpu_type_from_lspci() -> str:
         logger.debug("lspci command timed out after 5 seconds")
         return "UNKNOWN"
     except Exception as e:
-        logger.debug(f"Error running lspci: {e}")
+        logger.debug("Error running lspci: {}", e)
         return "UNKNOWN"
 
 
@@ -350,7 +350,7 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
     vendor = DRIVER_VENDOR_MAP.get(driver_name, "UNKNOWN")
 
     if vendor == "UNKNOWN":
-        logger.debug(f"Unknown driver '{driver_name}', attempting lspci detection")
+        logger.debug("Unknown driver '{}', attempting lspci detection", driver_name)
         vendor = _detect_gpu_type_from_lspci()
 
         # If lspci failed and we're in WSL2, try nvidia-smi as fallback
@@ -399,7 +399,7 @@ def _parse_lspci_gpu_name(gpu_type: str) -> str:
         pass
     except Exception as e:
         # Other errors (timeout, etc) - log for debugging
-        logger.debug(f"Error running lspci for {gpu_type}: {e}")
+        logger.debug("Error running lspci for {}: {}", gpu_type, e)
 
     return f"{gpu_type} GPU"
 
@@ -468,7 +468,7 @@ def _get_lspci_device_name_for_pci_address(pci_address: str) -> str | None:
         # lspci not installed - fine, caller will fall back.
         return None
     except Exception as e:
-        logger.debug(f"Error running lspci for PCI address {pci_address}: {e}")
+        logger.debug("Error running lspci for PCI address {}: {}", pci_address, e)
         return None
 
 
@@ -517,7 +517,7 @@ def get_gpu_name(gpu_type: str, gpu_device: str) -> str:
             return gpu_name  # Don't add (VAAPI) here; format_gpu_info will add it
 
     except Exception as e:
-        logger.debug(f"Error getting GPU name for {gpu_type}: {e}")
+        logger.debug("Error getting GPU name for {}: {}", gpu_type, e)
 
     # Fallback - return only the GPU type name without acceleration method
     return f"{gpu_type} GPU"
@@ -529,9 +529,9 @@ def _log_system_info() -> None:
     from .ffmpeg_capabilities import _check_ffmpeg_version, _get_ffmpeg_hwaccels
 
     logger.debug("=== System Information ===")
-    logger.debug(f"Platform: {platform.platform()}")
-    logger.debug(f"Python version: {platform.python_version()}")
-    logger.debug(f"FFmpeg path: {os.environ.get('FFMPEG_PATH', 'ffmpeg')}")
+    logger.debug("Platform: {}", platform.platform())
+    logger.debug("Python version: {}", platform.python_version())
+    logger.debug("FFmpeg path: {}", os.environ.get("FFMPEG_PATH", "ffmpeg"))
 
     # Check FFmpeg version
     _check_ffmpeg_version()
@@ -539,7 +539,7 @@ def _log_system_info() -> None:
     # Log available hardware accelerators
     hwaccels = _get_ffmpeg_hwaccels()
     if hwaccels:
-        logger.debug(f"Available FFmpeg hardware accelerators: {hwaccels}")
+        logger.debug("Available FFmpeg hardware accelerators: {}", hwaccels)
 
     # Log GPU device mapping (standard Linux devices)
     gpu_devices = _get_gpu_devices()
@@ -547,7 +547,7 @@ def _log_system_info() -> None:
         logger.debug("GPU device mapping:")
         for card_name, render_device, driver in gpu_devices:
             label = _format_driver_label(render_device, driver)
-            logger.debug(f"  {card_name} -> {render_device} ({label})")
+            logger.debug("  {} -> {} ({})", card_name, render_device, label)
 
     logger.debug("=== End System Information ===")
 

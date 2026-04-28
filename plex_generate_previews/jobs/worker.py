@@ -332,7 +332,7 @@ class Worker:
                 media_title=self.media_title,
                 item_key=item_key,
             )
-            ctx_logger.info(f"{self.display_name} started: {display_name}")
+            ctx_logger.info("{} started: {}", self.display_name, display_name)
 
             try:
                 result = process_item(
@@ -352,7 +352,7 @@ class Worker:
                 else:
                     self.completed += 1
             except CancellationError:
-                ctx_logger.info(f"{self.display_name} cancelled while processing {display_name}")
+                ctx_logger.info("{} cancelled while processing {}", self.display_name, display_name)
                 self.outcome_counts["failed"] += 1
                 self.failed += 1
             except CodecNotSupportedError as e:
@@ -364,7 +364,7 @@ class Worker:
                     # reason to the UI + logs.
                     reason = str(e) or "GPU processing failed"
                     if self.cancel_check and self.cancel_check():
-                        ctx_logger.info(f"{self.display_name} cancelled before CPU fallback for {display_name}")
+                        ctx_logger.info("{} cancelled before CPU fallback for {}", self.display_name, display_name)
                         self.outcome_counts["failed"] += 1
                         self.failed += 1
                     else:
@@ -397,10 +397,10 @@ class Worker:
                             else:
                                 self.completed += 1
                             ctx_logger.info(
-                                f"{self.display_name} completed CPU fallback for {display_name} ({result.value})"
+                                "{} completed CPU fallback for {} ({})", self.display_name, display_name, result.value
                             )
                         except CancellationError:
-                            ctx_logger.info(f"{self.display_name} cancelled during CPU fallback for {display_name}")
+                            ctx_logger.info("{} cancelled during CPU fallback for {}", self.display_name, display_name)
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
                         except Exception as retry_exc:
@@ -570,7 +570,7 @@ class WorkerPool:
         self.add_workers("GPU", gpu_workers)
         self.add_workers("CPU", cpu_workers)
 
-        logger.info(f"Initialized {len(self.workers)} workers: {gpu_workers} GPU + {cpu_workers} CPU")
+        logger.info("Initialized {} workers: {} GPU + {} CPU", len(self.workers), gpu_workers, cpu_workers)
 
     def has_busy_workers(self) -> bool:
         """Check if any workers are currently busy."""
@@ -634,7 +634,7 @@ class WorkerPool:
                 self.workers.append(w)
                 added += 1
         if added > 0:
-            logger.info(f"Added {added} {worker_type.upper()} worker(s)")
+            logger.info("Added {} {} worker(s)", added, worker_type.upper())
         return added
 
     def remove_workers(self, worker_type: str, count: int) -> dict:
@@ -675,9 +675,9 @@ class WorkerPool:
                 self._pending_removals[normalized_type] += scheduled
 
         if removed > 0:
-            logger.info(f"Removed {removed} idle {normalized_type} worker(s)")
+            logger.info("Removed {} idle {} worker(s)", removed, normalized_type)
         if scheduled > 0:
-            logger.info(f"Scheduled {scheduled} busy {normalized_type} worker(s) for removal when idle")
+            logger.info("Scheduled {} busy {} worker(s) for removal when idle", scheduled, normalized_type)
         return {"removed": removed, "scheduled": scheduled, "unavailable": unavailable}
 
     def _retire_idle_worker_if_scheduled(self, worker: "Worker") -> bool:
@@ -697,7 +697,7 @@ class WorkerPool:
             # Per-worker flag takes priority (device-aware reconciliation)
             if worker._pending_removal:
                 self.workers.remove(worker)
-                logger.info(f"Retired {worker.display_name} after deferred reconciliation removal")
+                logger.info("Retired {} after deferred reconciliation removal", worker.display_name)
                 return True
 
             pending = int(self._pending_removals.get(worker.worker_type, 0))
@@ -706,7 +706,7 @@ class WorkerPool:
             self.workers.remove(worker)
             self._pending_removals[worker.worker_type] = pending - 1
 
-        logger.info(f"Retired {worker.display_name} after deferred removal request")
+        logger.info("Retired {} after deferred removal request", worker.display_name)
         return True
 
     def _apply_deferred_removals(self) -> int:
@@ -804,7 +804,7 @@ class WorkerPool:
             self._next_gpu_assignment_index = 0
 
         if removed or added or deferred:
-            logger.info(f"GPU reconciliation: added={added}, removed={removed}, deferred={deferred}")
+            logger.info("GPU reconciliation: added={}, removed={}, deferred={}", added, removed, deferred)
         return {"added": added, "removed": removed, "deferred": deferred}
 
     def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
@@ -847,7 +847,7 @@ class WorkerPool:
                         video_element.tag.lower(),
                     )
         except Exception as e:
-            logger.debug(f"Could not re-query Plex for {item_key}: {e}")
+            logger.debug("Could not re-query Plex for {}: {}", item_key, e)
         return ("Unknown (fallback)", "unknown")
 
     def _assign_main_queue_task(
@@ -884,7 +884,7 @@ class WorkerPool:
             library_name=library_name,
             cancel_check=cancel_check,
         )
-        logger.info(f"Dispatch: assigned main queue item to {worker.display_name} (title={media_title!r})")
+        logger.info("Dispatch: assigned main queue item to {} (title={!r})", worker.display_name, media_title)
         return True
 
     def _has_cpu_capable_workers(self) -> bool:
@@ -1171,7 +1171,7 @@ class WorkerPool:
 
         library_prefix = f"[{library_name}] " if library_name else ""
 
-        logger.info(f"Processing {total_items} items with {len(self._snapshot_workers())} workers")
+        logger.info("Processing {} items with {} workers", total_items, len(self._snapshot_workers()))
 
         def _record_worker_delta(worker: "Worker") -> None:
             """Track per-worker success/failure deltas for this run."""
@@ -1216,7 +1216,7 @@ class WorkerPool:
         while True:
             # Check cancellation before doing more work
             if cancel_check and cancel_check():
-                logger.info(f"{library_prefix}Cancellation requested — stopping")
+                logger.info("{}Cancellation requested — stopping", library_prefix)
                 cancellation_requested = True
                 break
 
@@ -1233,11 +1233,15 @@ class WorkerPool:
                     workers_snap = self._snapshot_workers()
                     busy = sum(1 for w in workers_snap if w.is_busy)
                     logger.info(
-                        f"{library_prefix}Pause gate entered; queue_length={len(media_queue)}, busy_workers={busy}, idle_workers={len(workers_snap) - busy}"
+                        "{}Pause gate entered; queue_length={}, busy_workers={}, idle_workers={}",
+                        library_prefix,
+                        len(media_queue),
+                        busy,
+                        len(workers_snap) - busy,
                     )
                     paused_gate_logged = True
                 if cancel_check and cancel_check():
-                    logger.info(f"{library_prefix}Cancellation requested while paused")
+                    logger.info("{}Cancellation requested while paused", library_prefix)
                     cancellation_requested = True
                     break
                 _handle_completions(self._snapshot_workers())
@@ -1248,7 +1252,11 @@ class WorkerPool:
                 workers_snap = self._snapshot_workers()
                 busy = sum(1 for w in workers_snap if w.is_busy)
                 logger.info(
-                    f"{library_prefix}Pause gate exited; queue_length={len(media_queue)}, busy_workers={busy}, idle_workers={len(workers_snap) - busy}"
+                    "{}Pause gate exited; queue_length={}, busy_workers={}, idle_workers={}",
+                    library_prefix,
+                    len(media_queue),
+                    busy,
+                    len(workers_snap) - busy,
                 )
                 paused_gate_logged = False
             if cancellation_requested:
@@ -1259,7 +1267,11 @@ class WorkerPool:
             if current_time - last_overall_progress_log >= 5.0:
                 progress_percent = int((completed_tasks / total_items) * 100) if total_items > 0 else 0
                 logger.info(
-                    f"Processing progress {library_prefix}{completed_tasks}/{total_items} ({progress_percent}%) completed"
+                    "Processing progress {}{}/{} ({}%) completed",
+                    library_prefix,
+                    completed_tasks,
+                    total_items,
+                    progress_percent,
                 )
                 last_overall_progress_log = current_time
 
@@ -1269,8 +1281,10 @@ class WorkerPool:
                 available_worker = self._find_available_worker()
                 if not available_worker or not media_queue:
                     logger.debug(
-                        f"{library_prefix}Dispatch: nothing to assign "
-                        f"(worker={bool(available_worker)}, queue={len(media_queue)})"
+                        "{}Dispatch: nothing to assign (worker={}, queue={})",
+                        library_prefix,
+                        bool(available_worker),
+                        len(media_queue),
                     )
                     break
 
@@ -1307,7 +1321,7 @@ class WorkerPool:
                     actual_processed = actual_completed + actual_failed
 
                     if not self.has_busy_workers() and actual_processed >= total_items:
-                        logger.debug(f"All items processed ({actual_processed}/{total_items}), exiting")
+                        logger.debug("All items processed ({}/{}), exiting", actual_processed, total_items)
                         break
 
             # Adaptive sleep
@@ -1329,7 +1343,7 @@ class WorkerPool:
         if on_finish:
             on_finish(total_completed, total_failed, total_items)
 
-        logger.info(f"Processing complete: {total_completed} successful, {total_failed} failed")
+        logger.info("Processing complete: {} successful, {} failed", total_completed, total_failed)
 
         return {
             "completed": total_completed,
@@ -1382,9 +1396,9 @@ class WorkerPool:
             if not worker.ffmpeg_started:
                 display_path = worker.media_file if worker.media_file else worker.media_title
                 if worker.worker_type == "GPU":
-                    logger.info(f"[GPU {worker.gpu_index}]: Started processing {display_path}")
+                    logger.info("[GPU {}]: Started processing {}", worker.gpu_index, display_path)
                 else:
-                    logger.info(f"[CPU]: Started processing {display_path}")
+                    logger.info("[CPU]: Started processing {}", display_path)
 
             # Mark that FFmpeg has started outputting progress
             worker.ffmpeg_started = True
@@ -1396,10 +1410,14 @@ class WorkerPool:
                 speed_display = speed if speed else "0.0x"
                 if worker.worker_type == "GPU":
                     logger.info(
-                        f"[GPU {worker.gpu_index}]: {worker.media_title} - {progress_percent}% (speed={speed_display})"
+                        "[GPU {}]: {} - {}% (speed={})",
+                        worker.gpu_index,
+                        worker.media_title,
+                        progress_percent,
+                        speed_display,
                     )
                 else:
-                    logger.info(f"[CPU]: {worker.media_title} - {progress_percent}% (speed={speed_display})")
+                    logger.info("[CPU]: {} - {}% (speed={})", worker.media_title, progress_percent, speed_display)
 
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""

@@ -413,7 +413,9 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         recent_ts = _recent_dispatches.get(dedup_key)
         if recent_ts is not None:
             age = int(now_ts - recent_ts)
-            logger.info(f"Webhook: {safe_source} duplicate of '{safe_title}' ignored (already dispatched {age}s ago)")
+            logger.info(
+                "Webhook: {} duplicate of '{}' ignored (already dispatched {}s ago)", safe_source, safe_title, age
+            )
             dedup_skip = True
         else:
             dedup_skip = False
@@ -448,7 +450,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
         return False
 
     logger.info(
-        f"Webhook: {safe_source} imported '{safe_title}' — scheduling job with {path_count} path(s) in {delay}s"
+        "Webhook: {} imported '{}' — scheduling job with {} path(s) in {}s", safe_source, safe_title, path_count, delay
     )
     return True
 
@@ -583,12 +585,12 @@ def radarr_webhook():
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry("radarr", event_type, "", "disabled")
-        logger.info(f"Webhook: Radarr event '{event_type}' ignored (webhooks disabled)")
+        logger.info("Webhook: Radarr event '{}' ignored (webhooks disabled)", event_type)
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type != "Download":
         _add_history_entry("radarr", event_type, "", "ignored")
-        logger.info(f"Webhook: Radarr event '{event_type}' ignored")
+        logger.info("Webhook: Radarr event '{}' ignored", event_type)
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
     movie = _as_dict(data.get("movie"))
@@ -655,12 +657,12 @@ def _handle_sonarr_compatible_webhook(source: str):
     settings = get_settings_manager()
     if not settings.get("webhook_enabled", True):
         _add_history_entry(source, event_type, "", "disabled")
-        logger.info(f"Webhook: {label} event '{event_type}' ignored (webhooks disabled)")
+        logger.info("Webhook: {} event '{}' ignored (webhooks disabled)", label, event_type)
         return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event_type not in ("Download", "OnDownload"):
         _add_history_entry(source, event_type, "", "ignored")
-        logger.info(f"Webhook: {label} event '{event_type}' ignored")
+        logger.info("Webhook: {} event '{}' ignored", label, event_type)
         return jsonify({"success": True, "message": f"Ignored event: {event_type}"})
 
     series = _as_dict(data.get("series"))

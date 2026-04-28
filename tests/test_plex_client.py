@@ -959,7 +959,11 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
         assert any("resolved" in str(call) for call in mock_info.call_args_list)
-        assert any("[1/1]" in str(call) for call in mock_info.call_args_list)
+        # Match either pre-formatted "[1/1]" or Loguru placeholder form "[{}/{}]" with args 1, 1.
+        assert any(
+            "[1/1]" in str(call) or ("[{}/{}]" in str(call) and "1, 1" in str(call))
+            for call in mock_info.call_args_list
+        )
 
     def test_get_media_items_by_paths_no_match(self, mock_config):
         """Paths that match no Plex item return empty list."""

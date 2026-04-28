@@ -230,7 +230,7 @@ def save_settings():
     thread_warning = ""
     if updates:
         settings.update(updates)
-        logger.info(f"Settings updated: {list(updates.keys())}")
+        logger.info("Settings updated: {}", list(updates.keys()))
 
         if "gpu_config" in updates:
             _reconcile_live_gpu_workers(settings)
@@ -314,7 +314,7 @@ def update_log_level():
     rotation = sm.get("log_rotation_size", "10 MB")
     retention = sm.get("log_retention_count", 5)
     setup_logging(log_level=level, rotation=rotation, retention=retention)
-    logger.info(f"Log level changed to {level}")
+    logger.info("Log level changed to {}", level)
 
     return jsonify({"success": True, "log_level": level})
 

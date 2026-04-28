@@ -329,9 +329,9 @@ def create_ffmpeg_runner(
                 hw_decode_active = True
         elif use_gpu and init_vulkan:
             logger.debug(
-                f"Skipping HW decode for DV Profile 5 ({video_file}) on "
-                f"{effective_gpu}: no VAAPI render device available; "
-                f"using software decode + Vulkan/libplacebo tone mapping"
+                "Skipping HW decode for DV Profile 5 ({}) on {}: no VAAPI render device available; using software decode + Vulkan/libplacebo tone mapping",
+                video_file,
+                effective_gpu,
             )
 
         # Cap the video decoder to 1 thread ONLY when decode is offloaded
@@ -392,8 +392,8 @@ def create_ffmpeg_runner(
 
         start_local = time.time()
         hw_label = "GPU" if gpu else "CPU"
-        logger.info(f"Encoding thumbnails for {video_file} ({hw_label})")
-        logger.info(f"FFmpeg command: {' '.join(args)}")
+        logger.info("Encoding thumbnails for {} ({})", video_file, hw_label)
+        logger.info("FFmpeg command: {}", " ".join(args))
 
         # When the Layer-3 probe retry in gpu_detection succeeded only with
         # VK_DRIVER_FILES set, propagate those env overrides to the real
@@ -409,7 +409,7 @@ def create_ffmpeg_runner(
                 ffmpeg_env = os.environ.copy()
                 ffmpeg_env.update(vulkan_overrides)
                 logger.debug(
-                    f"FFmpeg libplacebo path: injecting Vulkan env overrides {vulkan_overrides} into subprocess"
+                    "FFmpeg libplacebo path: injecting Vulkan env overrides {} into subprocess", vulkan_overrides
                 )
 
         # Use file polling approach for non-blocking, high-frequency progress monitoring
@@ -474,7 +474,7 @@ def create_ffmpeg_runner(
             time.sleep(0.02)
             while proc.poll() is None:
                 if cancel_check and cancel_check():
-                    logger.info(f"Cancellation requested, terminating FFmpeg for {video_file}")
+                    logger.info("Cancellation requested, terminating FFmpeg for {}", video_file)
                     proc.terminate()
                     try:
                         proc.wait(timeout=5)
@@ -608,20 +608,20 @@ def create_ffmpeg_runner(
 
             # Log permission errors at INFO level so users can see them without DEBUG
             if permission_errors:
-                logger.info(f"Permission error detected while processing {video_file}:")
+                logger.info("Permission error detected while processing {}:", video_file)
                 for error_line in permission_errors[:3]:  # Show up to 3 permission error lines
-                    logger.info(f"  {error_line}")
+                    logger.info("  {}", error_line)
                 if len(permission_errors) > 3:
-                    logger.info(f"  ... and {len(permission_errors) - 3} more permission-related error(s)")
+                    logger.info("  ... and {} more permission-related error(s)", len(permission_errors) - 3)
 
             # Log full FFmpeg output at DEBUG level for detailed troubleshooting.
             # When config.log_level=DEBUG, FFmpeg itself is invoked with
             # -loglevel debug (see ffmpeg_loglevel above), so these lines
             # include VAAPI / Vulkan / Mesa / libplacebo internals — exactly
             # what's needed to diagnose hwaccel and filter-graph failures.
-            logger.debug(f"FFmpeg output ({len(ffmpeg_output_lines)} lines):")
+            logger.debug("FFmpeg output ({} lines):", len(ffmpeg_output_lines))
             for i, line in enumerate(ffmpeg_output_lines):
-                logger.debug(f"  {i + 1:3d}: {line}")
+                logger.debug("  {:3d}: {}", i + 1, line)
 
             # Save full FFmpeg stderr to a per-file log for post-mortem debugging
             _save_ffmpeg_failure_log(video_file, proc.returncode, ffmpeg_output_lines)

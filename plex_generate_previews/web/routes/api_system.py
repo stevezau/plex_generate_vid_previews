@@ -214,7 +214,7 @@ def _diagnose_vulkan_environment() -> dict:
                     if nvidia_driver_version:
                         break
         except OSError as exc:
-            logger.debug(f"Could not read {version_path}: {exc}")
+            logger.debug("Could not read {}: {}", version_path, exc)
 
     return {
         "nvidia_capabilities": caps,
@@ -264,7 +264,7 @@ def _get_vulkan_info() -> dict:
 
     result: dict = {"device": device}
     if not is_software:
-        logger.debug(f"Vulkan warning: device={device!r} is_software=False; no DV5 warning will be shown.")
+        logger.debug("Vulkan warning: device={!r} is_software=False; no DV5 warning will be shown.", device)
         return result
 
     try:
@@ -290,9 +290,12 @@ def _get_vulkan_info() -> dict:
     dri_mapped = bool(dri_render_nodes)
 
     logger.info(
-        f"Vulkan warning inputs: device={device!r} vendors={sorted(vendors)} "
-        f"has_nvidia={has_nvidia} has_mesa={has_mesa_vendor} "
-        f"dri_render_nodes={dri_render_nodes or '[]'}"
+        "Vulkan warning inputs: device={!r} vendors={} has_nvidia={} has_mesa={} dri_render_nodes={}",
+        device,
+        sorted(vendors),
+        has_nvidia,
+        has_mesa_vendor,
+        dri_render_nodes or "[]",
     )
 
     nvidia_name = _vendor_display_name(gpus, "NVIDIA") if has_nvidia else ""
@@ -340,9 +343,9 @@ def _get_vulkan_info() -> dict:
             # This is ~80% of real pure-NVIDIA reports.
             current_caps = diag["nvidia_capabilities"] or "(unset)"
             logger.info(
-                f"Vulkan warning: selected Case A1 (missing 'graphics' "
-                f"capability) for {nvidia_name!r}; "
-                f"NVIDIA_DRIVER_CAPABILITIES={current_caps!r}"
+                "Vulkan warning: selected Case A1 (missing 'graphics' capability) for {!r}; NVIDIA_DRIVER_CAPABILITIES={!r}",
+                nvidia_name,
+                current_caps,
             )
             body = (
                 f"<strong>Your GPU:</strong> {nvidia_name_esc}"
@@ -386,9 +389,9 @@ def _get_vulkan_info() -> dict:
             # manifest bug (#1559).
             driver_version = diag["nvidia_driver_version"]
             logger.info(
-                f"Vulkan warning: selected Case A2 (graphics cap set "
-                f"but nvidia_icd.json missing) for {nvidia_name!r}; "
-                f"driver_version={driver_version!r}"
+                "Vulkan warning: selected Case A2 (graphics cap set but nvidia_icd.json missing) for {!r}; driver_version={!r}",
+                nvidia_name,
+                driver_version,
             )
             driver_line = ""
             if driver_version:
@@ -432,9 +435,9 @@ def _get_vulkan_info() -> dict:
             # Case A3: ICD JSON exists but the supporting library is
             # missing. Almost always the CDI manifest bug (#1559).
             logger.info(
-                f"Vulkan warning: selected Case A3 (nvidia_icd.json at "
-                f"{diag['nvidia_icd_json_path']} but libnvidia-glvkspirv "
-                f"not found) for {nvidia_name!r}"
+                "Vulkan warning: selected Case A3 (nvidia_icd.json at {} but libnvidia-glvkspirv not found) for {!r}",
+                diag["nvidia_icd_json_path"],
+                nvidia_name,
             )
             body = (
                 f"<strong>Your GPU:</strong> {nvidia_name_esc}"
@@ -504,8 +507,9 @@ def _get_vulkan_info() -> dict:
         # NVIDIA + Intel/AMD but /dev/dri not forwarded: mounting the
         # render node lets libplacebo use Mesa alongside NVIDIA decoding.
         logger.info(
-            f"Vulkan warning: selected Case B (NVIDIA + Mesa, /dev/dri "
-            f"not mapped) for NVIDIA={nvidia_name!r} Mesa={mesa_name!r}"
+            "Vulkan warning: selected Case B (NVIDIA + Mesa, /dev/dri not mapped) for NVIDIA={!r} Mesa={!r}",
+            nvidia_name,
+            mesa_name,
         )
         body = (
             f"<strong>Your GPUs:</strong> "
@@ -534,7 +538,7 @@ def _get_vulkan_info() -> dict:
         )
     elif has_mesa_vendor and not has_nvidia and not dri_mapped:
         # Intel/AMD only, no render node: straight mount fix.
-        logger.info(f"Vulkan warning: selected Case C (Mesa only, /dev/dri not mapped) for {mesa_name!r}")
+        logger.info("Vulkan warning: selected Case C (Mesa only, /dev/dri not mapped) for {!r}", mesa_name)
         body = (
             f"<strong>Your GPU:</strong> {html_escape.escape(mesa_name)}"
             "<br><br>"
@@ -558,9 +562,9 @@ def _get_vulkan_info() -> dict:
         # Intel/AMD (with or without NVIDIA) already has /dev/dri but
         # rendering still fell back to software. Usually host-side.
         logger.info(
-            f"Vulkan warning: selected Case D (Mesa with /dev/dri "
-            f"mapped but rendering still fell back) for "
-            f"{mesa_name!r}; dri_nodes={dri_render_nodes}"
+            "Vulkan warning: selected Case D (Mesa with /dev/dri mapped but rendering still fell back) for {!r}; dri_nodes={}",
+            mesa_name,
+            dri_render_nodes,
         )
         detected = all_names_escaped or "a GPU"
         body = (
@@ -1173,7 +1177,7 @@ def _fetch_github_releases(limit: int = 10) -> list:
         _RELEASES_CACHE["fetched_at"] = time.monotonic()
         return entries[:limit]
     except Exception as e:
-        logger.debug(f"Failed to fetch GitHub releases: {e}")
+        logger.debug("Failed to fetch GitHub releases: {}", e)
         return []
 
 

@@ -106,7 +106,7 @@ def _ensure_gpu_cache() -> None:
             gpus.append(entry)
         with _gpu_cache_lock:
             _gpu_cache["result"] = gpus
-        logger.debug(f"GPU detection complete: {len(gpus)} GPU(s)")
+        logger.debug("GPU detection complete: {} GPU(s)", len(gpus))
     except Exception as e:
         logger.warning(
             "GPU detection failed ({}: {}). "

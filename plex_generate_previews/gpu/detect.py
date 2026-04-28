@@ -116,7 +116,7 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
 
     """
     if not os.path.exists(device_path):
-        logger.debug(f"✗ Device does not exist: {device_path}")
+        logger.debug("✗ Device does not exist: {}", device_path)
         return False, "not_found"
 
     if not os.access(device_path, os.R_OK | os.W_OK):
@@ -131,16 +131,16 @@ def _check_device_access(device_path: str) -> tuple[bool, str]:
 
             has_read = os.access(device_path, os.R_OK)
             detail = "read-only" if has_read else "not readable"
-            logger.debug(f"✗ Device exists but is {detail}: {device_path}")
-            logger.debug(f"  Device permissions: {perms} (owner={owner_uid}, group={group_gid})")
-            logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
+            logger.debug("✗ Device exists but is {}: {}", detail, device_path)
+            logger.debug("  Device permissions: {} (owner={}, group={})", perms, owner_uid, group_gid)
+            logger.debug("  Current user: {}, groups: {}", os.getuid(), os.getgroups())
         except Exception as e:
-            logger.debug(f"✗ Device exists but is not accessible: {device_path}")
-            logger.debug(f"  Current user: {os.getuid()}, groups: {os.getgroups()}")
-            logger.debug(f"  Could not get device stats: {e}")
+            logger.debug("✗ Device exists but is not accessible: {}", device_path)
+            logger.debug("  Current user: {}, groups: {}", os.getuid(), os.getgroups())
+            logger.debug("  Could not get device stats: {}", e)
         return False, "permission_denied"
 
-    logger.debug(f"✓ Device is accessible: {device_path}")
+    logger.debug("✓ Device is accessible: {}", device_path)
     return True, "accessible"
 
 
@@ -278,15 +278,15 @@ def _test_hwaccel_functionality(
             null_sink,
         ]
 
-        logger.debug(f"Testing {hwaccel} functionality: {' '.join(cmd)}")
+        logger.debug("Testing {} functionality: {}", hwaccel, " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, timeout=20)
 
         # FFmpeg returns 0 for success, 141 for SIGPIPE (which is OK for our test)
         if result.returncode in [0, 141]:
-            logger.debug(f"✓ {hwaccel} functionality test passed")
+            logger.debug("✓ {} functionality test passed", hwaccel)
             return True
         else:
-            logger.debug(f"✗ {hwaccel} functionality test failed (exit code: {result.returncode})")
+            logger.debug("✗ {} functionality test failed (exit code: {})", hwaccel, result.returncode)
 
             if result.stderr:
                 stderr_text = result.stderr.decode("utf-8", "ignore").strip()
@@ -315,7 +315,7 @@ def _test_hwaccel_functionality(
                             "(the whole directory, not a single sub-device)."
                         )
                 else:
-                    logger.debug(f"FFmpeg {hwaccel} stderr: {stderr_text[-500:]}")
+                    logger.debug("FFmpeg {} stderr: {}", hwaccel, stderr_text[-500:])
 
                 if hwaccel == "cuda":
                     if "/dev/null" in stderr_lower and "operation not permitted" in stderr_lower:
@@ -349,7 +349,7 @@ def _test_hwaccel_functionality(
             )
         return False
     except Exception as e:
-        logger.debug(f"✗ {hwaccel} functionality test failed with exception: {e}")
+        logger.debug("✗ {} functionality test failed with exception: {}", hwaccel, e)
         return False
 
 
@@ -404,12 +404,12 @@ def _test_acceleration_method(vendor: str, acceleration: str, device_path: str |
 
     # Check if the acceleration method is available in FFmpeg
     if not _is_hwaccel_available(accel_lower):
-        logger.debug(f"{acceleration} not available in FFmpeg")
+        logger.debug("{} not available in FFmpeg", acceleration)
         return False
 
     # Get test configuration from GPU_ACCELERATION_MAP
     if vendor not in GPU_ACCELERATION_MAP:
-        logger.debug(f"Unknown vendor {vendor}, cannot test")
+        logger.debug("Unknown vendor {}, cannot test", vendor)
         return False
 
     # Test the acceleration functionality
@@ -425,14 +425,14 @@ def _test_acceleration_method(vendor: str, acceleration: str, device_path: str |
     elif acceleration == "VIDEOTOOLBOX":
         test_passed = _test_hwaccel_functionality("videotoolbox")
     else:
-        logger.debug(f"Unknown acceleration method: {acceleration}")
+        logger.debug("Unknown acceleration method: {}", acceleration)
         return False
 
     # Return test result
     if test_passed:
-        logger.debug(f"✓ {vendor} {acceleration} hardware acceleration test passed")
+        logger.debug("✓ {} {} hardware acceleration test passed", vendor, acceleration)
     else:
-        logger.debug(f"✗ {vendor} {acceleration} functionality test failed")
+        logger.debug("✗ {} {} functionality test failed", vendor, acceleration)
     return test_passed
 
 
@@ -533,7 +533,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
     if _is_hwaccel_available("cuda"):
         smi_gpus = _enumerate_nvidia_gpus_via_smi()
         if smi_gpus:
-            logger.debug(f"=== Testing {len(smi_gpus)} NVIDIA GPU(s) via nvidia-smi ===")
+            logger.debug("=== Testing {} NVIDIA GPU(s) via nvidia-smi ===", len(smi_gpus))
             if _is_wsl2():
                 logger.warning(
                     "WSL2 detected. NVIDIA GPU support inside WSL2 is unofficial. "
@@ -543,7 +543,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
             for g in smi_gpus:
                 idx = g["index"]
                 device = f"cuda:{idx}"
-                logger.info(f"  Checking NVIDIA GPU {idx} ({g['name']})...")
+                logger.info("  Checking NVIDIA GPU {} ({})...", idx, g["name"])
                 logger.info("    Testing CUDA acceleration...")
                 if _test_hwaccel_functionality("cuda", cuda_device_index=idx):
                     gpu_info = {
@@ -558,7 +558,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                     }
                     detected_gpus.append(("NVIDIA", device, gpu_info))
                     detected_vendors.add("NVIDIA")
-                    logger.info(f"  ✅ NVIDIA CUDA working: GPU {idx} ({g['name']})")
+                    logger.info("  ✅ NVIDIA CUDA working: GPU {} ({})", idx, g["name"])
                 else:
                     # Silent skip (matches legacy WSL2/container fallback
                     # behaviour) — the warning below tells the user what
@@ -595,7 +595,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                     logger.debug("  lspci could not identify GPU vendor")
 
                 for device_path in render_devices:
-                    logger.info(f"    Testing VAAPI on {device_path}...")
+                    logger.info("    Testing VAAPI on {}...", device_path)
                     if _test_hwaccel_functionality("vaapi", device_path):
                         if vendor in GPU_ACCELERATION_MAP:
                             gpu_name = get_gpu_name(vendor, device_path)
@@ -611,9 +611,9 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                             "status": "ok",
                         }
                         detected_gpus.append((vendor, device_path, gpu_info))
-                        logger.info(f"  ✅ VAAPI working on {device_path}: {gpu_name}")
+                        logger.info("  ✅ VAAPI working on {}: {}", device_path, gpu_name)
                     else:
-                        logger.debug(f"  ✗ VAAPI test failed on {device_path}")
+                        logger.debug("  ✗ VAAPI test failed on {}", device_path)
                         vaapi_cfg = GPU_ACCELERATION_MAP.get(vendor, {})
                         error, error_detail = _build_gpu_error_detail("VAAPI", device_path, device_path, vaapi_cfg)
                         gpu_info = {
@@ -629,10 +629,10 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                         }
                         detected_gpus.append((vendor, device_path, gpu_info))
     else:
-        logger.debug(f"Found {len(physical_gpus)} physical GPU(s) in /dev/dri")
+        logger.debug("Found {} physical GPU(s) in /dev/dri", len(physical_gpus))
         for card_name, render_device, driver in physical_gpus:
             label = _format_driver_label(render_device, driver)
-            logger.debug(f"  {card_name}: {render_device} ({label})")
+            logger.debug("  {}: {} ({})", card_name, render_device, label)
 
     # For each physical GPU, test appropriate acceleration methods
     logger.debug("=== Testing GPU Acceleration Methods ===")
@@ -644,17 +644,17 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
         # two-GPU host doesn't double-register or collapse both cards
         # onto a single "cuda" device path (issue #221).
         if (driver == "nvidia" or vendor == "NVIDIA") and "NVIDIA" in detected_vendors:
-            logger.debug(f"Skipping {card_name}: NVIDIA already registered via nvidia-smi")
+            logger.debug("Skipping {}: NVIDIA already registered via nvidia-smi", card_name)
             continue
 
         # Handle UNKNOWN vendor with special fallback logic for CUDA
         if vendor == "UNKNOWN":
             # Check if CUDA acceleration is available (useful for WSL2 NVIDIA GPUs)
             if _is_hwaccel_available("cuda"):
-                logger.debug(f"Unknown vendor for {card_name}, but CUDA is available - attempting NVIDIA detection")
+                logger.debug("Unknown vendor for {}, but CUDA is available - attempting NVIDIA detection", card_name)
                 nvidia_vendor = _detect_nvidia_via_nvidia_smi()
                 if nvidia_vendor == "NVIDIA":
-                    logger.info(f"  Detected NVIDIA GPU via nvidia-smi for {card_name} (vendor was unknown)")
+                    logger.info("  Detected NVIDIA GPU via nvidia-smi for {} (vendor was unknown)", card_name)
                     vendor = "NVIDIA"
                     if _is_wsl2():
                         logger.warning(
@@ -672,7 +672,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                             "WSL2 detected - allowing CUDA acceleration attempt with unknown vendor (unofficial support)"
                         )
                         # Test CUDA directly - if it works, treat as NVIDIA
-                        logger.info(f"  Checking {card_name} (UNKNOWN vendor, attempting CUDA)...")
+                        logger.info("  Checking {} (UNKNOWN vendor, attempting CUDA)...", card_name)
                         logger.info("    Testing CUDA acceleration...")
                         if _test_hwaccel_functionality("cuda"):
                             # CUDA works! Treat as NVIDIA even though we couldn't confirm
@@ -686,29 +686,29 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                             )
                             # Fall through to normal NVIDIA processing
                         else:
-                            logger.debug(f"Skipping {card_name} - CUDA acceleration test failed")
+                            logger.debug("Skipping {} - CUDA acceleration test failed", card_name)
                             continue
                     else:
                         # Not WSL2, skip unknown vendor
-                        logger.debug(f"Skipping {card_name} - unknown vendor and nvidia-smi did not confirm NVIDIA")
+                        logger.debug("Skipping {} - unknown vendor and nvidia-smi did not confirm NVIDIA", card_name)
                         continue
             else:
                 # No CUDA available and vendor is unknown, skip
-                logger.debug(f"Skipping {card_name} - unknown vendor '{vendor}' and CUDA not available")
+                logger.debug("Skipping {} - unknown vendor '{}' and CUDA not available", card_name, vendor)
                 continue
 
         # After UNKNOWN→NVIDIA promotion, skip if nvidia-smi already
         # registered this GPU at the top of the function (issue #221).
         if vendor == "NVIDIA" and "NVIDIA" in detected_vendors:
-            logger.debug(f"Skipping {card_name}: NVIDIA already registered via nvidia-smi")
+            logger.debug("Skipping {}: NVIDIA already registered via nvidia-smi", card_name)
             continue
 
         if vendor not in GPU_ACCELERATION_MAP:
-            logger.debug(f"Skipping {card_name} - vendor '{vendor}' not in GPU acceleration map")
+            logger.debug("Skipping {} - vendor '{}' not in GPU acceleration map", card_name, vendor)
             continue
 
-        logger.debug(f"Testing {card_name} ({vendor} - {driver})...")
-        logger.info(f"  Checking {card_name} ({vendor})...")
+        logger.debug("Testing {} ({} - {})...", card_name, vendor, driver)
+        logger.info("  Checking {} ({})...", card_name, vendor)
 
         accel_config = GPU_ACCELERATION_MAP[vendor]
         primary_method = accel_config["primary"]
@@ -723,8 +723,8 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
             device_path = None
 
         # Test primary acceleration method
-        logger.debug(f"  Testing primary method: {primary_method}")
-        logger.info(f"    Testing {primary_method} acceleration...")
+        logger.debug("  Testing primary method: {}", primary_method)
+        logger.info("    Testing {} acceleration...", primary_method)
         if _test_acceleration_method(vendor, primary_method, device_path):
             gpu_name = get_gpu_name(vendor, device_path)
             gpu_info = {
@@ -738,7 +738,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
             }
             detected_gpus.append((vendor, device_path, gpu_info))
             detected_vendors.add(vendor)
-            logger.info(f"  ✅ {card_name}: {vendor} {primary_method} working")
+            logger.info("  ✅ {}: {} {} working", card_name, vendor, primary_method)
             continue  # Primary worked, skip fallback
 
         # Primary failed, log appropriate message
@@ -762,12 +762,12 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                     primary_method,
                 )
         else:
-            logger.debug(f"  ✗ {card_name}: {primary_method} test failed")
+            logger.debug("  ✗ {}: {} test failed", card_name, primary_method)
 
         # Test fallback method if available
         if fallback_method:
-            logger.debug(f"  Testing fallback method: {fallback_method}")
-            logger.info(f"    Testing fallback {fallback_method} acceleration...")
+            logger.debug("  Testing fallback method: {}", fallback_method)
+            logger.info("    Testing fallback {} acceleration...", fallback_method)
             fallback_device_path = render_device if fallback_method == "VAAPI" else device_path
 
             if _test_acceleration_method(vendor, fallback_method, fallback_device_path):
@@ -783,7 +783,7 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                 }
                 detected_gpus.append((vendor, fallback_device_path, gpu_info))
                 detected_vendors.add(vendor)
-                logger.info(f"  ✅ {card_name}: {vendor} {fallback_method} working (fallback)")
+                logger.info("  ✅ {}: {} {} working (fallback)", card_name, vendor, fallback_method)
             else:
                 logger.warning(
                     "{}: every hardware-acceleration method tested ({} primary, {} fallback) failed. "
@@ -844,7 +844,7 @@ def _detect_windows_gpus() -> list[tuple[str, str, dict]]:
     detected_gpus = []
 
     hwaccels = _get_ffmpeg_hwaccels()
-    logger.debug(f"Windows platform detected; FFmpeg hwaccels: {hwaccels}")
+    logger.debug("Windows platform detected; FFmpeg hwaccels: {}", hwaccels)
 
     # Try NVIDIA CUDA first
     if "cuda" in hwaccels and _detect_nvidia_via_nvidia_smi() == "NVIDIA":
@@ -858,7 +858,7 @@ def _detect_windows_gpus() -> list[tuple[str, str, dict]]:
                 "device_path": "cuda",
             }
             detected_gpus.append(("NVIDIA", "cuda", gpu_info))
-            logger.info(f"  ✅ Windows NVIDIA CUDA working: {gpu_name}")
+            logger.info("  ✅ Windows NVIDIA CUDA working: {}", gpu_name)
             return detected_gpus
         else:
             logger.debug("  CUDA functionality test failed, falling back to D3D11VA")
@@ -941,5 +941,5 @@ def detect_all_gpus() -> list[tuple[str, str, dict]]:
     elif is_macos():
         detected_gpus.extend(_detect_macos_gpus())
 
-    logger.debug(f"=== Multi-GPU Detection Complete: Found {len(detected_gpus)} working GPU(s) ===")
+    logger.debug("=== Multi-GPU Detection Complete: Found {} working GPU(s) ===", len(detected_gpus))
     return detected_gpus

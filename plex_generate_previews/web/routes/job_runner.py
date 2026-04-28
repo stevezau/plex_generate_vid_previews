@@ -82,7 +82,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
     """
     with _inflight_lock:
         if job_id in _inflight_jobs:
-            logger.info(f"Skipping duplicate _start_job_async for {job_id} — already in flight")
+            logger.info("Skipping duplicate _start_job_async for {} — already in flight", job_id)
             return
         _inflight_jobs.add(job_id)
 
@@ -122,7 +122,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     if not merged.get("path_count"):
                         merged["path_count"] = len(wp)
                 job_manager.update_job_config(job_id, merged)
-                logger.info(f"Job {job_id} not started — global processing paused; job remains pending")
+                logger.info("Job {} not started — global processing paused; job remains pending", job_id)
                 return
 
             def log_sink(message):
@@ -239,7 +239,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         setattr(config, key, value)
 
             config.working_tmp_folder = create_working_directory(config.tmp_folder)
-            logger.debug(f"Created working temp folder: {config.working_tmp_folder}")
+            logger.debug("Created working temp folder: {}", config.working_tmp_folder)
 
             tmp_ok, tmp_messages = _verify_tmp_folder_health(config.working_tmp_folder)
             for message in tmp_messages:
@@ -375,7 +375,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                     def _on_item_complete(display_name, title, success):
                         outcome = "success" if success else "failed"
-                        logger.info(f"{display_name} completed: {title!r} ({outcome})")
+                        logger.info("{} completed: {!r} ({})", display_name, title, outcome)
 
                     def _on_dispatch_start():
                         """Transition PENDING -> RUNNING when items are dispatched."""
@@ -562,7 +562,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                     f"INFO - Triggered Plex scan for {len(scan_results)} path(s) ({detail})",
                                 )
                         except Exception as scan_exc:  # noqa: BLE001
-                            logger.debug(f"Plex partial scan attempt failed (non-fatal): {scan_exc}")
+                            logger.debug("Plex partial scan attempt failed (non-fatal): {}", scan_exc)
 
                     spawned_retry_id = None
                     if retry_paths and not (result.get("cancelled") or status_value == "cancelled"):
@@ -693,9 +693,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
                 if config.working_tmp_folder and os.path.isdir(config.working_tmp_folder):
                     try:
-                        logger.debug(f"Cleaning up working temp folder: {config.working_tmp_folder}")
+                        logger.debug("Cleaning up working temp folder: {}", config.working_tmp_folder)
                         shutil.rmtree(config.working_tmp_folder)
-                        logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
+                        logger.debug("Cleaned up working temp folder: {}", config.working_tmp_folder)
                     except Exception as cleanup_error:
                         logger.warning(
                             "Could not clean up the working temp folder at {} ({}). "
@@ -705,7 +705,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             cleanup_error,
                         )
                 elif config.working_tmp_folder:
-                    logger.debug(f"Working temp folder already absent, skipping cleanup: {config.working_tmp_folder}")
+                    logger.debug("Working temp folder already absent, skipping cleanup: {}", config.working_tmp_folder)
 
         except Exception as e:
             logger.error(

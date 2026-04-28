@@ -197,7 +197,7 @@ def _notify_file_result(file_path: str, outcome: "ProcessingResult", reason: str
         try:
             cb(file_path, outcome.value, reason, worker)
         except Exception:
-            logger.debug(f"File result callback error for {file_path}", exc_info=True)
+            logger.debug("File result callback error for {}", file_path, exc_info=True)
 
 
 def log_failure_summary() -> None:
@@ -418,7 +418,7 @@ def _save_ffmpeg_failure_log(video_file: str, returncode: int, stderr_lines: lis
             fh.write("-" * 72 + "\n")
             for line in stderr_lines:
                 fh.write(line + "\n")
-        logger.debug(f"Saved FFmpeg failure log to {log_path}")
+        logger.debug("Saved FFmpeg failure log to {}", log_path)
     except OSError:
         pass  # best-effort
 
@@ -801,8 +801,9 @@ def generate_images(
                     dv5_software_fallback = True
                 else:
                     logger.info(
-                        f"Dolby Vision Profile 5 detected for {video_file}; "
-                        f"using libplacebo tone mapping (hdr_format={hdr_fmt!r})"
+                        "Dolby Vision Profile 5 detected for {}; using libplacebo tone mapping (hdr_format={!r})",
+                        video_file,
+                        hdr_fmt,
                     )
                     use_libplacebo = True
                     # Pick the DV5 filter chain based on GPU vendor.
@@ -855,9 +856,9 @@ def generate_images(
                 # default, so the standard zscale/tonemap chain works
                 # correctly.  This avoids all libplacebo/RPU complexity.
                 logger.info(
-                    f"Dolby Vision with HDR10 fallback detected for "
-                    f"{video_file}; using HDR10 base layer for tone "
-                    f"mapping (hdr_format={hdr_fmt!r})"
+                    "Dolby Vision with HDR10 fallback detected for {}; using HDR10 base layer for tone mapping (hdr_format={!r})",
+                    video_file,
+                    hdr_fmt,
                 )
             # For both DV-with-fallback (above) and non-DV HDR, use
             # the zscale/tonemap chain.  Skip for DV5 software fallback:
@@ -973,7 +974,7 @@ def generate_images(
             reason,
         )
         stderr_excerpt = "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
-        logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+        logger.debug("FFmpeg stderr excerpt (last 5 lines): {}", stderr_excerpt)
         _clean_output_images(output_folder)
         # Same filter shape as the NVIDIA/software primary DV5 path; run
         # here without hardware decode so it works on any host with a
@@ -1018,7 +1019,7 @@ def generate_images(
                 diag_label,
                 video_file,
             )
-            logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+            logger.debug("FFmpeg stderr excerpt (last 5 lines): {}", stderr_excerpt)
 
             # Clean up any partial files before retrying
             _clean_output_images(output_folder)
@@ -1079,7 +1080,7 @@ def generate_images(
                 fallback_reason,
                 rc,
             )
-            logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
+            logger.debug("FFmpeg stderr excerpt (last 5 lines): {}", stderr_excerpt)
             # Clean up any partial files from GPU attempts
             _clean_output_images(output_folder)
             # Raise exception to signal worker pool to re-queue for CPU worker
@@ -1115,7 +1116,13 @@ def generate_images(
             else (" (sw libplacebo retry)" if did_sw_libplacebo_retry else (" (retry no-skip)" if did_retry else ""))
         )
         logger.info(
-            f"Generated Video Preview for {video_file} HW={hw} TIME={seconds}seconds SPEED={speed} IMAGES={image_count}{fallback_suffix}"
+            "Generated Video Preview for {} HW={} TIME={}seconds SPEED={} IMAGES={}{}",
+            video_file,
+            hw,
+            seconds,
+            speed,
+            image_count,
+            fallback_suffix,
         )
     else:
         fallback_suffix = (
@@ -1248,11 +1255,11 @@ def _cleanup_temp_directory(tmp_path: str) -> None:
     """
     try:
         if os.path.exists(tmp_path):
-            logger.debug(f"Cleaning up temp directory: {tmp_path}")
+            logger.debug("Cleaning up temp directory: {}", tmp_path)
             shutil.rmtree(tmp_path)
-            logger.debug(f"Cleaned up temp directory: {tmp_path}")
+            logger.debug("Cleaned up temp directory: {}", tmp_path)
         else:
-            logger.debug(f"Temp directory already absent, skipping cleanup: {tmp_path}")
+            logger.debug("Temp directory already absent, skipping cleanup: {}", tmp_path)
     except Exception as cleanup_error:
         logger.warning(
             "Could not delete temporary working folder {}: {}. "
@@ -1491,7 +1498,7 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     except PermissionError:
         # Re-raise PermissionError (already logged above)
         raise
-    logger.info(f"Generated BIF file: {bif_filename} ({len(images)} thumbnails)")
+    logger.info("Generated BIF file: {} ({} thumbnails)", bif_filename, len(images))
 
 
 def _fan_out_secondary_publishers(
@@ -1697,7 +1704,7 @@ def process_item(
                 media_file = sanitize_path(plex_path)
 
             if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
-                logger.info(f"Skipping (excluded path): {media_file}")
+                logger.info("Skipping (excluded path): {}", media_file)
                 _update_best(ProcessingResult.SKIPPED_EXCLUDED)
                 _notify_file_result(
                     media_file,
@@ -1766,7 +1773,7 @@ def process_item(
                 continue
 
             if os.path.isfile(index_bif) and config.regenerate_thumbnails:
-                logger.debug(f"Deleting existing BIF file at {index_bif} to regenerate thumbnails for {media_file}")
+                logger.debug("Deleting existing BIF file at {} to regenerate thumbnails for {}", index_bif, media_file)
                 try:
                     os.remove(index_bif)
                 except Exception as e:
@@ -1789,7 +1796,7 @@ def process_item(
                     continue
 
             if os.path.isfile(index_bif):
-                logger.info(f"Skipping {media_file} — BIF already exists at {index_bif}")
+                logger.info("Skipping {} — BIF already exists at {}", media_file, index_bif)
                 _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
                 _notify_file_result(
                     media_file,
@@ -1811,7 +1818,7 @@ def process_item(
                 )
                 continue
 
-            logger.info(f"Generating BIF for {media_file} -> {index_bif}")
+            logger.info("Generating BIF for {} -> {}", media_file, index_bif)
 
             if not _ensure_directories(indexes_path, tmp_path, media_file):
                 _update_best(ProcessingResult.FAILED)

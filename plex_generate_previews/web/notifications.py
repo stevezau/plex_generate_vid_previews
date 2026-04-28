@@ -46,7 +46,7 @@ def dismiss_session(notification_id: str) -> None:
     """
     with _SESSION_DISMISSED_LOCK:
         _SESSION_DISMISSED.add(notification_id)
-    logger.debug(f"notifications: session-dismissed {notification_id}")
+    logger.debug("notifications: session-dismissed {}", notification_id)
 
 
 def undismiss_session(notification_id: str) -> None:
@@ -146,10 +146,10 @@ def build_active_notifications(
         if not notif_id:
             continue
         if notif_id in persisted:
-            logger.debug(f"notifications: {notif_id} suppressed (permanently dismissed)")
+            logger.debug("notifications: {} suppressed (permanently dismissed)", notif_id)
             continue
         if _session_is_dismissed(notif_id):
-            logger.debug(f"notifications: {notif_id} suppressed (session dismissed)")
+            logger.debug("notifications: {} suppressed (session dismissed)", notif_id)
             continue
         notifications.append(entry)
     return notifications

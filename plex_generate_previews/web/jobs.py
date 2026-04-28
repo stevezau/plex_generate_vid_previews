@@ -241,9 +241,9 @@ class JobManager:
                                 job_error,
                             )
                             continue
-                logger.info(f"Loaded {len(self._jobs)} jobs from {self.jobs_file}")
+                logger.info("Loaded {} jobs from {}", len(self._jobs), self.jobs_file)
                 if self._interrupted_jobs:
-                    logger.info(f"Found {len(self._interrupted_jobs)} interrupted/pending job(s) from previous run")
+                    logger.info("Found {} interrupted/pending job(s) from previous run", len(self._interrupted_jobs))
                 if needs_save:
                     self._save_jobs()
             except (OSError, json.JSONDecodeError) as e:
@@ -295,7 +295,7 @@ class JobManager:
             try:
                 self.socketio.emit(event, data, namespace="/jobs")
             except Exception:
-                logger.debug(f"SocketIO emit failed for {event}", exc_info=True)
+                logger.debug("SocketIO emit failed for {}", event, exc_info=True)
 
         t = threading.Thread(target=_do_emit, daemon=True)
         t.start()
@@ -311,7 +311,7 @@ class JobManager:
             if os.path.isfile(path):
                 os.remove(path)
         except OSError as e:
-            logger.debug(f"Could not remove job log file {path}: {e}")
+            logger.debug("Could not remove job log file {}: {}", path, e)
 
     def _get_job_history_days(self) -> int:
         """Read job_history_days from settings, defaulting to 30."""
@@ -353,7 +353,7 @@ class JobManager:
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
             self._save_jobs()
-            logger.info(f"Retention: removed {len(expired_ids)} job(s) older than {days} day(s)")
+            logger.info("Retention: removed {} job(s) older than {} day(s)", len(expired_ids), days)
 
         # Clean orphaned job log files
         if os.path.isdir(self._job_logs_dir):
@@ -365,7 +365,7 @@ class JobManager:
                     path = os.path.join(self._job_logs_dir, name)
                     try:
                         os.remove(path)
-                        logger.debug(f"Removed orphaned job log: {path}")
+                        logger.debug("Removed orphaned job log: {}", path)
                     except OSError:
                         pass
 
@@ -379,7 +379,7 @@ class JobManager:
                     path = os.path.join(self._job_file_results_dir, name)
                     try:
                         os.remove(path)
-                        logger.debug(f"Removed orphaned file results: {path}")
+                        logger.debug("Removed orphaned file results: {}", path)
                     except OSError:
                         pass
 
@@ -405,7 +405,7 @@ class JobManager:
             with self._lock:
                 self._enforce_log_retention()
         except Exception as e:
-            logger.debug(f"Retention tick error: {e}")
+            logger.debug("Retention tick error: {}", e)
         self._start_retention_timer()
 
     def create_job(
@@ -434,7 +434,7 @@ class JobManager:
             self._jobs[job.id] = job
             self._save_jobs()
             self._emit_event("job_created", job.to_dict())
-        logger.info(f"Created job {job.id} for library {library_name}")
+        logger.info("Created job {} for library {}", job.id, library_name)
         return job
 
     def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> list[Job]:
@@ -473,7 +473,7 @@ class JobManager:
                 if ref_time.tzinfo is None:
                     ref_time = ref_time.replace(tzinfo=timezone.utc)
                 if ref_time < cutoff:
-                    logger.debug(f"Skipping revive of job {job.id[:8]} — too old (ref={ref_str})")
+                    logger.debug("Skipping revive of job {} — too old (ref={})", job.id[:8], ref_str)
                     continue
             except (ValueError, AttributeError):
                 # Can't parse date — skip to be safe
@@ -492,7 +492,7 @@ class JobManager:
                 "INFO - Job revived after server restart; processing will resume.",
             )
             revived.append(job)
-            logger.info(f"Revived interrupted job {job.id[:8]} ({job.library_name})")
+            logger.info("Revived interrupted job {} ({})", job.id[:8], job.library_name)
 
         if revived:
             with self._lock:
@@ -587,7 +587,7 @@ class JobManager:
                 self._emit_event("job_started", job.to_dict())
                 started = True
         if started:
-            logger.info(f"Started job {job_id}")
+            logger.info("Started job {}", job_id)
         return job
 
     def update_progress(
@@ -718,7 +718,7 @@ class JobManager:
                 self._emit_event("job_cancelled", job.to_dict())
                 cancelled = True
         if cancelled:
-            logger.info(f"Cancelled job {job_id}")
+            logger.info("Cancelled job {}", job_id)
         return job
 
     def delete_job(self, job_id: str) -> bool:
@@ -737,7 +737,7 @@ class JobManager:
                 self._emit_event("job_deleted", {"job_id": job_id})
                 deleted = True
         if deleted:
-            logger.info(f"Deleted job {job_id}")
+            logger.info("Deleted job {}", job_id)
         return deleted
 
     def clear_completed_jobs(self, statuses: list[str] | None = None) -> int:
@@ -798,7 +798,7 @@ class JobManager:
                 with open(log_path, "a") as f:
                     f.write(line + "\n")
             except OSError as e:
-                logger.debug(f"Could not append to job log {log_path}: {e}")
+                logger.debug("Could not append to job log {}: {}", log_path, e)
 
     def get_logs(self, job_id: str, last_n: int = None) -> list[str]:
         """Get logs for a job (from memory if present, else from file; retention message if cleared)."""
@@ -914,7 +914,7 @@ class JobManager:
             with open(path, "a") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")
         except OSError as e:
-            logger.debug(f"Could not append file result to {path}: {e}")
+            logger.debug("Could not append file result to {}: {}", path, e)
 
     def get_file_results(
         self,
@@ -953,7 +953,7 @@ class JobManager:
                         continue
                     results.append(record)
         except OSError as e:
-            logger.debug(f"Could not read file results from {path}: {e}")
+            logger.debug("Could not read file results from {}: {}", path, e)
         return results
 
     def _delete_file_results(self, job_id: str) -> None:
@@ -963,7 +963,7 @@ class JobManager:
             if os.path.isfile(path):
                 os.remove(path)
         except OSError as e:
-            logger.debug(f"Could not remove file results {path}: {e}")
+            logger.debug("Could not remove file results {}: {}", path, e)
 
     # ========================================================================
     # Worker Status Management
@@ -1046,7 +1046,7 @@ class JobManager:
             self._emit_event("job_paused", {"job_id": job_id, "paused": True})
             paused = True
         if paused:
-            logger.info(f"Pause audit: job_id={job_id}, status={status_val}, paused=True")
+            logger.info("Pause audit: job_id={}, status={}, paused=True", job_id, status_val)
             self.add_log(
                 job_id,
                 "INFO - Pause requested; no new tasks will be dispatched until resume.",
@@ -1073,7 +1073,7 @@ class JobManager:
             self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
             resumed = True
         if resumed:
-            logger.info(f"Resume audit: job_id={job_id}, status={status_val}, paused=False")
+            logger.info("Resume audit: job_id={}, status={}, paused=False", job_id, status_val)
             self.add_log(job_id, "INFO - Resume requested; dispatch will continue.")
         return resumed
 

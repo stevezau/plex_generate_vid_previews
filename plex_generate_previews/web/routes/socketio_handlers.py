@@ -50,7 +50,7 @@ def register_socketio_handlers(socketio):
         job_id = data.get("job_id")
         if job_id:
             join_room(job_id)
-            logger.debug(f"Client subscribed to job {job_id}")
+            logger.debug("Client subscribed to job {}", job_id)
 
     @socketio.on("unsubscribe", namespace="/jobs")
     def handle_unsubscribe(data):

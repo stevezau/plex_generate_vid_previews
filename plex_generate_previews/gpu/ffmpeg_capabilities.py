@@ -37,12 +37,12 @@ def _get_ffmpeg_version() -> tuple[int, int, int] | None:
             timeout=5,
         )
         if result.returncode != 0:
-            logger.debug(f"Failed to get FFmpeg version: {result.stderr}")
+            logger.debug("Failed to get FFmpeg version: {}", result.stderr)
             return None
 
         # Extract version from first line: "ffmpeg version 7.1.1-1ubuntu1.2 Copyright..."
         version_line = result.stdout.split("\n")[0] if result.stdout else ""
-        logger.debug(f"FFmpeg version string: '{version_line}'")
+        logger.debug("FFmpeg version string: '{}'", version_line)
 
         # Special-case date-based git builds (e.g., "ffmpeg version 2025-10-12-git-...")
         # These are not semantic versions; treat as "unknown version" so we don't
@@ -81,14 +81,14 @@ def _get_ffmpeg_version() -> tuple[int, int, int] | None:
                 major = int(groups[0])
                 minor = int(groups[1]) if num_groups >= 2 else 0
                 patch = int(groups[2]) if num_groups >= 3 else 0
-                logger.debug(f"FFmpeg version detected: {major}.{minor}.{patch}")
+                logger.debug("FFmpeg version detected: {}.{}.{}", major, minor, patch)
                 return (major, minor, patch)
 
-        logger.debug(f"Could not parse FFmpeg version from: '{version_line}'")
+        logger.debug("Could not parse FFmpeg version from: '{}'", version_line)
         return None
 
     except Exception as e:
-        logger.debug(f"Error getting FFmpeg version: {e}")
+        logger.debug("Error getting FFmpeg version: {}", e)
         return None
 
 
@@ -110,7 +110,13 @@ def _check_ffmpeg_version() -> bool:
 
     if version >= MIN_FFMPEG_VERSION:
         logger.debug(
-            f"✓ FFmpeg version {version[0]}.{version[1]}.{version[2]} meets minimum requirement {MIN_FFMPEG_VERSION[0]}.{MIN_FFMPEG_VERSION[1]}.{MIN_FFMPEG_VERSION[2]}"
+            "✓ FFmpeg version {}.{}.{} meets minimum requirement {}.{}.{}",
+            version[0],
+            version[1],
+            version[2],
+            MIN_FFMPEG_VERSION[0],
+            MIN_FFMPEG_VERSION[1],
+            MIN_FFMPEG_VERSION[2],
         )
         return True
     logger.warning(
@@ -145,7 +151,7 @@ def _get_ffmpeg_hwaccels() -> list[str]:
             timeout=5,
         )
         if result.returncode != 0:
-            logger.debug(f"Failed to get FFmpeg hardware accelerators: {result.stderr}")
+            logger.debug("Failed to get FFmpeg hardware accelerators: {}", result.stderr)
             return []
 
         hwaccels = []
@@ -156,7 +162,7 @@ def _get_ffmpeg_hwaccels() -> list[str]:
 
         return hwaccels
     except Exception as e:
-        logger.debug(f"Error getting FFmpeg hardware accelerators: {e}")
+        logger.debug("Error getting FFmpeg hardware accelerators: {}", e)
         return []
 
 
@@ -174,8 +180,8 @@ def _is_hwaccel_available(hwaccel: str) -> bool:
     is_available = hwaccel in available_hwaccels
 
     if is_available:
-        logger.debug(f"✓ {hwaccel} hardware acceleration is available")
+        logger.debug("✓ {} hardware acceleration is available", hwaccel)
     else:
-        logger.debug(f"✗ {hwaccel} hardware acceleration is not available")
+        logger.debug("✗ {} hardware acceleration is not available", hwaccel)
 
     return is_available

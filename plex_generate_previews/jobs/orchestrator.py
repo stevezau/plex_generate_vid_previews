@@ -214,9 +214,9 @@ def run_processing(
                     break
                 count = len(media_items)
                 if count <= 0:
-                    logger.info(f"No media items found in library '{section.title}', skipping")
+                    logger.info("No media items found in library '{}', skipping", section.title)
                     continue
-                logger.info(f"Queued library '{section.title}' with {count} items")
+                logger.info("Queued library '{}' with {} items", section.title, count)
                 all_media_items.extend(media_items)
                 library_item_counts.append((section.title, count))
 
@@ -231,14 +231,14 @@ def run_processing(
                 # at once (big win on unraid shfs / mergerfs / JBOD setups).
                 if config.sort_by == "random":
                     random.Random().shuffle(all_media_items)
-                    logger.info(f"Shuffled {len(all_media_items)} items for random processing order")
+                    logger.info("Shuffled {} items for random processing order", len(all_media_items))
 
                 total_items = len(all_media_items)
                 logger.info(
-                    f"Processing {total_items} items across {len(library_item_counts)} libraries in a shared queue"
+                    "Processing {} items across {} libraries in a shared queue", total_items, len(library_item_counts)
                 )
                 for library_name, count in library_item_counts:
-                    logger.info(f"Library queued: {library_name} ({count} items)")
+                    logger.info("Library queued: {} ({} items)", library_name, count)
 
                 result = _dispatch_items(all_media_items, "All Libraries")
                 total_successful += result["completed"]
@@ -274,9 +274,9 @@ def run_processing(
         summary = ", ".join(parts) if parts else "no items processed"
 
         if cancellation_requested:
-            logger.info(f"Processing stopped by cancellation: {summary}")
+            logger.info("Processing stopped by cancellation: {}", summary)
         else:
-            logger.info(f"Processing complete: {summary}")
+            logger.info("Processing complete: {}", summary)
 
         if total_processed > 0 and not_found > 0 and generated == 0:
             logger.warning(
@@ -331,7 +331,7 @@ def run_processing(
         try:
             if os.path.isdir(config.working_tmp_folder):
                 shutil.rmtree(config.working_tmp_folder)
-                logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
+                logger.debug("Cleaned up working temp folder: {}", config.working_tmp_folder)
         except Exception as cleanup_error:
             logger.warning(
                 "Could not delete the working temp folder at {}: {}. "
