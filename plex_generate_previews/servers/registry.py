@@ -204,7 +204,12 @@ class ServerRegistry:
                 )
             return PlexServer(legacy_config, server_id=config.id, name=config.name)
 
-        # Emby and Jellyfin land in Phase 2/3.
+        if config.type is ServerType.EMBY:
+            from .emby import EmbyServer
+
+            return EmbyServer(config)
+
+        # Jellyfin lands in Phase 3.
         raise UnsupportedServerTypeError(f"Server type {config.type.value!r} is not yet supported")
 
 

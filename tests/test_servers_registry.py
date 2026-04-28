@@ -136,22 +136,22 @@ class TestServerRegistryFromSettings:
                     "auth": {},
                 },
                 {
-                    "id": "emby-1",
-                    "type": "emby",
-                    "name": "Emby",
+                    "id": "jelly-1",
+                    "type": "jellyfin",  # Phase 3 — not yet supported
+                    "name": "Jellyfin",
                     "enabled": True,
-                    "url": "http://emby:8096",
+                    "url": "http://jellyfin:8096",
                     "auth": {},
                 },
             ],
             legacy_config=mock_config,
         )
-        # Phase 1 only ships Plex; Emby is skipped, not crashed.
+        # Plex and Emby ship in Phase 1/2; Jellyfin is skipped until Phase 3.
         assert [s.id for s in registry.servers()] == ["plex-default"]
         # ServerConfig for skipped server is still in the configs list so
-        # ownership decisions can include it later (when the implementation
-        # lands), but the live client map omits it.
-        assert {c.id for c in registry.configs()} == {"plex-default", "emby-1"}
+        # ownership decisions can include it later, but the live client map
+        # omits it.
+        assert {c.id for c in registry.configs()} == {"plex-default", "jelly-1"}
 
     def test_unknown_type_string_skipped(self, mock_config):
         registry = ServerRegistry.from_settings(

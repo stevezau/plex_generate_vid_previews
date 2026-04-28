@@ -181,13 +181,13 @@ def refresh_server_libraries(server_id: str):
     except UnsupportedServerTypeError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    if cfg.type is not ServerType.PLEX:
+    if cfg.type not in (ServerType.PLEX, ServerType.EMBY):
         return (
             jsonify(
                 {
                     "error": (
-                        f"Refresh for {cfg.type.value} servers is not yet implemented "
-                        "in Phase 1; the client lands in a follow-up commit."
+                        f"Refresh for {cfg.type.value} servers is not yet implemented; "
+                        "Jellyfin support arrives in Phase 3."
                     )
                 }
             ),
@@ -196,7 +196,9 @@ def refresh_server_libraries(server_id: str):
 
     # Plex's live client still needs a legacy Config until the wrapper is
     # updated to take a ServerConfig. load_config() reads the same settings
-    # we just inspected, so the URL/token/verify_ssl agree.
+    # we just inspected, so the URL/token/verify_ssl agree. Emby builds
+    # purely from the persisted ServerConfig and doesn't need the legacy
+    # config; calling load_config() is a no-op cost for that path.
     try:
         legacy_config = load_config()
     except Exception as exc:

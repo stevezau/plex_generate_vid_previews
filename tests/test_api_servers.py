@@ -253,21 +253,21 @@ class TestRefreshLibraries:
         )
         assert response.status_code == 404
 
-    def test_501_for_non_plex_servers(self, client, auth_headers):
+    def test_501_for_jellyfin_until_phase_3(self, client, auth_headers):
         _seed_media_servers(
             [
                 {
-                    "id": "emby-1",
-                    "type": "emby",
-                    "name": "Emby",
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
                     "enabled": True,
-                    "url": "http://emby:8096",
+                    "url": "http://jellyfin:8096",
                     "auth": {},
                 }
             ]
         )
         response = client.post(
-            "/api/servers/emby-1/refresh-libraries",
+            "/api/servers/jelly-1/refresh-libraries",
             headers=auth_headers,
         )
         assert response.status_code == 501
