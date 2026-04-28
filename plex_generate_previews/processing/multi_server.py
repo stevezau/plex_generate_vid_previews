@@ -429,12 +429,20 @@ def process_canonical_path(
         if not cache_hit and use_frame_cache:
             cache.put(canonical_path, frame_dir=Path(tmp_path), frame_count=frame_count)
 
+        # ``width``/``height`` are documentation-only on BifBundle —
+        # adapters that need real frame dimensions (Jellyfin tile-grid)
+        # measure them off the first JPG on disk. We surface what we
+        # know from generate_images: it returns a tuple whose 4th
+        # element is the requested width when the cache miss path ran;
+        # cache-hit and non-tuple branches fall back to the default
+        # 320x180 the FFmpeg pass uses.
+        gen_width = int(gen_result[3]) if isinstance(gen_result, tuple) and len(gen_result) > 3 else 320
         bundle = BifBundle(
             canonical_path=canonical_path,
             frame_dir=Path(tmp_path),
             bif_path=None,
             frame_interval=int(getattr(config, "plex_bif_frame_interval", 10) or 10),
-            width=int(gen_result[3]) if isinstance(gen_result, tuple) and len(gen_result) > 3 else 320,
+            width=gen_width,
             height=180,
             frame_count=frame_count,
         )

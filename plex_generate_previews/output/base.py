@@ -67,13 +67,21 @@ class OutputAdapter(ABC):
     def compute_output_paths(
         self,
         bundle: BifBundle,
-        server: MediaServer,
+        server: MediaServer | None,
         item_id: str | None,
     ) -> list[Path]:
         """Return the absolute paths this adapter will write.
 
         Implementations may return more than one path when the format is
         multi-file (e.g. Jellyfin tile sheets plus a manifest).
+
+        ``server`` is ``None`` when the caller (e.g. the diagnostics
+        ``output-status`` endpoint) only needs path computation and
+        hasn't built a live client. Adapters that don't actually need
+        the server (Emby sidecar, Jellyfin trickplay) accept ``None``
+        unconditionally; adapters that do (Plex bundle, which queries
+        the bundle hash from the API) raise ``ValueError`` when called
+        without one.
 
         Implementations may raise ``LibraryNotYetIndexedError`` when the
         server has not yet ingested the item the adapter needs metadata for;

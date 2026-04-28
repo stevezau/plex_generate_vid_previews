@@ -48,7 +48,7 @@ class EmbyBifAdapter(OutputAdapter):
     def compute_output_paths(
         self,
         bundle: BifBundle,
-        server: MediaServer,
+        server: MediaServer | None,
         item_id: str | None,
     ) -> list[Path]:
         """Return ``[<media_dir>/<basename>-<width>-<interval>.bif]``."""

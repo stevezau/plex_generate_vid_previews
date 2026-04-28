@@ -50,13 +50,15 @@ class PlexBundleAdapter(OutputAdapter):
     def compute_output_paths(
         self,
         bundle: BifBundle,
-        server: MediaServer,
+        server: MediaServer | None,
         item_id: str | None,
     ) -> list[Path]:
         """Look up the bundle hash for ``item_id`` and return the BIF path.
 
         Raises:
-            ValueError: When ``item_id`` is missing.
+            ValueError: When ``item_id`` or ``server`` is missing — Plex
+                bundle paths require both (the bundle hash is fetched
+                from Plex's ``/library/metadata/{id}/tree`` endpoint).
             LibraryNotYetIndexedError: When Plex has no MediaPart hash matching
                 the bundle's ``canonical_path`` — e.g. Plex hasn't scanned the
                 file yet. The dispatcher routes this into the slow-backoff
@@ -65,6 +67,8 @@ class PlexBundleAdapter(OutputAdapter):
         """
         if item_id is None:
             raise ValueError("PlexBundleAdapter requires an item_id")
+        if server is None:
+            raise ValueError("PlexBundleAdapter requires a live PlexServer to look up the bundle hash")
 
         from ..servers.plex import PlexServer  # local import to avoid cycles
 

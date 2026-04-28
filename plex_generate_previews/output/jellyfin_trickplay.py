@@ -83,7 +83,7 @@ class JellyfinTrickplayAdapter(OutputAdapter):
     def compute_output_paths(
         self,
         bundle: BifBundle,
-        server: MediaServer,
+        server: MediaServer | None,
         item_id: str | None,
     ) -> list[Path]:
         """Return the manifest path; tile-sheet paths are derived during publish.
