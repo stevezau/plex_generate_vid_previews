@@ -289,9 +289,12 @@ def get_path_owners():
     """
     from flask import request
 
-    path = (request.args.get("path") or "").strip()
-    if not path:
+    from ...utils import sanitize_path
+
+    raw_path = (request.args.get("path") or "").strip()
+    if not raw_path:
         return jsonify({"error": "path query parameter required"}), 400
+    path = sanitize_path(raw_path)
 
     settings = get_settings_manager()
     raw_servers = settings.get("media_servers") or []
@@ -606,10 +609,12 @@ def get_output_status(server_id: str):
     from pathlib import Path as _Path
 
     from ...processing.multi_server import _adapter_for_server
+    from ...utils import sanitize_path
 
-    canonical_path = (request.args.get("path") or "").strip()
-    if not canonical_path:
+    raw_path = (request.args.get("path") or "").strip()
+    if not raw_path:
         return jsonify({"error": "path query parameter required"}), 400
+    canonical_path = sanitize_path(raw_path)
 
     raw_servers = _get_media_servers()
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)

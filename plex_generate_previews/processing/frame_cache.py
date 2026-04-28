@@ -243,8 +243,11 @@ def get_frame_cache(
 ) -> FrameCache:
     """Return the process-wide :class:`FrameCache` (lazily constructed).
 
-    First call decides the ``base_dir``; subsequent calls return the
-    same instance regardless of args. Tests override via :func:`reset_frame_cache`.
+    First call with a non-default arg decides that arg. Subsequent
+    calls with a *different* non-default value raise so the caller
+    notices instead of silently writing into a stale location.
+    Tests reset via :func:`reset_frame_cache` to bypass this guard
+    when they intentionally swap the cache out.
     """
     global _singleton
     with _singleton_lock:
@@ -259,6 +262,17 @@ def get_frame_cache(
                 base_dir=base_dir,
                 max_entries=max_entries,
                 ttl_seconds=ttl_seconds,
+            )
+            return _singleton
+
+        # Singleton already exists — verify the caller isn't passing
+        # conflicting non-default config; that would silently write to
+        # the wrong place. ``base_dir=None`` means "use whatever's
+        # there", so don't compare those.
+        if base_dir is not None and str(base_dir) != str(_singleton._base_dir):
+            raise RuntimeError(
+                f"FrameCache singleton already initialised with base_dir={_singleton._base_dir!r}; "
+                f"cannot reconfigure with base_dir={base_dir!r} — call reset_frame_cache() first"
             )
         return _singleton
 

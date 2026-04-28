@@ -80,7 +80,7 @@ class PlexBundleAdapter(OutputAdapter):
 
         return [self._bundle_bif_path(bundle_hash)]
 
-    def publish(self, bundle: BifBundle, output_paths: list[Path]) -> None:
+    def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
         """Pack ``bundle.frame_dir`` into a BIF file at the first output path.
 
         Plex stores exactly one ``index-sd.bif`` per bundle, so we expect
@@ -109,7 +109,7 @@ class PlexBundleAdapter(OutputAdapter):
         generate_bif(
             str(index_bif),
             str(bundle.frame_dir),
-            _BifIntervalConfig(self._frame_interval),
+            BifIntervalConfig(self._frame_interval),
         )
         logger.debug("Plex BIF written to {}", index_bif)
 
@@ -164,7 +164,7 @@ class PlexBundleAdapter(OutputAdapter):
         raise LibraryNotYetIndexedError(f"Plex item {item_id} returned no valid bundle hashes")
 
 
-class _BifIntervalConfig:
+class BifIntervalConfig:
     """Minimal shim exposing :attr:`plex_bif_frame_interval` for ``generate_bif``.
 
     ``generate_bif`` consumes only this one attribute from its config

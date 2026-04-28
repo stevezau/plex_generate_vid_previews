@@ -81,10 +81,14 @@ class OutputAdapter(ABC):
         """
 
     @abstractmethod
-    def publish(self, bundle: BifBundle, output_paths: list[Path]) -> None:
+    def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
         """Write the bundle's data to ``output_paths``.
 
         ``output_paths`` is the result of a previous call to
         :meth:`compute_output_paths` and must contain absolute paths. All
         intermediate directories must be created by the implementation.
+        ``item_id`` is the same value that was passed to
+        :meth:`compute_output_paths` — adapters whose output format
+        embeds the id (e.g. Jellyfin's manifest, keyed by item id)
+        read it here.
         """

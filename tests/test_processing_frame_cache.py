@@ -193,10 +193,20 @@ class TestLruEviction:
 
 
 class TestSingletonAccessor:
-    def test_returns_same_instance(self, tmp_path):
+    def test_returns_same_instance_with_matching_args(self, tmp_path):
         a = get_frame_cache(base_dir=tmp_path / "cache")
-        b = get_frame_cache(base_dir=tmp_path / "different")
-        assert a is b  # second call ignores args
+        b = get_frame_cache(base_dir=tmp_path / "cache")
+        assert a is b  # idempotent when args match
+
+    def test_returns_same_instance_when_second_call_omits_args(self, tmp_path):
+        a = get_frame_cache(base_dir=tmp_path / "cache")
+        b = get_frame_cache()
+        assert a is b  # ``base_dir=None`` means "use existing"
+
+    def test_reconfigure_with_different_base_dir_raises(self, tmp_path):
+        get_frame_cache(base_dir=tmp_path / "cache")
+        with pytest.raises(RuntimeError, match="already initialised"):
+            get_frame_cache(base_dir=tmp_path / "different")
 
     def test_reset_clears_singleton(self, tmp_path):
         a = get_frame_cache(base_dir=tmp_path / "cache")

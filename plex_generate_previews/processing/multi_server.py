@@ -35,6 +35,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import requests
 from loguru import logger
 
 from ..output import BifBundle, EmbyBifAdapter, JellyfinTrickplayAdapter, PlexBundleAdapter
@@ -225,7 +226,14 @@ def _publish_one(
     *,
     skip_if_exists: bool,
 ) -> PublisherResult:
-    """Run one publisher; convert exceptions into a :class:`PublisherResult`."""
+    """Run one publisher; convert *expected* failures into a :class:`PublisherResult`.
+
+    Only catches the runtime/IO/network/value exceptions adapters
+    legitimately raise in their published contract. Programming errors
+    (AttributeError, AssertionError, etc.) propagate so genuine bugs
+    surface as test failures or 5xx responses instead of silently
+    becoming a per-publisher ``FAILED`` row.
+    """
     try:
         output_paths = adapter.compute_output_paths(bundle, server, item_id)
     except LibraryNotYetIndexedError as exc:
@@ -236,16 +244,8 @@ def _publish_one(
             status=PublisherStatus.SKIPPED_NOT_INDEXED,
             message=str(exc),
         )
-    except (TypeError, ValueError) as exc:
-        return PublisherResult(
-            server_id=server.id,
-            server_name=server.name,
-            adapter_name=adapter.name,
-            status=PublisherStatus.FAILED,
-            message=f"compute_output_paths: {exc}",
-        )
-    except Exception as exc:
-        logger.exception("Unexpected error in compute_output_paths for {}", server.name)
+    except (TypeError, ValueError, OSError, RuntimeError, requests.RequestException) as exc:
+        logger.warning("compute_output_paths failed for {}: {}", server.name, exc)
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,
@@ -268,9 +268,9 @@ def _publish_one(
         )
 
     try:
-        adapter.publish(bundle, output_paths)
-    except Exception as exc:
-        logger.exception("Publish failed for {} via {}", server.name, adapter.name)
+        adapter.publish(bundle, output_paths, item_id)
+    except (TypeError, ValueError, OSError, RuntimeError, requests.RequestException) as exc:
+        logger.warning("publish failed for {} via {}: {}", server.name, adapter.name, exc)
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,

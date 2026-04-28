@@ -94,7 +94,7 @@ class TestPublish:
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=15)
         manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="abc-id")[0]
 
-        adapter.publish(bundle, [manifest_path])
+        adapter.publish(bundle, [manifest_path], item_id="abc-id")
 
         # Exactly one sheet for 15 frames (10x10 grid holds up to 100).
         sheets_dir = media_dir / "trickplay" / "Test (2024)-320"
@@ -134,7 +134,7 @@ class TestPublish:
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=250)
         manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="long-id")[0]
 
-        adapter.publish(bundle, [manifest_path])
+        adapter.publish(bundle, [manifest_path], item_id="long-id")
 
         sheets_dir = media_dir / "trickplay" / "Long (2024)-320"
         sheet_files = sorted(sheets_dir.iterdir())
@@ -160,7 +160,7 @@ class TestPublish:
         adapter = JellyfinTrickplayAdapter()
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=5)
         manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
-        adapter.publish(bundle, [manifest_path])
+        adapter.publish(bundle, [manifest_path], item_id="x")
 
         assert (media_dir / "trickplay").is_dir()
 
@@ -176,7 +176,7 @@ class TestPublish:
         manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
 
         with pytest.raises(RuntimeError, match="No JPG frames"):
-            adapter.publish(bundle, [manifest_path])
+            adapter.publish(bundle, [manifest_path], item_id="x")
 
     def test_empty_output_paths_raises(self, tmp_path):
         adapter = JellyfinTrickplayAdapter()
@@ -198,7 +198,7 @@ class TestPublish:
         adapter = JellyfinTrickplayAdapter()
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=2)
         manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
-        adapter.publish(bundle, [manifest_path])
+        adapter.publish(bundle, [manifest_path], item_id="x")
 
         sheets = sorted((tmp_path / "trickplay" / "Foo-320").iterdir())
         with Image.open(sheets[0]) as sheet:

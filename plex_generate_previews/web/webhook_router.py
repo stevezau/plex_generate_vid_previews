@@ -46,7 +46,7 @@ from ..servers import (
     ServerType,
     WebhookEvent,
 )
-from ..servers.ownership import _apply_path_mappings
+from ..servers.ownership import apply_path_mappings
 from .settings_manager import get_settings_manager
 from .webhooks import _authenticate_webhook, webhooks_bp
 
@@ -214,7 +214,7 @@ def _canonicalize_path(remote_path: str, server_config: ServerConfig | None) -> 
     """
     if not server_config or not server_config.path_mappings:
         return remote_path
-    candidates = _apply_path_mappings(remote_path, server_config.path_mappings)
+    candidates = apply_path_mappings(remote_path, server_config.path_mappings)
     return candidates[0] if candidates else remote_path
 
 

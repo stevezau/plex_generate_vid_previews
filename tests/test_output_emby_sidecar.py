@@ -8,10 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from plex_generate_previews.output import BifBundle, EmbyBifAdapter
-from plex_generate_previews.output.emby_sidecar import (
-    _emby_sidecar_paths_in_dir,
-    _split_emby_filename,
-)
 
 
 def _make_bundle(canonical_path: str, frame_dir: Path) -> BifBundle:
@@ -138,36 +134,3 @@ class TestStaticHelpers:
             width=320,
             frame_interval=10,
         ) == Path("/m/Foo (2024)/Foo (2024)-320-10.bif")
-
-    def test_split_emby_filename_round_trip(self):
-        assert _split_emby_filename("Foo (2024)-320-10.bif") == ("Foo (2024)", 320, 10)
-
-    def test_split_emby_filename_with_dashes_in_basename(self):
-        # Show - S01E01 - Pilot-320-10.bif
-        assert _split_emby_filename("Show - S01E01 - Pilot-320-10.bif") == (
-            "Show - S01E01 - Pilot",
-            320,
-            10,
-        )
-
-    def test_split_emby_filename_rejects_non_bif(self):
-        assert _split_emby_filename("Foo-320-10.txt") is None
-
-    def test_split_emby_filename_rejects_missing_suffix(self):
-        assert _split_emby_filename("Foo.bif") is None
-
-    def test_emby_sidecar_paths_in_dir(self, tmp_path):
-        # Mix of valid sidecars + unrelated files.
-        (tmp_path / "Foo-320-10.bif").write_bytes(b"")
-        (tmp_path / "Foo-480-5.bif").write_bytes(b"")
-        (tmp_path / "Foo.mkv").write_bytes(b"")
-        (tmp_path / "Foo.bif").write_bytes(b"")  # not Emby-pattern; ignored
-
-        results = _emby_sidecar_paths_in_dir(str(tmp_path))
-        # Only the two Emby-flavoured sidecars, sorted by filename.
-        assert len(results) == 2
-        widths = sorted(width for _, _, width, _ in results)
-        assert widths == [320, 480]
-
-    def test_emby_sidecar_paths_in_dir_handles_missing_dir(self):
-        assert _emby_sidecar_paths_in_dir("/does/not/exist") == []

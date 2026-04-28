@@ -14,7 +14,6 @@ canonical media path plus the configured width and interval.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from loguru import logger
@@ -58,7 +57,7 @@ class EmbyBifAdapter(OutputAdapter):
         sidecar = media_path.parent / f"{basename}-{self._width}-{self._frame_interval}.bif"
         return [sidecar]
 
-    def publish(self, bundle: BifBundle, output_paths: list[Path]) -> None:
+    def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
         """Pack ``bundle.frame_dir`` into a BIF at the sidecar path.
 
         Reuses the existing ``generate_bif`` helper so the BIF byte layout
@@ -82,12 +81,12 @@ class EmbyBifAdapter(OutputAdapter):
             raise
 
         from ..processing.orchestrator import generate_bif
-        from .plex_bundle import _BifIntervalConfig
+        from .plex_bundle import BifIntervalConfig
 
         generate_bif(
             str(sidecar),
             str(bundle.frame_dir),
-            _BifIntervalConfig(self._frame_interval),
+            BifIntervalConfig(self._frame_interval),
         )
 
         # Sanity: filename must follow Emby's <basename>-<w>-<i>.bif pattern.
@@ -112,44 +111,3 @@ class EmbyBifAdapter(OutputAdapter):
         media_path = Path(canonical_path)
         basename = media_path.stem
         return media_path.parent / f"{basename}-{int(width)}-{int(frame_interval)}.bif"
-
-
-def _split_emby_filename(name: str) -> tuple[str, int, int] | None:
-    """Inverse of the Emby filename pattern.
-
-    Given ``Foo (2024)-320-10.bif`` returns ``("Foo (2024)", 320, 10)``;
-    returns ``None`` if the name doesn't match the pattern. Used by the
-    BIF viewer to enumerate Emby-flavoured sidecars.
-    """
-    if not name.endswith(".bif"):
-        return None
-    stem = name[: -len(".bif")]
-    parts = stem.rsplit("-", 2)
-    if len(parts) != 3:
-        return None
-    base, width_str, interval_str = parts
-    try:
-        return base, int(width_str), int(interval_str)
-    except ValueError:
-        return None
-
-
-def _emby_sidecar_paths_in_dir(directory: str) -> list[tuple[str, str, int, int]]:
-    """List Emby sidecar BIFs in ``directory`` as ``(path, base, width, interval)``.
-
-    Used by the BIF viewer to surface every preview already on disk for a
-    given media folder. Stable order (sorted by filename) so test
-    assertions are deterministic.
-    """
-    results: list[tuple[str, str, int, int]] = []
-    try:
-        entries = sorted(os.listdir(directory))
-    except OSError:
-        return results
-    for entry in entries:
-        parsed = _split_emby_filename(entry)
-        if parsed is None:
-            continue
-        base, width, interval = parsed
-        results.append((os.path.join(directory, entry), base, width, interval))
-    return results

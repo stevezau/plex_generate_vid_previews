@@ -54,7 +54,7 @@ def _normalize(path: str) -> str:
     return path.rstrip("/") + "/"
 
 
-def _apply_path_mappings(remote_path: str, mappings: list[dict[str, Any]]) -> list[str]:
+def apply_path_mappings(remote_path: str, mappings: list[dict[str, Any]]) -> list[str]:
     """Translate a server-side path to candidate local paths.
 
     A single ``remote_path`` can map to several local prefixes when the user
@@ -114,7 +114,7 @@ def server_owns_path(
             # match every absolute file path; reject those explicitly.
             if not (remote_path or "").strip():
                 continue
-            for local_candidate in _apply_path_mappings(remote_path, server.path_mappings):
+            for local_candidate in apply_path_mappings(remote_path, server.path_mappings):
                 if not (local_candidate or "").strip():
                     continue
                 local_prefix = _normalize(local_candidate)

@@ -93,8 +93,6 @@ class JellyfinTrickplayAdapter(OutputAdapter):
                 keyed by item id and Jellyfin's web client looks the
                 trickplay data up by item, so without it the output
                 would be invalid.
-            LibraryNotYetIndexedError: Reserved for future server-side
-                lookups (currently never raised here).
         """
         if item_id is None:
             raise ValueError(
@@ -102,18 +100,24 @@ class JellyfinTrickplayAdapter(OutputAdapter):
             )
         # We deliberately do NOT touch the server here — the item id is
         # already known from the source webhook or library scan.
-        del server  # unused
-        return [self._manifest_path(bundle.canonical_path, item_id=item_id)]
+        del server, item_id  # unused; the dispatcher passes item_id again at publish time
+        media_path = Path(bundle.canonical_path)
+        basename = media_path.stem
+        return [media_path.parent / "trickplay" / f"{basename}-{self._width}.json"]
 
-    def publish(self, bundle: BifBundle, output_paths: list[Path]) -> None:
+    def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
         """Pack ``bundle.frame_dir`` JPG frames into Jellyfin tile sheets + manifest.
 
         ``output_paths[0]`` is the manifest path (computed by
         :meth:`compute_output_paths`). Sheet directory and contents are
-        derived from it.
+        derived from it. ``item_id`` is the Jellyfin item id this
+        manifest indexes — the same value that was passed to
+        :meth:`compute_output_paths`.
         """
         if not output_paths:
             raise ValueError("JellyfinTrickplayAdapter.publish requires the manifest path")
+        if not item_id:
+            raise ValueError("JellyfinTrickplayAdapter.publish requires the Jellyfin item_id")
 
         manifest_path = output_paths[0]
         sheets_dir = manifest_path.with_suffix("")  # strip .json → trickplay/<basename>-<width>/
@@ -152,11 +156,6 @@ class JellyfinTrickplayAdapter(OutputAdapter):
             sheet_image.save(sheet_path, "JPEG", quality=self._jpeg_quality)
             sheets_written += 1
 
-        # Find the item id from the manifest filename — the path was
-        # computed by compute_output_paths which embedded it implicitly
-        # via _manifest_path. We re-derive it here from the bundle for
-        # clarity / robustness.
-        item_id = _item_id_from_manifest_path(manifest_path)
         manifest_payload = self._build_manifest(
             item_id=item_id,
             thumbnail_count=len(frames),
@@ -171,28 +170,6 @@ class JellyfinTrickplayAdapter(OutputAdapter):
             sheets_written,
             manifest_path,
         )
-
-    # ------------------------------------------------------------------ helpers
-    def _manifest_path(self, canonical_path: str, *, item_id: str) -> Path:
-        """Compute ``<media_dir>/trickplay/<basename>-<width>.json``.
-
-        The item id isn't part of the on-disk filename (Jellyfin's web
-        player resolves the manifest by walking the trickplay/ folder,
-        not by id). It's encoded into the manifest's top-level
-        ``Trickplay`` key instead. We pass it here only so a stable
-        marker survives the round-trip from compute_output_paths to
-        publish; the helper at module level peels it back out.
-        """
-        media_path = Path(canonical_path)
-        basename = media_path.stem
-        trickplay_dir = media_path.parent / "trickplay"
-        # Stash the item id in a dotfile metadata path so publish() can
-        # recover it later. The visible manifest filename stays standard.
-        path = trickplay_dir / f"{basename}-{self._width}.json"
-        # Attach the item id as an attribute so publish() can read it
-        # without parsing the path. PathLike doesn't allow attributes
-        # natively, so we wrap the path object.
-        return _ManifestPath(path, item_id=item_id)
 
     def _build_manifest(
         self,
@@ -219,34 +196,6 @@ class JellyfinTrickplayAdapter(OutputAdapter):
                 }
             }
         }
-
-
-class _ManifestPath(type(Path())):
-    """``Path`` subclass that carries the manifest's item id as an attribute.
-
-    The output adapter contract returns plain :class:`pathlib.Path`
-    instances from :meth:`compute_output_paths`, but the Jellyfin
-    publisher needs the item id at publish time. Subclassing ``Path``
-    keeps the public type signature unchanged while letting publish()
-    recover the id without a second function argument.
-    """
-
-    def __new__(cls, *args, item_id: str = "", **kwargs):
-        instance = super().__new__(cls, *args, **kwargs)
-        instance._item_id = item_id  # type: ignore[attr-defined]
-        return instance
-
-
-def _item_id_from_manifest_path(path: Path) -> str:
-    """Recover the item id stashed onto a :class:`_ManifestPath`.
-
-    Returns the empty string when called with a plain :class:`Path` —
-    in that case the caller is using the adapter outside the normal
-    compute → publish round-trip and should be supplying the id by
-    other means. The empty manifest key is ugly but won't crash; an
-    explicit lookup is preferred.
-    """
-    return getattr(path, "_item_id", "") or ""
 
 
 def _measure_first_frame(frame_path: Path) -> tuple[int, int]:

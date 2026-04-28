@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
+from plex_generate_previews.processing.frame_cache import reset_frame_cache
 from plex_generate_previews.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
@@ -31,6 +32,17 @@ from plex_generate_previews.servers import (
     ServerRegistry,
     ServerType,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_frame_cache_singleton():
+    """Each test gets a fresh frame-cache singleton so the
+    base_dir-conflict guard in :func:`get_frame_cache` doesn't fire
+    across tests that use different ``tmp_path`` fixtures.
+    """
+    reset_frame_cache()
+    yield
+    reset_frame_cache()
 
 
 def _populate_frames(directory: str | Path, count: int, *, real_images: bool = True) -> None:
