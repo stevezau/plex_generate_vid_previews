@@ -238,13 +238,31 @@ def _match_registry_server(
     candidates = [(registry.get(c.id), c) for c in registry.configs() if c.type is expected_type]
 
     if server_id_hint:
-        for live, cfg in candidates:
-            # Match against the server's *self-reported* identity
-            # captured at probe time (Plex machineIdentifier, Emby/
-            # Jellyfin ServerId). The locally-generated ``cfg.id`` UUID
-            # never appears in vendor payloads.
-            if cfg.server_identity and cfg.server_identity == server_id_hint:
-                return live, cfg
+        # Match against the server's *self-reported* identity
+        # captured at probe time (Plex machineIdentifier, Emby/
+        # Jellyfin ServerId). The locally-generated ``cfg.id`` UUID
+        # never appears in vendor payloads.
+        matches = [
+            (live, cfg) for live, cfg in candidates if cfg.server_identity and cfg.server_identity == server_id_hint
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Identity collision — extremely rare in practice (cloned-VM
+            # scenario where two Plex installs share the same
+            # machineIdentifier). The webhook can't be confidently routed
+            # so we refuse rather than silently picking one. Users hit
+            # this should give one of the two servers a fresh identity
+            # or use the per-server fallback URL ``/api/webhooks/server/<id>``.
+            logger.warning(
+                "Identity collision: {} configured {} servers share server_identity={!r}. "
+                "Refusing to route — either change one server's identity or use the "
+                "explicit per-server webhook URL.",
+                len(matches),
+                kind,
+                server_id_hint,
+            )
+            return None, None
 
     # Single candidate: unambiguous — use it. Covers two cases:
     # (a) the payload omits the identity hint, (b) the configured

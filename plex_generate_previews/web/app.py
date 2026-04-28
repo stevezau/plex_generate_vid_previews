@@ -282,6 +282,11 @@ def create_app(config_dir: str = None) -> Flask:
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["CONFIG_DIR"] = config_dir
     app.config["WTF_CSRF_CHECK_DEFAULT"] = False  # We apply CSRF selectively
+    # Cap inbound request bodies to 1 MiB. Webhook payloads from
+    # Plex/Emby/Jellyfin/Sonarr/Radarr are kilobytes at most; anything
+    # larger is either misconfiguration or a DoS attempt. Flask returns
+    # 413 Payload Too Large automatically when this is exceeded.
+    app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
 
     # Trust reverse-proxy headers (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
     # so request.scheme and request.remote_addr are correct behind nginx/traefik/etc.

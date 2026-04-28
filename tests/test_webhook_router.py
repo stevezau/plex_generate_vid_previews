@@ -413,6 +413,53 @@ class TestServerIdentityRouting:
         # for "could not match a configured server" rather than 200.
         assert response.status_code == 202
 
+    def test_identity_collision_refuses_to_route(self, client, auth_headers):
+        """Two configured servers share the same ``server_identity``
+        (cloned-VM scenario). Router must refuse rather than silently
+        picking the first match — the dispatch could go to the wrong
+        server's plex_config_folder and never appear in the user's UI."""
+        _seed_servers(
+            [
+                {
+                    "id": "uuid-jelly-A",
+                    "type": "jellyfin",
+                    "name": "Jellyfin A",
+                    "enabled": True,
+                    "url": "http://a:8096",
+                    "auth": {},
+                    # SAME server_identity as B (cloned VM).
+                    "server_identity": "jf-cloned-id",
+                },
+                {
+                    "id": "uuid-jelly-B",
+                    "type": "jellyfin",
+                    "name": "Jellyfin B",
+                    "enabled": True,
+                    "url": "http://b:8096",
+                    "auth": {},
+                    "server_identity": "jf-cloned-id",
+                },
+            ]
+        )
+
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps(
+                {
+                    "NotificationType": "ItemAdded",
+                    "ItemId": "jf-42",
+                    "ItemType": "Episode",
+                    "ServerId": "jf-cloned-id",
+                }
+            ),
+        )
+
+        # Router refuses to route under collision. Same 202 path as
+        # "no match found" since the user-visible outcome is the same:
+        # use the per-server fallback URL or fix one server's identity.
+        assert response.status_code == 202
+
 
 class TestAuth:
     def test_missing_token_rejected(self, client):
@@ -422,3 +469,29 @@ class TestAuth:
             data=json.dumps({"path": "/x.mkv"}),
         )
         assert response.status_code in (401, 403)
+
+
+class TestPayloadSizeLimit:
+    """Webhook bodies cap at MAX_CONTENT_LENGTH (1 MiB) to thwart DoS."""
+
+    def test_oversized_payload_returns_413(self, client, auth_headers):
+        # 2 MiB JSON blob — well over the 1 MiB cap.
+        oversized = json.dumps({"path": "/x.mkv", "junk": "A" * (2 * 1024 * 1024)})
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=oversized,
+        )
+        assert response.status_code == 413, response.status_code
+
+    def test_normal_size_payload_is_accepted(self, client, auth_headers):
+        """Sanity: a small (real-world-sized) payload still gets through."""
+        normal = json.dumps({"path": "/data/movies/Test/Test.mkv"})
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=normal,
+        )
+        # Either 200 (no_owners since no servers configured here) or
+        # 202; never 413 / 401 for an authed in-bounds payload.
+        assert response.status_code in (200, 202), response.status_code

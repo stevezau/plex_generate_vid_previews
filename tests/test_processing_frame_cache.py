@@ -191,6 +191,62 @@ class TestLruEviction:
         assert cache.get(str(tmp_path / "b.mkv")) is None
         assert cache.get(str(tmp_path / "a.mkv")) is not None
 
+    def test_eviction_removes_on_disk_frames(self, tmp_path):
+        """Evicting an entry must clean up the on-disk frame dir too —
+        otherwise a long-running process leaks disk space at the rate
+        of one frame-dir per evicted file."""
+        cache = FrameCache(tmp_path / "cache", max_entries=1)
+
+        media_a = tmp_path / "a.mkv"
+        media_a.write_bytes(b"x")
+        slot_a = cache.frame_dir_for(str(media_a))
+        _populate_real_jpgs(slot_a, count=2)
+        cache.put(str(media_a), frame_dir=slot_a, frame_count=2)
+        assert slot_a.is_dir()
+
+        # Adding 'b' evicts 'a' — slot_a should be removed from disk.
+        media_b = tmp_path / "b.mkv"
+        media_b.write_bytes(b"x")
+        slot_b = cache.frame_dir_for(str(media_b))
+        _populate_real_jpgs(slot_b, count=2)
+        cache.put(str(media_b), frame_dir=slot_b, frame_count=2)
+
+        assert not slot_a.exists(), "evicted entry's frame dir should be deleted from disk"
+        assert slot_b.is_dir()
+
+    def test_max_entries_default_is_32(self, tmp_path):
+        """The default cap matches what's documented; defends against
+        accidental tuning regression that would balloon disk usage."""
+        cache = FrameCache(tmp_path / "cache")
+        # Push 40 entries; only the last 32 should remain.
+        for i in range(40):
+            media = tmp_path / f"f{i:03d}.mkv"
+            media.write_bytes(b"x")
+            slot = cache.frame_dir_for(str(media))
+            _populate_real_jpgs(slot, count=1)
+            cache.put(str(media), frame_dir=slot, frame_count=1)
+        assert len(cache) == 32
+
+    def test_eviction_at_size_cap_does_not_strand_generation_locks(self, tmp_path):
+        """``generation_locks`` are intentionally never evicted (per docstring),
+        but we assert it: the LRU policy applies only to entries, not locks.
+        A regression that started evicting locks could deadlock concurrent
+        webhook fires for the same file."""
+        cache = FrameCache(tmp_path / "cache", max_entries=2)
+        # Touch the lock for "a" then fill the cache to evict "a".
+        lock_a = cache.generation_lock("/a.mkv")
+        for path in ("a.mkv", "b.mkv", "c.mkv"):
+            media = tmp_path / path
+            media.write_bytes(b"x")
+            slot = cache.frame_dir_for(str(media))
+            _populate_real_jpgs(slot, count=1)
+            cache.put(str(media), frame_dir=slot, frame_count=1)
+        # 'a' is evicted from entries…
+        assert cache.get(str(tmp_path / "a.mkv")) is None
+        # …but the lock for the same path is still the same object —
+        # i.e. lock identity preserved across the eviction.
+        assert cache.generation_lock("/a.mkv") is lock_a
+
 
 class TestSingletonAccessor:
     def test_returns_same_instance_with_matching_args(self, tmp_path):
