@@ -197,6 +197,120 @@ def setup_plex(*, base_url: str = PLEX_URL) -> ServerCredentials:
     )
 
 
+def setup_jellyfin_via_api_key_injection(*, base_url: str = JELLYFIN_URL) -> ServerCredentials:
+    """Bootstrap Jellyfin by injecting an API key directly into the SQLite DB.
+
+    Jellyfin's first-run wizard (``POST /Startup/User``) is broken
+    across 10.9 / 10.10 / 10.11 — the controller calls Users.First()
+    against an empty user table. As of this writing, no public
+    workaround exists short of clicking through the web UI.
+
+    Workaround: stop the container, ``INSERT INTO ApiKeys`` with a
+    known token, restart. The injected token authenticates against
+    every admin endpoint without going through user auth at all.
+
+    Requires: docker access (the container's volume is read via
+    ``docker run alpine``). Returns the captured credentials so the
+    integration suite can address Jellyfin like any other configured
+    server.
+    """
+    import secrets
+    import subprocess
+    from datetime import datetime, timezone
+
+    # Stop the container so the SQLite DB isn't held open by Jellyfin.
+    subprocess.run(
+        ["docker", "compose", "-f", str(HERE / "docker-compose.test.yml"), "stop", "jellyfin"],
+        check=True,
+        capture_output=True,
+    )
+
+    token = f"integration-{secrets.token_hex(16)}"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+
+    # Inject the API key via a throwaway alpine container that has sqlite.
+    inject_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        "plex-previews-test_jellyfin_config:/c",
+        "alpine",
+        "sh",
+        "-c",
+        (
+            "apk add --quiet sqlite && "
+            f'sqlite3 /c/data/data/jellyfin.db "INSERT INTO ApiKeys '
+            f"(DateCreated, DateLastActivity, Name, AccessToken) VALUES "
+            f"('{now}', '{now}', 'integration-test', '{token}');\""
+        ),
+    ]
+    inject_result = subprocess.run(inject_cmd, capture_output=True, text=True, check=False)
+    if inject_result.returncode != 0:
+        raise RuntimeError(f"Failed to inject Jellyfin API key: {inject_result.stderr.strip()}")
+
+    # Restart Jellyfin and wait for it.
+    subprocess.run(
+        ["docker", "compose", "-f", str(HERE / "docker-compose.test.yml"), "start", "jellyfin"],
+        check=True,
+        capture_output=True,
+    )
+    _wait_for_http(f"{base_url}/System/Info/Public")
+
+    # Verify the token works + capture identity.
+    info = requests.get(
+        f"{base_url}/System/Info",
+        headers={"X-Emby-Token": token, "Accept": "application/json"},
+        timeout=30,
+    )
+    info.raise_for_status()
+    server_id = str(info.json().get("Id") or "")
+    if not server_id:
+        raise RuntimeError(f"Jellyfin /System/Info returned no Id field with the injected token: {info.json()}")
+
+    # Configure a Movies library if not already present (idempotent).
+    folders_resp = requests.get(
+        f"{base_url}/Library/VirtualFolders",
+        headers={"X-Emby-Token": token, "Accept": "application/json"},
+        timeout=30,
+    )
+    folders_resp.raise_for_status()
+    have_movies = any(isinstance(f, dict) and f.get("Name") == "Movies" for f in (folders_resp.json() or []))
+    if not have_movies:
+        add_resp = requests.post(
+            f"{base_url}/Library/VirtualFolders",
+            params={
+                "name": "Movies",
+                "collectionType": "movies",
+                "paths": "/jf-media/Movies",
+                "refreshLibrary": "true",
+            },
+            headers={"X-Emby-Token": token, "Content-Type": "application/json"},
+            json={
+                "LibraryOptions": {
+                    "EnabledMetadataReaders": ["Nfo"],
+                    "DisabledMetadataReaders": [],
+                    "EnabledMetadataFetcherOrder": [],
+                    "DisabledImageFetchers": [],
+                    "EnabledImageFetchers": [],
+                    "DisabledImageFetcherOrder": [],
+                }
+            },
+            timeout=60,
+        )
+        if not add_resp.ok:
+            raise RuntimeError(f"Jellyfin AddVirtualFolder failed: HTTP {add_resp.status_code} {add_resp.text[:300]}")
+
+    return ServerCredentials(
+        name="jellyfin",
+        server_id=server_id,
+        access_token=token,
+        user_id="",  # API-key auth doesn't have a user context
+        base_url=base_url,
+        library_remote_path="/jf-media/Movies",
+    )
+
+
 def setup_jellyfin_with_existing_token(
     *,
     base_url: str,
@@ -316,11 +430,13 @@ def main() -> int:
             except Exception as exc:
                 print(f"[setup] jellyfin failed: {exc}", file=sys.stderr)
         else:
-            print(
-                "[setup] skipping jellyfin: pass --jellyfin-token + --jellyfin-user-id "
-                "after completing the manual wizard at http://127.0.0.1:8097",
-                file=sys.stderr,
-            )
+            print("[setup] configuring jellyfin via API-key injection ...", flush=True)
+            try:
+                captured.append(setup_jellyfin_via_api_key_injection())
+            except Exception as exc:
+                print(f"[setup] jellyfin failed: {exc}", file=sys.stderr)
+                if args.server == "jellyfin":
+                    return 1
 
     if not captured:
         print("[setup] no servers configured; nothing to write", file=sys.stderr)

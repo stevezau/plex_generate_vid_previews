@@ -55,6 +55,16 @@ def plex_credentials(servers_env: dict[str, str]) -> dict[str, str]:
     return {k: servers_env[k] for k in needed}
 
 
+@pytest.fixture(scope="session")
+def jellyfin_credentials(servers_env: dict[str, str]) -> dict[str, str]:
+    """Captured Jellyfin credentials, or skip if Jellyfin wasn't configured."""
+    needed = ("JELLYFIN_URL", "JELLYFIN_SERVER_ID", "JELLYFIN_ACCESS_TOKEN")
+    missing = [k for k in needed if not servers_env.get(k)]
+    if missing:
+        pytest.skip(f"Jellyfin credentials missing: {missing}")
+    return {k: servers_env[k] for k in needed}
+
+
 @pytest.fixture
 def media_root() -> Path:
     """Local path to the synthetic test fixtures (mounted into containers)."""

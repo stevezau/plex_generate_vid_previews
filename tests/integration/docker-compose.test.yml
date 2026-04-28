@@ -48,9 +48,13 @@ services:
     # trickplay adapter exhaustively (it shares 90% with Emby via
     # EmbyApiClient base class), so live integration is documented
     # as a follow-up.
-    image: jellyfin/jellyfin:10.9.11
+    image: lscr.io/linuxserver/jellyfin:10.9.11
     container_name: previews-test-jellyfin
-    user: "1000:1000"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: UTC
+      JELLYFIN_PublishedServerUrl: "http://127.0.0.1:8097"
     ports:
       - "127.0.0.1:8097:8096"   # Jellyfin API + UI (host port shifted to avoid collision)
     volumes:

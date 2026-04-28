@@ -254,12 +254,15 @@ class TestListItems:
 
 
 class TestResolveItemToRemotePath:
+    """The default fixture uses api_key auth (no user_id) → the
+    client hits ``/Items?Ids={id}`` which returns ``{"Items": [...]}``.
+    """
+
     def test_prefers_media_sources_path(self, emby):
         with patch.object(EmbyServer, "_request") as req:
             response = MagicMock()
             response.json.return_value = {
-                "Path": "/top.mkv",
-                "MediaSources": [{"Path": "/media-source.mkv"}],
+                "Items": [{"Path": "/top.mkv", "MediaSources": [{"Path": "/media-source.mkv"}]}]
             }
             response.raise_for_status.return_value = None
             req.return_value = response
@@ -269,7 +272,7 @@ class TestResolveItemToRemotePath:
     def test_falls_back_to_top_level_path(self, emby):
         with patch.object(EmbyServer, "_request") as req:
             response = MagicMock()
-            response.json.return_value = {"Path": "/top.mkv", "MediaSources": []}
+            response.json.return_value = {"Items": [{"Path": "/top.mkv", "MediaSources": []}]}
             response.raise_for_status.return_value = None
             req.return_value = response
 
@@ -282,11 +285,29 @@ class TestResolveItemToRemotePath:
     def test_returns_none_when_no_path_anywhere(self, emby):
         with patch.object(EmbyServer, "_request") as req:
             response = MagicMock()
-            response.json.return_value = {"MediaSources": [{"Type": "stream"}]}
+            response.json.return_value = {"Items": [{"MediaSources": [{"Type": "stream"}]}]}
             response.raise_for_status.return_value = None
             req.return_value = response
 
             assert emby.resolve_item_to_remote_path("42") is None
+
+    def test_per_user_endpoint_when_user_id_present(self):
+        """Password auth (with user_id) uses /Users/{id}/Items/{id}."""
+        config = _emby_config(auth={"method": "password", "access_token": "tok", "user_id": "u-1"})
+        emby_with_user = EmbyServer(config)
+        with patch.object(EmbyServer, "_request") as req:
+            response = MagicMock()
+            # /Users/{userId}/Items/{itemId} returns the item directly,
+            # NOT wrapped in {"Items": [...]}.
+            response.json.return_value = {"Path": "/per-user.mkv"}
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            result = emby_with_user.resolve_item_to_remote_path("42")
+            assert result == "/per-user.mkv"
+            # Verify the call hit the per-user endpoint.
+            call_args = req.call_args
+            assert call_args.args[1] == "/Users/u-1/Items/42", call_args
 
 
 class TestTriggerRefresh:

@@ -220,25 +220,42 @@ class EmbyApiClient(MediaServer):
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         """Return ``MediaSources[0].Path`` (or top-level ``Path``) for ``item_id``.
 
-        Emby's bare ``/Items/{id}`` returns 404 when no user context is
-        attached; the per-user endpoint ``/Users/{userId}/Items/{id}`` is
-        required to surface ``Path`` / ``MediaSources``. We fall back
-        to ``/Items/{id}`` for the API-key auth case where no user id
-        was captured. Prefers ``MediaSources[0].Path`` over the top-level
-        ``Path`` because some item types only populate the media source.
+        Three vendor-specific quirks need accommodating:
+
+        * Emby's bare ``/Items/{id}`` returns 404 when no user context is
+          attached → use the per-user endpoint
+          ``/Users/{userId}/Items/{id}`` whenever a ``user_id`` was
+          captured (password auth flow).
+        * Jellyfin's bare ``/Items/{id}`` returns **400** under any auth
+          shape (the route signature changed across versions).
+        * The plural ``/Items?Ids={id}`` works for both vendors and both
+          auth shapes; we use it as the universal fallback.
+
+        Prefers ``MediaSources[0].Path`` over the top-level ``Path``
+        because some item types only populate the media source.
         """
         user_id = self._user_id()
-        path_template = f"/Users/{user_id}/Items/{item_id}" if user_id else f"/Items/{item_id}"
+        if user_id:
+            primary_path = f"/Users/{user_id}/Items/{item_id}"
+            primary_params = {"Fields": "Path,MediaSources"}
+            primary_unwrap = lambda data: data  # noqa: E731 — single-item endpoint returns the item directly
+        else:
+            primary_path = "/Items"
+            primary_params = {"Ids": item_id, "Fields": "Path,MediaSources"}
+
+            def primary_unwrap(data):
+                items = data.get("Items") or []
+                return items[0] if items else {}
+
         try:
-            response = self._request(
-                "GET",
-                path_template,
-                params={"Fields": "Path,MediaSources"},
-            )
+            response = self._request("GET", primary_path, params=primary_params)
             response.raise_for_status()
-            data = response.json()
+            data = primary_unwrap(response.json())
         except Exception as exc:
             logger.debug("{} item lookup failed for {}: {}", self.vendor_name, item_id, exc)
+            return None
+
+        if not isinstance(data, dict):
             return None
 
         for source in data.get("MediaSources", []) or []:
