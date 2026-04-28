@@ -1493,6 +1493,44 @@ function _serverBadge(item) {
     return ` <span class="badge ${cls} ms-1" title="${escapeHtmlAttr(tooltip)}">${logo}${escapeHtmlText(label)}</span>`;
 }
 
+// Phase H5: render the per-publisher outcome list captured by the
+// multi-server dispatcher. Empty for legacy jobs (no publishers field).
+const _PUBLISHER_STATUS_BADGES = {
+    published:    { label: 'Published',    cls: 'bg-success' },
+    skipped:      { label: 'Skipped',      cls: 'bg-secondary' },
+    not_indexed:  { label: 'Not indexed',  cls: 'bg-warning text-dark' },
+    failed:       { label: 'Failed',       cls: 'bg-danger' },
+    no_owners:    { label: 'No owner',     cls: 'bg-secondary' },
+};
+
+function _renderPublishersBlock(job) {
+    const rows = (job && Array.isArray(job.publishers)) ? job.publishers : [];
+    if (!rows.length) return '';
+    // Group by canonical_path so each file gets its own server row.
+    const byPath = new Map();
+    for (const p of rows) {
+        const key = p.canonical_path || '(unknown path)';
+        if (!byPath.has(key)) byPath.set(key, []);
+        byPath.get(key).push(p);
+    }
+    const sections = [];
+    for (const [path, pubs] of byPath.entries()) {
+        const badges = pubs.map(function (p) {
+            const meta = _PUBLISHER_STATUS_BADGES[p.status] || { label: p.status || '?', cls: 'bg-secondary' };
+            const stype = (p.server_type || '').toLowerCase();
+            const logo = _vendorLogo(stype, 12) || '';
+            const sname = p.server_name || stype.toUpperCase() || 'Server';
+            const tooltip = p.message ? ` title="${escapeHtmlAttr(p.message)}"` : '';
+            return `<span class="badge ${meta.cls} me-1"${tooltip}>${logo}${escapeHtmlText(sname)}: ${escapeHtmlText(meta.label)}</span>`;
+        }).join('');
+        const fname = path.split('/').pop() || path;
+        sections.push(
+            `<div class="mt-2"><span class="text-muted">${escapeHtml(fname)}</span><br>${badges}</div>`,
+        );
+    }
+    return `<div class="mt-3 pt-2 border-top"><strong>Publishers:</strong>${sections.join('')}</div>`;
+}
+
 let _jobQueueUpdatePending = false;
 
 function updateJobQueue() {
@@ -1566,13 +1604,18 @@ function updateJobQueue() {
             webhookBasenames = job.config.webhook_paths.map(function (p) { return p.split('/').pop() || p; });
         }
         const hasMultiFile = webhookBasenames.length > 1;
+        // Phase H5: also show the toggle when publisher rows exist, so single-file
+        // jobs surface their per-server publish breakdown.
+        const hasPublishers = Array.isArray(job.publishers) && job.publishers.length > 0;
+        const hasExpandableDetail = hasMultiFile || hasPublishers;
         const isFilesExpanded = expandedJobFileRows.has(String(job.id));
         const libraryTitle = webhookBasenames.length > 0
             ? ` title="${escapeHtml(webhookBasenames.join(', '))}"`
             : '';
-        const filesToggleBtn = hasMultiFile
+        const toggleTitle = hasMultiFile ? 'Show files' : 'Show publishers';
+        const filesToggleBtn = hasExpandableDetail
             ? ` <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="job-files-toggle-${escapeHtml(job.id)}"
-                        onclick="toggleJobFiles('${escapeHtml(job.id)}')" aria-expanded="${isFilesExpanded ? 'true' : 'false'}" aria-controls="job-detail-${escapeHtml(job.id)}" title="Show files">
+                        onclick="toggleJobFiles('${escapeHtml(job.id)}')" aria-expanded="${isFilesExpanded ? 'true' : 'false'}" aria-controls="job-detail-${escapeHtml(job.id)}" title="${toggleTitle}">
                    <i class="bi ${isFilesExpanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>
                  </button>`
             : '';
@@ -1609,18 +1652,23 @@ function updateJobQueue() {
                 </td>
             </tr>
         `;
-        if (hasMultiFile) {
-            const filesList = webhookBasenames
-                .map(function (b) { return `<div class="text-muted">${escapeHtml(b)}</div>`; })
-                .join('');
-            const overflow = job.config.path_count > webhookBasenames.length
+        if (hasExpandableDetail) {
+            const filesList = hasMultiFile
+                ? webhookBasenames.map(function (b) { return `<div class="text-muted">${escapeHtml(b)}</div>`; }).join('')
+                : '';
+            const overflow = hasMultiFile && job.config.path_count > webhookBasenames.length
                 ? `<div class="text-muted mt-1">(+${job.config.path_count - webhookBasenames.length} more)</div>`
                 : '';
+            const filesBlock = hasMultiFile
+                ? `<strong>Files:</strong><div class="mt-1">${filesList}${overflow}</div>`
+                : '';
+            // Phase H5: per-server publisher block. Empty for legacy jobs.
+            const publishersBlock = _renderPublishersBlock(job);
             html += `
             <tr id="job-detail-${escapeHtml(job.id)}" class="${isFilesExpanded ? '' : 'd-none'} job-files-detail" aria-hidden="${isFilesExpanded ? 'false' : 'true'}">
                 <td colspan="7" class="bg-body-tertiary small py-2 ps-4">
-                    <strong>Files:</strong>
-                    <div class="mt-1">${filesList}${overflow}</div>
+                    ${filesBlock}
+                    ${publishersBlock}
                 </td>
             </tr>
             `;
@@ -1794,6 +1842,7 @@ function updateActiveJobs(runningJobs) {
             <div class="mb-2 small">
                 <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${_serverBadge(job)}${webhookFilesHtml}
             </div>
+            ${_renderPublishersBlock(job)}
             ${startedLine ? `<div class="mb-2">${startedLine}</div>` : ''}
             <div class="progress" style="height: 24px;">
                 <div class="progress-bar progress-bar-striped progress-bar-animated"

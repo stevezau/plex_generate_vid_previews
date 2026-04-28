@@ -16,13 +16,52 @@ from ..processing.orchestrator import ProcessingResult, clear_failures, log_fail
 from .worker import WorkerPool
 
 
-def _dispatch_webhook_paths_multi_server(config, *, progress_callback=None, cancel_check=None) -> dict:
+def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
+    """Flatten a MultiServerResult into wire-friendly publisher rows for Job UI.
+
+    Persisted on Job.publishers so the dashboard can render
+    "this file: Plex ✓, Emby ✗" without re-grepping the log stream.
+    Also looks up the server type from media_servers so the badge
+    palette matches.
+    """
+    rows = []
+    type_by_id: dict[str, str] = {}
+    try:
+        from ..web.settings_manager import get_settings_manager
+
+        for entry in get_settings_manager().get("media_servers") or []:
+            if isinstance(entry, dict) and entry.get("id"):
+                type_by_id[str(entry["id"])] = (entry.get("type") or "").lower()
+    except Exception:
+        pass
+    for pub in (result.publishers or []) if result is not None else []:
+        status = pub.status.value if hasattr(pub.status, "value") else str(pub.status)
+        rows.append(
+            {
+                "server_id": pub.server_id,
+                "server_name": pub.server_name,
+                "server_type": type_by_id.get(str(pub.server_id), ""),
+                "adapter_name": pub.adapter_name,
+                "status": status,
+                "message": pub.message or "",
+                "canonical_path": canonical_path,
+            }
+        )
+    return rows
+
+
+def _dispatch_webhook_paths_multi_server(
+    config, *, progress_callback=None, cancel_check=None, job_id: str | None = None
+) -> dict:
     """Dispatch webhook_paths through the multi-server registry without Plex.
 
     Used when a webhook fires on an Emby/Jellyfin-only install: the legacy
     Plex resolution shortcut is unavailable, but ``process_canonical_path``
     in the multi-server dispatcher walks every owning server in the registry
     directly — Plex is not required.
+
+    When ``job_id`` is supplied, per-publisher outcomes are appended to that
+    job's ``publishers`` field so the Jobs UI can show per-server status.
 
     Returns the aggregated ProcessingResult counts keyed by enum value.
     """
@@ -62,6 +101,15 @@ def _dispatch_webhook_paths_multi_server(config, *, progress_callback=None, canc
     sid_filter_raw = getattr(config, "server_id_filter", None)
     sid_filter = sid_filter_raw if isinstance(sid_filter_raw, str) and sid_filter_raw else None
 
+    job_manager = None
+    if job_id:
+        try:
+            from ..web.jobs import get_job_manager
+
+            job_manager = get_job_manager()
+        except Exception:
+            job_manager = None
+
     for idx, p in enumerate(paths, 1):
         if cancel_check and cancel_check():
             logger.info("Webhook dispatch cancelled after {} of {} path(s)", idx - 1, len(paths))
@@ -82,6 +130,11 @@ def _dispatch_webhook_paths_multi_server(config, *, progress_callback=None, canc
             for pub in result.publishers or []:
                 key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
                 counts[key] = counts.get(key, 0) + 1
+            if job_manager is not None:
+                try:
+                    job_manager.append_publishers(job_id, _publisher_rows_from_result(result, p))
+                except Exception as exc:
+                    logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
         except Exception as exc:
             logger.warning(
                 "Multi-server dispatch failed for {} ({}: {}). Other paths in this batch are still being processed.",
@@ -183,7 +236,10 @@ def run_processing(
                     len(config.webhook_paths),
                 )
                 outcome_counts = _dispatch_webhook_paths_multi_server(
-                    config, progress_callback=progress_callback, cancel_check=cancel_check
+                    config,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    job_id=job_id,
                 )
                 return {"outcome": outcome_counts}
             logger.warning(

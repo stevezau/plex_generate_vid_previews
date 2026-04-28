@@ -453,3 +453,66 @@ class TestRequeueInterruptedJobs:
         assert second == []
         assert jm._interrupted_jobs == []
         assert len(jm.get_all_jobs()) == 1
+
+
+class TestPublishersAttribution:
+    """Phase H5: per-publisher rows persisted on Job for the Jobs UI."""
+
+    def test_default_publishers_is_empty_list(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+        assert job.publishers == []
+        assert job.to_dict()["publishers"] == []
+
+    def test_append_publishers_persists_through_restart(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+
+        rows = [
+            {
+                "server_id": "p1",
+                "server_name": "Plex Home",
+                "server_type": "plex",
+                "adapter_name": "plex_bundle",
+                "status": "published",
+                "message": "",
+                "canonical_path": "/data/movies/Foo.mkv",
+            },
+            {
+                "server_id": "e1",
+                "server_name": "Emby Den",
+                "server_type": "emby",
+                "adapter_name": "emby_sidecar",
+                "status": "failed",
+                "message": "sidecar dir not writable",
+                "canonical_path": "/data/movies/Foo.mkv",
+            },
+        ]
+        jm.append_publishers(job.id, rows)
+
+        # Same in-memory state.
+        assert len(jm.get_job(job.id).publishers) == 2
+        assert jm.get_job(job.id).publishers[1]["status"] == "failed"
+
+        # Round-trip through disk via a fresh JobManager.
+        jm2 = JobManager(config_dir=config_dir)
+        revived = jm2.get_job(job.id)
+        assert revived is not None
+        assert len(revived.publishers) == 2
+        assert revived.publishers[0]["server_name"] == "Plex Home"
+        assert revived.publishers[1]["message"] == "sidecar dir not writable"
+
+    def test_append_publishers_noop_when_unknown_job(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        # Should not raise.
+        jm.append_publishers("missing-id", [{"server_id": "x"}])
+
+    def test_append_publishers_noop_when_rows_empty(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+        jm.append_publishers(job.id, [])
+        assert jm.get_job(job.id).publishers == []

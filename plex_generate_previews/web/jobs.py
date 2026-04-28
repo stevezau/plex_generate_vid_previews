@@ -115,6 +115,11 @@ class Job:
     server_id: str | None = None
     server_name: str | None = None
     server_type: str | None = None  # plex / emby / jellyfin
+    # Per-publisher outcomes from the multi-server dispatcher. Each entry:
+    # {server_id, server_name, server_type, adapter_name, status, message,
+    #  canonical_path}. Persists in jobs.json so historical jobs keep their
+    # publisher breakdown across restarts. Empty list for legacy jobs.
+    publishers: list[dict] = field(default_factory=list)
     progress: JobProgress = field(default_factory=JobProgress)
     error: str | None = None
     config: dict[str, Any] = field(default_factory=dict)
@@ -146,6 +151,7 @@ class Job:
             "server_id": self.server_id,
             "server_name": self.server_name,
             "server_type": self.server_type,
+            "publishers": list(self.publishers or []),
             "progress": self.progress.to_dict(),
             "error": self.error,
             "config": self.config,
@@ -612,6 +618,25 @@ class JobManager:
         if started:
             logger.info("Started job {}", job_id)
         return job
+
+    def append_publishers(self, job_id: str, publisher_rows: list[dict]) -> None:
+        """Append per-publisher outcome rows to a job (Phase H5).
+
+        Called by the multi-server dispatcher after each ``process_canonical_path``
+        run so the Jobs UI can show "this file published to Plex (ok), Emby
+        (failed)" without users having to grep the log stream.
+        """
+        if not publisher_rows:
+            return
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            existing = list(job.publishers or [])
+            existing.extend(publisher_rows)
+            job.publishers = existing
+            self._save_jobs()
+            self._emit_event("job_updated", job.to_dict())
 
     def update_progress(
         self,
