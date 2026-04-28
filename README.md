@@ -36,11 +36,11 @@
 
 ## About
 
-Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos in Plex.
+Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are the small images you see when scrubbing through videos in any of those servers.
 
-**The Problem:** Plex's built-in preview generation is painfully slow.
+**The Problem:** Server-side preview generation is painfully slow — Plex's is single-threaded software-decoded, Emby has no GPU acceleration at all, and Jellyfin's HW-accelerated trickplay is buggy/slow on many systems.
 
-**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
+**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**, and can drive any number of Plex / Emby / Jellyfin servers from a single instance — each new file is processed once and the result is published to every server that owns it, in the format that server expects (BIF for Plex/Emby, native JPG tile-grid for Jellyfin).
 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
@@ -51,18 +51,21 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 | Feature | Description |
 |---------|-------------|
+| **Multi-Vendor** | Plex, Emby, and Jellyfin — any combination, any number of each ([guide](docs/multi-server.md)) |
+| **One Pass, Many Servers** | A single FFmpeg pass produces output for every server that owns the file |
 | **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
 | **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
 | **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| **Library Filtering** | Process specific Plex libraries |
+| **Library Filtering** | Per-library enable/disable per server |
 | **Quality Control** | Adjustable thumbnail quality (1-10) |
 | **Docker Ready** | Pre-built images with GPU support |
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Radarr/Sonarr** | Webhook integration for auto-processing on import |
+| **Universal Webhooks** | One URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
 | **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves the user's browser |
 | **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ---
