@@ -597,6 +597,7 @@ For full design and per-vendor details see [Multi-Media-Server](multi-server.md)
 | POST | `/api/servers/test-connection` | Test a candidate config without saving |
 | POST | `/api/servers/<id>/refresh-libraries` | Re-fetch the server's library list |
 | GET | `/api/servers/owners?path=...` | Diagnose which servers own a given path |
+| GET | `/api/servers/<id>/output-status?path=...` | Whether publisher output files exist for a path on this server |
 | POST | `/api/servers/auth/emby/password` | Username+password → Emby token |
 | POST | `/api/servers/auth/jellyfin/password` | Username+password → Jellyfin token |
 | POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Begin Quick Connect ceremony |
