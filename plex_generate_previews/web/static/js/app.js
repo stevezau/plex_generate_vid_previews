@@ -1261,57 +1261,33 @@ async function scaleGpuWorkers(device, direction) {
 
 async function updateLibraryList() {
     const listEl = document.getElementById('libraryList');
-    // Only rendered on the Settings page.  Other pages that call
-    // loadLibraries() (e.g. Schedules) still need updateLibrarySelects
-    // to run, so bail out silently instead of throwing.
     if (!listEl) return;
 
-    let html = '';
-
-    if (libraries.length === 0) {
-        html = '<div class="text-muted small">No libraries found</div>';
-        listEl.innerHTML = html;
+    // Phase H6: replaced the flat per-library list with a compact summary.
+    // The full per-server library detail lives on /servers; the new New Job
+    // modal handles per-server picking. This card just orients the user.
+    if (!libraries || libraries.length === 0) {
+        listEl.innerHTML =
+            '<div class="text-muted small">' +
+            'No libraries enabled. <a href="/servers" class="text-decoration-none">Add or enable libraries on the Servers page</a>.' +
+            '</div>';
         return;
     }
 
-    // Determine which libraries are selected in settings
-    let selectedNames = [];
-    try {
-        if (typeof SettingsManager !== 'undefined') {
-            const settings = await new SettingsManager().get();
-            selectedNames = (settings.selected_libraries || []).map(function (s) {
-                return String(s).trim().toLowerCase();
-            }).filter(function (s) { return s.length > 0; });
-        }
-    } catch (e) {
-        console.warn('Could not load selected_libraries for filter:', e);
+    const distinctServers = new Set();
+    for (const l of libraries) {
+        if (l && l.server_id) distinctServers.add(l.server_id);
     }
+    const serverCount = distinctServers.size || 1;
+    const libCount = libraries.length;
 
-    const allSelected = selectedNames.length === 0;
-
-    if (allSelected) {
-        html += '<div class="text-muted small mb-2">All libraries selected</div>';
-    } else {
-        html += `<div class="text-muted small mb-2">${selectedNames.length} of ${libraries.length} selected &middot; <a href="/settings" class="text-decoration-none">Manage</a></div>`;
-    }
-
-    for (const lib of libraries) {
-        const icon = libraryTypeIcon(lib);
-        const typeLabel = libraryTypeLabel(lib);
-        const isSelected = allSelected || selectedNames.includes(lib.name.toLowerCase());
-        const dimClass = isSelected ? '' : ' opacity-50';
-
-        html += `
-            <div class="library-item${dimClass}">
-                <span class="library-name">
-                    <i class="bi ${icon} me-2"></i>${escapeHtml(lib.name)}
-                </span>
-                <span class="library-count">${typeLabel}</span>
-            </div>
-        `;
-    }
-
-    listEl.innerHTML = html;
+    listEl.innerHTML =
+        `<div class="d-flex justify-content-between align-items-center">` +
+        `<span class="small"><strong>${libCount}</strong> librar${libCount === 1 ? 'y' : 'ies'} ` +
+        `across <strong>${serverCount}</strong> server${serverCount === 1 ? '' : 's'}</span>` +
+        `<a href="/servers" class="small text-decoration-none">Manage <i class="bi bi-arrow-right-short"></i></a>` +
+        `</div>` +
+        `<div class="form-text mt-1">Use <strong>Start New Job</strong> above to scan a specific server / libraries.</div>`;
 }
 
 function updateLibrarySelects(filterServerId) {
@@ -2921,38 +2897,111 @@ function updateScheduleList() {
 
 // Action Functions
 function showNewJobModal() {
-    // Populate library checkboxes
-    const libraryList = document.getElementById('jobLibraryList');
-    if (libraries.length > 0) {
-        libraryList.innerHTML = libraries.map(lib => `
+    // Phase H6: server picker → multi-select libraries grouped by server.
+    document.getElementById('jobLibraryAll').checked = true;
+    const sortByEl = document.getElementById('jobSortBy');
+    if (sortByEl) sortByEl.value = '';
+
+    _populateJobServerPicker();
+    // Render libraries from the current global cache; refreshes on server change.
+    _renderJobLibraryList(libraries, '');
+
+    const modal = new bootstrap.Modal(document.getElementById('newJobModal'));
+    modal.show();
+}
+
+async function _populateJobServerPicker() {
+    const sel = document.getElementById('jobServerScope');
+    if (!sel) return;
+    try {
+        const data = await apiGet('/api/servers');
+        const servers = (data.servers || []).filter(s => s.enabled !== false);
+        sel.innerHTML = '<option value="">All servers (show every library)</option>';
+        servers.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = `${s.name} (${(s.type || '').toUpperCase()})`;
+            sel.appendChild(opt);
+        });
+        sel.value = '';
+    } catch (e) {
+        // Picker is optional — leave the default in place.
+    }
+}
+
+async function onJobServerChange() {
+    const sel = document.getElementById('jobServerScope');
+    if (!sel) return;
+    const serverId = sel.value;
+    try {
+        const url = serverId ? `/api/libraries?server_id=${encodeURIComponent(serverId)}` : '/api/libraries';
+        const data = await apiGet(url);
+        libraries = data.libraries || [];
+        _renderJobLibraryList(libraries, serverId);
+    } catch (e) {
+        showToast('New Job', 'Could not load libraries for the selected server', 'warning');
+    }
+}
+
+function _renderJobLibraryList(libs, filterServerId) {
+    const listEl = document.getElementById('jobLibraryList');
+    if (!listEl) return;
+    if (!libs || libs.length === 0) {
+        if (librariesLoadError) {
+            listEl.innerHTML =
+                '<div class="text-warning small d-flex align-items-start gap-2">' +
+                '<i class="bi bi-exclamation-triangle-fill mt-1"></i>' +
+                '<span>Can\'t load libraries right now. ' +
+                '<a href="/servers" class="text-decoration-none">Check the Servers page</a>.</span>' +
+                '</div>';
+        } else {
+            listEl.innerHTML = '<div class="text-muted small">No libraries available for this selection.</div>';
+        }
+        return;
+    }
+
+    // Group by server when "All servers" is selected — disambiguates the
+    // same-named libraries on Plex+Emby. When pinned to one server, render
+    // a flat list (no point in single-group headers).
+    if (filterServerId) {
+        listEl.innerHTML = libs.map(lib => `
             <div class="form-check">
                 <input class="form-check-input job-library-checkbox" type="checkbox"
                        value="${lib.id}" id="jobLib_${lib.id}" disabled>
                 <label class="form-check-label" for="jobLib_${lib.id}">
-                    ${lib.name} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
+                    ${escapeHtml(lib.name)} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
                 </label>
             </div>
         `).join('');
-    } else if (librariesLoadError) {
-        libraryList.innerHTML =
-            '<div class="text-warning small d-flex align-items-start gap-2">' +
-            '<i class="bi bi-exclamation-triangle-fill mt-1"></i>' +
-            '<span>Can\'t load libraries right now. ' +
-            '<a href="/settings" class="text-decoration-none">Check your Plex connection in Settings</a>.</span>' +
-            '</div>';
-    } else {
-        libraryList.innerHTML = '<div class="text-muted small">No libraries found on this Plex server.</div>';
+        return;
     }
 
-    // Reset "All Libraries" checkbox to checked
-    document.getElementById('jobLibraryAll').checked = true;
-
-    // Reset processing-order dropdown to default
-    const sortByEl = document.getElementById('jobSortBy');
-    if (sortByEl) sortByEl.value = '';
-
-    const modal = new bootstrap.Modal(document.getElementById('newJobModal'));
-    modal.show();
+    // Group by server for the "All servers" view.
+    const groups = new Map();
+    for (const lib of libs) {
+        const key = lib.server_id || '__legacy__';
+        if (!groups.has(key)) {
+            groups.set(key, { server_name: lib.server_name || '', server_type: lib.server_type || '', libs: [] });
+        }
+        groups.get(key).libs.push(lib);
+    }
+    const sections = [];
+    for (const [_, grp] of groups) {
+        const stype = (grp.server_type || '').toLowerCase();
+        const logo = _vendorLogo(stype, 14) || '';
+        const head = `<div class="text-muted small mt-2 mb-1">${logo}<strong>${escapeHtml(grp.server_name || stype.toUpperCase() || 'Server')}</strong></div>`;
+        const rows = grp.libs.map(lib => `
+            <div class="form-check ms-2">
+                <input class="form-check-input job-library-checkbox" type="checkbox"
+                       value="${lib.id}" id="jobLib_${lib.id}" disabled>
+                <label class="form-check-label" for="jobLib_${lib.id}">
+                    ${escapeHtml(lib.name)} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
+                </label>
+            </div>
+        `).join('');
+        sections.push(head + rows);
+    }
+    listEl.innerHTML = sections.join('');
 }
 
 function toggleAllLibraries(checkbox) {
@@ -2962,6 +3011,19 @@ function toggleAllLibraries(checkbox) {
         if (checkbox.checked) {
             cb.checked = false;
         }
+    });
+}
+
+// Phase H6: Select-all / None affordance for the multi-select picker.
+function setAllLibrariesChecked(checked) {
+    const allCb = document.getElementById('jobLibraryAll');
+    if (allCb && allCb.checked) {
+        allCb.checked = false;
+        toggleAllLibraries(allCb);
+    }
+    document.querySelectorAll('.job-library-checkbox').forEach(cb => {
+        cb.disabled = false;
+        cb.checked = checked;
     });
 }
 
@@ -3005,12 +3067,16 @@ async function startNewJob() {
         jobConfig.sort_by = sortBy;
     }
 
+    const serverScope = document.getElementById('jobServerScope');
+    const serverId = serverScope ? serverScope.value : '';
+
     const jobPayload = {
         library_names: selectedLibraryNames.length > 0 ? selectedLibraryNames : null,
         library_name: libraryName,
         priority: priority,
-        config: jobConfig
+        config: jobConfig,
     };
+    if (serverId) jobPayload.server_id = serverId;
 
     // Retry once on transient network errors ("Failed to fetch" from
     // server congestion).
