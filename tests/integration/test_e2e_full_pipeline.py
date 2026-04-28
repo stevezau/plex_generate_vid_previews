@@ -353,15 +353,12 @@ class TestWebhookEndToEnd:
         if sidecar.exists():
             sidecar.unlink()
 
-        # The Flask request handler builds its own Config via load_config().
-        # We don't get to inject our test real_config the same way — but
-        # we can override load_config so the app uses the same CPU /
-        # working_tmp_folder shape.
-        from plex_generate_previews import config as config_module
-
-        monkeypatch.setattr(config_module, "load_config", lambda: real_config)
+        # The Flask request handler builds its own Config via
+        # _load_config_or_minimal() inside the webhook router. Override
+        # it so the dispatcher uses our test_config (with the right
+        # working_tmp_folder + ffmpeg settings).
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router.load_config",
+            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
             lambda: real_config,
         )
 
@@ -431,11 +428,8 @@ class TestWebhookEndToEnd:
         if sidecar.exists():
             sidecar.unlink()
 
-        from plex_generate_previews import config as config_module
-
-        monkeypatch.setattr(config_module, "load_config", lambda: real_config)
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router.load_config",
+            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
             lambda: real_config,
         )
 
