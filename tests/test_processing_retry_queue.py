@@ -378,9 +378,12 @@ class TestProcessCanonicalPathIntegration:
             PublisherStatus,
         )
 
-        # We verify by patching _publish_one to return SKIPPED_NOT_INDEXED
-        # for all publishers, then checking that the retry scheduler has
-        # one pending entry afterwards.
+        # Compare pending count delta rather than absolute. Other tests
+        # in the same process may legitimately have pending retries
+        # (this autouse fixture is file-scoped, doesn't bind across
+        # imports of process_canonical_path elsewhere).
+        baseline_pending = get_retry_scheduler().pending_count()
+
         registry = MagicMock()
         registry.find_owning_servers.return_value = [
             MagicMock(server_id="plex-1"),
@@ -443,8 +446,9 @@ class TestProcessCanonicalPathIntegration:
             )
 
         assert result.status is MultiServerStatus.SKIPPED
-        # Retry scheduler should have one entry pending.
-        assert get_retry_scheduler().pending_count() == 1
+        # Retry scheduler should have at least one MORE entry pending
+        # than before (delta-based — robust to other tests' state).
+        assert get_retry_scheduler().pending_count() == baseline_pending + 1
 
     def test_skipped_not_indexed_no_retry_when_disabled(self):
         """schedule_retry_on_not_indexed=False suppresses scheduling."""
@@ -452,6 +456,8 @@ class TestProcessCanonicalPathIntegration:
             PublisherResult,
             PublisherStatus,
         )
+
+        baseline_pending = get_retry_scheduler().pending_count()
 
         registry = MagicMock()
         config = MagicMock()
@@ -502,4 +508,5 @@ class TestProcessCanonicalPathIntegration:
                 schedule_retry_on_not_indexed=False,
             )
 
-        assert get_retry_scheduler().pending_count() == 0
+        # No NEW retry scheduled (delta=0; other tests' state irrelevant).
+        assert get_retry_scheduler().pending_count() == baseline_pending
