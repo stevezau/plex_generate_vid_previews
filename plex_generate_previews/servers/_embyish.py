@@ -220,13 +220,19 @@ class EmbyApiClient(MediaServer):
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         """Return ``MediaSources[0].Path`` (or top-level ``Path``) for ``item_id``.
 
-        Prefers ``MediaSources[0].Path`` over the top-level ``Path`` because
-        some item types only populate the media source.
+        Emby's bare ``/Items/{id}`` returns 404 when no user context is
+        attached; the per-user endpoint ``/Users/{userId}/Items/{id}`` is
+        required to surface ``Path`` / ``MediaSources``. We fall back
+        to ``/Items/{id}`` for the API-key auth case where no user id
+        was captured. Prefers ``MediaSources[0].Path`` over the top-level
+        ``Path`` because some item types only populate the media source.
         """
+        user_id = self._user_id()
+        path_template = f"/Users/{user_id}/Items/{item_id}" if user_id else f"/Items/{item_id}"
         try:
             response = self._request(
                 "GET",
-                f"/Items/{item_id}",
+                path_template,
                 params={"Fields": "Path,MediaSources"},
             )
             response.raise_for_status()

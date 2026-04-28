@@ -38,7 +38,10 @@ services:
       retries: 30
 
   jellyfin:
-    image: jellyfin/jellyfin:latest
+    # Pinned to 10.10.x — 10.11.x has a startup-wizard bug where
+    # POST /Startup/User throws on a fresh install (empty user DB).
+    # Until that's fixed upstream the integration suite uses 10.10.
+    image: jellyfin/jellyfin:10.9.11
     container_name: previews-test-jellyfin
     user: "1000:1000"
     ports:

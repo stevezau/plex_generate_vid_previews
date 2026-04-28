@@ -90,7 +90,7 @@ addopts = [
     "--disable-warnings",
     "-n", "auto",
     "--dist", "load",
-    "-m", "not gpu and not e2e",
+    "-m", "not gpu and not e2e and not integration",
     "--timeout=30",
     "--timeout-method=thread",
 ]
