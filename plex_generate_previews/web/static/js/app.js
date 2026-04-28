@@ -497,6 +497,20 @@ const _MEDIA_SERVER_TYPE_ICONS = {
     jellyfin: 'bi-cup-hot',
 };
 
+// Vendor SVG logos shipped under /static/images/vendors/. Returns an
+// <img> tag for the given server type, or null when the type is unknown
+// (callers fall back to the Bootstrap icon).
+function _vendorLogo(type, size) {
+    const stype = (type || '').toLowerCase();
+    if (!['plex', 'emby', 'jellyfin'].includes(stype)) return null;
+    const px = Number(size) || 18;
+    return (
+        `<img src="/static/images/vendors/${stype}.svg" alt="${stype}" ` +
+        `width="${px}" height="${px}" class="vendor-logo" ` +
+        `style="vertical-align: -3px; margin-right: 4px;">`
+    );
+}
+
 // Refresh the dashboard "Media Servers" rows from /api/system/media-servers.
 // Renders one row per configured server with vendor icon + status badge.
 // Empty state nudges the user to /servers.
@@ -536,14 +550,18 @@ async function updateMediaServersStatus() {
     const rows = servers.map(s => {
         const badge = _MEDIA_SERVER_STATUS_BADGES[s.status]
             || { label: s.status || 'Unknown', cls: 'bg-secondary' };
-        const icon = _MEDIA_SERVER_TYPE_ICONS[s.type] || 'bi-hdd-network';
         const typeLabel = (s.type || '').toUpperCase();
         const tooltip = s.error ? ` title="${escapeHtmlAttr(s.error)}"` : '';
         const url = s.url ? `<div class="small text-muted text-truncate" style="max-width: 100%;">${escapeHtmlText(s.url)}</div>` : '';
+        // Prefer the vendor SVG logo; fall back to the Bootstrap icon when
+        // the server type is unknown (defensive — should never happen for
+        // configured servers).
+        const logo = _vendorLogo(s.type, 18) ||
+            `<i class="bi ${_MEDIA_SERVER_TYPE_ICONS[s.type] || 'bi-hdd-network'} me-2"></i>`;
         return `
             <div class="d-flex justify-content-between align-items-start mb-2">
                 <div class="d-flex flex-column" style="min-width: 0;">
-                    <span><i class="bi ${icon} me-2"></i><strong>${escapeHtmlText(s.name || typeLabel || 'Server')}</strong>
+                    <span>${logo}<strong>${escapeHtmlText(s.name || typeLabel || 'Server')}</strong>
                         <span class="text-muted small ms-1">${typeLabel}</span>
                     </span>
                     ${url}
@@ -1468,7 +1486,11 @@ function _serverBadge(item) {
     const cls = palette[stype] || 'bg-secondary';
     const label = sname || stype.toUpperCase() || 'Server';
     const tooltip = stype ? `${stype.toUpperCase()}` : '';
-    return ` <span class="badge ${cls} ms-1" title="${escapeHtmlAttr(tooltip)}">${escapeHtmlText(label)}</span>`;
+    // Prepend a tiny vendor logo when we have a known type (12px, fits a badge);
+    // colour palette stays as the colour-blind-friendly fallback.
+    const logoTag = _vendorLogo(stype, 12);
+    const logo = logoTag ? logoTag.replace('margin-right: 4px;', 'margin-right: 3px; vertical-align: -2px;') : '';
+    return ` <span class="badge ${cls} ms-1" title="${escapeHtmlAttr(tooltip)}">${logo}${escapeHtmlText(label)}</span>`;
 }
 
 let _jobQueueUpdatePending = false;

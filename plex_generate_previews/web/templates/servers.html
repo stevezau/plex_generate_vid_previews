@@ -64,17 +64,20 @@
                     <div class="row g-2">
                         <div class="col-md-4">
                             <button class="btn btn-outline-primary w-100 py-3 server-type-btn" data-type="plex">
-                                <i class="bi bi-play-circle fs-2 d-block mb-1"></i>Plex
+                                <img src="{{ url_for('static', filename='images/vendors/plex.svg') }}" alt="Plex" width="36" height="36" class="d-block mx-auto mb-1">
+                                Plex
                             </button>
                         </div>
                         <div class="col-md-4">
                             <button class="btn btn-outline-success w-100 py-3 server-type-btn" data-type="emby">
-                                <i class="bi bi-circle-fill fs-2 d-block mb-1"></i>Emby
+                                <img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" alt="Emby" width="36" height="36" class="d-block mx-auto mb-1">
+                                Emby
                             </button>
                         </div>
                         <div class="col-md-4">
                             <button class="btn btn-outline-info w-100 py-3 server-type-btn" data-type="jellyfin">
-                                <i class="bi bi-circle fs-2 d-block mb-1"></i>Jellyfin
+                                <img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" alt="Jellyfin" width="36" height="36" class="d-block mx-auto mb-1">
+                                Jellyfin
                             </button>
                         </div>
                     </div>

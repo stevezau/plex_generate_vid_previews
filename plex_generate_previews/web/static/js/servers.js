@@ -109,12 +109,18 @@
             : '<span class="badge bg-secondary">disabled</span>';
         const libCount = (server.libraries || []).length;
         const enabledLibs = (server.libraries || []).filter((l) => l.enabled).length;
+        // Vendor SVG logo (24px) prepended to the server name. Falls back
+        // to nothing when type is unknown — the type-coloured badge on the
+        // right keeps the vendor signal.
+        const vendorLogo = ['plex', 'emby', 'jellyfin'].includes((server.type || '').toLowerCase())
+            ? `<img src="/static/images/vendors/${escapeHtml(server.type.toLowerCase())}.svg" alt="${escapeHtml(server.type)}" width="24" height="24" style="margin-right: 8px; vertical-align: -5px;">`
+            : '';
         return `
             <div class="col-md-6 col-lg-4">
                 <div class="card h-100">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-2">
-                            <h5 class="card-title mb-0">${escapeHtml(server.name)}</h5>
+                            <h5 class="card-title mb-0">${vendorLogo}${escapeHtml(server.name)}</h5>
                             <span class="badge bg-${typeBadgeColor}">${escapeHtml(server.type)}</span>
                         </div>
                         <div class="text-muted small mb-2">${escapeHtml(server.url)}</div>
