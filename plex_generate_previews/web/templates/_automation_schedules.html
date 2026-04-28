@@ -12,12 +12,12 @@
                 </p>
                 <ul class="mb-3">
                     <li>
-                        <strong>Full library scan</strong> — walk an entire Plex library and generate previews for anything missing. Good for weekly/nightly runs.
+                        <strong>Full library scan</strong> — walk an entire library on the selected server (Plex, Emby, or Jellyfin) and generate previews for anything missing. Good for weekly/nightly runs.
                     </li>
                     <li>
-                        <strong>Recently added only</strong> — fast poll that just checks what Plex added in the last few minutes. Good for tight, frequent intervals (every 15 min) when you want fresh imports to get previews quickly without scanning everything. See the
-                        <a href="#section-webhooks-recently-added"
-                           onclick="showAutomationTab('triggers'); setTimeout(function(){ var el=document.getElementById('section-webhooks-recently-added'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }, 100); return false;">Triggers tab</a> for a one-click "Create default scanner" shortcut.
+                        <strong>Recently added only</strong> <span class="badge bg-warning text-dark ms-1">Plex only</span> — fast poll that just checks what Plex added in the last few minutes. Good for tight, frequent intervals (every 15 min) when you want fresh Plex imports to get previews quickly without scanning everything. Emby/Jellyfin users should use the *arr or Custom webhook on the
+                        <a href="#section-webhooks-sonarr-radarr"
+                           onclick="showAutomationTab('triggers'); setTimeout(function(){ var el=document.getElementById('section-webhooks-sonarr-radarr'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }, 100); return false;">Triggers tab</a> instead — fires instantly when new media lands.
                     </li>
                 </ul>
                 <div class="small text-muted">
@@ -213,7 +213,7 @@
                     <div class="mb-3" id="scheduleSortByGroup">
                         <label for="scheduleSortBy" class="form-label">Processing Order</label>
                         <select class="form-select" id="scheduleSortBy">
-                            <option value="" selected>Default (Plex order)</option>
+                            <option value="" selected>Default (server order)</option>
                             <option value="newest">Newest first</option>
                             <option value="oldest">Oldest first</option>
                             <option value="random">Random</option>

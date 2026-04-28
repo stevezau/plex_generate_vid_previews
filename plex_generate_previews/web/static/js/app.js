@@ -1,5 +1,5 @@
 /**
- * Plex Preview Generator - Dashboard JavaScript
+ * Media Preview Generator - Dashboard JavaScript
  */
 
 // Global state

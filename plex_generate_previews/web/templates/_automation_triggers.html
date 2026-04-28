@@ -7,26 +7,31 @@
             </div>
             <div class="card-body">
                 <p class="mb-3">
-                    Webhooks automatically generate preview thumbnails when new media is added to Plex — you don't have to open this app every time. Pick the trigger source that matches how your media gets into Plex and you're done.
+                    Webhooks automatically generate preview thumbnails when new media is added to your media servers (Plex, Emby, Jellyfin) — you don't have to open this app every time. Pick the trigger source that matches how your media gets in and you're done.
                 </p>
 
-                <h6 class="mb-2"><i class="bi bi-signpost me-1"></i>How do you add media to Plex?</h6>
+                <h6 class="mb-2"><i class="bi bi-signpost me-1"></i>How do you add media?</h6>
                 <div class="decision-list mb-4">
                     <div class="decision-row">
                         <div class="decision-scenario">
                             Sonarr / Radarr / Sportarr grab your media
-                            <div class="text-muted small">Sportarr is the Sonarr fork for sports content.</div>
+                            <div class="text-muted small">Sportarr is the Sonarr fork for sports content. Works for any server.</div>
                         </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation"><a href="#section-webhooks-sonarr-radarr"><i class="bi bi-arrow-right-circle me-1"></i>Use the *arr webhook</a></div>
                     </div>
                     <div class="decision-row">
-                        <div class="decision-scenario">Tdarr or a script transcodes files</div>
+                        <div class="decision-scenario">Tdarr or a script transcodes files
+                            <div class="text-muted small">Works for any server.</div>
+                        </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation"><a href="#section-webhooks-custom"><i class="bi bi-arrow-right-circle me-1"></i>Use the Custom webhook</a></div>
                     </div>
                     <div class="decision-row">
-                        <div class="decision-scenario">You add media manually (drag &amp; drop, Plex import, etc.)</div>
+                        <div class="decision-scenario">
+                            You add media manually to <strong>Plex</strong> (drag &amp; drop, Plex import, etc.)
+                            <div class="text-muted small">Plex-only triggers; for Emby/Jellyfin use the *arr or Custom webhook above.</div>
+                        </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation">
                             <a href="#section-webhooks-plex-direct"><i class="bi bi-arrow-right-circle me-1"></i>Plex Direct</a>
