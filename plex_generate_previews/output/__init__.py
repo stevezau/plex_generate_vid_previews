@@ -7,6 +7,13 @@ defined in :mod:`.base`. Concrete adapters are added in later phases.
 
 from .base import BifBundle, OutputAdapter
 from .emby_sidecar import EmbyBifAdapter
+from .jellyfin_trickplay import JellyfinTrickplayAdapter
 from .plex_bundle import PlexBundleAdapter
 
-__all__ = ["BifBundle", "EmbyBifAdapter", "OutputAdapter", "PlexBundleAdapter"]
+__all__ = [
+    "BifBundle",
+    "EmbyBifAdapter",
+    "JellyfinTrickplayAdapter",
+    "OutputAdapter",
+    "PlexBundleAdapter",
+]
