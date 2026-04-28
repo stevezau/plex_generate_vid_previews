@@ -236,5 +236,12 @@ class ServerConfig:
     timeout: int = 30
     libraries: list[Library] = field(default_factory=list)
     path_mappings: list[dict[str, Any]] = field(default_factory=list)
+    # Per-server exclusion rules — same shape as the legacy global
+    # ``exclude_paths`` setting (list of ``{"value": str, "type": "path"|"regex"}``).
+    # Phase 2 of the multi-server refactor migrates the global list into
+    # the first Plex entry's ``exclude_paths`` so users can have different
+    # rules per server (with an "Apply to all servers" UI button to copy
+    # one server's list to the others when they don't want the granularity).
+    exclude_paths: list[dict[str, Any]] = field(default_factory=list)
     output: dict[str, Any] = field(default_factory=dict)
     server_identity: str | None = None

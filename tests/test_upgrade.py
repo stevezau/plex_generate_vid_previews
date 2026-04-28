@@ -933,6 +933,162 @@ class TestMigrateToV7:
         assert servers[0]["url"] == "http://plex:32400"
 
 
+class TestMigrateToV8:
+    """Tests for the v8 schema migration: move global path_mappings/exclude_paths into media_servers[0]."""
+
+    def test_no_globals_no_op(self, settings_manager):
+        """Nothing to migrate → empty notes list, schema versions unchanged otherwise."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(updates={"media_servers": [{"id": "plex-default", "type": "plex"}]})
+        notes = _migrate_to_v8(settings_manager)
+        assert notes == []
+
+    def test_empty_media_servers_keeps_globals_at_top_level(self, settings_manager):
+        """Plex-less install (media_servers: []) — keep globals; warn so user knows to assign once a server is added."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [],
+                "path_mappings": [{"plex_prefix": "/media", "local_prefix": "/data"}],
+                "exclude_paths": [{"value": "/x", "type": "path"}],
+            }
+        )
+        notes = _migrate_to_v8(settings_manager)
+        assert any("no media_servers configured yet" in n for n in notes)
+        assert settings_manager.get("path_mappings") == [{"plex_prefix": "/media", "local_prefix": "/data"}]
+        assert settings_manager.get("exclude_paths") == [{"value": "/x", "type": "path"}]
+
+    def test_multiple_servers_keeps_globals_with_warning(self, settings_manager):
+        """When >1 server is configured, ambiguity → keep at top level + warn user to assign explicitly."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {"id": "plex", "type": "plex", "name": "Plex"},
+                    {"id": "emby", "type": "emby", "name": "Emby"},
+                ],
+                "path_mappings": [{"plex_prefix": "/m", "local_prefix": "/l"}],
+                "exclude_paths": [{"value": "/x", "type": "path"}],
+            }
+        )
+        notes = _migrate_to_v8(settings_manager)
+        assert any("2 servers configured" in n for n in notes)
+        assert settings_manager.get("path_mappings") == [{"plex_prefix": "/m", "local_prefix": "/l"}]
+        assert settings_manager.get("exclude_paths") == [{"value": "/x", "type": "path"}]
+        # Per-server lists left untouched.
+        servers = settings_manager.get("media_servers")
+        assert servers[0].get("path_mappings", []) == []
+        assert servers[1].get("path_mappings", []) == []
+
+    def test_single_plex_server_inherits_globals(self, settings_manager):
+        """The common case: single-Plex install — both lists move into media_servers[0]."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {"id": "plex-default", "type": "plex", "name": "Plex", "path_mappings": [], "exclude_paths": []}
+                ],
+                "path_mappings": [{"plex_prefix": "/media", "local_prefix": "/data"}],
+                "exclude_paths": [{"value": "/data/Trailers/", "type": "path"}],
+            }
+        )
+        notes = _migrate_to_v8(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["path_mappings"] == [{"plex_prefix": "/media", "local_prefix": "/data"}]
+        assert servers[0]["exclude_paths"] == [{"value": "/data/Trailers/", "type": "path"}]
+        # Top-level keys deleted (no dual state).
+        assert "path_mappings" not in settings_manager.get_all()
+        assert "exclude_paths" not in settings_manager.get_all()
+        assert any("moved global" in n for n in notes)
+
+    def test_single_non_plex_server_also_inherits(self, settings_manager):
+        """If Plex was deleted and only Emby remains, the rules go to that single server."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {"id": "emby", "type": "emby", "name": "Emby", "path_mappings": [], "exclude_paths": []}
+                ],
+                "path_mappings": [{"plex_prefix": "/m", "local_prefix": "/l"}],
+                "exclude_paths": [{"value": "/x", "type": "path"}],
+            }
+        )
+        _migrate_to_v8(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["path_mappings"] == [{"plex_prefix": "/m", "local_prefix": "/l"}]
+        assert servers[0]["exclude_paths"] == [{"value": "/x", "type": "path"}]
+
+    def test_existing_per_server_rules_are_preserved_and_appended(self, settings_manager):
+        """If media_servers[0] already has per-server rules, the global ones append to them (no overwrite)."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex",
+                        "type": "plex",
+                        "name": "Plex",
+                        "path_mappings": [{"plex_prefix": "/old", "local_prefix": "/local-old"}],
+                        "exclude_paths": [{"value": "/old-excl", "type": "path"}],
+                    }
+                ],
+                "path_mappings": [{"plex_prefix": "/new", "local_prefix": "/local-new"}],
+                "exclude_paths": [{"value": "/new-excl", "type": "path"}],
+            }
+        )
+        _migrate_to_v8(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert len(servers[0]["path_mappings"]) == 2
+        assert len(servers[0]["exclude_paths"]) == 2
+
+    def test_pre_v6_legacy_keys_cleaned_up(self, settings_manager):
+        """plex_videos_path_mapping / plex_local_videos_path_mapping vestigial keys are dropped."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [{"id": "plex", "type": "plex", "name": "Plex"}],
+                "plex_videos_path_mapping": "/p",
+                "plex_local_videos_path_mapping": "/l",
+            }
+        )
+        notes = _migrate_to_v8(settings_manager)
+        assert "plex_videos_path_mapping" not in settings_manager.get_all()
+        assert "plex_local_videos_path_mapping" not in settings_manager.get_all()
+        assert any("pre-v6" in n for n in notes)
+
+    def test_idempotent(self, settings_manager):
+        """Re-running v8 on already-migrated settings is a no-op (no double-append)."""
+        from plex_generate_previews.upgrade import _migrate_to_v8
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex",
+                        "type": "plex",
+                        "name": "Plex",
+                        "path_mappings": [{"plex_prefix": "/m", "local_prefix": "/l"}],
+                        "exclude_paths": [{"value": "/x", "type": "path"}],
+                    }
+                ]
+            }
+        )
+        # No global keys present.
+        _migrate_to_v8(settings_manager)
+        _migrate_to_v8(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert len(servers[0]["path_mappings"]) == 1
+        assert len(servers[0]["exclude_paths"]) == 1
+
+
 class TestLegacyPlexToMediaServer:
     """Tests for the public helper used by the v7 migration."""
 

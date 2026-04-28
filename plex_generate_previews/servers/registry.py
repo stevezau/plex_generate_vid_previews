@@ -88,6 +88,7 @@ def server_config_from_dict(data: dict[str, Any]) -> ServerConfig:
         timeout=int(data.get("timeout") or 30),
         libraries=libs,
         path_mappings=list(data.get("path_mappings") or []),
+        exclude_paths=list(data.get("exclude_paths") or []),
         output=dict(data.get("output") or {}),
         server_identity=server_identity,
     )

@@ -80,6 +80,7 @@ def _server_config(
     server_type: ServerType,
     libraries: list[Library],
     output: dict | None = None,
+    exclude_paths: list[dict] | None = None,
 ) -> dict:
     return {
         "id": server_id,
@@ -97,6 +98,7 @@ def _server_config(
             }
             for lib in libraries
         ],
+        "exclude_paths": exclude_paths or [],
         "output": output
         or {
             "adapter": {
@@ -127,6 +129,78 @@ class TestNoOwners:
         )
         assert result.status is MultiServerStatus.NO_OWNERS
         assert result.publishers == []
+
+
+class TestPerServerExcludePaths:
+    """Per-server exclude_paths filtering — one server skips, others publish.
+
+    The dispatcher consults each owning server's ``exclude_paths`` list
+    before adding it to the publishers fan-out. A user can have very
+    different exclusion rules per server (skip /Trailers/ on Jellyfin
+    only, etc.).
+    """
+
+    def test_excluded_server_is_filtered_out(self, mock_config_for_processing, tmp_path):
+        # Two servers both own the path; only one excludes it.
+        media_dir = tmp_path / "movies" / "Trailer (2024)"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                    exclude_paths=[{"value": str(media_file), "type": "path"}],
+                ),
+                _server_config(
+                    server_id="jellyfin-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="2", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                ),
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=5)
+            return (True, 5, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "plex_generate_previews.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+        # Emby was excluded; only Jellyfin should appear in the publishers list.
+        published_server_ids = [p.server_id for p in result.publishers]
+        assert "emby-1" not in published_server_ids
+        assert "jellyfin-1" in published_server_ids
+
+    def test_no_servers_remain_after_exclusion_returns_no_owners(self, mock_config_for_processing, tmp_path):
+        media_file = tmp_path / "movies" / "OnlyExcluded.mkv"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"fake")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                    exclude_paths=[{"value": str(media_file), "type": "path"}],
+                ),
+            ],
+        )
+        result = process_canonical_path(
+            canonical_path=str(media_file),
+            registry=registry,
+            config=mock_config_for_processing,
+        )
+        # Every owning server excluded the path → no publishers, NO_OWNERS.
+        assert result.status is MultiServerStatus.NO_OWNERS
 
 
 class TestSourceMissing:

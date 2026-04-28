@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 7
+_CURRENT_SCHEMA_VERSION = 8
 
 # -------------------------------------------------------------------------
 # Env-var-to-settings migration map
@@ -217,6 +217,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 7:
         all_notes += _migrate_to_v7(sm)
+
+    if current < 8:
+        all_notes += _migrate_to_v8(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -542,6 +545,114 @@ def _migrate_to_v7(sm) -> list:
 
     sm.apply_changes(updates={"media_servers": [entry]})
     notes.append("v7: synthesised media_servers[0] from legacy plex_* settings")
+    return notes
+
+
+def _migrate_to_v8(sm) -> list:
+    """Move global ``path_mappings`` / ``exclude_paths`` into ``media_servers[0]``.
+
+    Phase 0 + Phase 1 of the multi-server refactor taught readers and
+    writers to prefer the per-server view. v8 completes the move on
+    disk so the global keys can be removed entirely.
+
+    Edge cases (every one identified in the pre-implementation audit):
+
+    * **Nothing to migrate** — no global keys present → no-op.
+    * **Empty ``media_servers``** — Plex-less install. Keep the global
+      keys at the global level; warn so the user knows to assign them
+      once they configure a server.
+    * **Multiple ``media_servers``** — ambiguous which server should
+      inherit the rules. Keep at global level; warn so the user
+      reviews and assigns explicitly.
+    * **Single server but not Plex** — Plex was deleted, only Emby
+      remains. Apply the rules to that single non-Plex entry; same
+      semantics regardless of vendor.
+    * **Pre-v6 leftovers** — clean up
+      ``plex_videos_path_mapping`` / ``plex_local_videos_path_mapping``
+      keys at the same time (they're vestigial after v6).
+    * **Atomicity** — every persistence step happens in a single
+      ``apply_changes`` call, which uses ``atomic_json_save``. A
+      mid-write crash leaves either the v7 file or the v8 file —
+      never a partial state.
+    * **Idempotency** — re-running on a v8 file is a no-op because
+      ``_migrate_schema`` skips us when ``_schema_version >= 8``.
+      Even without that guard, the two ``del`` semantics are safe to
+      repeat.
+    * **Schema bump rollback** — ``_migrate_schema`` bumps the version
+      key only AFTER all migrations succeed (line 224); if v8 raises
+      mid-migration, schema_version stays at 7 and the next startup
+      retries.
+    """
+    notes: list[str] = []
+    global_path_mappings = sm.get("path_mappings") or []
+    global_exclude_paths = sm.get("exclude_paths") or []
+
+    # Pre-v6 fields that may still be hanging around — clean them up
+    # regardless of whether there's a media_servers entry to migrate
+    # them into. They're unused after v6.
+    legacy_pre_v6_present = bool(sm.get("plex_videos_path_mapping")) or bool(sm.get("plex_local_videos_path_mapping"))
+
+    if not global_path_mappings and not global_exclude_paths and not legacy_pre_v6_present:
+        return notes
+
+    media_servers = list(sm.get("media_servers") or [])
+
+    if not media_servers and (global_path_mappings or global_exclude_paths):
+        notes.append(
+            "v8: keeping global path_mappings/exclude_paths at top level — no media_servers configured yet "
+            "(they'll be picked up automatically once you add a server, or moved by re-running the migration)"
+        )
+        # Still clean up the pre-v6 keys.
+        if legacy_pre_v6_present:
+            sm.apply_changes(deletes=["plex_videos_path_mapping", "plex_local_videos_path_mapping"])
+            notes.append("v8: cleaned up pre-v6 plex_videos_path_mapping/plex_local_videos_path_mapping keys")
+        return notes
+
+    if len(media_servers) > 1 and (global_path_mappings or global_exclude_paths):
+        notes.append(
+            f"v8: {len(media_servers)} servers configured — global path_mappings ({len(global_path_mappings)}) "
+            f"and exclude_paths ({len(global_exclude_paths)}) kept at top level. "
+            "Open Settings → Media Servers and assign each rule explicitly to its target server."
+        )
+        if legacy_pre_v6_present:
+            sm.apply_changes(deletes=["plex_videos_path_mapping", "plex_local_videos_path_mapping"])
+            notes.append("v8: cleaned up pre-v6 plex_videos_path_mapping/plex_local_videos_path_mapping keys")
+        return notes
+
+    # Exactly one server (any type — could be Plex or Emby/Jellyfin if
+    # the user deleted Plex). Apply the rules to it.
+    if media_servers:
+        target = dict(media_servers[0])  # shallow copy so we don't mutate input
+        existing_pm = list(target.get("path_mappings") or [])
+        existing_ep = list(target.get("exclude_paths") or [])
+        if global_path_mappings:
+            target["path_mappings"] = existing_pm + list(global_path_mappings)
+        if global_exclude_paths:
+            target["exclude_paths"] = existing_ep + list(global_exclude_paths)
+        media_servers[0] = target
+
+        deletes = []
+        if "path_mappings" in sm.get_all():
+            deletes.append("path_mappings")
+        if "exclude_paths" in sm.get_all():
+            deletes.append("exclude_paths")
+        if legacy_pre_v6_present:
+            deletes.extend(["plex_videos_path_mapping", "plex_local_videos_path_mapping"])
+
+        sm.apply_changes(updates={"media_servers": media_servers}, deletes=deletes)
+
+        moved_parts = []
+        if global_path_mappings:
+            moved_parts.append(f"path_mappings ({len(global_path_mappings)})")
+        if global_exclude_paths:
+            moved_parts.append(f"exclude_paths ({len(global_exclude_paths)})")
+        if moved_parts:
+            notes.append(
+                f"v8: moved global {' + '.join(moved_parts)} into media_servers[0] ({target.get('name') or target.get('id')})"
+            )
+        if legacy_pre_v6_present:
+            notes.append("v8: cleaned up pre-v6 plex_videos_path_mapping/plex_local_videos_path_mapping keys")
+
     return notes
 
 

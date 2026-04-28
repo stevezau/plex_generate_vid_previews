@@ -174,7 +174,14 @@ def _resolve_publishers(
     caller-supplied hint when the dispatcher already knows it (e.g. the
     webhook router). Servers without an instantiable adapter are
     skipped with a warning.
+
+    Servers that exclude this path via their per-server ``exclude_paths``
+    rules are filtered out — letting users have different exclusion
+    policies per server (e.g. skip a path on Jellyfin but still publish
+    it on Plex).
     """
+    from ..config import is_path_excluded
+
     publishers: list[tuple[MediaServer, OutputAdapter, str | None]] = []
     item_id_hints = item_id_by_server or {}
 
@@ -189,6 +196,18 @@ def _resolve_publishers(
 
         cfg = registry.get_config(match.server_id)
         if cfg is None:
+            continue
+
+        # Per-server exclude filter — same shape as the legacy global
+        # exclude_paths setting, just scoped to one server.
+        if cfg.exclude_paths and is_path_excluded(canonical_path, cfg.exclude_paths):
+            logger.info(
+                "Skipping {} on {!r} ({}) — matches that server's exclude_paths rules. "
+                "Other configured servers may still publish this file.",
+                canonical_path,
+                cfg.name,
+                cfg.id,
+            )
             continue
 
         adapter = _adapter_for_server(cfg)
