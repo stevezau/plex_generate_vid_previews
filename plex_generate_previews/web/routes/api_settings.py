@@ -89,6 +89,145 @@ def _auto_pause_if_needed(settings) -> None:
         logger.debug("Could not emit pause event", exc_info=True)
 
 
+_PER_SERVER_FIELDS = frozenset(
+    {
+        "plex_url",
+        "plex_token",
+        "plex_verify_ssl",
+        "plex_config_folder",
+        "selected_libraries",
+        "path_mappings",
+        "exclude_paths",
+    }
+)
+
+
+def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tuple[dict, list[dict] | None]:
+    """Pluck legacy Plex-flavoured fields out of ``updates`` and fold them into ``media_servers[0]``.
+
+    The Setup Wizard and the legacy Settings page both POST flat
+    ``plex_url`` / ``plex_token`` / ``selected_libraries`` /
+    ``path_mappings`` / ``exclude_paths`` / ``plex_config_folder`` keys.
+    Phase 1 of the multi-server refactor stops persisting those at the
+    top level and instead writes them into the first Plex entry of the
+    ``media_servers`` list — that's the single source of truth Phase 0
+    already taught every reader to prefer.
+
+    Returns a tuple of:
+
+    1. A new ``updates`` dict with the per-server fields removed (so the
+       caller can persist whatever's left as global settings).
+    2. The new ``media_servers`` list to persist (or ``None`` if no
+       per-server fields were touched).
+
+    The caller is responsible for adding the returned ``media_servers``
+    list back into ``updates`` when persisting.
+
+    Behaviour:
+
+    - The token field of value ``"****"`` (four asterisks) means
+      "the user didn't change it" — the existing token is preserved.
+    - When no Plex entry exists yet (fresh install, completing the
+      Setup Wizard), a new ``plex-default`` entry is created.
+    - Per-library toggles in the existing ``media_servers[0].libraries``
+      list are preserved when ``selected_libraries`` is updated; only
+      the ``enabled`` flag is recomputed from the new selection.
+    """
+    touched = _PER_SERVER_FIELDS & updates.keys()
+    if not touched:
+        return updates, None
+
+    # Pull the per-server fields out of updates so the caller doesn't
+    # write them as global keys too (avoids dual state).
+    payload = {k: updates[k] for k in touched}
+    new_updates = {k: v for k, v in updates.items() if k not in touched}
+
+    media_servers = list(settings.get("media_servers") or [])
+    plex_index = next(
+        (i for i, e in enumerate(media_servers) if isinstance(e, dict) and (e.get("type") or "").lower() == "plex"),
+        None,
+    )
+    if plex_index is None:
+        # Fresh install: synthesise a new Plex entry. Match the shape
+        # produced by upgrade.py::_legacy_plex_to_media_server so old
+        # and new flow result in identical settings.json.
+        plex_entry: dict = {
+            "id": "plex-default",
+            "type": "plex",
+            "name": "Plex",
+            "enabled": True,
+            "url": "",
+            "auth": {},
+            "verify_ssl": True,
+            "timeout": 60,
+            "libraries": [],
+            "path_mappings": [],
+            "exclude_paths": [],
+            "output": {"adapter": "plex_bundle", "plex_config_folder": "", "frame_interval": 10},
+        }
+        media_servers.append(plex_entry)
+        plex_index = len(media_servers) - 1
+    plex_entry = dict(media_servers[plex_index])  # shallow copy so we don't mutate input
+
+    if "plex_url" in payload:
+        plex_entry["url"] = str(payload["plex_url"] or "").strip()
+    if "plex_verify_ssl" in payload:
+        plex_entry["verify_ssl"] = bool(payload["plex_verify_ssl"])
+    if "plex_token" in payload:
+        token_val = payload["plex_token"]
+        # The GET endpoint returns "****" as a placeholder; ignore that
+        # so the user's existing token isn't wiped by re-saving the form.
+        if token_val and token_val != "****":
+            auth = dict(plex_entry.get("auth") or {})
+            auth.setdefault("method", "token")
+            auth["token"] = token_val
+            plex_entry["auth"] = auth
+    if "plex_config_folder" in payload:
+        output = dict(plex_entry.get("output") or {})
+        output.setdefault("adapter", "plex_bundle")
+        output.setdefault("frame_interval", 10)
+        output["plex_config_folder"] = str(payload["plex_config_folder"] or "").strip()
+        plex_entry["output"] = output
+    if "selected_libraries" in payload:
+        new_selected = payload["selected_libraries"] or []
+        if not isinstance(new_selected, list):
+            new_selected = []
+        new_selected_set = {str(x) for x in new_selected if x}
+        existing_libs = list(plex_entry.get("libraries") or [])
+        if existing_libs:
+            # Re-flag existing entries; new ids that aren't in the cached
+            # library list get appended as minimal stubs (a Refresh
+            # Libraries call will fill in the names).
+            updated: list[dict] = []
+            seen_ids: set[str] = set()
+            for lib in existing_libs:
+                if not isinstance(lib, dict):
+                    continue
+                lib_id = str(lib.get("id") or lib.get("name") or "")
+                seen_ids.add(lib_id)
+                lib_copy = dict(lib)
+                lib_copy["enabled"] = lib_id in new_selected_set
+                updated.append(lib_copy)
+            for lib_id in new_selected_set - seen_ids:
+                updated.append({"id": lib_id, "name": lib_id, "remote_paths": [], "enabled": True})
+            plex_entry["libraries"] = updated
+        else:
+            # No cached libraries yet — wizard provided the IDs only.
+            plex_entry["libraries"] = [
+                {"id": lib_id, "name": lib_id, "remote_paths": [], "enabled": True}
+                for lib_id in sorted(new_selected_set)
+            ]
+    if "path_mappings" in payload:
+        pm = payload["path_mappings"] or []
+        plex_entry["path_mappings"] = list(pm) if isinstance(pm, list) else []
+    if "exclude_paths" in payload:
+        ep = payload["exclude_paths"] or []
+        plex_entry["exclude_paths"] = list(ep) if isinstance(ep, list) else []
+
+    media_servers[plex_index] = plex_entry
+    return new_updates, media_servers
+
+
 def _auto_resume_if_needed(settings) -> None:
     """Resume processing when workers become available again."""
     settings.processing_paused = False
@@ -119,24 +258,36 @@ def _auto_resume_if_needed(settings) -> None:
 @api.route("/settings")
 @setup_or_auth_required
 def get_settings():
-    """Get all settings."""
+    """Get all settings.
+
+    Per-server Plex fields (URL, token, libraries, path mappings,
+    exclude paths, config folder) are projected from ``media_servers[0]``
+    when present so the legacy Settings UI keeps working through the
+    Phase 1 migration. Legacy global keys remain as a fallback.
+    """
+    from ...config import derive_legacy_plex_view
     from ..settings_manager import get_settings_manager
 
     settings = get_settings_manager()
+    plex_view = derive_legacy_plex_view(settings.get("media_servers") or [])
+
+    def _from_view(view_key, fallback):
+        val = plex_view.get(view_key)
+        return val if val not in (None, "", []) else fallback
 
     return jsonify(
         {
-            "plex_url": settings.plex_url or "",
-            "plex_token": "****" if settings.plex_token else "",
+            "plex_url": _from_view("plex_url", settings.plex_url or ""),
+            "plex_token": "****" if (plex_view.get("plex_token") or settings.plex_token) else "",
             "plex_name": settings.plex_name or "",
-            "plex_verify_ssl": settings.plex_verify_ssl,
-            "plex_config_folder": settings.plex_config_folder or "/plex",
-            "selected_libraries": settings.selected_libraries,
+            "plex_verify_ssl": plex_view.get("plex_verify_ssl", settings.plex_verify_ssl),
+            "plex_config_folder": _from_view("plex_config_folder", settings.plex_config_folder or "/plex"),
+            "selected_libraries": _from_view("selected_libraries", settings.selected_libraries),
             "media_path": settings.media_path or "",
             "plex_videos_path_mapping": settings.get("plex_videos_path_mapping", ""),
             "plex_local_videos_path_mapping": settings.get("plex_local_videos_path_mapping", ""),
-            "path_mappings": settings.get("path_mappings", []),
-            "exclude_paths": settings.get("exclude_paths", []),
+            "path_mappings": _from_view("path_mappings", settings.get("path_mappings", [])),
+            "exclude_paths": _from_view("exclude_paths", settings.get("exclude_paths", [])),
             "gpu_config": settings.gpu_config,
             "gpu_threads": settings.gpu_threads,
             "cpu_threads": settings.cpu_threads,
@@ -227,6 +378,17 @@ def save_settings():
             cleaned.append(entry)
         updates["gpu_config"] = cleaned
 
+    # Route Plex-flavoured legacy fields into media_servers[0] instead of
+    # writing them as top-level keys. Phase 0 already taught readers to
+    # prefer the per-server view; this is the write half of the same flip.
+    # Capture which fields the *caller* tried to update before we strip
+    # them, so the post-save hooks (cache invalidation, webhook re-register)
+    # still fire even though the keys ended up nested under media_servers.
+    incoming_field_keys = set(updates.keys())
+    updates, new_media_servers = _route_legacy_plex_fields_into_media_servers(settings, updates)
+    if new_media_servers is not None:
+        updates["media_servers"] = new_media_servers
+
     thread_warning = ""
     if updates:
         settings.update(updates)
@@ -249,8 +411,11 @@ def save_settings():
 
         # Invalidate the Plex library cache when connection details change
         # so the next libraries request fetches fresh data.
+        # Use incoming_field_keys (pre-routing) so this hook still fires
+        # when the user changes plex_url / plex_token / plex_verify_ssl —
+        # even though those keys now end up inside media_servers[0].
         plex_fields = {"plex_url", "plex_token", "plex_verify_ssl"}
-        if plex_fields & updates.keys():
+        if plex_fields & incoming_field_keys:
             from .api_system import clear_library_cache
 
             clear_library_cache()

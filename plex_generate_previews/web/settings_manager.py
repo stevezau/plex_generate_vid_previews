@@ -227,12 +227,30 @@ class SettingsManager:
 
     # =========================================================================
     # Convenience properties (settings.json is the sole source)
+    #
+    # Plex-flavoured fields (plex_url / plex_token / plex_verify_ssl /
+    # plex_config_folder / selected_libraries) are derived from the first
+    # enabled Plex entry in ``media_servers`` when present, falling back to
+    # the legacy top-level keys for installs that haven't been migrated yet.
+    # See ``config.derive_legacy_plex_view`` for the projection rules.
     # =========================================================================
+
+    def _plex_view(self) -> dict:
+        """Return the legacy-flat view derived from ``media_servers[0]``.
+
+        Cached locally per call rather than at construction time so any
+        update via ``set`` / ``update`` / ``apply_changes`` is picked up
+        immediately by the next read.
+        """
+        # Local import to avoid a config↔settings_manager import cycle.
+        from ..config import derive_legacy_plex_view
+
+        return derive_legacy_plex_view(self.get("media_servers") or [])
 
     @property
     def plex_url(self) -> str | None:
         """Plex server URL."""
-        return self.get("plex_url")
+        return self._plex_view().get("plex_url") or self.get("plex_url")
 
     @plex_url.setter
     def plex_url(self, value: str) -> None:
@@ -241,7 +259,7 @@ class SettingsManager:
     @property
     def plex_token(self) -> str | None:
         """Plex authentication token."""
-        return self.get("plex_token")
+        return self._plex_view().get("plex_token") or self.get("plex_token")
 
     @plex_token.setter
     def plex_token(self, value: str) -> None:
@@ -250,7 +268,7 @@ class SettingsManager:
     @property
     def plex_config_folder(self) -> str | None:
         """Plex configuration folder path."""
-        return self.get("plex_config_folder") or "/plex"
+        return self._plex_view().get("plex_config_folder") or self.get("plex_config_folder") or "/plex"
 
     @plex_config_folder.setter
     def plex_config_folder(self, value: str) -> None:
@@ -259,6 +277,9 @@ class SettingsManager:
     @property
     def plex_verify_ssl(self) -> bool:
         """Whether to verify Plex server TLS certificates."""
+        view = self._plex_view()
+        if "plex_verify_ssl" in view:
+            return bool(view["plex_verify_ssl"])
         val = self.get("plex_verify_ssl")
         if val is not None:
             return bool(val)
@@ -354,7 +375,10 @@ class SettingsManager:
 
     @property
     def selected_libraries(self) -> list[str]:
-        """List of selected library IDs."""
+        """List of selected library IDs (Plex)."""
+        view = self._plex_view()
+        if view.get("selected_libraries"):
+            return view["selected_libraries"]
         return self.get("selected_libraries", [])
 
     @selected_libraries.setter

@@ -901,6 +901,104 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         assert resp.get_json().get("exclude_paths") == exclude_paths
 
+    def test_save_settings_writes_plex_fields_into_media_servers(self, client):
+        """Phase 1: per-server Plex fields go into media_servers[0], not legacy keys.
+
+        After this PR, the Settings POST and Setup Wizard route plex_url /
+        plex_token / plex_verify_ssl / plex_config_folder /
+        selected_libraries / path_mappings / exclude_paths into the first
+        Plex entry of ``media_servers``. The flat top-level keys should
+        NOT be persisted alongside (avoids dual state).
+        """
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "plex_url": "http://plex.example:32400",
+                "plex_token": "secret-token-123",
+                "plex_verify_ssl": False,
+                "plex_config_folder": "/srv/plex_data",
+                "selected_libraries": ["1", "2"],
+                "path_mappings": [{"plex_prefix": "/plex_data", "local_prefix": "/mnt/data", "webhook_prefixes": []}],
+            },
+        )
+
+        sm = get_settings_manager()
+        servers = sm.get("media_servers") or []
+        assert len(servers) == 1
+        plex = servers[0]
+        assert plex["type"] == "plex"
+        assert plex["url"] == "http://plex.example:32400"
+        assert plex["auth"]["token"] == "secret-token-123"
+        assert plex["verify_ssl"] is False
+        assert plex["output"]["plex_config_folder"] == "/srv/plex_data"
+        assert {lib["id"] for lib in plex["libraries"] if lib.get("enabled")} == {"1", "2"}
+        assert plex["path_mappings"] == [
+            {"plex_prefix": "/plex_data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+        ]
+        # Per-server fields must NOT be written as legacy top-level keys —
+        # otherwise we'd have dual state and migrations get confused.
+        raw = sm.get_all()
+        assert "plex_url" not in raw
+        assert "plex_token" not in raw
+        assert "plex_config_folder" not in raw
+        assert "selected_libraries" not in raw
+        assert "path_mappings" not in raw
+
+    def test_save_settings_preserves_existing_token_when_redacted(self, client):
+        """POSTing token='****' (the placeholder GET returns) keeps the existing token."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        # Set an initial token
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"plex_url": "http://plex:32400", "plex_token": "real-token"},
+        )
+        # Re-save with the placeholder — token should NOT be wiped
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"plex_token": "****", "plex_verify_ssl": True},
+        )
+        sm = get_settings_manager()
+        plex = (sm.get("media_servers") or [{}])[0]
+        assert plex["auth"]["token"] == "real-token"
+
+    def test_get_settings_projects_from_media_servers(self, client):
+        """GET /api/settings returns plex_url derived from media_servers[0]."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://from-media-servers:32400",
+                        "auth": {"token": "abc"},
+                        "verify_ssl": False,
+                        "libraries": [{"id": "5", "name": "Movies", "enabled": True}],
+                        "path_mappings": [],
+                        "exclude_paths": [],
+                        "output": {"plex_config_folder": "/x"},
+                    }
+                ],
+            }
+        )
+        resp = client.get("/api/settings", headers=_api_headers())
+        data = resp.get_json()
+        assert data["plex_url"] == "http://from-media-servers:32400"
+        assert data["plex_token"] == "****"
+        assert data["plex_verify_ssl"] is False
+        assert data["plex_config_folder"] == "/x"
+        assert data["selected_libraries"] == ["5"]
+
     def test_save_settings(self, client):
         # Pre-seed gpu_config so gpu_threads setter can distribute workers
         client.post(
