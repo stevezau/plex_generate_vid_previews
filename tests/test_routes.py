@@ -9,6 +9,7 @@ Uses Flask's test client with an in-memory config dir.
 import json
 import os
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1572,6 +1573,95 @@ class TestSystemAPI:
         data = resp.get_json()
         assert "gpu_threads" in data
         assert "cpu_threads" in data
+
+    def test_media_servers_status_empty_when_unconfigured(self, client):
+        from plex_generate_previews.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = None
+            _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_get_sm:
+            sm = MagicMock()
+            sm.get.return_value = []
+            mock_get_sm.return_value = sm
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["servers"] == []
+        assert body["cached"] is False
+        assert body["ttl"] == 30
+
+    def test_media_servers_status_summarises_each_entry(self, client):
+        from plex_generate_previews.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = None
+            _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+        entries = [
+            {
+                "id": "p1",
+                "name": "Home Plex",
+                "type": "plex",
+                "url": "http://plex:32400",
+                "enabled": True,
+                "auth": {"method": "token", "token": "abc"},
+            },
+            {
+                "id": "e1",
+                "name": "Living Room Emby",
+                "type": "emby",
+                "url": "http://emby:8096",
+                "enabled": False,
+                "auth": {"method": "api_key", "api_key": "k"},
+            },
+        ]
+
+        ok = MagicMock(ok=True, server_id="srv-uuid-1", error=None)
+        live = MagicMock()
+        live.test_connection.return_value = ok
+
+        with (
+            patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_get_sm,
+            patch(
+                "plex_generate_previews.web.routes.api_servers._instantiate_for_probe",
+                return_value=live,
+            ),
+        ):
+            sm = MagicMock()
+            sm.get.return_value = entries
+            mock_get_sm.return_value = sm
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["servers"]) == 2
+        plex_row = next(s for s in body["servers"] if s["id"] == "p1")
+        emby_row = next(s for s in body["servers"] if s["id"] == "e1")
+        assert plex_row["status"] == "connected"
+        assert plex_row["server_id"] == "srv-uuid-1"
+        assert emby_row["status"] == "disabled"
+        # Disabled servers don't get probed.
+        live.test_connection.assert_called_once()
+
+    def test_media_servers_status_uses_30s_cache(self, client):
+        from plex_generate_previews.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = [
+                {"id": "p1", "status": "connected", "name": "X", "type": "plex"}
+            ]
+            _api_system._media_server_status_cache["fetched_at"] = time.time()
+
+        try:
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+            body = resp.get_json()
+            assert body["cached"] is True
+            assert body["servers"][0]["id"] == "p1"
+        finally:
+            with _api_system._media_server_status_lock:
+                _api_system._media_server_status_cache["result"] = None
+                _api_system._media_server_status_cache["fetched_at"] = 0.0
 
 
 # ---------------------------------------------------------------------------

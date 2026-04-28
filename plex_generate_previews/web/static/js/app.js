@@ -436,8 +436,8 @@ async function refreshStatus() {
         }
     }
 
-    // --- Plex server status ---
-    await updatePlexStatusBadge();
+    // --- Media servers status (one row per configured server) ---
+    await updateMediaServersStatus();
 
     // --- Worker thread counts ---
     // Keep config counts cached for idle-state badge rendering. Actual live
@@ -481,39 +481,85 @@ async function loadWorkerConfigCounts(forceRefresh = false) {
 // from "couldn't load libraries" and show the right message.
 let librariesLoadError = null;
 
-// The Dashboard Plex Server badge reflects the live connection state.
-// Keeps "Connected", "Can't reach Plex", and "Not set up" in one place so
-// both refreshStatus() and loadLibraries() can call it.
-async function updatePlexStatusBadge() {
-    const plexStatus = document.getElementById('plexStatus');
-    const plexInfo = document.getElementById('plexServerInfo');
-    if (!plexStatus || !plexInfo || typeof SettingsManager === 'undefined') return;
+// Map a backend status string from /api/system/media-servers into a
+// (label, badge-class) pair so the dashboard renders consistently.
+const _MEDIA_SERVER_STATUS_BADGES = {
+    connected:     { label: 'Connected',     cls: 'bg-success' },
+    unreachable:   { label: "Can't reach",   cls: 'bg-warning text-dark' },
+    unauthorised:  { label: 'Auth failed',   cls: 'bg-warning text-dark' },
+    misconfigured: { label: 'Misconfigured', cls: 'bg-danger' },
+    disabled:      { label: 'Disabled',      cls: 'bg-secondary' },
+};
 
-    let settings;
+const _MEDIA_SERVER_TYPE_ICONS = {
+    plex:     'bi-play-btn',
+    emby:     'bi-emoji-laughing',
+    jellyfin: 'bi-cup-hot',
+};
+
+// Refresh the dashboard "Media Servers" rows from /api/system/media-servers.
+// Renders one row per configured server with vendor icon + status badge.
+// Empty state nudges the user to /servers.
+async function updateMediaServersStatus() {
+    const container = document.getElementById('mediaServersStatus');
+    if (!container) return;
+
+    let payload;
     try {
-        settings = await new SettingsManager().get();
+        payload = await apiGet('/api/system/media-servers');
     } catch (e) {
-        console.warn('Failed to read settings for Plex status:', e);
-        plexStatus.textContent = 'Unknown';
-        plexStatus.className = 'badge bg-secondary';
+        console.warn('Failed to load media-server status:', e);
+        container.innerHTML =
+            '<div class="text-danger small">' +
+            '<i class="bi bi-exclamation-triangle me-2"></i>' +
+            'Failed to load media-server status' +
+            '</div>';
         return;
     }
 
-    plexInfo.textContent = settings.plex_name || settings.plex_url || '';
-
-    if (!settings.plex_url) {
-        plexStatus.textContent = 'Not set up';
-        plexStatus.className = 'badge bg-secondary';
-        plexStatus.title = '';
-    } else if (librariesLoadError) {
-        plexStatus.textContent = "Can't reach Plex";
-        plexStatus.className = 'badge bg-warning text-dark';
-        plexStatus.title = librariesLoadError;
-    } else {
-        plexStatus.textContent = 'Connected';
-        plexStatus.className = 'badge bg-success';
-        plexStatus.title = '';
+    const servers = (payload && payload.servers) || [];
+    if (servers.length === 0) {
+        container.innerHTML =
+            '<div class="small text-muted">' +
+            '<i class="bi bi-hdd-network me-2"></i>' +
+            'No media servers configured. ' +
+            '<a href="/servers">Add one</a>.' +
+            '</div>';
+        return;
     }
+
+    const rows = servers.map(s => {
+        const badge = _MEDIA_SERVER_STATUS_BADGES[s.status]
+            || { label: s.status || 'Unknown', cls: 'bg-secondary' };
+        const icon = _MEDIA_SERVER_TYPE_ICONS[s.type] || 'bi-hdd-network';
+        const typeLabel = (s.type || '').toUpperCase();
+        const tooltip = s.error ? ` title="${escapeHtmlAttr(s.error)}"` : '';
+        const url = s.url ? `<div class="small text-muted text-truncate" style="max-width: 100%;">${escapeHtmlText(s.url)}</div>` : '';
+        return `
+            <div class="d-flex justify-content-between align-items-start mb-2">
+                <div class="d-flex flex-column" style="min-width: 0;">
+                    <span><i class="bi ${icon} me-2"></i><strong>${escapeHtmlText(s.name || typeLabel || 'Server')}</strong>
+                        <span class="text-muted small ms-1">${typeLabel}</span>
+                    </span>
+                    ${url}
+                </div>
+                <span class="badge ${badge.cls}"${tooltip}>${escapeHtmlText(badge.label)}</span>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = rows;
+}
+
+function escapeHtmlText(str) {
+    if (str == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+}
+
+function escapeHtmlAttr(str) {
+    return escapeHtmlText(str).replace(/"/g, '&quot;');
 }
 
 async function loadLibraries() {
@@ -523,11 +569,11 @@ async function loadLibraries() {
         librariesLoadError = null;
         await updateLibraryList();
         updateLibrarySelects();
-        updatePlexStatusBadge();
+        updateMediaServersStatus();
     } catch (error) {
         console.error('Failed to load libraries:', error);
         librariesLoadError = error.message || 'Unknown error';
-        updatePlexStatusBadge();
+        updateMediaServersStatus();
 
         const listEl = document.getElementById('libraryList');
         if (!listEl) return;

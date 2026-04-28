@@ -860,6 +860,107 @@ def get_system_status():
         return jsonify({"error": "Failed to retrieve system status"}), 500
 
 
+_media_server_status_cache: dict = {"result": None, "fetched_at": 0.0}
+_media_server_status_lock = threading.Lock()
+_MEDIA_SERVER_STATUS_TTL = 30  # seconds
+
+
+def _probe_media_server_entry(entry: dict) -> dict:
+    """Probe a single media-server registry entry for the dashboard.
+
+    Returns a wire-friendly summary: id, name, type, enabled flag, url, and
+    a coarse ``status`` ("connected" | "unreachable" | "unauthorised" |
+    "disabled" | "misconfigured"). Errors are caught and surfaced via
+    ``status`` + ``error`` so a single bad server can't break the dashboard.
+    """
+    from ...servers import server_config_from_dict
+    from .api_servers import _instantiate_for_probe
+
+    summary = {
+        "id": str(entry.get("id") or ""),
+        "name": str(entry.get("name") or ""),
+        "type": str(entry.get("type") or "").lower(),
+        "enabled": bool(entry.get("enabled", True)),
+        "url": str(entry.get("url") or ""),
+    }
+
+    if not summary["enabled"]:
+        summary["status"] = "disabled"
+        return summary
+
+    try:
+        cfg = server_config_from_dict(entry)
+    except Exception as exc:
+        summary["status"] = "misconfigured"
+        summary["error"] = str(exc)
+        return summary
+
+    try:
+        live = _instantiate_for_probe(cfg)
+    except Exception as exc:
+        summary["status"] = "misconfigured"
+        summary["error"] = str(exc)
+        return summary
+    if live is None:
+        summary["status"] = "misconfigured"
+        summary["error"] = "no probe client available for this server type"
+        return summary
+
+    try:
+        result = live.test_connection()
+    except Exception as exc:
+        summary["status"] = "unreachable"
+        summary["error"] = str(exc)
+        return summary
+
+    if result.ok:
+        summary["status"] = "connected"
+        if result.server_id:
+            summary["server_id"] = result.server_id
+        return summary
+
+    err = (getattr(result, "error", "") or "").lower()
+    if "401" in err or "403" in err or "unauth" in err or "forbid" in err:
+        summary["status"] = "unauthorised"
+    else:
+        summary["status"] = "unreachable"
+    if getattr(result, "error", ""):
+        summary["error"] = result.error
+    return summary
+
+
+@api.route("/system/media-servers")
+@setup_or_auth_required
+def get_media_servers_status():
+    """Per-server reachability summary for the dashboard.
+
+    Returns one row per configured ``media_servers`` entry, each tagged
+    with a status string the UI maps to a coloured badge. Cached for 30s
+    so a busy dashboard doesn't open a TCP connection per refresh; the
+    settings UI can call ``/api/servers/<id>/test-connection`` for an
+    immediate probe.
+    """
+    from ..settings_manager import get_settings_manager
+
+    now = time.time()
+    with _media_server_status_lock:
+        cached = _media_server_status_cache["result"]
+        fetched = _media_server_status_cache["fetched_at"]
+        if cached is not None and (now - fetched) < _MEDIA_SERVER_STATUS_TTL:
+            return jsonify({"servers": cached, "cached": True, "ttl": _MEDIA_SERVER_STATUS_TTL})
+
+    raw = get_settings_manager().get("media_servers") or []
+    entries = list(raw) if isinstance(raw, list) else []
+
+    summaries = [_probe_media_server_entry(e) for e in entries if isinstance(e, dict)]
+
+    with _media_server_status_lock:
+        _media_server_status_cache["result"] = summaries
+        _media_server_status_cache["fetched_at"] = time.time()
+
+    return jsonify({"servers": summaries, "cached": False, "ttl": _MEDIA_SERVER_STATUS_TTL})
+
+
 @api.route("/system/config")
 @api_token_required
 def get_config():

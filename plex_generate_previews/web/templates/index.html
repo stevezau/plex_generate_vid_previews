@@ -25,12 +25,13 @@
                 <i class="bi bi-pc-display me-2"></i>System &amp; Workers
             </div>
             <div class="card-body">
-                <!-- Plex Connection Status -->
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <span><i class="bi bi-hdd-network me-2"></i>Plex Server</span>
-                    <span id="plexStatus" class="badge bg-secondary">Checking...</span>
+                <!-- Media Servers Status (one row per configured server) -->
+                <div id="mediaServersStatus" class="mb-3">
+                    <div class="text-muted small d-flex align-items-center gap-2">
+                        <span class="spinner-border spinner-border-sm" role="status"></span>
+                        Checking media servers&hellip;
+                    </div>
                 </div>
-                <div id="plexServerInfo" class="small text-muted mb-3"></div>
 
                 <hr>
 
