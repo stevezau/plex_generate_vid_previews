@@ -197,7 +197,100 @@
         $('#step-result-back').addEventListener('click', () => showStep('step-connect'));
         $('#step-result-save').addEventListener('click', saveServer);
         $('#quickConnectStart').addEventListener('click', startQuickConnect);
+        $('#plexOAuthStart').addEventListener('click', startPlexOAuth);
     });
+
+    // ---------- Plex OAuth + auto-discovery ------------------------------------
+    async function startPlexOAuth() {
+        const btn = $('#plexOAuthStart');
+        btn.disabled = true;
+        const origLabel = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Waiting for plex.tv…';
+
+        const auth = new PlexAuth({
+            onSuccess: async (token) => {
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Discovering servers…';
+                wizard.plexToken = token;
+                const r = await fetch('/api/plex/servers', {
+                    headers: {
+                        'X-Plex-Token': token,
+                        'X-CSRFToken': csrfToken(),
+                    },
+                });
+                let data = null;
+                try { data = await r.json(); } catch (_) { /* */ }
+                if (!r.ok || !data || !data.servers) {
+                    alert('Could not list Plex servers from plex.tv');
+                    btn.disabled = false;
+                    btn.innerHTML = origLabel;
+                    return;
+                }
+                renderPlexDiscovered(data.servers);
+                btn.disabled = false;
+                btn.innerHTML = origLabel;
+            },
+            onError: (err) => {
+                console.error('Plex OAuth failed', err);
+                alert('Plex OAuth failed: ' + (err.message || err));
+                btn.disabled = false;
+                btn.innerHTML = origLabel;
+            },
+            onCancel: () => {
+                btn.disabled = false;
+                btn.innerHTML = origLabel;
+            },
+        });
+
+        try {
+            const pin = await auth.requestPin();
+            auth.openAuthWindow(pin.auth_url);
+            await auth.pollForToken(pin.id);
+        } catch (err) {
+            console.error('Plex OAuth flow error', err);
+            alert('Plex OAuth flow error: ' + (err.message || err));
+            btn.disabled = false;
+            btn.innerHTML = origLabel;
+        }
+    }
+
+    function renderPlexDiscovered(servers) {
+        const list = $('#plexDiscoveredServers');
+        if (servers.length === 0) {
+            list.innerHTML = '<div class="text-muted small">No Plex servers found on your account.</div>';
+            $('#plexDiscoveredList').classList.remove('d-none');
+            return;
+        }
+        list.innerHTML = servers.map((s) => {
+            const ownedBadge = s.owned ? '<span class="badge bg-success">owned</span>' : '<span class="badge bg-secondary">shared</span>';
+            const localBadge = s.local ? '<span class="badge bg-info">local</span>' : '';
+            return `
+                <button type="button" class="list-group-item list-group-item-action plex-server-pick"
+                        data-uri="${escapeHtml(s.uri || '')}"
+                        data-name="${escapeHtml(s.name || '')}">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <strong>${escapeHtml(s.name || 'Unnamed Plex')}</strong><br>
+                            <small class="text-muted">${escapeHtml(s.uri || s.host || '')}</small>
+                        </div>
+                        <div>${ownedBadge} ${localBadge}</div>
+                    </div>
+                </button>
+            `;
+        }).join('');
+        $('#plexDiscoveredList').classList.remove('d-none');
+
+        $$('.plex-server-pick').forEach((el) => {
+            el.addEventListener('click', () => {
+                const uri = el.dataset.uri;
+                const name = el.dataset.name;
+                $('#serverUrl').value = uri;
+                if (!$('#serverName').value) $('#serverName').value = name;
+                // Visually mark the picked server.
+                $$('.plex-server-pick').forEach((x) => x.classList.remove('active'));
+                el.classList.add('active');
+            });
+        });
+    }
 
     function configureAuthForType(type) {
         const methodSection = $('#auth-method-section');
@@ -307,8 +400,9 @@
 
     async function buildAuth() {
         if (wizard.type === 'plex') {
-            const tok = $('#plexToken').value.trim();
-            if (!tok) { alert('Plex token required.'); return null; }
+            // Prefer the OAuth-derived token when present; fall back to manual.
+            const tok = wizard.plexToken || $('#plexToken').value.trim();
+            if (!tok) { alert('Plex token required (sign in with Plex or paste a token).'); return null; }
             return { method: 'token', token: tok };
         }
         if (wizard.authMethod === 'api_key') {

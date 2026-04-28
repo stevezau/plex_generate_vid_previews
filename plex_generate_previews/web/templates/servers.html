@@ -137,11 +137,29 @@
                     </div>
 
                     <div id="auth-fields-token-plex" class="d-none">
-                        <div class="mb-2">
-                            <label class="form-label">Plex token</label>
-                            <input type="password" id="plexToken" class="form-control" autocomplete="off">
-                            <div class="form-text">Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>. OAuth flow lives in the Setup wizard.</div>
+                        <div class="mb-3">
+                            <button type="button" class="btn btn-warning w-100" id="plexOAuthStart">
+                                <i class="bi bi-shield-check me-1"></i>Sign in with Plex (auto-discover servers)
+                            </button>
+                            <small class="text-muted d-block mt-1">
+                                Recommended. Lists every Plex server your account can access so you can pick one (or add several from one sign-in).
+                            </small>
                         </div>
+
+                        <div id="plexDiscoveredList" class="d-none mb-3">
+                            <label class="form-label">Pick a server to add</label>
+                            <div id="plexDiscoveredServers" class="list-group"></div>
+                        </div>
+
+                        <details class="mb-2">
+                            <summary class="text-muted small">Or enter the token manually</summary>
+                            <div class="mt-2">
+                                <label class="form-label">Plex token</label>
+                                <input type="password" id="plexToken" class="form-control" autocomplete="off">
+                                <div class="form-text">Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>.</div>
+                            </div>
+                        </details>
+
                         <div class="mb-2">
                             <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
                             <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
@@ -171,5 +189,6 @@
     </div>
 </div>
 
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script src="{{ url_for('static', filename='js/servers.js') }}"></script>
 {% endblock %}
