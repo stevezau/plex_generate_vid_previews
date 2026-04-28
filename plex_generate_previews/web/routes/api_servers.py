@@ -335,8 +335,6 @@ def refresh_server_libraries(server_id: str):
     Phase 1 only supports the Plex client path; for other server types the
     endpoint returns 501 with a clear message.
     """
-    from ...config import load_config
-
     settings = get_settings_manager()
     raw_servers = settings.get("media_servers") or []
     if not isinstance(raw_servers, list):
@@ -354,23 +352,20 @@ def refresh_server_libraries(server_id: str):
         return jsonify({"error": f"server {server_id!r} not found"}), 404
 
     try:
-        server_config_from_dict(target_entry)
+        target_cfg = server_config_from_dict(target_entry)
     except UnsupportedServerTypeError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    # Plex's live client still needs a legacy Config until the wrapper is
-    # updated to take a ServerConfig. load_config() reads the same settings
-    # we just inspected, so the URL/token/verify_ssl agree. Emby builds
-    # purely from the persisted ServerConfig and doesn't need the legacy
-    # config; calling load_config() is a no-op cost for that path.
+    # Build the live server directly from the per-server ServerConfig
+    # rather than going through the global registry + load_config(). This
+    # lets the endpoint work in multi-server-only deployments (no Plex
+    # configured) and avoids a hard dependency on PLEX_URL/PLEX_TOKEN
+    # being set in the env when refreshing an Emby/Jellyfin server.
     try:
-        legacy_config = load_config()
+        server = _instantiate_for_probe(target_cfg)
     except Exception as exc:
-        logger.warning("Refresh libraries: load_config failed: {}", exc)
-        return jsonify({"error": f"failed to load config: {exc}"}), 500
-
-    registry = ServerRegistry.from_settings(raw_servers, legacy_config=legacy_config)
-    server = registry.get(server_id)
+        logger.warning("Refresh libraries: instantiate failed: {}", exc)
+        return jsonify({"error": f"could not instantiate server {server_id!r}: {exc}"}), 500
     if server is None:
         return jsonify({"error": f"could not instantiate server {server_id!r}"}), 500
 
@@ -646,7 +641,7 @@ def get_output_status(server_id: str):
     )
     item_id = request.args.get("item_id") or None
 
-    if adapter.needs_server_metadata():
+    if cfg.type is ServerType.PLEX:
         # Plex: we need the live server to compute the bundle path.
         # Without an item_id we can't go further; report the limitation.
         if not item_id:
@@ -676,9 +671,28 @@ def get_output_status(server_id: str):
         except Exception as exc:
             return jsonify({"error": f"compute_output_paths failed: {exc}"}), 502
     else:
-        # Emby / Jellyfin: pure path computation.
+        # Emby / Jellyfin: pure path computation. Jellyfin's adapter
+        # advertises needs_server_metadata=True because it requires an
+        # item_id, but it doesn't need a live server — the item_id
+        # comes from the query string. Pass server=None.
         try:
             paths = adapter.compute_output_paths(bundle, server=None, item_id=item_id)
+        except ValueError as exc:
+            # Adapter rejected — typically means item_id was missing for
+            # an adapter that requires it. Surface the reason in the
+            # response shape so the UI can prompt the user.
+            return jsonify(
+                {
+                    "server_id": server_id,
+                    "server_type": cfg.type.value,
+                    "adapter": adapter.name,
+                    "paths": [],
+                    "exists": False,
+                    "missing_paths": [],
+                    "needs_item_id": "item_id" in str(exc).lower(),
+                    "message": str(exc),
+                }
+            )
         except Exception as exc:
             return jsonify({"error": f"compute_output_paths failed: {exc}"}), 400
 
