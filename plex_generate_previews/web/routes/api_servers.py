@@ -570,15 +570,89 @@ def test_server_connection():
         logger.warning("test_connection raised: {}", exc)
         return jsonify({"ok": False, "message": f"unexpected error: {exc}"}), 200
 
-    return jsonify(
-        {
-            "ok": result.ok,
-            "server_id": result.server_id,
-            "server_name": result.server_name,
-            "version": result.version,
-            "message": result.message,
-        }
-    )
+    response_body = {
+        "ok": result.ok,
+        "server_id": result.server_id,
+        "server_name": result.server_name,
+        "version": result.version,
+        "message": result.message,
+    }
+
+    # Jellyfin-only setup gotcha: libraries default
+    # ``EnableTrickplayImageExtraction`` to false, so Jellyfin won't
+    # see our sidecar trickplay even when the files are correct. Surface
+    # the misconfiguration here so the wizard can show a "Fix it for me"
+    # button before the user saves the server.
+    if result.ok and cfg.type is ServerType.JELLYFIN and hasattr(live, "check_trickplay_extraction_status"):
+        try:
+            statuses = live.check_trickplay_extraction_status()
+        except Exception as exc:
+            logger.debug("Trickplay status probe raised: {}", exc)
+            statuses = []
+
+        misconfigured = [s for s in statuses if not s.get("extraction_enabled")]
+        if misconfigured:
+            response_body["warnings"] = [
+                {
+                    "code": "jellyfin_trickplay_disabled",
+                    "message": (
+                        "Some Jellyfin libraries have trickplay extraction disabled — "
+                        "without it Jellyfin won't display preview thumbnails for files "
+                        "we publish. Enable it via the 'Fix it for me' button or in "
+                        "Jellyfin's library settings."
+                    ),
+                    "libraries": [{"id": s["id"], "name": s["name"]} for s in misconfigured],
+                }
+            ]
+
+    return jsonify(response_body)
+
+
+@api.route("/servers/<server_id>/jellyfin/fix-trickplay", methods=["POST"])
+@setup_or_auth_required
+def fix_jellyfin_trickplay(server_id: str):
+    """One-click fix for the ``EnableTrickplayImageExtraction`` gotcha.
+
+    Body: optional ``{"library_ids": ["<id>", ...]}`` to scope the fix
+    to specific libraries; absent body flips every library on the
+    server. Calls :meth:`JellyfinServer.enable_trickplay_extraction`
+    which POSTs the updated ``LibraryOptions`` to Jellyfin.
+
+    Returns ``{"ok": true|false, "results": {<lib_id>: "ok"|<error>}}``.
+    The endpoint reports 200 even on partial failure — the per-library
+    results dict carries the actual story so the UI can show a row-by-row
+    summary.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    if cfg.type is not ServerType.JELLYFIN:
+        return jsonify({"error": f"server {server_id} is not a Jellyfin server"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "enable_trickplay_extraction"):
+        return jsonify({"error": "could not instantiate Jellyfin client"}), 500
+
+    body = request.get_json(silent=True) or {}
+    library_ids = body.get("library_ids") if isinstance(body, dict) else None
+    if library_ids is not None and not isinstance(library_ids, list):
+        return jsonify({"error": "library_ids must be a list"}), 400
+
+    try:
+        results = live.enable_trickplay_extraction(library_ids=library_ids)
+    except Exception as exc:
+        logger.warning("enable_trickplay_extraction raised: {}", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+    all_ok = all(v == "ok" for v in results.values())
+    return jsonify({"ok": all_ok, "results": results})
 
 
 @api.route("/servers/<server_id>/output-status", methods=["GET"])

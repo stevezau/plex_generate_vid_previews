@@ -300,6 +300,171 @@ class TestParseWebhook:
         assert jelly.parse_webhook(b"not-json{", headers={}) is None
 
 
+class TestTrickplayExtractionStatus:
+    """Surface the EnableTrickplayImageExtraction misconfiguration to the UI."""
+
+    def test_returns_per_library_flags(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(
+                    return_value=[
+                        {
+                            "Name": "Movies",
+                            "ItemId": "1",
+                            "Locations": ["/jf-media/Movies"],
+                            "LibraryOptions": {
+                                "EnableTrickplayImageExtraction": True,
+                                "ExtractTrickplayImagesDuringLibraryScan": True,
+                            },
+                        },
+                        {
+                            "Name": "TV",
+                            "ItemId": "2",
+                            "Locations": ["/jf-media/TV"],
+                            "LibraryOptions": {
+                                "EnableTrickplayImageExtraction": False,
+                                "ExtractTrickplayImagesDuringLibraryScan": False,
+                            },
+                        },
+                    ]
+                ),
+                raise_for_status=MagicMock(),
+            )
+            result = jelly.check_trickplay_extraction_status()
+
+        assert result == [
+            {
+                "id": "1",
+                "name": "Movies",
+                "locations": ["/jf-media/Movies"],
+                "extraction_enabled": True,
+                "scan_extraction_enabled": True,
+            },
+            {
+                "id": "2",
+                "name": "TV",
+                "locations": ["/jf-media/TV"],
+                "extraction_enabled": False,
+                "scan_extraction_enabled": False,
+            },
+        ]
+
+    def test_empty_on_request_failure(self, jelly):
+        with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("boom")):
+            assert jelly.check_trickplay_extraction_status() == []
+
+    def test_handles_missing_library_options(self, jelly):
+        """Older Jellyfin versions might not return ``LibraryOptions``; fall back to False."""
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "Locations": []}]),
+                raise_for_status=MagicMock(),
+            )
+            result = jelly.check_trickplay_extraction_status()
+        assert result[0]["extraction_enabled"] is False
+        assert result[0]["scan_extraction_enabled"] is False
+
+
+class TestEnableTrickplayExtraction:
+    """One-click fix that flips the flag on selected libraries."""
+
+    def test_updates_each_library(self, jelly):
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(
+                return_value=[
+                    {
+                        "Name": "Movies",
+                        "ItemId": "1",
+                        "LibraryOptions": {"EnableTrickplayImageExtraction": False},
+                    },
+                    {
+                        "Name": "TV",
+                        "ItemId": "2",
+                        "LibraryOptions": {"EnableTrickplayImageExtraction": False},
+                    },
+                ]
+            ),
+            raise_for_status=MagicMock(),
+        )
+        post_response = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        captured: list[dict] = []
+
+        def fake_request(method, path, *, params=None, json_body=None):
+            if method == "GET" and path == "/Library/VirtualFolders":
+                return get_response
+            if method == "POST" and path == "/Library/VirtualFolders/LibraryOptions":
+                captured.append(json_body)
+                return post_response
+            raise AssertionError(f"unexpected request {method} {path}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            results = jelly.enable_trickplay_extraction()
+
+        assert results == {"1": "ok", "2": "ok"}
+        # Verify the POST body kept the existing options dict and flipped the flag.
+        assert all(c["LibraryOptions"]["EnableTrickplayImageExtraction"] is True for c in captured)
+        assert all(c["LibraryOptions"]["ExtractTrickplayImagesDuringLibraryScan"] is True for c in captured)
+        assert {c["Id"] for c in captured} == {"1", "2"}
+
+    def test_filters_to_requested_library_ids(self, jelly):
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(
+                return_value=[
+                    {"Name": "Movies", "ItemId": "1", "LibraryOptions": {}},
+                    {"Name": "TV", "ItemId": "2", "LibraryOptions": {}},
+                ]
+            ),
+            raise_for_status=MagicMock(),
+        )
+        post_response = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        captured: list[dict] = []
+
+        def fake_request(method, path, *, params=None, json_body=None):
+            if method == "GET":
+                return get_response
+            captured.append(json_body)
+            return post_response
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            results = jelly.enable_trickplay_extraction(library_ids=["1"])
+
+        assert list(results.keys()) == ["1"]
+        assert len(captured) == 1
+        assert captured[0]["Id"] == "1"
+
+    def test_per_library_failure_reported(self, jelly):
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(
+                return_value=[
+                    {"Name": "Movies", "ItemId": "1", "LibraryOptions": {}},
+                    {"Name": "Broken", "ItemId": "2", "LibraryOptions": {}},
+                ]
+            ),
+            raise_for_status=MagicMock(),
+        )
+        ok_post = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        def fake_request(method, path, *, params=None, json_body=None):
+            if method == "GET":
+                return get_response
+            if json_body and json_body.get("Id") == "2":
+                raise requests.HTTPError("403")
+            return ok_post
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            results = jelly.enable_trickplay_extraction()
+
+        assert results["1"] == "ok"
+        assert results["2"].startswith("error:")
+
+
 class TestRegistryWiring:
     def test_registry_can_construct_jellyfin_server(self):
         from plex_generate_previews.servers import ServerRegistry

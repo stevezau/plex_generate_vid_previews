@@ -40,6 +40,7 @@ from loguru import logger
 
 from ..output import BifBundle, EmbyBifAdapter, JellyfinTrickplayAdapter, PlexBundleAdapter
 from ..output.base import OutputAdapter
+from ..output.journal import clear_meta, outputs_fresh_for_source, write_meta
 from ..servers.base import LibraryNotYetIndexedError, MediaServer, ServerConfig, ServerType
 from .frame_cache import get_frame_cache
 from .orchestrator import (
@@ -254,17 +255,20 @@ def _publish_one(
             message=f"compute_output_paths: {exc}",
         )
 
-    # If every output path already exists and the user hasn't asked to
-    # regenerate, skip the actual publish — but still let the caller know
-    # the publisher *would* have published.
-    if skip_if_exists and output_paths and all(p.exists() for p in output_paths):
+    # Skip when every output exists AND the journal proves the source
+    # hasn't changed since the last publish. The journal check guards
+    # against the "Sonarr quality upgrade" case: file replaced in place,
+    # outputs still on disk, but stale — mtime+size mismatch forces
+    # regeneration. Falls through to publish if the meta is missing
+    # (older publishes pre-journal) or if it doesn't match.
+    if skip_if_exists and output_paths and outputs_fresh_for_source(output_paths, bundle.canonical_path):
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,
             adapter_name=adapter.name,
             status=PublisherStatus.SKIPPED_OUTPUT_EXISTS,
             output_paths=output_paths,
-            message="Output already exists",
+            message="Output already exists (source unchanged)",
         )
 
     try:
@@ -279,6 +283,10 @@ def _publish_one(
             output_paths=output_paths,
             message=f"publish: {exc}",
         )
+
+    # Stamp the journal so the next webhook for an unchanged source can
+    # short-circuit. Best-effort — see ``write_meta``.
+    write_meta(output_paths, bundle.canonical_path, publisher=adapter.name)
 
     # Best-effort refresh; failures are logged but don't fail the publisher.
     try:
@@ -350,6 +358,95 @@ def process_canonical_path(
             status=MultiServerStatus.FAILED,
             message=f"Source file not found: {canonical_path}",
         )
+
+    # Pre-FFmpeg short-circuit: when every owning publisher's outputs
+    # already exist AND the journal confirms the source hasn't changed
+    # since the last publish, we can skip frame extraction entirely.
+    # This handles the "Sonarr fires immediately, Plex's own webhook
+    # follows 30 min later" scenario: the cache has expired but the
+    # outputs are still on disk and still valid.
+    #
+    # When ``regenerate=True`` we deliberately bypass this and force a
+    # fresh run; we also clear stale ``.meta`` sidecars so the new run
+    # writes them rather than running into mismatched fingerprints
+    # later. ``compute_output_paths`` may need to call the server (Plex
+    # bundle hash); we tolerate failures here and fall back to the full
+    # pipeline rather than spuriously refusing to publish.
+    if not regenerate:
+        all_fresh = True
+        for server, adapter, item_id_hint in publishers:
+            try:
+                item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+                probe_bundle = BifBundle(
+                    canonical_path=canonical_path,
+                    frame_dir=Path(os.devnull),  # unused by compute_output_paths
+                    bif_path=None,
+                    frame_interval=int(getattr(config, "plex_bif_frame_interval", 10) or 10),
+                    width=320,
+                    height=180,
+                    frame_count=0,
+                )
+                paths = adapter.compute_output_paths(probe_bundle, server, item_id)
+            except Exception:
+                all_fresh = False
+                break
+            if not paths or not outputs_fresh_for_source(paths, canonical_path):
+                all_fresh = False
+                break
+        if all_fresh:
+            logger.info(
+                "All publishers' outputs already fresh for {} — skipping FFmpeg",
+                canonical_path,
+            )
+            results = []
+            for server, adapter, item_id_hint in publishers:
+                item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+                probe_bundle = BifBundle(
+                    canonical_path=canonical_path,
+                    frame_dir=Path(os.devnull),
+                    bif_path=None,
+                    frame_interval=int(getattr(config, "plex_bif_frame_interval", 10) or 10),
+                    width=320,
+                    height=180,
+                    frame_count=0,
+                )
+                paths = adapter.compute_output_paths(probe_bundle, server, item_id)
+                results.append(
+                    PublisherResult(
+                        server_id=server.id,
+                        server_name=server.name,
+                        adapter_name=adapter.name,
+                        status=PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+                        output_paths=paths,
+                        message="Output already exists (source unchanged)",
+                    )
+                )
+            return MultiServerResult(
+                canonical_path=canonical_path,
+                status=MultiServerStatus.SKIPPED,
+                publishers=results,
+                frame_count=0,
+                message="All outputs fresh; FFmpeg skipped",
+            )
+    else:
+        # Regenerate: drop stale ``.meta`` sidecars so a partial failure
+        # mid-pipeline can't leave a fingerprint that misleads the next
+        # short-circuit check. Best-effort.
+        for server, adapter, item_id_hint in publishers:
+            try:
+                item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+                probe_bundle = BifBundle(
+                    canonical_path=canonical_path,
+                    frame_dir=Path(os.devnull),
+                    bif_path=None,
+                    frame_interval=int(getattr(config, "plex_bif_frame_interval", 10) or 10),
+                    width=320,
+                    height=180,
+                    frame_count=0,
+                )
+                clear_meta(adapter.compute_output_paths(probe_bundle, server, item_id))
+            except Exception:
+                continue
 
     # Frame cache: when enabled, the second+ webhook for the same file
     # within the cache TTL skips FFmpeg entirely. Disabled callers

@@ -81,6 +81,108 @@ class JellyfinServer(EmbyApiClient):
         except Exception as exc:
             logger.debug("Jellyfin /Library/Refresh failed: {}", exc)
 
+    def check_trickplay_extraction_status(self) -> list[dict[str, Any]]:
+        """Return per-library trickplay-extraction flags.
+
+        Why this exists: Jellyfin libraries default ``EnableTrickplayImageExtraction``
+        to ``False``. With that flag off, Jellyfin **ignores sidecar
+        trickplay files** in the media folder even if our publisher wrote
+        them perfectly. The user sees no scrubbing thumbnails and reports
+        the tool as broken, when actually a single library setting needs
+        to be flipped.
+
+        We surface this in the connection test so the UI can display a
+        prominent warning and offer a one-click fix
+        (:meth:`enable_trickplay_extraction`).
+
+        Returns a list of ``{id, name, locations, extraction_enabled,
+        scan_extraction_enabled}`` dicts — one per virtual folder. Empty
+        list on failure (logged as a warning so we don't false-alarm
+        the UI when the server's just unreachable).
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.warning("Failed to read Jellyfin VirtualFolders for trickplay check: {}", exc)
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        out: list[dict[str, Any]] = []
+        for raw in data:
+            if not isinstance(raw, dict):
+                continue
+            options = raw.get("LibraryOptions") or {}
+            out.append(
+                {
+                    "id": str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or ""),
+                    "name": str(raw.get("Name") or ""),
+                    "locations": list(raw.get("Locations") or []),
+                    # The runtime-enable flag is what gates Jellyfin's
+                    # detection of *our* sidecar trickplay; the scan
+                    # variant gates Jellyfin's own generation. Both
+                    # need to be on for a smooth experience.
+                    "extraction_enabled": bool(options.get("EnableTrickplayImageExtraction", False)),
+                    "scan_extraction_enabled": bool(options.get("ExtractTrickplayImagesDuringLibraryScan", False)),
+                }
+            )
+        return out
+
+    def enable_trickplay_extraction(self, library_ids: list[str] | None = None) -> dict[str, str]:
+        """Flip ``EnableTrickplayImageExtraction`` on for the given libraries.
+
+        Called from the per-server "Fix it for me" UI button. ``library_ids``
+        restricts which libraries to update; ``None`` means every library.
+
+        For each target library we POST the **full existing**
+        ``LibraryOptions`` dict back with the two trickplay flags
+        flipped to true — Jellyfin's update endpoint is a wholesale
+        replacement, not a diff, so any field we omit reverts to its
+        default.
+
+        Returns ``{library_id: "ok"|"<error message>"}`` so the UI can
+        report partial success when one library succeeds and another
+        fails.
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            return {"_global": f"failed to fetch libraries: {exc}"}
+
+        results: dict[str, str] = {}
+        if not isinstance(folders, list):
+            return {"_global": "unexpected VirtualFolders response shape"}
+
+        target_ids = set(library_ids) if library_ids else None
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            if target_ids is not None and lib_id not in target_ids:
+                continue
+
+            options = dict(raw.get("LibraryOptions") or {})
+            options["EnableTrickplayImageExtraction"] = True
+            options["ExtractTrickplayImagesDuringLibraryScan"] = True
+
+            try:
+                update = self._request(
+                    "POST",
+                    "/Library/VirtualFolders/LibraryOptions",
+                    json_body={"Id": lib_id, "LibraryOptions": options},
+                )
+                update.raise_for_status()
+                results[lib_id] = "ok"
+            except Exception as exc:
+                logger.warning("Failed to enable trickplay on Jellyfin library {}: {}", lib_id, exc)
+                results[lib_id] = f"error: {exc}"
+        return results
+
     def parse_webhook(
         self,
         payload: dict[str, Any] | bytes,
