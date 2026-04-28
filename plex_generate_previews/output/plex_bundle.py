@@ -100,7 +100,11 @@ class PlexBundleAdapter(OutputAdapter):
             indexes_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError as exc:
             logger.error(
-                "Permission denied creating Plex bundle directory {}: {}",
+                "Cannot create Plex bundle folder at {}: permission denied. "
+                "Plex previews live under your Plex config folder — make sure that folder is "
+                "mounted read-write (not :ro in Docker), the path in Settings → Media Servers "
+                "matches your actual mount, and the user running this tool can write to it. "
+                "Original error: {}",
                 indexes_dir,
                 exc,
             )

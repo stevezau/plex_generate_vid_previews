@@ -297,14 +297,22 @@ def run_processing(
         logger.error("Please fix the connection issue and try again.")
         return None
     except Exception as e:
-        logger.error(f"Unexpected error in main execution: {e}")
+        logger.error(
+            f"Unexpected error during preview-generation job: {type(e).__name__}: {e}. "
+            f"This is a bug — the job will abort. Enable Debug logging under Settings → Logging "
+            f"to capture the full traceback and report it on GitHub."
+        )
         raise
     finally:
         try:
             if worker_pool is not None and not job_id:
                 worker_pool.shutdown()
         except Exception as worker_error:
-            logger.warning(f"Failed to shutdown worker pool: {worker_error}")
+            logger.warning(
+                f"Worker pool didn't shut down cleanly: {worker_error}. "
+                f"Background threads may still be running — usually harmless, but if you see "
+                f"orphan FFmpeg processes after the job ends, restart the container."
+            )
         finally:
             if not job_id and worker_pool_callback:
                 worker_pool_callback(None)
@@ -314,4 +322,8 @@ def run_processing(
                 shutil.rmtree(config.working_tmp_folder)
                 logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
         except Exception as cleanup_error:
-            logger.warning(f"Failed to clean up working temp folder {config.working_tmp_folder}: {cleanup_error}")
+            logger.warning(
+                f"Could not delete the working temp folder at {config.working_tmp_folder}: "
+                f"{cleanup_error}. This won't break future runs but the folder will accumulate "
+                f"data over time — watch your disk and manually clear it if it grows large."
+            )

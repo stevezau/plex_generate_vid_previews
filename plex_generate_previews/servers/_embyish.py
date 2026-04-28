@@ -150,13 +150,23 @@ class EmbyApiClient(MediaServer):
             response.raise_for_status()
             data = response.json()
         except Exception as exc:
-            logger.warning("Failed to list {} virtual folders: {}", self.vendor_name, exc)
+            logger.warning(
+                "Could not fetch the library list from {} server {!r}: {}. "
+                "Verify the server is running and your access token / API key in "
+                "Settings → Media Servers is still valid.",
+                self.vendor_name,
+                self.name,
+                exc,
+            )
             return []
 
         if not isinstance(data, list):
             logger.warning(
-                "{} VirtualFolders returned unexpected shape: {}",
+                "{} server {!r} returned an unexpected response when listing libraries "
+                "(got {} instead of a list). The server may be misconfigured or running an "
+                "incompatible version.",
                 self.vendor_name,
+                self.name,
                 type(data).__name__,
             )
             return []

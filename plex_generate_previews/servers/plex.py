@@ -143,7 +143,13 @@ class PlexServer(MediaServer):
         try:
             sections = retry_plex_call(self._connect().library.sections)
         except Exception as exc:
-            logger.warning("Failed to enumerate Plex library sections: {}", exc)
+            logger.warning(
+                "Could not list libraries on Plex server {!r} after retries: {}. "
+                "Plex may be offline, restarting, or the token may have expired — "
+                "test the connection in Settings → Media Servers.",
+                self.name,
+                exc,
+            )
             return []
 
         selected_ids = {str(s).strip() for s in (getattr(self._config, "plex_library_ids", None) or [])}
@@ -192,7 +198,12 @@ class PlexServer(MediaServer):
         try:
             sections = retry_plex_call(plex.library.sections)
         except Exception as exc:
-            logger.warning("Failed to enumerate Plex sections for list_items: {}", exc)
+            logger.warning(
+                "Could not list Plex libraries while looking up items for library {}: {}. "
+                "Verify Plex is reachable and the access token is valid.",
+                library_id,
+                exc,
+            )
             return
 
         target = next(
@@ -200,7 +211,12 @@ class PlexServer(MediaServer):
             None,
         )
         if target is None:
-            logger.warning("Plex library id {} not found", library_id)
+            logger.warning(
+                "Plex library with id {} no longer exists on the server — it may have been "
+                "deleted or renamed. Open Settings → Media Servers, click 'Refresh libraries' "
+                "on this Plex entry, and re-tick the libraries you want to process.",
+                library_id,
+            )
             return
 
         try:
@@ -234,7 +250,13 @@ class PlexServer(MediaServer):
                     target.METADATA_TYPE,
                 )
         except Exception as exc:
-            logger.warning("Failed to enumerate items in Plex library {}: {}", target.title, exc)
+            logger.warning(
+                "Could not list items in Plex library {!r}: {}. "
+                "The library may be empty, still scanning, or the Plex server may be busy. "
+                "Try again in a few minutes.",
+                target.title,
+                exc,
+            )
 
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         """Return ``item.media[0].parts[0].file`` for ``item_id``, else ``None``.

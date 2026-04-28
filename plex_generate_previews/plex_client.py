@@ -228,9 +228,13 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
         http.client.BadStatusLine,
         xml.etree.ElementTree.ParseError,
     ) as e:
-        logger.error(f"Failed to get Plex library sections after retries: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        logger.error("Cannot proceed without library access. Please check your Plex server status.")
+        logger.error(
+            f"Could not list Plex libraries after several retries — aborting this run. "
+            f"{type(e).__name__}: {e}. "
+            f"Most likely Plex is offline, the URL or token in Settings is wrong, or the network "
+            f"between this tool and Plex is broken. Confirm Plex is reachable at the configured "
+            f"URL, then click Test Connection in Settings → Plex."
+        )
         return
 
     sections_time = time.time() - start_time
@@ -321,9 +325,13 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
             http.client.BadStatusLine,
             xml.etree.ElementTree.ParseError,
         ) as e:
-            logger.error(f"Failed to search library '{section.title}' after retries: {e}")
-            logger.error(f"Exception type: {type(e).__name__}")
-            logger.warning(f"Skipping library '{section.title}' due to error")
+            logger.error(
+                f"Could not fetch items from Plex library '{section.title}' after several "
+                f"retries — skipping it for this run. {type(e).__name__}: {e}. "
+                f"This usually means Plex is overloaded, restarting, or the library is huge "
+                f"and timing out. Try again in a few minutes; if it keeps failing, increase "
+                f"the Plex timeout under Settings → Plex."
+            )
             continue
 
         library_time = time.time() - library_start_time
@@ -581,7 +589,11 @@ def trigger_plex_partial_scan(
                         f"for section {section_key}, path {scan_folder}"
                     )
             except requests.RequestException as e:
-                logger.warning(f"Failed to trigger Plex partial scan for {scan_folder}: {e}")
+                logger.warning(
+                    f"Could not ask Plex to scan the folder {scan_folder!r}: {e}. "
+                    f"The preview file was still saved — Plex just won't know about it until "
+                    f"its own scheduled scan runs (or you trigger one manually)."
+                )
 
         if triggered:
             scanned.append(unresolved)
@@ -696,7 +708,11 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
         if path is None:
             continue
         if not isinstance(path, str):
-            logger.warning("Webhook path resolution received non-string path value; skipping invalid entry")
+            logger.warning(
+                "Webhook included a file path that wasn't text (got {} instead). "
+                "Skipping it — check the webhook source's payload template if you keep seeing this.",
+                type(path).__name__,
+            )
             continue
         cleaned_path = path.strip()
         if not cleaned_path:
@@ -725,7 +741,11 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
         http.client.BadStatusLine,
         xml.etree.ElementTree.ParseError,
     ) as e:
-        logger.error(f"Failed to get Plex library sections for webhook paths: {e}")
+        logger.error(
+            f"Could not list Plex libraries to resolve incoming webhook paths: {e}. "
+            f"Webhooks for files this run can't be processed; verify Plex is reachable and the "
+            f"token is valid, then re-fire the webhook (or wait for the next scheduled scan)."
+        )
         return WebhookResolutionResult(items=[], unresolved_paths=[], skipped_paths=[], path_hints=[])
 
     matched_items = []
@@ -829,7 +849,12 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
                     plex_path = plex_locations[0] if plex_locations else ""
                     item_key = getattr(item, "key", None)
                     if not item_key:
-                        logger.warning("Skipping matched Plex item without metadata key during webhook path resolution")
+                        logger.warning(
+                            "Plex returned a search match for {} but didn't include the item's "
+                            "metadata key — usually means Plex is still indexing this file. "
+                            "It will be picked up on the next webhook or library scan.",
+                            plex_path or "(unknown path)",
+                        )
                         continue
                     if item_key in seen_keys:
                         continue

@@ -225,7 +225,12 @@ def list_servers():
     settings = get_settings_manager()
     raw_servers = settings.get("media_servers") or []
     if not isinstance(raw_servers, list):
-        logger.warning("media_servers in settings is not a list; returning empty")
+        logger.warning(
+            "The 'media_servers' setting in settings.json is malformed (expected a list, got "
+            "{}). Treating it as empty — your existing servers will not appear until the "
+            "setting is fixed. Edit settings.json and restart, or re-add servers via the UI.",
+            type(raw_servers).__name__,
+        )
         raw_servers = []
 
     response_servers: list[dict] = []
@@ -235,7 +240,11 @@ def list_servers():
         try:
             cfg = server_config_from_dict(entry)
         except UnsupportedServerTypeError as exc:
-            logger.warning("Skipping server with unsupported type: {}", exc)
+            logger.warning(
+                "Hiding a configured media server because its type is not recognised: {}. "
+                "Open Settings → Media Servers and remove or correct the entry.",
+                exc,
+            )
             continue
         response_servers.append(
             {
@@ -364,7 +373,12 @@ def refresh_server_libraries(server_id: str):
     try:
         server = _instantiate_for_probe(target_cfg)
     except Exception as exc:
-        logger.warning("Refresh libraries: instantiate failed: {}", exc)
+        logger.warning(
+            "Refresh libraries: could not create a client for media server {!r} ({}). "
+            "Verify the URL, type, and credentials in Settings → Media Servers.",
+            target_cfg.name or server_id,
+            exc,
+        )
         return jsonify({"error": f"could not instantiate server {server_id!r}: {exc}"}), 500
     if server is None:
         return jsonify({"error": f"could not instantiate server {server_id!r}"}), 500
@@ -372,7 +386,13 @@ def refresh_server_libraries(server_id: str):
     try:
         new_libraries = server.list_libraries()
     except Exception as exc:
-        logger.warning("Refresh libraries: list_libraries raised: {}", exc)
+        logger.warning(
+            "Refresh libraries: media server {!r} returned an error when asked for its library "
+            "list: {}. The cached library list will not be updated this time. "
+            "Verify the server is reachable and credentials haven't expired.",
+            target_cfg.name or server_id,
+            exc,
+        )
         return jsonify({"error": f"server query failed: {exc}"}), 502
 
     # Preserve the user's per-library 'enabled' toggle for any library that
@@ -567,7 +587,13 @@ def test_server_connection():
     try:
         result = live.test_connection()
     except Exception as exc:
-        logger.warning("test_connection raised: {}", exc)
+        logger.warning(
+            "Test Connection: unexpected error contacting media server at {} ({}: {}). "
+            "Returning the error to the UI for the user to see.",
+            cfg.url,
+            type(exc).__name__,
+            exc,
+        )
         return jsonify({"ok": False, "message": f"unexpected error: {exc}"}), 200
 
     response_body = {
@@ -648,7 +674,14 @@ def fix_jellyfin_trickplay(server_id: str):
     try:
         results = live.enable_trickplay_extraction(library_ids=library_ids)
     except Exception as exc:
-        logger.warning("enable_trickplay_extraction raised: {}", exc)
+        logger.warning(
+            "Fix-trickplay: could not flip the trickplay-extraction flag on Jellyfin server "
+            "{!r}: {}: {}. The flag is unchanged. As a manual fallback, enable it in Jellyfin's "
+            "web UI (Dashboard → Libraries → edit library → 'Trickplay image extraction').",
+            cfg.name or server_id,
+            type(exc).__name__,
+            exc,
+        )
         return jsonify({"ok": False, "error": str(exc)}), 200
 
     all_ok = all(v == "ok" for v in results.values())

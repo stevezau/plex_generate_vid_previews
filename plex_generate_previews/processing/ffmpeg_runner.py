@@ -534,7 +534,14 @@ def create_ffmpeg_runner(
         # Error logging (skip generic failure log when we killed due to stall; already logged above)
         if proc.returncode != 0 and not stalled:
             exit_diagnosis = _diagnose_ffmpeg_exit_code(proc.returncode)
-            logger.error(f"FFmpeg failed with return code {proc.returncode} ({exit_diagnosis}) for {video_file}")
+            logger.error(
+                f"FFmpeg failed while extracting frames from {video_file} "
+                f"(exit code {proc.returncode}: {exit_diagnosis}). "
+                f"See the FFmpeg stderr lines logged below — they usually point at the cause "
+                f"(unsupported codec, broken hardware acceleration, corrupted file, full disk). "
+                f"If this happens often on the same file, try toggling hardware acceleration off "
+                f"in Settings → GPU."
+            )
 
             # Log last few stderr lines at WARNING level so users can diagnose
             # failures without needing DEBUG mode (especially for crashes/signals)

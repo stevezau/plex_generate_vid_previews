@@ -74,7 +74,11 @@ class EmbyBifAdapter(OutputAdapter):
             sidecar.parent.mkdir(parents=True, exist_ok=True)
         except PermissionError as exc:
             logger.error(
-                "Permission denied creating Emby sidecar parent {}: {}",
+                "Cannot save Emby preview file next to media at {}: permission denied. "
+                "The Emby BIF format requires writing the .bif file alongside the source video. "
+                "Verify the media folder is mounted read-write (not :ro in Docker) and that "
+                "the user running this tool has write permission. "
+                "Original error: {}",
                 sidecar.parent,
                 exc,
             )

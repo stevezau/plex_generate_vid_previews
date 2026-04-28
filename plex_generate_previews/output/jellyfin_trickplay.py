@@ -135,7 +135,12 @@ class JellyfinTrickplayAdapter(OutputAdapter):
             sheets_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError as exc:
             logger.error(
-                "Permission denied creating Jellyfin trickplay dir {}: {}",
+                "Cannot create Jellyfin trickplay folder at {}: permission denied. "
+                "The container or process running this tool needs WRITE access to the "
+                "folder containing this media file. "
+                "If running in Docker, make sure your media volume is mounted read-write "
+                "(not :ro) and the PUID/PGID env vars match the file owner. "
+                "Original error: {}",
                 sheets_dir,
                 exc,
             )

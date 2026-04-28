@@ -101,7 +101,11 @@ def _check_ffmpeg_version() -> bool:
     """
     version = _get_ffmpeg_version()
     if version is None:
-        logger.warning("Could not determine FFmpeg version - proceeding with caution")
+        logger.warning(
+            "Could not detect the installed FFmpeg version. Carrying on, but if preview "
+            "generation fails later, run `ffmpeg -version` from a terminal inside the same "
+            "container/host to confirm FFmpeg is installed and on the PATH."
+        )
         return True  # Don't fail if we can't determine version
 
     if version >= MIN_FFMPEG_VERSION:

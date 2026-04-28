@@ -60,7 +60,13 @@ def server_config_from_dict(data: dict[str, Any]) -> ServerConfig:
                 )
             )
         except Exception as exc:
-            logger.warning("Skipping malformed library entry {}: {}", raw, exc)
+            logger.warning(
+                "Library configuration is invalid and will be ignored: {}. "
+                "Open Settings → Media Servers and re-add or fix this library entry. "
+                "Raw entry: {!r}",
+                exc,
+                raw,
+            )
 
     type_str = str(data.get("type") or "").strip().lower()
     try:
@@ -138,14 +144,24 @@ class ServerRegistry:
             try:
                 cfg = server_config_from_dict(raw)
             except UnsupportedServerTypeError as exc:
-                logger.warning("Skipping server: {}", exc)
+                logger.warning(
+                    "Skipping a media server because its configuration is invalid: {}. "
+                    "Open Settings → Media Servers, remove or fix this entry, then restart.",
+                    exc,
+                )
                 continue
 
             registry._configs[cfg.id] = cfg
             try:
                 server = registry._build_server(cfg, legacy_config=legacy_config)
             except UnsupportedServerTypeError as exc:
-                logger.warning("Skipping {!r}: {}", cfg.name or cfg.id, exc)
+                logger.warning(
+                    "Skipping media server {!r} (id={}) — could not initialise: {}. "
+                    "Verify the server URL, credentials, and type in Settings → Media Servers.",
+                    cfg.name or "(no name)",
+                    cfg.id,
+                    exc,
+                )
                 continue
             registry._servers[cfg.id] = server
         return registry

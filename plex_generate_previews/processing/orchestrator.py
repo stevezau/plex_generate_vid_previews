@@ -1070,7 +1070,13 @@ def generate_images(
             if did_dv_safe_retry
             else (" after sw libplacebo retry" if did_sw_libplacebo_retry else (" after retry" if did_retry else ""))
         )
-        logger.error(f"Failed to generate thumbnails for {video_file}; 0 images produced{fallback_suffix}")
+        logger.error(
+            f"FFmpeg produced no preview frames for {video_file}{fallback_suffix}. "
+            f"Common causes: video file is corrupted, codec is unsupported by your FFmpeg build, "
+            f"or hardware acceleration failed silently. Try playing the file in a media player to "
+            f"confirm it's intact, then enable Debug logging (Settings → Logging) to see FFmpeg's "
+            f"detailed output."
+        )
         error_summary = _extract_ffmpeg_error_summary(stderr_lines_all)
         worker_ctx = "GPU" if gpu is not None else "CPU"
         reason = (
@@ -1127,12 +1133,18 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
         try:
             os.makedirs(indexes_path)
         except PermissionError as e:
-            logger.error(f"Permission denied creating index path {indexes_path} for {media_file}: {e}")
-            logger.info(f"Please check directory permissions for: {os.path.dirname(indexes_path)}")
+            logger.error(
+                f"Cannot create Plex preview folder at {indexes_path} (needed for "
+                f"{media_file}): permission denied. The user running this tool needs WRITE access "
+                f"to {os.path.dirname(indexes_path)}. In Docker, check your Plex config volume "
+                f"is mounted read-write and PUID/PGID match the file owner. "
+                f"Original error: {e}"
+            )
             return False
         except OSError as e:
             logger.error(
-                f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating index path {indexes_path}"
+                f"Cannot create Plex preview folder at {indexes_path} (needed for "
+                f"{media_file}): {e}. Verify the parent path exists and the disk isn't full."
             )
             return False
 
@@ -1140,12 +1152,17 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
         try:
             os.makedirs(tmp_path)
         except PermissionError as e:
-            logger.error(f"Permission denied creating tmp path {tmp_path} for {media_file}: {e}")
-            logger.info(f"Please check directory permissions for: {os.path.dirname(tmp_path)}")
+            logger.error(
+                f"Cannot create temporary working folder at {tmp_path} (needed for {media_file}): "
+                f"permission denied. Verify {os.path.dirname(tmp_path)} is writable, or change "
+                f"the working folder under Settings → Advanced. Original error: {e}"
+            )
             return False
         except OSError as e:
             logger.error(
-                f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when creating tmp path {tmp_path}"
+                f"Cannot create temporary working folder at {tmp_path} (needed for {media_file}): "
+                f"{e}. Most likely the disk is full or the path doesn't exist. Free up space or "
+                f"change the working folder under Settings → Advanced."
             )
             return False
 
@@ -1167,7 +1184,11 @@ def _cleanup_temp_directory(tmp_path: str) -> None:
         else:
             logger.debug(f"Temp directory already absent, skipping cleanup: {tmp_path}")
     except Exception as cleanup_error:
-        logger.warning(f"Failed to clean up temp directory {tmp_path}: {cleanup_error}")
+        logger.warning(
+            f"Could not delete temporary working folder {tmp_path}: {cleanup_error}. "
+            f"This won't break preview generation, but the folder will accumulate over time — "
+            f"watch your disk space and manually delete it if it grows large."
+        )
 
 
 def _generate_and_save_bif(
@@ -1234,7 +1255,13 @@ def _generate_and_save_bif(
             image_count = len(glob.glob(os.path.join(tmp_path, "*.jpg")))
 
     if image_count == 0:
-        logger.error(f"No thumbnails generated for {media_file}; skipping BIF creation")
+        logger.error(
+            f"No preview frames extracted from {media_file} — cannot create the preview file. "
+            f"FFmpeg ran but produced zero JPGs. Most likely the file is corrupted, the codec "
+            f"isn't supported by your FFmpeg build, or hardware acceleration silently failed. "
+            f"Try playing the file in a media player to confirm it's intact, or enable Debug "
+            f"logging to see FFmpeg's detailed output."
+        )
         _cleanup_temp_directory(tmp_path)
         detail = f" ({ffmpeg_error})" if ffmpeg_error else ""
         raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}{detail}")
@@ -1248,7 +1275,10 @@ def _generate_and_save_bif(
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
-            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
+            logger.warning(
+                f"Could not delete the partially-written preview file at {index_bif}: {remove_error}. "
+                f"You may need to delete this file manually so the next run can recreate it cleanly."
+            )
         logger.error(f"Permission denied generating BIF file {index_bif} for {media_file}: {e}")
         logger.info(f"Please check write permissions for: {os.path.dirname(index_bif)}")
         raise
@@ -1262,7 +1292,10 @@ def _generate_and_save_bif(
             if os.path.exists(index_bif):
                 os.remove(index_bif)
         except Exception as remove_error:
-            logger.warning(f"Failed to remove failed BIF file {index_bif}: {remove_error}")
+            logger.warning(
+                f"Could not delete the partially-written preview file at {index_bif}: {remove_error}. "
+                f"You may need to delete this file manually so the next run can recreate it cleanly."
+            )
         raise
 
 
@@ -1498,13 +1531,16 @@ def process_item(
     try:
         data = retry_plex_call(plex.query, f"{item_key}/tree")
     except Exception as e:
-        logger.error(f"Failed to query Plex for item {item_key} after retries: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        if hasattr(e, "request") and e.request:
-            logger.error(f"Request URL: {e.request.url}")
-            logger.error(f"Request method: {e.request.method}")
-            safe_headers = {k: ("****" if "token" in k.lower() else v) for k, v in e.request.headers.items()}
-            logger.error(f"Request headers: {safe_headers}")
+        # Single comprehensive line — keep the request URL for diagnosis
+        # but skip the headers dump (token-redacted but still noisy).
+        request_url = getattr(getattr(e, "request", None), "url", None)
+        url_hint = f" (request URL: {request_url})" if request_url else ""
+        logger.error(
+            f"Could not fetch metadata for Plex item {item_key} after several retries "
+            f"({type(e).__name__}: {e}){url_hint}. "
+            f"This usually means Plex is offline, restarting, or the token in Settings has "
+            f"expired. Confirm Plex is running and re-test the connection in Settings → Plex."
+        )
         _notify_file_result(
             f"item:{item_key}",
             ProcessingResult.FAILED,
@@ -1569,7 +1605,13 @@ def process_item(
             try:
                 indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
             except Exception as e:
-                logger.error(f"Error generating bundle_file for {media_file} due to {type(e).__name__}:{str(e)}")
+                logger.error(
+                    f"Could not set up the Plex preview folder for {media_file}: "
+                    f"{type(e).__name__}: {e}. "
+                    f"This usually means the Plex config folder in Settings doesn't match the "
+                    f"actual mount path, or the folder isn't writable. Check Settings → Plex "
+                    f"and verify the path exists and is read-write inside this container."
+                )
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,
@@ -1658,7 +1700,11 @@ def process_item(
             except (CancellationError, CodecNotSupportedError):
                 raise
             except RuntimeError as e:
-                logger.error(f"Error processing {media_file}: {str(e)}")
+                logger.error(
+                    f"Preview generation failed for {media_file}: {e}. "
+                    f"This file will be skipped. The cause is in the message above — usually "
+                    f"a codec issue, corrupted file, or write-permission problem."
+                )
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,
@@ -1668,7 +1714,12 @@ def process_item(
                 )
                 continue
             except Exception as e:
-                logger.error(f"Error processing {media_file}: {type(e).__name__}: {str(e)}")
+                logger.error(
+                    f"Unexpected error generating previews for {media_file}: "
+                    f"{type(e).__name__}: {e}. "
+                    f"This file will be skipped. If you keep seeing this, enable Debug logging "
+                    f"under Settings → Logging and report the full traceback as an issue."
+                )
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
                     media_file,

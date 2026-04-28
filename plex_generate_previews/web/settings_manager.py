@@ -91,7 +91,13 @@ class SettingsManager:
                     self._settings = json.load(f)
                 logger.debug(f"Loaded settings from {self.settings_file}")
             except Exception as e:
-                logger.error(f"Failed to load settings: {e}")
+                logger.error(
+                    f"Could not read settings file at {self.settings_file}: {e}. "
+                    f"Falling back to defaults — your previously-saved configuration will not "
+                    f"be loaded. The file may be corrupted or have wrong permissions; check it "
+                    f"is valid JSON and readable by this process. Back up the file before any "
+                    f"manual edits."
+                )
                 self._settings = {}
         else:
             self._settings = {}
@@ -110,7 +116,11 @@ class SettingsManager:
             except (ImportError, AttributeError):
                 pass
         except Exception as e:
-            logger.error(f"Failed to save settings: {e}")
+            logger.error(
+                f"Could not save settings to {self.settings_file}: {e}. "
+                f"Your changes were NOT persisted and will be lost on restart. Check the config "
+                f"directory exists and is writable, and that the disk isn't full."
+            )
             raise
 
     def _load_setup_state(self) -> None:
@@ -121,7 +131,11 @@ class SettingsManager:
                     self._setup_state = json.load(f)
                 logger.debug(f"Loaded setup state from {self.setup_state_file}")
             except Exception as e:
-                logger.error(f"Failed to load setup state: {e}")
+                logger.error(
+                    f"Could not read setup-state file at {self.setup_state_file}: {e}. "
+                    f"The setup wizard will treat this as a fresh install — you may be asked "
+                    f"to re-complete first-run setup. Check the file is valid JSON and readable."
+                )
                 self._setup_state = {}
         else:
             self._setup_state = {}
@@ -134,7 +148,10 @@ class SettingsManager:
             atomic_json_save(str(self.setup_state_file), self._setup_state)
             logger.debug(f"Saved setup state to {self.setup_state_file}")
         except Exception as e:
-            logger.error(f"Failed to save setup state: {e}")
+            logger.error(
+                f"Could not save setup-state to {self.setup_state_file}: {e}. "
+                f"Wizard progress was NOT persisted; check the config directory is writable."
+            )
             raise
 
     def get(self, key: str, default: Any = None) -> Any:

@@ -105,7 +105,13 @@ class JellyfinServer(EmbyApiClient):
             response.raise_for_status()
             data = response.json()
         except Exception as exc:
-            logger.warning("Failed to read Jellyfin VirtualFolders for trickplay check: {}", exc)
+            logger.warning(
+                "Could not check Jellyfin trickplay settings on server {!r}: {}. "
+                "The 'Fix trickplay' diagnostic is unavailable until Jellyfin is reachable — "
+                "verify the server is running and your API key / token is valid.",
+                self.name,
+                exc,
+            )
             return []
 
         if not isinstance(data, list):
@@ -179,7 +185,15 @@ class JellyfinServer(EmbyApiClient):
                 update.raise_for_status()
                 results[lib_id] = "ok"
             except Exception as exc:
-                logger.warning("Failed to enable trickplay on Jellyfin library {}: {}", lib_id, exc)
+                logger.warning(
+                    "Could not enable trickplay extraction on Jellyfin library {} (server {!r}): {}. "
+                    "Other libraries may still be fixed — check the per-library results dict. "
+                    "If this keeps happening, enable the flag manually in Jellyfin's web UI: "
+                    "Dashboard → Libraries → edit library → 'Trickplay image extraction'.",
+                    lib_id,
+                    self.name,
+                    exc,
+                )
                 results[lib_id] = f"error: {exc}"
         return results
 

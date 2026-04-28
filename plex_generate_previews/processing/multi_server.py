@@ -246,13 +246,19 @@ def _publish_one(
             message=str(exc),
         )
     except (TypeError, ValueError, OSError, RuntimeError, requests.RequestException) as exc:
-        logger.warning("compute_output_paths failed for {}: {}", server.name, exc)
+        logger.warning(
+            "Could not work out where to save previews for media server {!r}: {}. "
+            "This usually means the server is unreachable or its API rejected our request — "
+            "check the server's status, network connectivity, and credentials in Settings → Media Servers.",
+            server.name,
+            exc,
+        )
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,
             adapter_name=adapter.name,
             status=PublisherStatus.FAILED,
-            message=f"compute_output_paths: {exc}",
+            message=f"Could not compute output paths: {exc}",
         )
 
     # Skip when every output exists AND the journal proves the source
@@ -274,14 +280,21 @@ def _publish_one(
     try:
         adapter.publish(bundle, output_paths, item_id)
     except (TypeError, ValueError, OSError, RuntimeError, requests.RequestException) as exc:
-        logger.warning("publish failed for {} via {}: {}", server.name, adapter.name, exc)
+        logger.warning(
+            "Failed to write preview output for media server {!r} (format: {}): {}. "
+            "Common causes: write permission denied on the output folder, disk full, "
+            "or the destination path doesn't exist. Verify the output folder is writable.",
+            server.name,
+            adapter.name,
+            exc,
+        )
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,
             adapter_name=adapter.name,
             status=PublisherStatus.FAILED,
             output_paths=output_paths,
-            message=f"publish: {exc}",
+            message=f"Could not write preview file: {exc}",
         )
 
     # Stamp the journal so the next webhook for an unchanged source can
