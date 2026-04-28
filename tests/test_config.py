@@ -12,6 +12,7 @@ import pytest
 
 from plex_generate_previews.config import (
     ConfigValidationError,
+    derive_legacy_plex_view,
     expand_path_mapping_candidates,
     get_config_value,
     get_path_mapping_pairs,
@@ -649,6 +650,134 @@ class TestLocalPathToWebhookAliases:
         # Implementation skips wp == local_prefix
         result = local_path_to_webhook_aliases("/data/Movies/foo.mkv", mappings)
         assert result == []
+
+
+class TestDeriveLegacyPlexView:
+    """Test the helper that flattens media_servers[0] into legacy plex_* keys.
+
+    Phase 0 of the multi-server migration relies on this helper so that
+    every legacy reader (load_config, job_runner, recent_added_scanner,
+    webhooks) keeps working when settings.json only has media_servers[0].
+    """
+
+    def test_empty_list_returns_empty(self):
+        assert derive_legacy_plex_view([]) == {}
+
+    def test_non_list_returns_empty(self):
+        assert derive_legacy_plex_view(None) == {}
+        assert derive_legacy_plex_view("not-a-list") == {}
+
+    def test_no_plex_entry_returns_empty(self):
+        # Only Emby/Jellyfin configured — derived view stays empty so the
+        # legacy global plex_* keys remain authoritative for any consumer
+        # that still wants Plex-flavoured config (none should, eventually).
+        servers = [
+            {"id": "1", "type": "emby", "name": "Emby", "url": "http://emby:8096", "enabled": True},
+            {"id": "2", "type": "jellyfin", "name": "JF", "url": "http://jf:8096", "enabled": True},
+        ]
+        assert derive_legacy_plex_view(servers) == {}
+
+    def test_disabled_plex_entry_is_skipped(self):
+        servers = [
+            {"id": "1", "type": "plex", "name": "Plex", "url": "http://plex:32400", "enabled": False},
+        ]
+        assert derive_legacy_plex_view(servers) == {}
+
+    def test_first_enabled_plex_wins_over_later_entries(self):
+        servers = [
+            {
+                "id": "1",
+                "type": "plex",
+                "name": "Plex A",
+                "url": "http://a:32400",
+                "enabled": True,
+                "auth": {"token": "tok-a"},
+            },
+            {
+                "id": "2",
+                "type": "plex",
+                "name": "Plex B",
+                "url": "http://b:32400",
+                "enabled": True,
+                "auth": {"token": "tok-b"},
+            },
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert view["plex_url"] == "http://a:32400"
+        assert view["plex_token"] == "tok-a"
+
+    def test_full_projection_round_trip(self):
+        servers = [
+            {
+                "id": "plex-default",
+                "type": "plex",
+                "name": "Plex",
+                "enabled": True,
+                "url": "http://plex.lan:32400",
+                "auth": {"method": "token", "token": "abc123"},
+                "verify_ssl": False,
+                "timeout": 90,
+                "libraries": [
+                    {"id": "1", "name": "Movies", "enabled": True},
+                    {"id": "2", "name": "Anime", "enabled": False},
+                    {"id": "3", "name": "TV", "enabled": True},
+                ],
+                "path_mappings": [{"plex_prefix": "/data", "local_prefix": "/mnt"}],
+                "exclude_paths": [{"value": "/data/Trailers/", "type": "path"}],
+                "output": {"adapter": "plex_bundle", "plex_config_folder": "/srv/plex_config", "frame_interval": 5},
+            }
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert view == {
+            "plex_url": "http://plex.lan:32400",
+            "plex_token": "abc123",
+            "plex_verify_ssl": False,
+            "plex_timeout": 90,
+            "plex_config_folder": "/srv/plex_config",
+            "selected_libraries": ["1", "3"],  # disabled "Anime" excluded
+            "path_mappings": [{"plex_prefix": "/data", "local_prefix": "/mnt"}],
+            "exclude_paths": [{"value": "/data/Trailers/", "type": "path"}],
+        }
+
+    def test_empty_optional_fields_omitted(self):
+        # No libraries / path_mappings / exclude_paths → the corresponding
+        # keys are simply absent from the view, so callers fall back to
+        # their normal default-handling rather than getting a forced empty list.
+        servers = [
+            {
+                "id": "plex-default",
+                "type": "plex",
+                "url": "http://plex:32400",
+                "enabled": True,
+                "auth": {"token": "t"},
+                "libraries": [],
+                "path_mappings": [],
+                "exclude_paths": [],
+                "output": {},
+            }
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert "selected_libraries" not in view
+        assert "path_mappings" not in view
+        assert "exclude_paths" not in view
+        assert "plex_config_folder" not in view
+        assert view["plex_url"] == "http://plex:32400"
+        assert view["plex_token"] == "t"
+
+    def test_invalid_timeout_is_skipped(self):
+        # Garbage timeout shouldn't blow up callers — we just omit the key
+        # so the legacy default kicks in.
+        servers = [
+            {
+                "id": "plex-default",
+                "type": "plex",
+                "url": "http://plex:32400",
+                "enabled": True,
+                "timeout": "not-a-number",
+            }
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert "plex_timeout" not in view
 
 
 class TestLoadConfig:

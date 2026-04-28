@@ -61,8 +61,16 @@ def _section_is_selected(
 
 
 def _parse_global_library_filter(settings) -> tuple[set[str], set[str]]:
-    """Parse the global ``selected_libraries`` setting into title/id sets."""
-    raw = settings.get("selected_libraries", [])
+    """Parse the active library filter into title/id sets.
+
+    Prefers the per-server library list from ``media_servers[0]`` (Plex)
+    when present; falls back to the legacy global ``selected_libraries``
+    key for older installs that haven't been migrated.
+    """
+    from ..config import derive_legacy_plex_view
+
+    plex_view = derive_legacy_plex_view(settings.get("media_servers") or [])
+    raw = plex_view.get("selected_libraries") or settings.get("selected_libraries", [])
     titles: set[str] = set()
     ids: set[str] = set()
     if isinstance(raw, list):
@@ -269,7 +277,15 @@ def scan_recently_added(
     # Pre-filter settings: when the user has regenerate_thumbnails on
     # they want EVERYTHING re-processed, so we skip the BIF-exists
     # filter and let the worker handle it.
-    plex_config_folder = str(settings.get("plex_config_folder") or "/plex")
+    # Prefer media_servers[0].output.plex_config_folder (per-server) over
+    # the legacy global key, so the BIF-exists check finds the right
+    # bundle directory for installs that have already migrated.
+    from ..config import derive_legacy_plex_view as _derive
+
+    _plex_view_for_folder = _derive(settings.get("media_servers") or [])
+    plex_config_folder = str(
+        _plex_view_for_folder.get("plex_config_folder") or settings.get("plex_config_folder") or "/plex"
+    )
     regenerate = bool(settings.get("regenerate_thumbnails", False))
 
     submitted = 0

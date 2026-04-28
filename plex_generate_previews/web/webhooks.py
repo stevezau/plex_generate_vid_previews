@@ -510,7 +510,15 @@ def _execute_webhook_job(debounce_key: str) -> None:
             },
         )
         settings = get_settings_manager()
-        selected_libraries = settings.get("selected_libraries", [])
+        # Prefer the per-server library list from media_servers[0] (Plex)
+        # over the legacy global selected_libraries key. The webhook
+        # dispatch path filters Plex jobs by enabled-library; without
+        # this projection a settings.json that only stores libraries
+        # under media_servers[0] would scan every library.
+        from ..config import derive_legacy_plex_view
+
+        plex_view = derive_legacy_plex_view(settings.get("media_servers") or [])
+        selected_libraries = plex_view.get("selected_libraries") or settings.get("selected_libraries", [])
         if not isinstance(selected_libraries, list):
             selected_libraries = []
         selected_libraries = [str(name).strip() for name in selected_libraries if str(name).strip()]

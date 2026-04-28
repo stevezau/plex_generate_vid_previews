@@ -194,33 +194,45 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 return
 
             settings = get_settings_manager()
-            if settings.plex_url:
-                config.plex_url = settings.plex_url
-            if settings.plex_token:
-                config.plex_token = settings.plex_token
-            if settings.plex_config_folder:
-                config.plex_config_folder = settings.plex_config_folder
 
             from ...config import (
+                derive_legacy_plex_view,
                 normalize_exclude_paths,
                 normalize_path_mappings,
                 split_library_selectors,
             )
 
-            selected_libs = settings.get("selected_libraries", [])
+            # Layer the per-server Plex view (media_servers[0]) over legacy
+            # global keys so reads here match what load_config does. Without
+            # this, a settings.json that only has media_servers[0] (no legacy
+            # plex_url/plex_token/etc) would miss them at job-start time.
+            plex_view = derive_legacy_plex_view(settings.get("media_servers") or [])
+            effective = {**settings.get_all(), **plex_view}
+
+            plex_url = effective.get("plex_url")
+            plex_token = effective.get("plex_token")
+            plex_config_folder = effective.get("plex_config_folder")
+            if plex_url:
+                config.plex_url = plex_url
+            if plex_token:
+                config.plex_token = plex_token
+            if plex_config_folder:
+                config.plex_config_folder = plex_config_folder
+
+            selected_libs = effective.get("selected_libraries", [])
             if selected_libs:
                 selected_ids, selected_titles = split_library_selectors(selected_libs)
                 config.plex_library_ids = selected_ids or None
                 config.plex_libraries = selected_titles
 
-            path_mappings = normalize_path_mappings(settings)
+            path_mappings = normalize_path_mappings(effective)
             if path_mappings:
                 config.path_mappings = path_mappings
-            config.exclude_paths = normalize_exclude_paths(settings.get("exclude_paths"))
-            if settings.get("plex_videos_path_mapping"):
-                config.plex_videos_path_mapping = settings.get("plex_videos_path_mapping")
-            if settings.get("plex_local_videos_path_mapping"):
-                config.plex_local_videos_path_mapping = settings.get("plex_local_videos_path_mapping")
+            config.exclude_paths = normalize_exclude_paths(effective.get("exclude_paths"))
+            if effective.get("plex_videos_path_mapping"):
+                config.plex_videos_path_mapping = effective.get("plex_videos_path_mapping")
+            if effective.get("plex_local_videos_path_mapping"):
+                config.plex_local_videos_path_mapping = effective.get("plex_local_videos_path_mapping")
 
             if config_overrides:
                 for key, value in config_overrides.items():

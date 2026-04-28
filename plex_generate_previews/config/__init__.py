@@ -253,11 +253,85 @@ def clear_config_cache() -> None:
     _cached_config_mtime = None
 
 
+def derive_legacy_plex_view(media_servers: list) -> dict:
+    """Project the first enabled Plex entry in ``media_servers`` into legacy ``plex_*`` keys.
+
+    The new multi-server model stores Plex config inside ``media_servers[i]``
+    where ``type == "plex"``. But every legacy consumer (plex_client,
+    job_runner, recent_added_scanner, the Plex bundle output path) still
+    reads flat ``plex_url`` / ``plex_token`` / ``selected_libraries`` /
+    ``path_mappings`` / ``exclude_paths`` / ``plex_config_folder`` keys
+    from settings.
+
+    This function returns a dict that looks like the legacy flat view but
+    is derived from the per-server config, so the read path can prefer it
+    and the legacy globals become a fallback only.
+
+    Returns an empty dict when no Plex server is configured — callers
+    should fall back to the legacy global keys in that case.
+    """
+    if not isinstance(media_servers, list):
+        return {}
+    plex_entry = next(
+        (
+            e
+            for e in media_servers
+            if isinstance(e, dict) and (e.get("type") or "").lower() == "plex" and e.get("enabled", True)
+        ),
+        None,
+    )
+    if plex_entry is None:
+        return {}
+
+    auth = plex_entry.get("auth") or {}
+    output = plex_entry.get("output") or {}
+    libs_raw = plex_entry.get("libraries") or []
+    selected_libraries: list[str] = []
+    if isinstance(libs_raw, list):
+        for lib in libs_raw:
+            if not isinstance(lib, dict) or not lib.get("enabled", True):
+                continue
+            lib_id = lib.get("id") or lib.get("name")
+            if lib_id:
+                selected_libraries.append(str(lib_id))
+
+    view: dict = {}
+    if plex_entry.get("url"):
+        view["plex_url"] = plex_entry["url"]
+    token = auth.get("token") if isinstance(auth, dict) else None
+    if token:
+        view["plex_token"] = token
+    if "verify_ssl" in plex_entry:
+        view["plex_verify_ssl"] = bool(plex_entry["verify_ssl"])
+    if "timeout" in plex_entry:
+        try:
+            view["plex_timeout"] = int(plex_entry["timeout"])
+        except (TypeError, ValueError):
+            pass
+    if isinstance(output, dict) and output.get("plex_config_folder"):
+        view["plex_config_folder"] = output["plex_config_folder"]
+    if selected_libraries:
+        view["selected_libraries"] = selected_libraries
+    pm = plex_entry.get("path_mappings")
+    if isinstance(pm, list) and pm:
+        view["path_mappings"] = pm
+    ep = plex_entry.get("exclude_paths")
+    if isinstance(ep, list) and ep:
+        view["exclude_paths"] = ep
+    return view
+
+
 def load_config() -> Config:
     """Load and validate configuration from settings.json and environment variables.
 
     settings.json is the primary source. Environment variables act as
     fallbacks (for backward compat / first-run before migration).
+
+    Within settings.json, when a Plex entry exists in ``media_servers``,
+    its fields take precedence over the legacy flat ``plex_*`` keys —
+    that's the multi-server data path the rest of the app already uses.
+    Legacy flat keys remain as a fallback so existing single-Plex
+    installs keep working through the migration window.
 
     Returns:
         Validated configuration object.
@@ -282,6 +356,13 @@ def load_config() -> Config:
             logger.debug("Loaded {} settings from settings.json", len(ui_settings))
     except Exception as e:
         logger.debug("Could not load settings.json: {}", e)
+
+    # Overlay the derived per-server Plex view on top of the legacy flat keys
+    # so reads prefer media_servers[0] when it exists (without the legacy keys
+    # being removed yet — they're still the back-compat fallback).
+    plex_view = derive_legacy_plex_view(ui_settings.get("media_servers") or [])
+    if plex_view:
+        ui_settings = {**ui_settings, **plex_view}
 
     def get_value(settings_key, env_key, default, value_type=str):
         """Get config value from settings.json, falling back to env then default."""
