@@ -207,9 +207,12 @@ class EmbyApiClient(MediaServer):
             payload = response.json()
         except Exception as exc:
             logger.warning(
-                "Failed to list {} items for library {}: {}",
+                "Could not list items in {} library {} ({}: {}). "
+                "This library will be skipped for this run — verify the server is reachable, the API key / token "
+                "is still valid, and that the library hasn't been deleted on the server side.",
                 self.vendor_name,
                 library_id,
+                type(exc).__name__,
                 exc,
             )
             return

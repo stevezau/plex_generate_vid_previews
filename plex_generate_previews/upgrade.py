@@ -235,7 +235,13 @@ def _migrate_to_v2(sm) -> list:
             old_threads = int(old_threads_val)
             old_ffmpeg = int(sm.get("ffmpeg_threads", 2))
         except (ValueError, TypeError):
-            logger.warning("Invalid gpu_threads/ffmpeg_threads in settings, skipping migration")
+            logger.warning(
+                "Old GPU settings (gpu_threads={!r}, ffmpeg_threads={!r}) aren't valid numbers — "
+                "they can't be migrated to the new per-GPU layout. Defaulting to 0 GPU workers + 2 ffmpeg threads. "
+                "Open Settings → GPU and configure your devices manually.",
+                old_threads_val,
+                sm.get("ffmpeg_threads"),
+            )
             old_threads = 0
             old_ffmpeg = 2
 

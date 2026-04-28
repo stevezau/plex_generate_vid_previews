@@ -114,9 +114,17 @@ def _check_ffmpeg_version() -> bool:
         )
         return True
     logger.warning(
-        f"⚠ FFmpeg version {version[0]}.{version[1]}.{version[2]} is below minimum requirement {MIN_FFMPEG_VERSION[0]}.{MIN_FFMPEG_VERSION[1]}.{MIN_FFMPEG_VERSION[2]}"
+        "Installed FFmpeg is {}.{}.{} but this app needs at least {}.{}.{}. "
+        "Older FFmpeg builds are missing hardware-acceleration features (CUDA / VAAPI / QSV / VideoToolbox) "
+        "that BIF generation relies on for speed. CPU fallback may still work but will be slow. "
+        "Fix: rebuild the Docker image (it ships a recent FFmpeg) or upgrade FFmpeg on your host.",
+        version[0],
+        version[1],
+        version[2],
+        MIN_FFMPEG_VERSION[0],
+        MIN_FFMPEG_VERSION[1],
+        MIN_FFMPEG_VERSION[2],
     )
-    logger.warning("Hardware acceleration may not work properly. Please upgrade FFmpeg.")
     return False
 
 

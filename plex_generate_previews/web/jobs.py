@@ -219,7 +219,14 @@ class JobManager:
                             self._jobs[job.id] = job
                         except (TypeError, KeyError, ValueError) as job_error:
                             job_id = job_data.get("id", "unknown")
-                            logger.warning(f"Failed to load job {job_id}: {job_error}")
+                            logger.warning(
+                                "Skipping job {} from saved jobs file: its record is malformed ({}: {}). "
+                                "Other jobs in the file will still load — most likely a leftover from an older "
+                                "version. If you don't need to keep it, you can clear it from the Jobs page.",
+                                job_id,
+                                type(job_error).__name__,
+                                job_error,
+                            )
                             continue
                 logger.info(f"Loaded {len(self._jobs)} jobs from {self.jobs_file}")
                 if self._interrupted_jobs:
@@ -227,9 +234,23 @@ class JobManager:
                 if needs_save:
                     self._save_jobs()
             except (OSError, json.JSONDecodeError) as e:
-                logger.warning(f"Failed to load jobs file: {e}")
+                logger.warning(
+                    "Could not read the saved jobs file at {} ({}: {}). "
+                    "Starting with an empty jobs list — your job history won't appear, "
+                    "but new jobs will still run and save normally.",
+                    self.jobs_file,
+                    type(e).__name__,
+                    e,
+                )
             except Exception as e:
-                logger.error(f"Unexpected error loading jobs: {e}")
+                logger.error(
+                    "Unexpected error loading jobs from {} ({}: {}). "
+                    "Starting with an empty jobs list — please open an issue with the recent log lines "
+                    "if you need the history recovered.",
+                    self.jobs_file,
+                    type(e).__name__,
+                    e,
+                )
 
     def _save_jobs(self) -> None:
         """Save jobs to persistent storage. Caller must hold _lock."""
@@ -239,7 +260,14 @@ class JobManager:
             jobs_data = {"jobs": [job.to_dict() for job in self._jobs.values()]}
             atomic_json_save(self.jobs_file, jobs_data)
         except OSError as e:
-            logger.error(f"Failed to save jobs: {e}")
+            logger.error(
+                "Could not save the jobs file to {} ({}: {}). "
+                "Job state will be lost when the app restarts — "
+                "check that the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
+                self.jobs_file,
+                type(e).__name__,
+                e,
+            )
 
     def _emit_event(self, event: str, data: dict) -> None:
         """Emit a SocketIO event without blocking the caller.

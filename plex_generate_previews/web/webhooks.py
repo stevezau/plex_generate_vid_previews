@@ -66,7 +66,14 @@ def _load_history_from_disk() -> None:
                 _webhook_history.extend(entries[-_HISTORY_MAX:])
             logger.debug("Loaded {} webhook history entries from {}", len(_webhook_history), path)
     except Exception as exc:
-        logger.warning("Failed to load webhook history from {}: {}", path, exc)
+        logger.warning(
+            "Could not load saved webhook history from {} ({}: {}). "
+            "Starting with an empty history — past webhook activity won't show up on the Webhooks page, "
+            "but new webhooks will still be received and recorded normally.",
+            path,
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _save_history_to_disk() -> None:
@@ -445,7 +452,11 @@ def _execute_webhook_job(debounce_key: str) -> None:
         _pending_timers.pop(debounce_key, None)
 
     if not batch:
-        logger.warning(f"Webhook: no pending batch found for key '{debounce_key}'")
+        logger.warning(
+            "Webhook batch '{}' fired but the pending list was already empty — "
+            "this usually happens when two debounce timers race; safe to ignore unless it repeats often.",
+            debounce_key,
+        )
         return
 
     source = str(batch.get("source", "unknown"))
@@ -828,7 +839,10 @@ def plex_webhook():
 
     if not rating_key:
         logger.warning(
-            "Webhook: Plex library.new payload missing ratingKey. Structure: {}",
+            "Plex 'library.new' webhook for {!r} arrived without a ratingKey — we can't look the item up. "
+            "Plex usually includes this; if you see this often the webhook source may be a third-party tool "
+            "sending a stripped-down payload. Payload structure for diagnosis: {}",
+            display_title or raw_title,
             _summarize_payload(data),
         )
         _add_history_entry("plex", "library.new", display_title or raw_title, "ignored_no_path")

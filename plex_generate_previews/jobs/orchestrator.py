@@ -185,7 +185,13 @@ def run_processing(
                 }
             }
             if not webhook_resolution.items:
-                logger.warning("No Plex items matched webhook file paths; skipping processing")
+                logger.warning(
+                    "Webhook arrived with {} file path(s) but Plex doesn't have any of them indexed yet — "
+                    "nothing to process. The retry queue will keep checking; if this persists, verify "
+                    "Plex's library scan is finishing and the path mappings under Settings line up between "
+                    "the source (e.g. Sonarr/Radarr) and Plex.",
+                    len(config.webhook_paths or []),
+                )
             else:
                 result = _dispatch_items(webhook_resolution.items, "Webhook Targets")
                 total_successful += result["completed"]
@@ -293,8 +299,12 @@ def run_processing(
     except KeyboardInterrupt:
         logger.info("Received interrupt signal, shutting down gracefully...")
     except ConnectionError as e:
-        logger.error(f"Connection failed: {e}")
-        logger.error("Please fix the connection issue and try again.")
+        logger.error(
+            "Could not reach Plex while running this job ({}). "
+            "Job aborted — verify the Plex URL and token in Settings, that the Plex server is running, "
+            "and that there's no firewall between the two. Re-run the job once Plex is reachable.",
+            e,
+        )
         return None
     except Exception as e:
         logger.error(

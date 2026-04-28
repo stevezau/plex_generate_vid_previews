@@ -483,7 +483,12 @@ class Worker:
             # Wait for current task to complete (with timeout)
             self.current_thread.join(timeout=60)
             if self.current_thread.is_alive():
-                logger.warning(f"{self.display_name} did not finish within shutdown timeout")
+                logger.warning(
+                    "{} is still busy after waiting 60 seconds for it to stop. "
+                    "Continuing shutdown anyway — its FFmpeg process may keep running for a few more seconds "
+                    "before the OS reaps it. If you see leftover ffmpeg processes after restart, kill them manually.",
+                    self.display_name,
+                )
 
     @staticmethod
     def find_available(workers: list["Worker"]) -> Optional["Worker"]:

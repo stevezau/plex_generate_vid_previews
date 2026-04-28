@@ -237,7 +237,13 @@ def register(token: str, url: str, auth_token: str | None = None) -> list[str]:
             account.deleteWebhook(stale_url)
             logger.info("Removed stale Plex webhook with old auth: {}", stale_url)
         except Exception as exc:
-            logger.warning("Failed to remove stale Plex webhook {}: {}", stale_url, exc)
+            logger.warning(
+                "Could not remove the old Plex webhook entry {} on plex.tv ({}). "
+                "We'll still register the new one, but Plex will keep firing the old URL too "
+                "until you delete it manually at https://app.plex.tv/desktop#!/account → Webhooks.",
+                stale_url,
+                exc,
+            )
 
     if target_with_auth in current and not stale:
         logger.debug("Plex webhook already registered: {}", target_with_auth)

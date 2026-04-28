@@ -73,7 +73,13 @@ def execute_scheduled_job(
             scan_recently_added(lookback, library_ids=library_ids)
             manager._update_last_run(schedule_id)
         except Exception as e:
-            logger.error("Failed to execute recently-added scan {}: {}", schedule_id, e)
+            logger.error(
+                "Scheduled 'recently added' scan {} could not run ({}: {}). "
+                "It will retry on its next scheduled tick — verify Plex is reachable and the token in Settings is valid.",
+                schedule_id,
+                type(e).__name__,
+                e,
+            )
         return
 
     logger.info(f"Executing scheduled job: {schedule_id} for library: {library_name}")
@@ -90,9 +96,20 @@ def execute_scheduled_job(
             manager.run_job_callback(**kwargs)
             manager._update_last_run(schedule_id)
         except Exception as e:
-            logger.error(f"Failed to execute scheduled job {schedule_id}: {e}")
+            logger.error(
+                "Scheduled job {} for library {!r} could not start ({}: {}). "
+                "It will retry on its next scheduled tick — check the Jobs page for any prior error details.",
+                schedule_id,
+                library_name or "all libraries",
+                type(e).__name__,
+                e,
+            )
     else:
-        logger.warning("No run_job_callback set, cannot execute scheduled job")
+        logger.warning(
+            "Scheduled job {} fired but no job runner is wired up — this is an internal startup issue. "
+            "Restart the app; if it persists, please open an issue with the latest log lines.",
+            schedule_id,
+        )
 
 
 class ScheduleManager:
@@ -142,7 +159,14 @@ class ScheduleManager:
                     self._schedules = data.get("schedules", {})
                 logger.info(f"Loaded {len(self._schedules)} schedule configurations")
             except (OSError, json.JSONDecodeError) as e:
-                logger.warning(f"Failed to load schedules: {e}")
+                logger.warning(
+                    "Could not read saved schedules from {} ({}: {}). "
+                    "Starting with an empty schedule list — your existing schedules will reappear "
+                    "if the file becomes readable; otherwise re-create them on the Schedules page.",
+                    self.schedules_file,
+                    type(e).__name__,
+                    e,
+                )
 
     def _save_schedules(self) -> None:
         """Save schedule metadata to persistent storage."""
@@ -151,7 +175,14 @@ class ScheduleManager:
 
             atomic_json_save(self.schedules_file, {"schedules": self._schedules})
         except OSError as e:
-            logger.error(f"Failed to save schedules: {e}")
+            logger.error(
+                "Could not save schedules to {} ({}: {}). "
+                "Your changes are still active in memory but won't survive a restart — "
+                "check that the config directory is writable (Docker: confirm the volume mount permissions and PUID/PGID).",
+                self.schedules_file,
+                type(e).__name__,
+                e,
+            )
 
     def _on_job_executed(self, event) -> None:
         """Handle successful job execution."""
@@ -159,11 +190,21 @@ class ScheduleManager:
 
     def _on_job_error(self, event) -> None:
         """Handle job execution error."""
-        logger.error(f"Scheduled job {event.job_id} failed: {event.exception}")
+        logger.error(
+            "Scheduled job {} raised an error: {}. "
+            "It will retry on its next scheduled tick — see earlier log lines for the underlying cause.",
+            event.job_id,
+            event.exception,
+        )
 
     def _on_job_missed(self, event) -> None:
         """Handle missed job."""
-        logger.warning(f"Scheduled job {event.job_id} was missed")
+        logger.warning(
+            "Scheduled job {} did not run on time and was skipped. "
+            "This usually means the app was offline when the schedule fired — "
+            "it will run normally on the next scheduled tick.",
+            event.job_id,
+        )
 
     def start(self) -> None:
         """Start the scheduler."""

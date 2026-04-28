@@ -1021,36 +1021,41 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
         if input_targets.intersection(skipped_by_library_targets):
             skipped_count += 1
             skipped_input_paths_from_loop.add(input_path)
-            logger.warning(f"  [{file_index}/{total_for_index}] {input_path}")
+            # Per-file diagnostic detail. Logged at info level — the
+            # aggregate "Skipped N input file(s)" warning below is the
+            # actionable summary; these lines just show the breakdown.
+            logger.info(f"  [{file_index}/{total_for_index}] {input_path}")
             if mapping_applied:
                 mapping_prefixes = sorted(
                     set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
                 )
-                logger.warning(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
+                logger.info(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
             if skipped_candidates:
-                logger.warning(f"        Found in excluded library: {skipped_candidates[0]}")
+                logger.info(f"        Found in excluded library: {skipped_candidates[0]}")
             result_suffix = f": {', '.join(excluded_libraries)})" if excluded_libraries else ")"
-            logger.warning("        Result: skipped (excluded library" + result_suffix)
+            logger.info("        Result: skipped (excluded library" + result_suffix)
             continue
 
         unresolved_count += 1
         unresolved_input_paths_from_loop.append(input_path)
-        logger.warning(f"  [{file_index}/{total_for_index}] {input_path}")
-        logger.warning("        Direct path not found in Plex")
+        # Per-file diagnostic detail. Logged at info level — the
+        # aggregate "Unresolved" warning below is the actionable summary.
+        logger.info(f"  [{file_index}/{total_for_index}] {input_path}")
+        logger.info("        Direct path not found in Plex")
         if mapping_applied:
             mapping_prefixes = sorted(
                 set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
             )
-            logger.warning(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
+            logger.info(f"        Trying path mappings: {', '.join(mapping_prefixes)}")
         bn = os.path.basename(input_path)
         plex_locs = basename_plex_locations.get(bn)
         if plex_locs:
-            logger.warning(f"        Plex has file with same name at: {plex_locs[0]}")
+            logger.info(f"        Plex has file with same name at: {plex_locs[0]}")
             if mapped_candidates:
-                logger.warning(f"        Webhook mapped to: {mapped_candidates[0]}")
-            logger.warning("        Result: not found (file exists in Plex but full paths differ)")
+                logger.info(f"        Webhook mapped to: {mapped_candidates[0]}")
+            logger.info("        Result: not found (file exists in Plex but full paths differ)")
         else:
-            logger.warning("        Result: not found")
+            logger.info("        Result: not found")
 
     # Classify any input paths beyond the per-file detail window (same formula as loop).
     for input_path in input_paths[max_detail_logs:]:

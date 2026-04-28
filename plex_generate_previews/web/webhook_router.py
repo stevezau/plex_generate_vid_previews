@@ -255,12 +255,14 @@ def _match_registry_server(
             # this should give one of the two servers a fresh identity
             # or use the per-server fallback URL ``/api/webhooks/server/<id>``.
             logger.warning(
-                "Identity collision: {} configured {} servers share server_identity={!r}. "
-                "Refusing to route — either change one server's identity or use the "
-                "explicit per-server webhook URL.",
-                len(matches),
+                "Two or more configured {} servers share the same server identity ({!r}, {} matches). "
+                "We can't tell which one this webhook came from, so it's being dropped to avoid the "
+                "wrong server getting credit. Fix: either re-install one server so it has a fresh "
+                "identity, or point each server at its own URL '/api/webhooks/server/<server_id>' "
+                "(found on the Servers page).",
                 kind,
                 server_id_hint,
+                len(matches),
             )
             return None, None
 
@@ -394,13 +396,21 @@ def webhook_incoming():
         request.content_length,
     )
     if payload is None:
-        logger.warning("Webhook router: rejected — {}", parse_error or "unrecognised payload")
+        logger.warning(
+            "Webhook from {} rejected: {}. "
+            "The body couldn't be parsed — make sure the source is sending JSON (Content-Type: application/json). "
+            "Plex sends multipart/form-data with a 'payload' field; that's also accepted.",
+            request.remote_addr,
+            parse_error or "unrecognised payload",
+        )
         return jsonify({"status": "ignored", "reason": parse_error or "unrecognised"}), 400
 
     if kind == "unknown":
         # Body parsed but didn't match any vendor signature — caller error.
         logger.warning(
-            "Webhook router: unrecognised payload shape from {} (Content-Type={})",
+            "Webhook from {} (Content-Type={}) parsed OK but didn't match any known vendor shape "
+            '(Plex / Emby / Jellyfin / Sonarr / Radarr / generic \'{{"path": "..."}}\'). '
+            "If you're using a custom integration, post a JSON body with a top-level 'path' field.",
             request.remote_addr,
             request.content_type,
         )

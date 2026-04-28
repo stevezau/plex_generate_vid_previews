@@ -477,7 +477,14 @@ class SettingsManager:
                 if self._client_id:
                     return self._client_id
             except Exception as e:
-                logger.warning(f"Failed to load client ID: {e}")
+                logger.warning(
+                    "Could not read the saved client identifier from {} ({}: {}). "
+                    "A new one will be generated — Plex will treat this as a fresh client "
+                    "the next time you sign in.",
+                    self.client_id_file,
+                    type(e).__name__,
+                    e,
+                )
 
         # Generate new ID
         self._client_id = f"plex-preview-generator-{uuid.uuid4()}"
@@ -488,7 +495,14 @@ class SettingsManager:
             self.client_id_file.write_text(self._client_id)
             logger.info(f"Generated new client identifier: {self._client_id}")
         except Exception as e:
-            logger.warning(f"Failed to save client ID: {e}")
+            logger.warning(
+                "Could not save the new client identifier to {} ({}: {}). "
+                "It'll keep working for this session, but a new one will be generated on next start. "
+                "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
+                self.client_id_file,
+                type(e).__name__,
+                e,
+            )
 
         return self._client_id
 

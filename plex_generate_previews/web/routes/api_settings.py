@@ -548,7 +548,13 @@ def plex_webhook_unregister():
         except pwh.PlexWebhookError as exc:
             # Surface the error but still flip the local toggle off so
             # the UI doesn't get stuck in a confusing in-between state.
-            logger.warning("Plex webhook unregister failed: {}", exc)
+            logger.warning(
+                "Could not remove the Plex webhook registration on plex.tv ({}). "
+                "We've still turned the toggle off here, but Plex may keep firing webhooks at us "
+                "until you remove the entry manually at https://app.plex.tv/desktop#!/account → Webhooks. "
+                "Check your Plex token is still valid in Settings.",
+                exc,
+            )
             settings.update({"plex_webhook_enabled": False})
             return (
                 jsonify(

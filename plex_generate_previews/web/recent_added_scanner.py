@@ -253,7 +253,12 @@ def scan_recently_added(
 
         sections = retry_plex_call(plex.library.sections)
     except Exception as exc:
-        logger.warning("Recently Added: failed to enumerate Plex sections: {}", exc)
+        logger.warning(
+            "Recently Added scan: could not list Plex libraries ({}: {}). "
+            "This run is skipped — verify the Plex server is reachable and the token in Settings is still valid.",
+            type(exc).__name__,
+            exc,
+        )
         return 0
 
     global_titles, global_ids = _parse_global_library_filter(settings)
@@ -337,17 +342,31 @@ def _build_plex_client(settings):
         from ..config import load_config
         from ..plex_client import plex_server
     except ImportError as exc:
-        logger.warning("Recently Added: cannot import Plex client modules: {}", exc)
+        logger.warning(
+            "Recently Added scan: a required module is missing ({}). "
+            "This usually means the install is incomplete — re-run 'pip install -e .' or rebuild the Docker image.",
+            exc,
+        )
         return None
 
     try:
         config = load_config()
     except Exception as exc:
-        logger.warning("Recently Added: failed to load config: {}", exc)
+        logger.warning(
+            "Recently Added scan: could not load app settings ({}: {}). "
+            "This run is skipped — open the Settings page and confirm the configuration saves cleanly.",
+            type(exc).__name__,
+            exc,
+        )
         return None
 
     try:
         return plex_server(config)
     except Exception as exc:
-        logger.warning("Recently Added: failed to connect to Plex: {}", exc)
+        logger.warning(
+            "Recently Added scan: could not connect to Plex ({}: {}). "
+            "This run is skipped — check the Plex URL and token in Settings, and that the server is up.",
+            type(exc).__name__,
+            exc,
+        )
         return None

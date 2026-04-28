@@ -73,7 +73,13 @@ def emby_password_auth():
             verify_ssl=verify_ssl,
         )
     except Exception as exc:
-        logger.warning("Emby password auth raised: {}", exc)
+        logger.warning(
+            "Emby username+password sign-in failed for {} ({}: {}). "
+            "Verify the URL, username, and password — and that the Emby server is reachable.",
+            url,
+            type(exc).__name__,
+            exc,
+        )
         return jsonify({"ok": False, "message": f"unexpected error: {exc}"}), 500
 
     return jsonify(
@@ -115,7 +121,14 @@ def jellyfin_password_auth():
             verify_ssl=verify_ssl,
         )
     except Exception as exc:
-        logger.warning("Jellyfin password auth raised: {}", exc)
+        logger.warning(
+            "Jellyfin username+password sign-in failed for {} ({}: {}). "
+            "Verify the URL, username, and password — and that the Jellyfin server is reachable. "
+            "If you'd rather use Quick Connect, switch the auth method on the previous step.",
+            url,
+            type(exc).__name__,
+            exc,
+        )
         return jsonify({"ok": False, "message": f"unexpected error: {exc}"}), 500
 
     return jsonify(

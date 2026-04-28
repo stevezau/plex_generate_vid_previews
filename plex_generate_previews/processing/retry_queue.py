@@ -133,7 +133,15 @@ class RetryScheduler:
         try:
             callback(canonical_path, attempt)
         except Exception as exc:
-            logger.exception("Retry #{} for {} crashed: {}", attempt, canonical_path, exc)
+            logger.exception(
+                "Retry #{} for {} hit an unexpected error and was abandoned ({}: {}). "
+                "This file won't be retried again automatically — re-trigger it via webhook or by re-running "
+                "the relevant library job. Please report this with the traceback above as it indicates a bug.",
+                attempt,
+                canonical_path,
+                type(exc).__name__,
+                exc,
+            )
 
 
 _singleton: RetryScheduler | None = None
@@ -199,7 +207,15 @@ def schedule_retry_for_unindexed(
                 retry_attempt=fired_attempt,
             )
         except Exception as exc:
-            logger.exception("Retry #{} dispatch raised for {}: {}", fired_attempt, path, exc)
+            logger.exception(
+                "Retry #{} for {} could not be dispatched ({}: {}). "
+                "Scheduling another retry — if this keeps happening, the underlying error needs investigation; "
+                "share the traceback above when reporting.",
+                fired_attempt,
+                path,
+                type(exc).__name__,
+                exc,
+            )
             schedule_retry_for_unindexed(
                 path,
                 registry=registry,

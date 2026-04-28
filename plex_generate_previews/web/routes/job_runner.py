@@ -691,7 +691,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         shutil.rmtree(config.working_tmp_folder)
                         logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
                     except Exception as cleanup_error:
-                        logger.warning(f"Failed to clean up: {cleanup_error}")
+                        logger.warning(
+                            "Could not clean up the working temp folder at {} ({}). "
+                            "Leftover scratch files won't affect future jobs but will use disk space — "
+                            "you can safely delete this folder manually if it grows too large.",
+                            config.working_tmp_folder,
+                            cleanup_error,
+                        )
                 elif config.working_tmp_folder:
                     logger.debug(f"Working temp folder already absent, skipping cleanup: {config.working_tmp_folder}")
 

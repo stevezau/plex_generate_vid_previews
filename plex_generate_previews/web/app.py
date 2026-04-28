@@ -248,7 +248,13 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
 
         logger.info(f"Revived {len(revived)} interrupted job(s) on startup")
     except Exception as e:
-        logger.warning(f"Failed to revive interrupted jobs: {e}")
+        logger.warning(
+            "Could not resume jobs that were running when the app last shut down ({}: {}). "
+            "Those jobs are still recorded in the database but won't restart automatically — "
+            "you can re-run them manually from the Jobs page when ready.",
+            type(e).__name__,
+            e,
+        )
 
 
 def create_app(config_dir: str = None) -> Flask:

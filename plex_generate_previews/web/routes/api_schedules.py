@@ -1,7 +1,5 @@
 """Schedule management API routes."""
 
-import traceback
-
 from flask import jsonify, request
 from loguru import logger
 
@@ -58,7 +56,14 @@ def create_schedule():
         logger.warning(f"Schedule validation error: {e}")
         return jsonify({"error": "Invalid schedule parameters"}), 400
     except Exception as e:
-        logger.error(f"Failed to create schedule: {e}\n{traceback.format_exc()}")
+        logger.exception(
+            "Could not save the new schedule {!r} ({}: {}). "
+            "Most often this is a malformed cron expression or a clash with an existing schedule — "
+            "check the cron syntax (e.g. '0 3 * * *' for 3am daily) and the schedules list for duplicates.",
+            data.get("name", "<unnamed>"),
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to create schedule"}), 500
 
 
