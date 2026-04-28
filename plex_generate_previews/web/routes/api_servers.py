@@ -178,6 +178,7 @@ def _validate_server_payload(
 
     libraries = data.get("libraries") if "libraries" in data else base.get("libraries", [])
     path_mappings = data.get("path_mappings") if "path_mappings" in data else base.get("path_mappings", [])
+    exclude_paths = data.get("exclude_paths") if "exclude_paths" in data else base.get("exclude_paths", [])
     output = data.get("output") if "output" in data else base.get("output", {})
 
     enabled = bool(data.get("enabled", base.get("enabled", True)))
@@ -196,6 +197,7 @@ def _validate_server_payload(
         "timeout": timeout,
         "libraries": list(libraries or []),
         "path_mappings": list(path_mappings or []),
+        "exclude_paths": list(exclude_paths or []),
         "output": dict(output or {}),
         "server_identity": str(server_identity) if server_identity else None,
     }

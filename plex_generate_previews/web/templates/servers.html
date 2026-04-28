@@ -215,6 +215,126 @@
     </div>
 </div>
 
+<!-- Edit Server Modal — per-server config editor for an already-saved server.
+     Submits via PUT /api/servers/<id>; the Add wizard above stays focused on
+     first-time onboarding. -->
+<div class="modal fade" id="editServerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-pencil me-1"></i>Edit
+                    <span id="editServerName" class="text-muted"></span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editServerId">
+                <input type="hidden" id="editServerType">
+
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#edit-tab-general" type="button">General</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-libraries" type="button">Libraries</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-paths" type="button">Path mappings</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-excludes" type="button">Exclude paths</button></li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- General -->
+                    <div class="tab-pane fade show active" id="edit-tab-general">
+                        <div class="mb-3">
+                            <label class="form-label">Display name</label>
+                            <input type="text" id="editServerDisplayName" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Server URL</label>
+                            <input type="text" id="editServerUrl" class="form-control" autocomplete="off">
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" id="editServerVerifySsl" class="form-check-input">
+                            <label class="form-check-label" for="editServerVerifySsl">Verify SSL certificate</label>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" id="editServerEnabled" class="form-check-input">
+                            <label class="form-check-label" for="editServerEnabled">Server enabled (uncheck to pause publishing)</label>
+                        </div>
+
+                        <!-- Plex-only: config folder -->
+                        <div id="editPlexConfigGroup" class="mb-3 d-none">
+                            <label class="form-label">Plex config folder</label>
+                            <input type="text" id="editPlexConfigFolder" class="form-control">
+                            <div class="form-text">Where this Plex server's preview bundles will be written.</div>
+                        </div>
+
+                        <details class="mb-3">
+                            <summary class="text-muted small">Re-authenticate (only if needed)</summary>
+                            <div class="mt-2">
+                                <p class="small text-muted mb-2">Token / API key is already saved — leave blank to keep it. Paste a new value only to rotate.</p>
+                                <input type="password" id="editServerToken" class="form-control" placeholder="•••••••• (unchanged)" autocomplete="off">
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Libraries -->
+                    <div class="tab-pane fade" id="edit-tab-libraries">
+                        <p class="small text-muted">Tick the libraries this app should publish previews for. Click "Refresh libraries" on the server card to fetch fresh names from the server.</p>
+                        <div id="editLibraryList" class="list-group small"></div>
+                    </div>
+
+                    <!-- Path mappings -->
+                    <div class="tab-pane fade" id="edit-tab-paths">
+                        <p class="small text-muted mb-2">
+                            Translate a path the server reports (e.g. <code>/data/movies</code>) into the path this app sees on disk
+                            (e.g. <code>/mnt/plex/movies</code>). Add one row per mount difference. Leave empty when the server and this
+                            app share the same view.
+                        </p>
+                        <table class="table table-sm" id="editPathMappingsTable">
+                            <thead><tr><th>Path on the server</th><th>Local path on this app</th><th></th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                        <div class="d-flex justify-content-between mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editAddPathMapping">
+                                <i class="bi bi-plus-lg me-1"></i>Add row
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editApplyPathMappingsAll" title="Copy these mappings to every other configured server">
+                                <i class="bi bi-arrow-left-right me-1"></i>Apply to all servers
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Exclude paths -->
+                    <div class="tab-pane fade" id="edit-tab-excludes">
+                        <p class="small text-muted mb-2">
+                            Skip preview generation for paths matching these rules — applied per server. Type "path" matches any file
+                            under the given prefix; type "regex" matches the full path.
+                        </p>
+                        <table class="table table-sm" id="editExcludePathsTable">
+                            <thead><tr><th>Value</th><th>Type</th><th></th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                        <div class="d-flex justify-content-between mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editAddExcludePath">
+                                <i class="bi bi-plus-lg me-1"></i>Add row
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editApplyExcludePathsAll" title="Copy these rules to every other configured server">
+                                <i class="bi bi-arrow-left-right me-1"></i>Apply to all servers
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="editServerResult" class="d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="editServerSave">
+                    <i class="bi bi-save me-1"></i>Save changes
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script src="{{ url_for('static', filename='js/servers.js') }}"></script>
 {% endblock %}

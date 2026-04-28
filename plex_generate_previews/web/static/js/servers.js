@@ -55,6 +55,12 @@
                 else alert(`Failed to delete: ${(r.data && r.data.error) || r.status}`);
             });
         });
+        $$('.edit-server-btn').forEach((btn) => {
+            btn.addEventListener('click', async (ev) => {
+                const id = ev.currentTarget.dataset.id;
+                openEditModal(id);
+            });
+        });
         $$('.refresh-libraries-btn').forEach((btn) => {
             btn.addEventListener('click', async (ev) => {
                 const id = ev.currentTarget.dataset.id;
@@ -119,6 +125,10 @@
                     </div>
                     <div class="card-footer bg-transparent d-flex flex-wrap gap-1 justify-content-between">
                         <div class="d-flex flex-wrap gap-1">
+                            <button class="btn btn-sm btn-outline-primary edit-server-btn"
+                                    data-id="${escapeHtml(server.id)}">
+                                <i class="bi bi-pencil me-1"></i>Edit
+                            </button>
                             <button class="btn btn-sm btn-outline-secondary refresh-libraries-btn"
                                     data-id="${escapeHtml(server.id)}">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
@@ -603,4 +613,259 @@
             alert(`Failed to save: ${(r.data && r.data.error) || r.status}`);
         }
     }
+
+    // ---------- Edit Server modal --------------------------------------------
+    // Opens a separate modal pre-populated from GET /api/servers/<id> and
+    // submits via PUT /api/servers/<id>. Path mappings + exclude paths get
+    // an "Apply to all servers" button that PUTs the same list to every
+    // other configured server (one click instead of N).
+
+    let _editState = null;  // { server, allServers }
+
+    async function openEditModal(serverId) {
+        // Fetch the target server + the full server list (needed for the
+        // "Apply to all" buttons so we know who to copy to).
+        const [singleR, listR] = await Promise.all([
+            api('GET', `/api/servers/${encodeURIComponent(serverId)}`),
+            api('GET', '/api/servers'),
+        ]);
+        if (!singleR.ok || !singleR.data) {
+            alert(`Failed to load server: ${singleR.status}`);
+            return;
+        }
+        const server = singleR.data;
+        const allServers = (listR.ok && listR.data && listR.data.servers) || [];
+        _editState = { server, allServers };
+
+        $('#editServerName').textContent = `${server.name || ''} (${server.type || ''})`;
+        $('#editServerId').value = server.id || '';
+        $('#editServerType').value = server.type || '';
+        $('#editServerDisplayName').value = server.name || '';
+        $('#editServerUrl').value = server.url || '';
+        $('#editServerVerifySsl').checked = server.verify_ssl !== false;
+        $('#editServerEnabled').checked = server.enabled !== false;
+        $('#editServerToken').value = '';
+
+        // Plex-only: show the config folder field.
+        const isPlex = (server.type || '').toLowerCase() === 'plex';
+        $('#editPlexConfigGroup').classList.toggle('d-none', !isPlex);
+        if (isPlex) {
+            const out = server.output || {};
+            $('#editPlexConfigFolder').value = out.plex_config_folder || '';
+        }
+
+        renderEditLibraries(server.libraries || []);
+        renderEditPathMappings(server.path_mappings || []);
+        renderEditExcludePaths(server.exclude_paths || []);
+        $('#editServerResult').className = 'd-none';
+        $('#editServerResult').innerHTML = '';
+
+        const modalEl = document.getElementById('editServerModal');
+        const modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+    }
+
+    function renderEditLibraries(libraries) {
+        const list = $('#editLibraryList');
+        if (!libraries.length) {
+            list.innerHTML = '<div class="text-muted small">No cached libraries — click "Refresh libraries" on the server card to fetch them from the server.</div>';
+            return;
+        }
+        list.innerHTML = libraries.map((lib, idx) => `
+            <label class="list-group-item d-flex align-items-center gap-2">
+                <input type="checkbox" class="form-check-input edit-lib-toggle"
+                       data-idx="${idx}"
+                       data-id="${escapeHtml(lib.id || '')}"
+                       data-name="${escapeHtml(lib.name || lib.id || '')}"
+                       ${lib.enabled ? 'checked' : ''}>
+                <span>${escapeHtml(lib.name || lib.id || 'unnamed')}</span>
+                <span class="badge bg-secondary ms-auto">${escapeHtml(lib.kind || 'unknown')}</span>
+            </label>
+        `).join('');
+    }
+
+    function renderEditPathMappings(mappings) {
+        const tbody = $('#editPathMappingsTable tbody');
+        tbody.innerHTML = '';
+        mappings.forEach((row) => addPathMappingRow(row));
+        if (!mappings.length) addPathMappingRow();
+    }
+
+    function addPathMappingRow(row) {
+        row = row || {};
+        const tbody = $('#editPathMappingsTable tbody');
+        const tr = document.createElement('tr');
+        const remoteVal = row.plex_prefix || row.remote_prefix || '';
+        const localVal = row.local_prefix || '';
+        tr.innerHTML = `
+            <td><input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data/movies"></td>
+            <td><input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies"></td>
+            <td><button type="button" class="btn btn-sm btn-outline-danger pm-remove"><i class="bi bi-x-lg"></i></button></td>
+        `;
+        tr.querySelector('.pm-remove').addEventListener('click', () => tr.remove());
+        tbody.appendChild(tr);
+    }
+
+    function readPathMappingsFromForm() {
+        return $$('#editPathMappingsTable tbody tr').map((tr) => {
+            const remote = tr.querySelector('.pm-remote').value.trim();
+            const local = tr.querySelector('.pm-local').value.trim();
+            if (!remote && !local) return null;
+            return { plex_prefix: remote, local_prefix: local, webhook_prefixes: [] };
+        }).filter(Boolean);
+    }
+
+    function renderEditExcludePaths(rules) {
+        const tbody = $('#editExcludePathsTable tbody');
+        tbody.innerHTML = '';
+        rules.forEach((row) => addExcludePathRow(row));
+        if (!rules.length) addExcludePathRow();
+    }
+
+    function addExcludePathRow(row) {
+        row = row || {};
+        const tbody = $('#editExcludePathsTable tbody');
+        const tr = document.createElement('tr');
+        const value = row.value || '';
+        const type = row.type || 'path';
+        tr.innerHTML = `
+            <td><input type="text" class="form-control form-control-sm ep-value" value="${escapeHtml(value)}" placeholder="/data/Trailers/"></td>
+            <td>
+                <select class="form-select form-select-sm ep-type">
+                    <option value="path" ${type === 'path' ? 'selected' : ''}>path (prefix)</option>
+                    <option value="regex" ${type === 'regex' ? 'selected' : ''}>regex</option>
+                </select>
+            </td>
+            <td><button type="button" class="btn btn-sm btn-outline-danger ep-remove"><i class="bi bi-x-lg"></i></button></td>
+        `;
+        tr.querySelector('.ep-remove').addEventListener('click', () => tr.remove());
+        tbody.appendChild(tr);
+    }
+
+    function readExcludePathsFromForm() {
+        return $$('#editExcludePathsTable tbody tr').map((tr) => {
+            const value = tr.querySelector('.ep-value').value.trim();
+            const type = tr.querySelector('.ep-type').value;
+            if (!value) return null;
+            return { value, type };
+        }).filter(Boolean);
+    }
+
+    function readEnabledLibraryIds() {
+        return $$('.edit-lib-toggle').map((el) => ({
+            id: el.dataset.id,
+            name: el.dataset.name,
+            enabled: el.checked,
+        }));
+    }
+
+    async function saveEditedServer() {
+        if (!_editState) return;
+        const { server } = _editState;
+        const result = $('#editServerResult');
+        const saveBtn = $('#editServerSave');
+        saveBtn.disabled = true;
+        const orig = saveBtn.innerHTML;
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+
+        // Build PUT payload — only include fields the user actually changed
+        // shape-wise (match server_config_to_dict's expected keys).
+        const payload = {
+            name: $('#editServerDisplayName').value.trim() || server.name,
+            url: $('#editServerUrl').value.trim(),
+            verify_ssl: $('#editServerVerifySsl').checked,
+            enabled: $('#editServerEnabled').checked,
+            path_mappings: readPathMappingsFromForm(),
+            exclude_paths: readExcludePathsFromForm(),
+        };
+
+        // Token: only send when the user typed something. Empty preserves
+        // the existing one (matches the api_servers.py PUT redaction rules).
+        const newToken = $('#editServerToken').value.trim();
+        if (newToken) {
+            payload.auth = { ...(server.auth || {}) };
+            const method = (server.auth && server.auth.method) || 'token';
+            if (method === 'api_key') payload.auth.api_key = newToken;
+            else payload.auth.token = newToken;
+            payload.auth.method = method;
+        }
+
+        // Per-library enabled toggles (preserve other library fields).
+        const toggles = readEnabledLibraryIds();
+        const toggleMap = new Map(toggles.map((t) => [t.id, t.enabled]));
+        payload.libraries = (server.libraries || []).map((lib) => ({
+            ...lib,
+            enabled: toggleMap.has(lib.id) ? toggleMap.get(lib.id) : !!lib.enabled,
+        }));
+
+        // Plex config folder lives under output.
+        if ((server.type || '').toLowerCase() === 'plex') {
+            payload.output = {
+                ...(server.output || {}),
+                adapter: 'plex_bundle',
+                plex_config_folder: $('#editPlexConfigFolder').value.trim(),
+            };
+        }
+
+        const r = await api('PUT', `/api/servers/${encodeURIComponent(server.id)}`, payload);
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = orig;
+        if (r.ok) {
+            const modalEl = document.getElementById('editServerModal');
+            const inst = window.bootstrap.Modal.getInstance(modalEl);
+            if (inst) inst.hide();
+            loadServers();
+        } else {
+            result.className = 'alert alert-danger mt-2';
+            result.textContent = (r.data && r.data.error) || `Save failed (HTTP ${r.status})`;
+        }
+    }
+
+    /**
+     * Copy the modal's current path_mappings / exclude_paths into every
+     * OTHER configured server via PUT. Lets users with shared mounts /
+     * shared exclusion rules avoid typing the same list N times.
+     */
+    async function applyListToAllServers(field, valueProducer, btn) {
+        if (!_editState) return;
+        const { server, allServers } = _editState;
+        const others = allServers.filter((s) => s.id !== server.id);
+        if (!others.length) {
+            alert('No other servers configured — nothing to copy to.');
+            return;
+        }
+        const value = valueProducer();
+        const okList = [];
+        const failedList = [];
+        const orig = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
+        for (const other of others) {
+            const r = await api('PUT', `/api/servers/${encodeURIComponent(other.id)}`, { [field]: value });
+            if (r.ok) okList.push(other.name || other.id);
+            else failedList.push(`${other.name || other.id}: ${(r.data && r.data.error) || r.status}`);
+        }
+        btn.disabled = false;
+        btn.innerHTML = orig;
+        const result = $('#editServerResult');
+        if (failedList.length === 0) {
+            result.className = 'alert alert-success mt-2';
+            result.innerHTML = `<i class="bi bi-check2-circle me-1"></i>Copied ${field} to ${okList.length} other server${okList.length === 1 ? '' : 's'}.`;
+        } else {
+            result.className = 'alert alert-warning mt-2';
+            result.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>Copied to ${okList.length}/${others.length} server${others.length === 1 ? '' : 's'}; failures:<br>${failedList.map(escapeHtml).join('<br>')}`;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        $('#editAddPathMapping').addEventListener('click', () => addPathMappingRow());
+        $('#editAddExcludePath').addEventListener('click', () => addExcludePathRow());
+        $('#editServerSave').addEventListener('click', saveEditedServer);
+        $('#editApplyPathMappingsAll').addEventListener('click', (ev) =>
+            applyListToAllServers('path_mappings', readPathMappingsFromForm, ev.currentTarget)
+        );
+        $('#editApplyExcludePathsAll').addEventListener('click', (ev) =>
+            applyListToAllServers('exclude_paths', readExcludePathsFromForm, ev.currentTarget)
+        );
+    });
 })();
