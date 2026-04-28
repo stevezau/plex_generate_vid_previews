@@ -764,6 +764,44 @@ class TestDeriveLegacyPlexView:
         assert view["plex_url"] == "http://plex:32400"
         assert view["plex_token"] == "t"
 
+    def test_server_id_pin_picks_specific_plex_in_multi_plex_install(self):
+        """When the caller passes server_id='plex-b', derive from THAT entry,
+        not the first enabled Plex. Used by job_runner so a job pinned to
+        a specific Plex server gets that server's URL/token/path mappings."""
+        servers = [
+            {
+                "id": "plex-a",
+                "type": "plex",
+                "name": "Plex A",
+                "url": "http://a:32400",
+                "enabled": True,
+                "auth": {"token": "tok-a"},
+                "path_mappings": [{"plex_prefix": "/a", "local_prefix": "/mnt/a"}],
+            },
+            {
+                "id": "plex-b",
+                "type": "plex",
+                "name": "Plex B",
+                "url": "http://b:32400",
+                "enabled": True,
+                "auth": {"token": "tok-b"},
+                "path_mappings": [{"plex_prefix": "/b", "local_prefix": "/mnt/b"}],
+            },
+        ]
+        view = derive_legacy_plex_view(servers, server_id="plex-b")
+        assert view["plex_url"] == "http://b:32400"
+        assert view["plex_token"] == "tok-b"
+        assert view["path_mappings"] == [{"plex_prefix": "/b", "local_prefix": "/mnt/b"}]
+
+    def test_server_id_pin_unknown_falls_back_to_first_plex(self):
+        """Unknown server_id must not raise — fall back to the first-enabled
+        Plex (the historical default) so callers keep working."""
+        servers = [
+            {"id": "plex-a", "type": "plex", "url": "http://a", "enabled": True, "auth": {"token": "a"}},
+        ]
+        view = derive_legacy_plex_view(servers, server_id="does-not-exist")
+        assert view["plex_url"] == "http://a"
+
     def test_invalid_timeout_is_skipped(self):
         # Garbage timeout shouldn't blow up callers — we just omit the key
         # so the legacy default kicks in.

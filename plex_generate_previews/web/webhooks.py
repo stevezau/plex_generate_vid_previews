@@ -182,11 +182,17 @@ def _add_history_entry(
     job_id: str | None = None,
     path_count: int | None = None,
     files_preview: list[str] | None = None,
+    server_id: str | None = None,
+    server_name: str | None = None,
+    server_type: str | None = None,
 ) -> None:
     """Append an event to the webhook history and persist to disk.
 
     Optional batch metadata (job_id, path_count, files_preview) is included
-    for triggered debounced batches so the UI can show which files were in the batch.
+    for triggered debounced batches so the UI can show which files were in
+    the batch. ``server_id`` / ``server_name`` / ``server_type`` capture the
+    pinned destination for multi-server-aware history (the new ``?server_id=``
+    query param on inbound webhook URLs).
     """
     entry: dict[str, object] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -201,6 +207,12 @@ def _add_history_entry(
         entry["path_count"] = path_count
     if files_preview is not None:
         entry["files_preview"] = files_preview[:_HISTORY_FILES_PREVIEW_CAP]
+    if server_id:
+        entry["server_id"] = server_id
+    if server_name:
+        entry["server_name"] = server_name
+    if server_type:
+        entry["server_type"] = server_type
     with _history_lock:
         _webhook_history.append(entry)
     _save_history_to_disk()
@@ -580,6 +592,9 @@ def _execute_webhook_job(debounce_key: str) -> None:
             job_id=job.id,
             path_count=len(webhook_paths),
             files_preview=basenames,
+            server_id=b_sid,
+            server_name=b_sname,
+            server_type=b_stype,
         )
     except Exception:
         title_label = batch_titles[0] if batch_titles else source

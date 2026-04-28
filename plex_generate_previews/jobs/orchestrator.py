@@ -16,6 +16,88 @@ from ..processing.orchestrator import ProcessingResult, clear_failures, log_fail
 from .worker import WorkerPool
 
 
+def _dispatch_webhook_paths_multi_server(config, *, progress_callback=None, cancel_check=None) -> dict:
+    """Dispatch webhook_paths through the multi-server registry without Plex.
+
+    Used when a webhook fires on an Emby/Jellyfin-only install: the legacy
+    Plex resolution shortcut is unavailable, but ``process_canonical_path``
+    in the multi-server dispatcher walks every owning server in the registry
+    directly — Plex is not required.
+
+    Returns the aggregated ProcessingResult counts keyed by enum value.
+    """
+    from ..processing.multi_server import process_canonical_path
+    from ..servers import ServerRegistry
+    from ..web.settings_manager import get_settings_manager
+
+    counts = {r.value: 0 for r in ProcessingResult}
+    paths = list(config.webhook_paths or [])
+    if not paths:
+        return counts
+
+    raw_servers = []
+    try:
+        raw_servers = list(get_settings_manager().get("media_servers") or [])
+    except Exception as exc:
+        logger.warning(
+            "Could not read media_servers when dispatching webhook paths ({}: {}). "
+            "These paths will not be processed — verify the Servers page lists at least one enabled server.",
+            type(exc).__name__,
+            exc,
+        )
+        return counts
+
+    try:
+        registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
+    except Exception as exc:
+        logger.warning(
+            "Could not build the media-server registry for webhook dispatch ({}: {}). "
+            "These paths will not be processed — open the Servers page and verify each server "
+            "has valid auth and a reachable URL.",
+            type(exc).__name__,
+            exc,
+        )
+        return counts
+
+    sid_filter_raw = getattr(config, "server_id_filter", None)
+    sid_filter = sid_filter_raw if isinstance(sid_filter_raw, str) and sid_filter_raw else None
+
+    for idx, p in enumerate(paths, 1):
+        if cancel_check and cancel_check():
+            logger.info("Webhook dispatch cancelled after {} of {} path(s)", idx - 1, len(paths))
+            break
+        if progress_callback:
+            try:
+                progress_callback(idx - 1, len(paths), f"Dispatching {os.path.basename(p)}")
+            except Exception:
+                pass
+        try:
+            result = process_canonical_path(
+                canonical_path=p,
+                registry=registry,
+                config=config,
+                cancel_check=cancel_check,
+                server_id_filter=sid_filter,
+            )
+            for pub in result.publishers or []:
+                key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
+                counts[key] = counts.get(key, 0) + 1
+        except Exception as exc:
+            logger.warning(
+                "Multi-server dispatch failed for {} ({}: {}). Other paths in this batch are still being processed.",
+                p,
+                type(exc).__name__,
+                exc,
+            )
+
+    if progress_callback:
+        try:
+            progress_callback(len(paths), len(paths), "Done")
+        except Exception:
+            pass
+    return counts
+
+
 def run_processing(
     config,
     selected_gpus,
@@ -60,6 +142,60 @@ def run_processing(
     return_data = None
     worker_pool = None
     try:
+        # Multi-server guard: when this job is pinned to a non-Plex server, or
+        # when no Plex is configured at all, the legacy Plex orchestrator can't
+        # do anything useful — full-library enumeration uses the Plex API.
+        # Honest no-op: log clearly and return so the job ends cleanly instead
+        # of crashing with a Plex connection error.
+        sid_filter = getattr(config, "server_id_filter", None)
+        if sid_filter and isinstance(sid_filter, str) and sid_filter:
+            try:
+                from ..web.settings_manager import get_settings_manager
+
+                raw = get_settings_manager().get("media_servers") or []
+                pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == sid_filter), None)
+            except Exception:
+                pinned_entry = None
+            pinned_type = (pinned_entry or {}).get("type") or ""
+            if pinned_entry and pinned_type and pinned_type.lower() != "plex":
+                if not getattr(config, "webhook_paths", None):
+                    logger.warning(
+                        "Job is pinned to {} server {!r} but full-library scans currently only support Plex. "
+                        "This job ended without processing anything. "
+                        "For Emby/Jellyfin, use the Sonarr/Radarr or Custom webhook on the Triggers tab — "
+                        "those publish previews to any configured server. "
+                        "Multi-server full-scan support is tracked as a follow-up.",
+                        pinned_type,
+                        sid_filter,
+                    )
+                    return {
+                        "outcome": {r.value: 0 for r in ProcessingResult},
+                        "skipped_reason": f"full-library scan not supported for {pinned_type} servers yet",
+                    }
+        if not (config.plex_url and config.plex_token):
+            if getattr(config, "webhook_paths", None):
+                # Webhook-driven jobs CAN still run on a non-Plex install via
+                # the multi-server dispatcher — it walks every owning server
+                # in the registry directly without needing a Plex connection.
+                logger.info(
+                    "No Plex configured — webhook job ({} path(s)) will be dispatched directly to "
+                    "owning media servers via the multi-server registry.",
+                    len(config.webhook_paths),
+                )
+                outcome_counts = _dispatch_webhook_paths_multi_server(
+                    config, progress_callback=progress_callback, cancel_check=cancel_check
+                )
+                return {"outcome": outcome_counts}
+            logger.warning(
+                "Full-library scan was requested but no Plex server is configured. "
+                "Full-scan currently only walks Plex libraries — for Emby/Jellyfin, "
+                "use the Sonarr/Radarr or Custom webhook on the Triggers tab. "
+                "This job ended without processing anything."
+            )
+            return {
+                "outcome": {r.value: 0 for r in ProcessingResult},
+                "skipped_reason": "no Plex server configured for full-library scan",
+            }
         if progress_callback:
             progress_callback(0, 0, "Connecting to Plex...")
         plex = plex_server(config)

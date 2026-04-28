@@ -2961,10 +2961,31 @@ async function startNewJob() {
     showToast('Error', 'Failed to start job: ' + lastError.message, 'danger');
 }
 
+async function _populateManualServerScopePicker() {
+    const sel = document.getElementById('manualServerScope');
+    if (!sel) return;
+    try {
+        const data = await apiGet('/api/servers');
+        const servers = (data.servers || []).filter(s => s.enabled !== false);
+        sel.innerHTML = '<option value="">All servers (publish to whoever owns the file)</option>';
+        servers.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = `${s.name} (${(s.type || '').toUpperCase()})`;
+            sel.appendChild(opt);
+        });
+    } catch (e) {
+        // Picker is optional — leave the default "All servers" option in place.
+    }
+}
+
 function showManualTriggerModal() {
     document.getElementById('manualFilePaths').value = '';
     document.getElementById('manualForceRegenerate').checked = false;
     document.getElementById('manualPriority').value = '2';
+    const sel = document.getElementById('manualServerScope');
+    if (sel) sel.value = '';
+    _populateManualServerScopePicker();
     new bootstrap.Modal(document.getElementById('manualTriggerModal')).show();
 }
 
@@ -2983,13 +3004,17 @@ async function startManualJob() {
 
     const forceRegenerate = document.getElementById('manualForceRegenerate').checked;
     const manualPriority = parseInt(document.getElementById('manualPriority').value, 10) || 2;
+    const serverSel = document.getElementById('manualServerScope');
+    const serverId = serverSel ? serverSel.value : '';
 
     try {
-        await apiPost('/api/jobs/manual', {
+        const payload = {
             file_paths: paths,
             force_regenerate: forceRegenerate,
-            priority: manualPriority
-        });
+            priority: manualPriority,
+        };
+        if (serverId) payload.server_id = serverId;
+        await apiPost('/api/jobs/manual', payload);
         bootstrap.Modal.getInstance(document.getElementById('manualTriggerModal')).hide();
         loadJobs();
         loadJobStats();

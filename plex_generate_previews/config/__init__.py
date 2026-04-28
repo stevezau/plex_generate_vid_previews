@@ -258,8 +258,8 @@ def clear_config_cache() -> None:
     _cached_config_mtime = None
 
 
-def derive_legacy_plex_view(media_servers: list) -> dict:
-    """Project the first enabled Plex entry in ``media_servers`` into legacy ``plex_*`` keys.
+def derive_legacy_plex_view(media_servers: list, server_id: str | None = None) -> dict:
+    """Project a Plex entry from ``media_servers`` into legacy ``plex_*`` keys.
 
     The new multi-server model stores Plex config inside ``media_servers[i]``
     where ``type == "plex"``. But every legacy consumer (plex_client,
@@ -272,19 +272,30 @@ def derive_legacy_plex_view(media_servers: list) -> dict:
     is derived from the per-server config, so the read path can prefer it
     and the legacy globals become a fallback only.
 
-    Returns an empty dict when no Plex server is configured — callers
-    should fall back to the legacy global keys in that case.
+    Args:
+        media_servers: The persisted ``media_servers`` array.
+        server_id: When set, project from that exact entry (used by job_runner
+            when a job is pinned to a specific Plex server in a multi-Plex
+            install). When None or unmatched, falls back to the first enabled
+            Plex entry — the historical behaviour.
+
+    Returns an empty dict when no matching Plex server is configured —
+    callers should fall back to the legacy global keys in that case.
     """
     if not isinstance(media_servers, list):
         return {}
-    plex_entry = next(
-        (
-            e
-            for e in media_servers
-            if isinstance(e, dict) and (e.get("type") or "").lower() == "plex" and e.get("enabled", True)
-        ),
-        None,
-    )
+
+    def _is_enabled_plex(e):
+        return isinstance(e, dict) and (e.get("type") or "").lower() == "plex" and e.get("enabled", True)
+
+    plex_entry = None
+    if server_id:
+        plex_entry = next(
+            (e for e in media_servers if _is_enabled_plex(e) and e.get("id") == server_id),
+            None,
+        )
+    if plex_entry is None:
+        plex_entry = next((e for e in media_servers if _is_enabled_plex(e)), None)
     if plex_entry is None:
         return {}
 

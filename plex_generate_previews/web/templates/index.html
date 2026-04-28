@@ -6,8 +6,8 @@
 <!-- Token Warning Banner (hidden by default) -->
 <div id="tokenWarningBanner" class="alert alert-warning d-none mb-4">
     <i class="bi bi-exclamation-triangle me-2"></i>
-    <strong>Plex token may be invalid or expired.</strong>
-    <a href="/settings" class="alert-link ms-2">Re-authenticate in Settings</a>
+    <strong>A media server's credentials may be invalid or expired.</strong>
+    <a href="/servers" class="alert-link ms-2">Check the Servers page</a>
 </div>
 
 <!-- Setup Required Banner (hidden by default) -->
@@ -342,7 +342,7 @@
                     <div class="mb-3">
                         <label for="jobSortBy" class="form-label">Processing Order</label>
                         <select class="form-select" id="jobSortBy">
-                            <option value="" selected>Default (Plex order)</option>
+                            <option value="" selected>Default (server order)</option>
                             <option value="newest">Newest first</option>
                             <option value="oldest">Oldest first</option>
                             <option value="random">Random</option>
@@ -376,6 +376,13 @@
                         <textarea class="form-control font-monospace" id="manualFilePaths" rows="5"
                             placeholder="/media/tv/Show Name (2024)&#10;/media/movies/Movie (2024)/Movie (2024).mkv"></textarea>
                         <div class="form-text">Enter one path per line (absolute paths as seen by the container). Directories will be expanded to include all media files within.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="manualServerScope" class="form-label">Publish to which server?</label>
+                        <select class="form-select" id="manualServerScope">
+                            <option value="">All servers (publish to whoever owns the file)</option>
+                        </select>
+                        <div class="form-text">Pin this job to one configured server. Useful when the same file exists on multiple servers and you only want previews regenerated for one.</div>
                     </div>
                     <div class="mb-3">
                         <label for="manualPriority" class="form-label">Priority</label>

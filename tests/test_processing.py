@@ -24,6 +24,9 @@ def _make_config(tmp_path, **overrides):
         "working_tmp_folder": str(tmp_path / "work"),
         "webhook_paths": None,
         "sort_by": None,
+        "plex_url": "http://plex:32400",
+        "plex_token": "tok",
+        "server_id_filter": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -66,6 +69,46 @@ def _isolate(tmp_path):
 # ---------------------------------------------------------------------------
 # Happy path: library scan flow
 # ---------------------------------------------------------------------------
+
+
+class TestMultiServerGuards:
+    """Tests for the new Phase G1 guards: jobs without Plex configured + jobs
+    pinned to non-Plex servers must end cleanly with a clear log message
+    instead of crashing with a Plex connection error."""
+
+    def test_no_plex_full_scan_returns_no_op(self, tmp_path):
+        config = _make_config(tmp_path, plex_url="", plex_token="")
+        result = run_processing(config, selected_gpus=[])
+        assert result is not None
+        assert "skipped_reason" in result
+        assert all(v == 0 for v in result["outcome"].values())
+
+    def test_pinned_to_non_plex_full_scan_returns_no_op(self, tmp_path):
+        config = _make_config(tmp_path, server_id_filter="emby-1")
+        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = [
+                {"id": "emby-1", "type": "emby", "name": "My Emby"},
+            ]
+            result = run_processing(config, selected_gpus=[])
+        assert result is not None
+        assert "skipped_reason" in result
+
+    def test_no_plex_with_webhook_paths_dispatches_via_registry(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            plex_url="",
+            plex_token="",
+            webhook_paths=["/data/movies/Foo.mkv"],
+        )
+        # Mock both the registry build and the per-path dispatcher.
+        with (
+            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+        ):
+            mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
+            result = run_processing(config, selected_gpus=[])
+        assert mock_dispatch.called
+        assert result is not None
+        assert "outcome" in result
 
 
 class TestLibraryScanFlow:

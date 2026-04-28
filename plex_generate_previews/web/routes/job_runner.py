@@ -202,11 +202,20 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 split_library_selectors,
             )
 
-            # Layer the per-server Plex view (media_servers[0]) over legacy
-            # global keys so reads here match what load_config does. Without
-            # this, a settings.json that only has media_servers[0] (no legacy
-            # plex_url/plex_token/etc) would miss them at job-start time.
-            plex_view = derive_legacy_plex_view(settings.get("media_servers") or [])
+            # Layer the per-server Plex view over legacy global keys so reads
+            # here match what load_config does. Without this, a settings.json
+            # that only has media_servers[N] (no legacy plex_url/plex_token/etc)
+            # would miss them at job-start time.
+            #
+            # Multi-Plex support: when this job is pinned to a specific server
+            # via config_overrides["server_id"], project from THAT entry so the
+            # legacy orchestrator path uses the right Plex URL, token, config
+            # folder, and path mappings — not whatever media_servers[0] has.
+            pinned_server_id = (config_overrides or {}).get("server_id") or None
+            plex_view = derive_legacy_plex_view(
+                settings.get("media_servers") or [],
+                server_id=pinned_server_id,
+            )
             effective = {**settings.get_all(), **plex_view}
 
             plex_url = effective.get("plex_url")
