@@ -262,7 +262,11 @@
                         <!-- Plex-only: config folder -->
                         <div id="editPlexConfigGroup" class="mb-3 d-none">
                             <label class="form-label">Plex config folder</label>
-                            <input type="text" id="editPlexConfigFolder" class="form-control">
+                            <div>
+                                <input type="text" id="editPlexConfigFolder" class="form-control">
+                                <div class="invalid-feedback small"></div>
+                                <div class="valid-feedback small">Path exists</div>
+                            </div>
                             <div class="form-text">Where this Plex server's preview bundles will be written.</div>
                         </div>
 

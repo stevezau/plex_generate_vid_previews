@@ -646,12 +646,20 @@
         $('#editServerEnabled').checked = server.enabled !== false;
         $('#editServerToken').value = '';
 
-        // Plex-only: show the config folder field.
+        // Plex-only: show the config folder field + wire its inline validator.
         const isPlex = (server.type || '').toLowerCase() === 'plex';
         $('#editPlexConfigGroup').classList.toggle('d-none', !isPlex);
         if (isPlex) {
             const out = server.output || {};
-            $('#editPlexConfigFolder').value = out.plex_config_folder || '';
+            const cfgInput = $('#editPlexConfigFolder');
+            cfgInput.value = out.plex_config_folder || '';
+            cfgInput.classList.remove('is-valid', 'is-invalid');
+            // Bind once — _editPlexConfigBound is set after the first wire-up.
+            if (!cfgInput.dataset.validatorBound) {
+                cfgInput.addEventListener('input', _debouncedValidatePath(cfgInput));
+                cfgInput.dataset.validatorBound = '1';
+            }
+            if (cfgInput.value) _validateLocalPathInput(cfgInput);
         }
 
         renderEditLibraries(server.libraries || []);
@@ -699,11 +707,66 @@
         const localVal = row.local_prefix || '';
         tr.innerHTML = `
             <td><input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data/movies"></td>
-            <td><input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies"></td>
+            <td>
+                <input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies">
+                <div class="invalid-feedback small"></div>
+                <div class="valid-feedback small">Path exists</div>
+            </td>
             <td><button type="button" class="btn btn-sm btn-outline-danger pm-remove"><i class="bi bi-x-lg"></i></button></td>
         `;
         tr.querySelector('.pm-remove').addEventListener('click', () => tr.remove());
+        const localInput = tr.querySelector('.pm-local');
+        localInput.addEventListener('input', _debouncedValidatePath(localInput));
+        if (localVal) _validateLocalPathInput(localInput);
         tbody.appendChild(tr);
+    }
+
+    // Debounced inline validation of local-path inputs (path mappings + Plex
+    // config folder). Mirrors the Setup Wizard's UX so users get red-border
+    // feedback the moment they type a path that doesn't exist.
+    const _validateTimers = new WeakMap();
+    function _debouncedValidatePath(input) {
+        return function () {
+            clearTimeout(_validateTimers.get(input));
+            _validateTimers.set(input, setTimeout(() => _validateLocalPathInput(input), 400));
+        };
+    }
+
+    async function _validateLocalPathInput(input) {
+        const path = (input.value || '').trim();
+        const feedback = input.parentElement.querySelector('.invalid-feedback');
+        if (!path) {
+            input.classList.remove('is-invalid', 'is-valid');
+            return;
+        }
+        try {
+            const resp = await fetch('/api/settings/validate-local-path', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
+                },
+                body: JSON.stringify({ path }),
+            });
+            const data = await resp.json();
+            // Bail if the user kept typing in the meantime — the later call
+            // will paint the final state.
+            if (input.value.trim() !== path) return;
+            if (data.error) {
+                input.classList.remove('is-valid');
+                input.classList.add('is-invalid');
+                if (feedback) feedback.textContent = data.error;
+            } else if (!data.exists) {
+                input.classList.remove('is-valid');
+                input.classList.add('is-invalid');
+                if (feedback) feedback.textContent = 'Directory not found on this container';
+            } else {
+                input.classList.remove('is-invalid');
+                input.classList.add('is-valid');
+            }
+        } catch {
+            input.classList.remove('is-valid', 'is-invalid');
+        }
     }
 
     function readPathMappingsFromForm() {
