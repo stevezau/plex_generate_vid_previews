@@ -918,6 +918,22 @@ def get_setup_token_info():
     return jsonify(get_token_info())
 
 
+@api.route("/setup/skip", methods=["POST"])
+@setup_or_auth_required
+def skip_setup():
+    """Mark setup as complete without configuring any media server.
+
+    Used by the "Skip setup — I'll add my server later" link on Step 1 of the
+    setup wizard (Phase H8). Lets Emby/Jellyfin users bypass the Plex-first
+    flow and add their server from the Servers page on the dashboard.
+    """
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    settings.complete_setup()
+    return jsonify({"success": True})
+
+
 @api.route("/setup/set-token", methods=["POST"])
 @setup_or_auth_required
 def set_setup_token():

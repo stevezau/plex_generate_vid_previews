@@ -460,6 +460,10 @@
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <small class="text-muted" id="logsJobId">Job ID: -</small>
                 </div>
+                <!-- Phase H8: per-publisher status header above the tabs so a
+                     user diagnosing a multi-server job sees "Plex ✓, Emby ✗"
+                     before having to scan the log stream. Empty for legacy jobs. -->
+                <div id="logsModalPublishers" class="mb-2"></div>
                 <!-- Tabs -->
                 <ul class="nav nav-tabs mb-3" id="jobDetailTabs" role="tablist">
                     <li class="nav-item" role="presentation">

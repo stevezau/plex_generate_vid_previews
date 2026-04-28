@@ -50,6 +50,12 @@
                     Connect your Plex account to automatically discover your servers and libraries.
                 </p>
 
+                <div class="alert alert-info small text-start py-2 mb-4">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Using Emby or Jellyfin instead? Click <strong>Skip setup</strong> below — you can
+                    add any server type from the Servers page after the wizard closes.
+                </div>
+
                 <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">
                     <i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex
                 </button>
@@ -99,7 +105,11 @@
             </div>
         </div>
 
-        <div class="d-flex justify-content-end mt-4">
+        <div class="d-flex justify-content-between align-items-center mt-4">
+            <button type="button" class="btn btn-link text-muted small p-0" id="skipSetupBtn"
+                    title="Mark setup complete and add servers later from the Servers page">
+                <i class="bi bi-skip-end me-1"></i>Skip setup — I&rsquo;ll add my server later
+            </button>
             <button type="button" class="btn btn-primary" id="step1Next" disabled>
                 Next <i class="bi bi-arrow-right ms-1"></i>
             </button>
@@ -1144,6 +1154,38 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     document.getElementById('step5Back').addEventListener('click', () => goToStep(4));
+
+    // Phase H8: "Skip setup — I'll add my server later" lets Emby/Jellyfin
+    // (and Plex-on-LAN) users bypass the Plex-first wizard and jump to the
+    // dashboard. The Servers page handles all three vendors first-class.
+    const skipBtn = document.getElementById('skipSetupBtn');
+    if (skipBtn) {
+        skipBtn.addEventListener('click', async function() {
+            if (!confirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.")) {
+                return;
+            }
+            this.disabled = true;
+            try {
+                const resp = await fetch('/api/setup/skip', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
+                    },
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    window.location.href = '/servers';
+                } else {
+                    alert('Could not skip setup: ' + (data.error || 'Unknown error'));
+                    this.disabled = false;
+                }
+            } catch (err) {
+                alert('Could not skip setup: ' + (err && err.message ? err.message : 'Network error'));
+                this.disabled = false;
+            }
+        });
+    }
 
     document.getElementById('finishSetup').addEventListener('click', async function() {
         this.disabled = true;

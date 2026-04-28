@@ -1115,16 +1115,27 @@ function renderHistoryPage() {
             titleCell += ' <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="history-files-toggle-' + idx + '" onclick="toggleHistoryFiles(' + idx + ')" aria-expanded="false" aria-controls="history-detail-' + idx + '" title="Show files"><i class="bi bi-chevron-down"></i></button>';
         }
 
-        // Per-server badge (added in Phase G5). Empty when the inbound
-        // webhook URL didn't carry ?server_id= — the job fans out to every
-        // owning server in that case.
-        let serverCell = '<span class="text-muted small">All</span>';
-        if (evt.server_name || evt.server_type) {
+        // Per-server badge (added in Phase G5). Three states:
+        //   * server_name/server_type set → coloured per-vendor badge
+        //   * pre-existing entry from before the column existed → "—"
+        //     with a tooltip explaining
+        //   * deliberately fan-out webhook (no server_id query param) →
+        //     "All" with a tooltip
+        const hasServerData = !!(evt.server_name || evt.server_type);
+        let serverCell;
+        if (hasServerData) {
             const palette = { plex: 'bg-warning text-dark', emby: 'bg-success', jellyfin: 'bg-info text-dark' };
             const stype = (evt.server_type || '').toLowerCase();
             const cls = palette[stype] || 'bg-secondary';
             const label = evt.server_name || stype.toUpperCase() || 'Server';
             serverCell = '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>';
+        } else if (evt.timestamp && new Date(evt.timestamp).getTime() < new Date('2026-04-29').getTime()) {
+            // History entries from before this column existed have no
+            // server attribution. Show an em-dash + tooltip rather than
+            // the misleading "All".
+            serverCell = '<span class="text-muted small" title="This webhook fired before the per-server attribution column was added in this version. Future events will show the destination server.">—</span>';
+        } else {
+            serverCell = '<span class="text-muted small" title="No ?server_id= on the inbound webhook URL — fanned out to every owning server.">All</span>';
         }
 
         tr.innerHTML =

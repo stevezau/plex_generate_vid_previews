@@ -2090,6 +2090,11 @@ function showLogsModal(jobId) {
     document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
     document.getElementById('logsSearchInput').value = '';
 
+    // Phase H8: render the per-publisher header for this job.
+    const _job = jobs.find(j => j.id === targetId);
+    const _hdr = document.getElementById('logsModalPublishers');
+    if (_hdr) _hdr.innerHTML = _job ? _renderPublishersBlock(_job) : '';
+
     _rawLogs = [];
     _logsTotalLines = 0;
     _logsLoadedOffset = 0;
