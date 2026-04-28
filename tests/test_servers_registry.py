@@ -124,7 +124,10 @@ class TestServerRegistryFromSettings:
         assert servers[0].id == "plex-default"
         assert servers[0].name == "Home Plex"
 
-    def test_skips_unsupported_types_with_warning(self, mock_config, caplog):
+    def test_unknown_server_type_skipped_silently(self, mock_config, caplog):
+        # All vendor types now have implementations (Plex/Emby/Jellyfin).
+        # Unknown type strings are still rejected by server_config_from_dict,
+        # which keeps them out of both `configs()` and `servers()`.
         registry = ServerRegistry.from_settings(
             [
                 {
@@ -136,22 +139,16 @@ class TestServerRegistryFromSettings:
                     "auth": {},
                 },
                 {
-                    "id": "jelly-1",
-                    "type": "jellyfin",  # Phase 3 — not yet supported
-                    "name": "Jellyfin",
-                    "enabled": True,
-                    "url": "http://jellyfin:8096",
-                    "auth": {},
+                    "id": "kodi-1",
+                    "type": "kodi",  # not a supported vendor
+                    "name": "Kodi",
+                    "url": "http://kodi",
                 },
             ],
             legacy_config=mock_config,
         )
-        # Plex and Emby ship in Phase 1/2; Jellyfin is skipped until Phase 3.
         assert [s.id for s in registry.servers()] == ["plex-default"]
-        # ServerConfig for skipped server is still in the configs list so
-        # ownership decisions can include it later, but the live client map
-        # omits it.
-        assert {c.id for c in registry.configs()} == {"plex-default", "jelly-1"}
+        assert {c.id for c in registry.configs()} == {"plex-default"}
 
     def test_unknown_type_string_skipped(self, mock_config):
         registry = ServerRegistry.from_settings(

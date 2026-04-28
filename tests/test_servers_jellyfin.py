@@ -1,0 +1,322 @@
+"""Tests for the Jellyfin server client.
+
+Covers the same MediaServer surface as the Emby tests but with Jellyfin's
+particularities (Quick Connect-derived auth shape, NotificationType
+webhook payload, ``/Items/{id}/Refresh`` instead of
+``/Library/Media/Updated``).
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+import requests
+
+from plex_generate_previews.servers import (
+    ConnectionResult,
+    JellyfinServer,
+    Library,
+    MediaItem,
+    ServerConfig,
+    ServerType,
+    WebhookEvent,
+)
+
+_DEFAULT_AUTH = {"method": "quick_connect", "access_token": "tok", "user_id": "u"}
+_SENTINEL = object()
+
+
+def _jelly_config(
+    *,
+    server_id: str = "jelly-1",
+    name: str = "Test Jellyfin",
+    auth=_SENTINEL,
+    libraries: list[Library] | None = None,
+    url: str = "http://jellyfin:8096",
+) -> ServerConfig:
+    if auth is _SENTINEL:
+        auth = dict(_DEFAULT_AUTH)
+    return ServerConfig(
+        id=server_id,
+        type=ServerType.JELLYFIN,
+        name=name,
+        enabled=True,
+        url=url,
+        auth=auth,
+        libraries=libraries or [],
+    )
+
+
+@pytest.fixture
+def jelly():
+    return JellyfinServer(_jelly_config())
+
+
+class TestConstruction:
+    def test_implements_media_server(self, jelly):
+        from plex_generate_previews.servers import MediaServer
+
+        assert isinstance(jelly, MediaServer)
+
+    def test_type_is_jellyfin(self, jelly):
+        assert jelly.type is ServerType.JELLYFIN
+
+
+class TestTokenExtraction:
+    def test_quick_connect_token(self):
+        s = JellyfinServer(_jelly_config(auth={"method": "quick_connect", "access_token": "qc"}))
+        assert s._token() == "qc"
+
+    def test_password_flow_token(self):
+        s = JellyfinServer(_jelly_config(auth={"method": "password", "access_token": "pw", "user_id": "u"}))
+        assert s._token() == "pw"
+
+    def test_api_key(self):
+        s = JellyfinServer(_jelly_config(auth={"method": "api_key", "api_key": "k"}))
+        assert s._token() == "k"
+
+    def test_no_auth_returns_empty_string(self):
+        s = JellyfinServer(_jelly_config(auth={}))
+        assert s._token() == ""
+
+
+class TestTestConnection:
+    def test_success(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.json.return_value = {
+                "Id": "jf-abc",
+                "ServerName": "Family Jellyfin",
+                "Version": "10.10.0",
+            }
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            result = jelly.test_connection()
+
+        assert isinstance(result, ConnectionResult)
+        assert result.ok is True
+        assert result.server_id == "jf-abc"
+        assert result.server_name == "Family Jellyfin"
+        assert result.version == "10.10.0"
+
+    def test_missing_url(self):
+        s = JellyfinServer(_jelly_config(url=""))
+        result = s.test_connection()
+        assert not result.ok
+
+    def test_missing_token(self):
+        s = JellyfinServer(_jelly_config(auth={}))
+        result = s.test_connection()
+        assert not result.ok
+
+    def test_unauthorized(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            err_response = MagicMock(status_code=401)
+            err = requests.exceptions.HTTPError(response=err_response)
+            response = MagicMock()
+            response.raise_for_status.side_effect = err
+            req.return_value = response
+
+            result = jelly.test_connection()
+
+        assert not result.ok
+        assert "401" in result.message
+
+
+class TestListLibraries:
+    def test_maps_virtual_folders(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.json.return_value = [
+                {
+                    "Name": "Movies",
+                    "ItemId": "1",
+                    "Locations": ["/jf-media/Movies"],
+                    "CollectionType": "movies",
+                },
+                {
+                    "Name": "TV Shows",
+                    "ItemId": "2",
+                    "Locations": ["/jf-media/TV"],
+                    "CollectionType": "tvshows",
+                },
+            ]
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            libs = jelly.list_libraries()
+
+        assert [lib.name for lib in libs] == ["Movies", "TV Shows"]
+        assert libs[0].kind == "movies"
+
+    def test_preserves_existing_enabled_toggles(self):
+        jelly = JellyfinServer(
+            _jelly_config(
+                libraries=[
+                    Library(id="1", name="Movies", remote_paths=("/m",), enabled=False),
+                ]
+            )
+        )
+
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.json.return_value = [
+                {"Name": "Movies", "ItemId": "1", "Locations": ["/jf-media/Movies"]},
+                {"Name": "TV Shows", "ItemId": "2", "Locations": ["/jf-media/TV"]},
+            ]
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            libs = jelly.list_libraries()
+
+        by_id = {lib.id: lib for lib in libs}
+        assert by_id["1"].enabled is False
+        assert by_id["2"].enabled is True
+
+    def test_empty_on_failure(self, jelly):
+        with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("boom")):
+            assert jelly.list_libraries() == []
+
+
+class TestListItems:
+    def test_yields_movies_and_episodes(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.json.return_value = {
+                "Items": [
+                    {"Id": "100", "Type": "Movie", "Name": "Test Movie", "Path": "/m/movie.mkv"},
+                    {
+                        "Id": "200",
+                        "Type": "Episode",
+                        "Name": "Pilot",
+                        "SeriesName": "Test Show",
+                        "ParentIndexNumber": 1,
+                        "IndexNumber": 1,
+                        "Path": "/m/show.mkv",
+                    },
+                ]
+            }
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            items = list(jelly.list_items("lib-1"))
+
+        assert len(items) == 2
+        assert all(isinstance(i, MediaItem) for i in items)
+        assert any("S01E01" in i.title for i in items)
+
+
+class TestResolveItemToRemotePath:
+    def test_prefers_media_sources_path(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.json.return_value = {
+                "Path": "/top.mkv",
+                "MediaSources": [{"Path": "/media-source.mkv"}],
+            }
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            assert jelly.resolve_item_to_remote_path("42") == "/media-source.mkv"
+
+    def test_returns_none_on_failure(self, jelly):
+        with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("404")):
+            assert jelly.resolve_item_to_remote_path("42") is None
+
+
+class TestTriggerRefresh:
+    def test_uses_per_item_refresh_when_id_known(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            jelly.trigger_refresh(item_id="42", remote_path=None)
+
+            req.assert_called_once_with("POST", "/Items/42/Refresh")
+
+    def test_falls_back_to_library_refresh_without_id(self, jelly):
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            jelly.trigger_refresh(item_id=None, remote_path="/some/path.mkv")
+
+            req.assert_called_once_with("POST", "/Library/Refresh")
+
+    def test_falls_back_to_library_refresh_when_per_item_fails(self, jelly):
+        # If the per-item refresh raises (e.g. item not yet indexed), we
+        # still nudge the full library scan as a best-effort fallback.
+        responses = [RuntimeError("404"), MagicMock(raise_for_status=MagicMock(return_value=None))]
+
+        def side_effect(*args, **kwargs):
+            value = responses.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with patch.object(JellyfinServer, "_request", side_effect=side_effect) as req:
+            jelly.trigger_refresh(item_id="42", remote_path=None)
+
+            assert req.call_count == 2
+            assert req.call_args_list[0].args == ("POST", "/Items/42/Refresh")
+            assert req.call_args_list[1].args == ("POST", "/Library/Refresh")
+
+
+class TestParseWebhook:
+    def test_itemadded_event(self, jelly):
+        payload = {
+            "NotificationType": "ItemAdded",
+            "ItemId": "42",
+            "ItemType": "Movie",
+            "ServerId": "abc",
+        }
+        ev = jelly.parse_webhook(payload, headers={})
+        assert isinstance(ev, WebhookEvent)
+        assert ev.item_id == "42"
+
+    def test_library_new_emby_template(self, jelly):
+        payload = {"Event": "library.new", "ItemId": "99"}
+        ev = jelly.parse_webhook(payload, headers={})
+        assert ev is not None
+        assert ev.item_id == "99"
+
+    def test_irrelevant_events_return_none(self, jelly):
+        for event in ["PlaybackStart", "PlaybackStop", "UserCreated"]:
+            payload = {"NotificationType": event, "ItemId": "1"}
+            assert jelly.parse_webhook(payload, headers={}) is None
+
+    def test_accepts_raw_bytes(self, jelly):
+        body = json.dumps({"NotificationType": "ItemAdded", "ItemId": "7"}).encode("utf-8")
+        ev = jelly.parse_webhook(body, headers={})
+        assert ev is not None
+        assert ev.item_id == "7"
+
+    def test_invalid_json_returns_none(self, jelly):
+        assert jelly.parse_webhook(b"not-json{", headers={}) is None
+
+
+class TestRegistryWiring:
+    def test_registry_can_construct_jellyfin_server(self):
+        from plex_generate_previews.servers import ServerRegistry
+
+        registry = ServerRegistry.from_settings(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Test Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                }
+            ],
+            legacy_config=None,
+        )
+        servers = registry.servers()
+        assert len(servers) == 1
+        assert isinstance(servers[0], JellyfinServer)

@@ -209,7 +209,11 @@ class ServerRegistry:
 
             return EmbyServer(config)
 
-        # Jellyfin lands in Phase 3.
+        if config.type is ServerType.JELLYFIN:
+            from .jellyfin import JellyfinServer
+
+            return JellyfinServer(config)
+
         raise UnsupportedServerTypeError(f"Server type {config.type.value!r} is not yet supported")
 
 

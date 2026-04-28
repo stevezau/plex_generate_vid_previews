@@ -181,16 +181,9 @@ def refresh_server_libraries(server_id: str):
     except UnsupportedServerTypeError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    if cfg.type not in (ServerType.PLEX, ServerType.EMBY):
+    if cfg.type not in (ServerType.PLEX, ServerType.EMBY, ServerType.JELLYFIN):
         return (
-            jsonify(
-                {
-                    "error": (
-                        f"Refresh for {cfg.type.value} servers is not yet implemented; "
-                        "Jellyfin support arrives in Phase 3."
-                    )
-                }
-            ),
+            jsonify({"error": f"Refresh for {cfg.type.value} servers is not implemented"}),
             501,
         )
 

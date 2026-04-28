@@ -253,7 +253,11 @@ class TestRefreshLibraries:
         )
         assert response.status_code == 404
 
-    def test_501_for_jellyfin_until_phase_3(self, client, auth_headers):
+    def test_jellyfin_refresh_succeeds(self, client, auth_headers, monkeypatch):
+        # Jellyfin now ships a real client; the refresh route accepts it.
+        from plex_generate_previews.servers import Library
+        from plex_generate_previews.servers.jellyfin import JellyfinServer
+
         _seed_media_servers(
             [
                 {
@@ -262,15 +266,22 @@ class TestRefreshLibraries:
                     "name": "Jellyfin",
                     "enabled": True,
                     "url": "http://jellyfin:8096",
-                    "auth": {},
+                    "auth": {"method": "api_key", "api_key": "k"},
                 }
             ]
         )
+
+        def fake_list_libraries(self):
+            return [Library(id="1", name="Movies", remote_paths=("/jf/movies",), enabled=True)]
+
+        monkeypatch.setattr(JellyfinServer, "list_libraries", fake_list_libraries)
+
         response = client.post(
             "/api/servers/jelly-1/refresh-libraries",
             headers=auth_headers,
         )
-        assert response.status_code == 501
+        assert response.status_code == 200
+        assert response.get_json()["count"] == 1
 
     def test_persists_libraries_and_preserves_enabled_toggle(self, client, auth_headers, monkeypatch):
         from plex_generate_previews.servers import Library

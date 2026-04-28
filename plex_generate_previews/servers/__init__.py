@@ -18,6 +18,7 @@ from .base import (
     WebhookEvent,
 )
 from .emby import EmbyServer
+from .jellyfin import JellyfinServer
 from .ownership import OwnershipMatch, find_owning_servers, server_owns_path
 from .plex import PlexServer
 from .registry import (
@@ -30,6 +31,7 @@ from .registry import (
 __all__ = [
     "ConnectionResult",
     "EmbyServer",
+    "JellyfinServer",
     "Library",
     "LibraryNotYetIndexedError",
     "MediaItem",
