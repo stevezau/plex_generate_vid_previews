@@ -40,6 +40,7 @@ from loguru import logger
 from ..output import BifBundle, EmbyBifAdapter, JellyfinTrickplayAdapter, PlexBundleAdapter
 from ..output.base import OutputAdapter
 from ..servers.base import LibraryNotYetIndexedError, MediaServer, ServerConfig, ServerType
+from .frame_cache import get_frame_cache
 from .orchestrator import (
     CodecNotSupportedError,
     _cleanup_temp_directory,
@@ -303,6 +304,7 @@ def process_canonical_path(
     cancel_check=None,
     worker_name: str = "",
     regenerate: bool = False,
+    use_frame_cache: bool = True,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -345,41 +347,70 @@ def process_canonical_path(
             message=f"Source file not found: {canonical_path}",
         )
 
-    tmp_path = _tmp_path_for(canonical_path, config.working_tmp_folder)
-    os.makedirs(tmp_path, exist_ok=True)
+    # Frame cache: when enabled, the second+ webhook for the same file
+    # within the cache TTL skips FFmpeg entirely. Disabled callers
+    # (regenerate=True, or callers that explicitly opt out) write into
+    # an ad-hoc tmp dir that's cleaned up at the end.
+    cache = get_frame_cache(base_dir=os.path.join(config.working_tmp_folder, "frame_cache"))
+    cache_hit: bool = False
+    cleanup_path: str | None = None
+
+    if use_frame_cache and not regenerate:
+        cached = cache.get(canonical_path)
+        if cached is not None:
+            tmp_path = str(cached.frame_dir)
+            frame_count = cached.frame_count
+            cache_hit = True
+            logger.debug(
+                "Frame cache hit for {} ({} frames)",
+                canonical_path,
+                frame_count,
+            )
+
+    if not cache_hit:
+        # Generate into the cache slot (if cache enabled) or an ad-hoc tmp.
+        if use_frame_cache:
+            tmp_path = str(cache.frame_dir_for(canonical_path))
+        else:
+            tmp_path = _tmp_path_for(canonical_path, config.working_tmp_folder)
+            cleanup_path = tmp_path  # only ad-hoc tmps get auto-cleaned
+        os.makedirs(tmp_path, exist_ok=True)
 
     try:
-        try:
-            gen_result = generate_images(
-                canonical_path,
-                tmp_path,
-                gpu,
-                gpu_device_path,
-                config,
-                progress_callback,
-                ffmpeg_threads_override=ffmpeg_threads_override,
-                cancel_check=cancel_check,
-            )
-        except CodecNotSupportedError:
-            # Re-raised so callers can fall back to CPU; not a publisher failure.
-            raise
-        except Exception as exc:
-            logger.exception("Frame generation failed for {}", canonical_path)
-            return MultiServerResult(
-                canonical_path=canonical_path,
-                status=MultiServerStatus.FAILED,
-                message=f"Frame generation failed: {exc}",
-            )
-
-        frame_count = 0
-        if isinstance(gen_result, tuple) and len(gen_result) >= 2:
-            frame_count = int(gen_result[1])
-        if frame_count <= 0:
-            # Re-derive from disk in case the helper returned a non-tuple.
+        if not cache_hit:
             try:
-                frame_count = sum(1 for f in os.listdir(tmp_path) if f.lower().endswith(".jpg"))
-            except OSError:
-                frame_count = 0
+                gen_result = generate_images(
+                    canonical_path,
+                    tmp_path,
+                    gpu,
+                    gpu_device_path,
+                    config,
+                    progress_callback,
+                    ffmpeg_threads_override=ffmpeg_threads_override,
+                    cancel_check=cancel_check,
+                )
+            except CodecNotSupportedError:
+                # Re-raised so callers can fall back to CPU; not a publisher failure.
+                raise
+            except Exception as exc:
+                logger.exception("Frame generation failed for {}", canonical_path)
+                return MultiServerResult(
+                    canonical_path=canonical_path,
+                    status=MultiServerStatus.FAILED,
+                    message=f"Frame generation failed: {exc}",
+                )
+
+            frame_count = 0
+            if isinstance(gen_result, tuple) and len(gen_result) >= 2:
+                frame_count = int(gen_result[1])
+            if frame_count <= 0:
+                # Re-derive from disk in case the helper returned a non-tuple.
+                try:
+                    frame_count = sum(1 for f in os.listdir(tmp_path) if f.lower().endswith(".jpg"))
+                except OSError:
+                    frame_count = 0
+        else:
+            gen_result = None
 
         if frame_count == 0:
             return MultiServerResult(
@@ -387,6 +418,12 @@ def process_canonical_path(
                 status=MultiServerStatus.NO_FRAMES,
                 message="FFmpeg produced 0 frames",
             )
+
+        # Store in cache only on a fresh generation; cache hits already
+        # have an entry. Skip caching when use_frame_cache=False so
+        # regenerate flows don't re-populate stale slots.
+        if not cache_hit and use_frame_cache:
+            cache.put(canonical_path, frame_dir=Path(tmp_path), frame_count=frame_count)
 
         bundle = BifBundle(
             canonical_path=canonical_path,
@@ -433,4 +470,7 @@ def process_canonical_path(
             message=f"{sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)} of {len(results)} publisher(s) succeeded",
         )
     finally:
-        _cleanup_temp_directory(tmp_path)
+        # Only clean up tmp dirs that are *not* in the cache. Cache
+        # entries persist for TTL so subsequent webhooks hit them.
+        if cleanup_path is not None:
+            _cleanup_temp_directory(cleanup_path)
