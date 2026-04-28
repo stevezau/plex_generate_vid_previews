@@ -30,173 +30,28 @@
                     <div class="decision-row">
                         <div class="decision-scenario">
                             You add media manually to <strong>Plex</strong> (drag &amp; drop, Plex import, etc.)
-                            <div class="text-muted small">Plex-only triggers; for Emby/Jellyfin use the *arr or Custom webhook above.</div>
+                            <div class="text-muted small">Plex-specific options live on the server card, not here.</div>
                         </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation">
-                            <a href="#section-webhooks-plex-direct"><i class="bi bi-arrow-right-circle me-1"></i>Plex Direct</a>
-                            <span class="text-muted small d-block">or <a href="#section-webhooks-recently-added">Recently Added Scanner</a> if no Plex Pass</span>
+                            <a href="/servers"><i class="bi bi-arrow-right-circle me-1"></i>Servers &rarr; Edit Plex &rarr; Webhook &amp; Scanner</a>
+                            <span class="text-muted small d-block">Plex Direct webhook + Recently Added Scanner</span>
                         </div>
                     </div>
                 </div>
 
-                <h6 class="mb-2"><i class="bi bi-activity me-1"></i>Currently active</h6>
-                <div class="overview-status-grid mb-4">
-                    <div class="overview-status-card" onclick="jumpToSection('section-webhooks-plex-direct')">
-                        <div class="status-label">Plex Direct</div>
-                        <div class="status-value" id="overviewPlexDirectStatus">
-                            <span class="text-muted">Checking…</span>
-                        </div>
-                    </div>
-                    <div class="overview-status-card" onclick="jumpToSection('section-webhooks-recently-added')">
-                        <div class="status-label">Recently Added Scanner</div>
-                        <div class="status-value" id="overviewRecentlyAddedStatus">
-                            <span class="text-muted">Checking…</span>
-                        </div>
-                    </div>
-                    <div class="overview-status-card" onclick="jumpToSection('section-webhooks-sonarr-radarr')">
-                        <div class="status-label">*arr apps / Custom</div>
-                        <div class="status-value">
-                            <span class="text-info">Ready</span>
-                            <div class="small text-muted">Configured in each app</div>
-                        </div>
-                    </div>
+                <div class="alert alert-secondary small mb-3">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <strong>Where did Plex Direct and the Recently Added Scanner go?</strong>
+                    They're now per-Plex-server controls on the
+                    <a href="/servers">Servers</a> page — open your Plex card &rarr; Edit &rarr; <em>Webhook &amp; Scanner</em>.
+                    The settings below still apply to all incoming webhooks (Plex, *arr, Custom).
                 </div>
 
                 <div class="upgrade-caveat">
                     <strong><i class="bi bi-exclamation-triangle me-1"></i>Note about file upgrades:</strong>
-                    The two auto-trigger options (Plex Direct and Recently Added Scanner) only fire on <em>brand-new</em> library items. When Sonarr or Radarr <em>upgrades</em> an existing file in place, Plex keeps the same library item and neither option notices. Use the Sonarr/Radarr webhook for that case — it has an "On Upgrade" event that handles in-place replacements.
+                    The Plex auto-trigger options (Plex Direct webhook and Recently Added Scanner — both now on the Servers page) only fire on <em>brand-new</em> library items. When Sonarr or Radarr <em>upgrades</em> an existing file in place, Plex keeps the same library item and neither option notices. Use the Sonarr/Radarr webhook for that case — it has an "On Upgrade" event that handles in-place replacements.
                 </div>
-            </div>
-        </div>
-
-        <!-- Section 2: Plex Direct Webhook -->
-        <div class="card section-card" id="section-webhooks-plex-direct">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <div>
-                    <i class="bi bi-lightning-charge me-2"></i>Plex Direct Webhook
-                    <span class="badge bg-info ms-2">Instant</span>
-                    <span class="badge bg-warning text-dark ms-1">Plex Pass required</span>
-                </div>
-                <span class="badge badge-status bg-secondary" id="plexWebhookStatusBadge">Checking…</span>
-            </div>
-            <div class="card-body">
-                <p class="mb-3">Plex pings this app the moment it adds a new library item, so previews start generating right away. This is the fastest option — but it only works if you have Plex Pass.</p>
-
-                <h6 class="mb-2">Prerequisites</h6>
-                <ul class="mb-3">
-                    <li><strong>Plex Pass</strong> active on your server-owner account.</li>
-                    <li>
-                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → General (toggle <em>Enable mobile push notifications</em>).
-                        <div class="text-muted small mt-1">
-                            This is a Plex quirk: the <code>library.new</code> webhook is delivered through the same code path as mobile push notifications, so with push notifications off, library events never fire. You don't have to actually use mobile push on a phone — they just need to be turned on.
-                        </div>
-                    </li>
-                </ul>
-
-                <div id="plexWebhookNoPlexPass" class="alert alert-warning small d-none">
-                    <i class="bi bi-exclamation-circle me-1"></i>
-                    Your Plex account doesn't appear to have an active Plex Pass subscription. Plex's webhook feature is Plex-Pass-only — use the Recently Added Scanner below instead.
-                </div>
-                <div id="plexWebhookError" class="alert alert-danger small d-none"></div>
-                <div id="plexWebhookWarning" class="alert alert-warning small d-none"></div>
-
-                <h6 class="mb-2">Setup</h6>
-                <ol class="mb-3">
-                    <li class="mb-3">
-                        Confirm the URL Plex will POST to. The default is the URL you're using right now, which works for most same-host setups. Override it if Plex is on a different machine or behind a different network/proxy.
-                        <div class="input-group input-group-sm mt-2">
-                            <input type="text" class="form-control" id="plexWebhookPublicUrl" placeholder="http://your-host:8080/api/webhooks/plex">
-                            <button class="btn btn-outline-secondary" type="button" id="plexWebhookResetUrlBtn" title="Reset to detected URL">
-                                <i class="bi bi-arrow-counterclockwise"></i>
-                            </button>
-                        </div>
-                        <div class="form-text">Must be reachable from your <strong>Plex Media Server</strong>, not just your browser.</div>
-                    </li>
-                    <li>
-                        Click <strong>Register with Plex</strong> below. Your webhook secret (or API token) is automatically embedded in the registered URL so Plex can authenticate — the webhook UI in Plex doesn't support custom headers, so this is the only option. <strong>If you change the webhook secret later, saving settings automatically re-registers</strong> so Plex picks up the new value.
-                    </li>
-                </ol>
-
-                <div class="d-flex gap-2 flex-wrap">
-                    <button class="btn btn-sm btn-primary" type="button" id="plexWebhookRegisterBtn">
-                        <i class="bi bi-plus-circle me-1"></i><span>Register with Plex</span>
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary" type="button" id="plexWebhookTestBtn">
-                        <i class="bi bi-broadcast-pin me-1"></i>Test reachability
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger d-none" type="button" id="plexWebhookUnregisterBtn">
-                        <i class="bi bi-x-circle me-1"></i>Remove from Plex
-                    </button>
-                </div>
-                <div id="plexWebhookTestResult" class="small mt-2"></div>
-
-                <details class="mt-3">
-                    <summary class="small text-muted" style="cursor:pointer;">How auth works (advanced)</summary>
-                    <div class="small text-muted mt-2">
-                        <p class="mb-2">
-                            When you click Register, this app calls the plex.tv account API and stores a URL like
-                            <code>https://your-host/api/webhooks/plex?token=SECRET</code>.
-                            Plex Media Server POSTs to that URL on server events; the endpoint filters for
-                            <code>library.new</code>, validates the query-string token against your webhook secret, and
-                            feeds the file paths into the same job pipeline as Sonarr/Radarr.
-                        </p>
-                        <p class="mb-0">
-                            If you'd rather register manually, you can paste the base URL into Plex Web → Settings → Webhooks yourself — but you'll still need to append <code>?token=&lt;your-secret&gt;</code> or Plex POSTs will 401.
-                        </p>
-                    </div>
-                </details>
-            </div>
-        </div>
-
-        <!-- Section 3: Recently Added Scanner -->
-        <div class="card section-card" id="section-webhooks-recently-added">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <div>
-                    <i class="bi bi-arrow-repeat me-2"></i>Plex Recently Added Scanner
-                    <span class="badge bg-warning text-dark ms-2">Plex only</span>
-                    <span class="badge bg-success ms-1">No Plex Pass needed</span>
-                </div>
-                <span class="badge badge-status bg-secondary" id="recentlyAddedStatusBadge">Loading…</span>
-            </div>
-            <div class="card-body">
-                <p class="mb-3">
-                    Polls <strong>Plex</strong> on a schedule and queues anything new. Use this if you don't have Plex Pass — or
-                    as a safety net alongside the Plex Direct webhook. <strong>The scanner is a regular schedule
-                    you can customize</strong> — create multiple scanners with different intervals, lookback
-                    windows, or libraries as you need.
-                </p>
-                <div class="alert alert-info small py-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i>
-                    <strong>Emby/Jellyfin users:</strong> use the *arr or Custom webhooks below — they fire as soon as
-                    new media lands and work for any media server, no polling needed.
-                </div>
-
-                <div id="recentlyAddedNoScanners" class="alert alert-secondary small d-none">
-                    <i class="bi bi-info-circle me-1"></i>
-                    No Recently Added scanners configured yet. Click <strong>Create default scanner</strong> below
-                    to create one with sensible defaults (every 15 minutes, 1 hour lookback, all libraries).
-                </div>
-
-                <div id="recentlyAddedScannerList" class="mb-3">
-                    <div class="text-muted small">
-                        <span class="spinner-border spinner-border-sm me-1"></span>Loading scanners…
-                    </div>
-                </div>
-
-                <div class="d-flex gap-2 flex-wrap">
-                    <button class="btn btn-sm btn-primary" type="button" id="recentlyAddedCreateDefaultBtn">
-                        <i class="bi bi-plus-circle me-1"></i>Create default scanner
-                    </button>
-                    <button class="btn btn-sm btn-outline-primary d-none" type="button" id="recentlyAddedScanNowBtn">
-                        <i class="bi bi-play-circle me-1"></i>Scan all now
-                    </button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary"
-                            data-bs-toggle="tab" data-bs-target="#pane-schedules">
-                        <i class="bi bi-sliders me-1"></i>Manage in Schedules tab
-                    </button>
-                </div>
-                <div id="recentlyAddedScanResult" class="small mt-2"></div>
             </div>
         </div>
 
@@ -406,7 +261,7 @@
                 <div class="form-check form-switch mb-3">
                     <input class="form-check-input" type="checkbox" id="webhookEnabled" checked>
                     <label class="form-check-label" for="webhookEnabled">Enable webhook processing</label>
-                    <div class="form-text">Master switch for all incoming webhooks (Plex Direct, Sonarr, Radarr, Custom). Disable to pause without touching any individual settings.</div>
+                    <div class="form-text">Master switch for all incoming webhooks (Sonarr, Radarr, Custom, and the per-server Plex Direct webhook). Disable to pause without touching any individual settings.</div>
                 </div>
 
                 <div class="mb-3">
@@ -449,7 +304,7 @@
                         </button>
                     </div>
                     <div class="form-text">
-                        Dedicated secret for webhook authentication (Sonarr/Radarr/Custom, and also embedded in the Plex Direct webhook URL). Leave empty to use the main API token instead. Rotating this value automatically re-registers the Plex Direct webhook.
+                        Dedicated secret for webhook authentication (Sonarr/Radarr/Custom, and also embedded in the Plex Direct webhook URL configured in Servers &rarr; your Plex card &rarr; Webhook &amp; Scanner). Leave empty to use the main API token instead. Rotating this value automatically re-registers any Plex Direct webhook the next time you save it from the Servers page.
                     </div>
                 </div>
 
@@ -608,7 +463,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     loadWebhookSettings();
     loadHistory();
-    loadPlexWebhookStatus();
 
     document.getElementById('webhookDelay').addEventListener('input', function() {
         document.getElementById('delayValue').textContent = this.value;
@@ -624,19 +478,6 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('requeueMaxAge').disabled = !this.checked;
     });
 
-    // Auto-trigger card wiring
-    document.getElementById('plexWebhookRegisterBtn').addEventListener('click', registerPlexWebhook);
-    document.getElementById('plexWebhookUnregisterBtn').addEventListener('click', unregisterPlexWebhook);
-    document.getElementById('plexWebhookTestBtn').addEventListener('click', testPlexWebhookReachability);
-    document.getElementById('plexWebhookResetUrlBtn').addEventListener('click', resetPlexWebhookUrl);
-    document.getElementById('recentlyAddedCreateDefaultBtn').addEventListener('click', createDefaultRecentlyAddedScanner);
-    document.getElementById('recentlyAddedScanNowBtn').addEventListener('click', scanAllRecentlyAddedNow);
-
-    // Initial data load — polling is managed by automation.html's coordinator
-    // to avoid duplicate /api/schedules requests from both tabs.
-    loadRecentlyAddedScanners();
-    loadHistory();
-
     // Auto-save: any stateful control inside #pane-triggers that isn't
     // explicitly skipped kicks a debounced save through saveWebhookSettings.
     if (typeof window.bindAutoSave === 'function') {
@@ -645,7 +486,6 @@ document.addEventListener('DOMContentLoaded', function() {
             saveFn: saveWebhookSettings,
             indicatorId: 'saveStatusIndicator',
             skipSelectors: [
-                '#plexWebhookPublicUrl',
                 '#sonarrUrl',
                 '#radarrUrl',
                 '#sportarrUrl',
@@ -656,165 +496,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Used by the Overview status cards that visually look clickable.
-function jumpToSection(id) {
-    var el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
 let allHistoryEvents = [];
 let historyPage = 1;
 let historyPerPage = parseInt(localStorage.getItem('historyPerPage') || '25', 10);
-let recentlyAddedScanners = [];
-
-function _formatScannerInterval(mins) {
-    if (!mins) return '';
-    mins = parseInt(mins, 10);
-    if (mins < 60) return 'every ' + mins + ' min';
-    if (mins % 60 === 0) {
-        var h = mins / 60;
-        return 'every ' + h + ' hour' + (h === 1 ? '' : 's');
-    }
-    return 'every ' + mins + ' min';
-}
-
-function _formatScannerLookback(hours) {
-    var h = parseFloat(hours);
-    if (isNaN(h) || h <= 0) return '';
-    if (h < 1) return Math.round(h * 60) + ' min lookback';
-    if (h < 24) return h + 'h lookback';
-    return Math.round(h / 24) + 'd lookback';
-}
-
-async function loadRecentlyAddedScanners() {
-    var list = document.getElementById('recentlyAddedScannerList');
-    var empty = document.getElementById('recentlyAddedNoScanners');
-    var createBtn = document.getElementById('recentlyAddedCreateDefaultBtn');
-    var scanBtn = document.getElementById('recentlyAddedScanNowBtn');
-    var badge = document.getElementById('recentlyAddedStatusBadge');
-    try {
-        const data = await apiGet('/api/schedules');
-        var all = (data && data.schedules) || [];
-        recentlyAddedScanners = all.filter(function(s) {
-            return s.config && s.config.job_type === 'recently_added';
-        });
-
-        if (recentlyAddedScanners.length === 0) {
-            list.innerHTML = '';
-            empty.classList.remove('d-none');
-            createBtn.classList.remove('d-none');
-            scanBtn.classList.add('d-none');
-            badge.className = 'badge badge-status bg-secondary';
-            badge.textContent = 'No scanners';
-        } else {
-            empty.classList.add('d-none');
-            // Hide the "Create default" button once any scanner exists —
-            // users can add more via the Schedules page.
-            createBtn.classList.add('d-none');
-            scanBtn.classList.remove('d-none');
-
-            var anyEnabled = recentlyAddedScanners.some(function(s) { return s.enabled !== false; });
-            if (anyEnabled) {
-                badge.className = 'badge badge-status bg-success';
-                badge.textContent = recentlyAddedScanners.length === 1
-                    ? '1 scanner active'
-                    : recentlyAddedScanners.length + ' scanners active';
-            } else {
-                badge.className = 'badge badge-status bg-secondary';
-                badge.textContent = 'All disabled';
-            }
-
-            var html = '<div class="list-group list-group-flush border rounded">';
-            recentlyAddedScanners.forEach(function(s) {
-                var interval = s.trigger_type === 'interval'
-                    ? _formatScannerInterval(s.trigger_value)
-                    : (s.trigger_value ? 'cron: ' + s.trigger_value : '');
-                var lookback = _formatScannerLookback((s.config || {}).lookback_hours);
-                var library = s.library_name || 'All Libraries';
-                var enabledBadge = s.enabled !== false
-                    ? '<span class="badge bg-success">Enabled</span>'
-                    : '<span class="badge bg-secondary">Disabled</span>';
-                html += '<div class="list-group-item bg-transparent d-flex justify-content-between align-items-center flex-wrap gap-2">' +
-                    '<div>' +
-                    '<div class="fw-semibold">' + escapeHtml(s.name) + ' ' + enabledBadge + '</div>' +
-                    '<div class="small text-muted">' +
-                    escapeHtml(library) + ' · ' + escapeHtml(interval) +
-                    (lookback ? ' · ' + escapeHtml(lookback) : '') +
-                    '</div>' +
-                    '</div>' +
-                    '<button type="button" class="btn btn-sm btn-outline-secondary" ' +
-                    'data-schedule-id="' + escapeHtml(s.id) + '" ' +
-                    'onclick="switchToSchedulesAndEdit(this.dataset.scheduleId)">' +
-                    '<i class="bi bi-sliders me-1"></i>Edit' +
-                    '</button>' +
-                    '</div>';
-            });
-            html += '</div>';
-            list.innerHTML = html;
-        }
-
-        updateOverviewStatusPills();
-    } catch (e) {
-        console.error('Failed to load scanner schedules:', e);
-        list.innerHTML = '<div class="text-danger small"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load scanners: ' + escapeHtml(e.message || 'unknown error') + '</div>';
-        badge.className = 'badge badge-status bg-warning text-dark';
-        badge.textContent = 'Error';
-    }
-}
-
-async function createDefaultRecentlyAddedScanner() {
-    var btn = document.getElementById('recentlyAddedCreateDefaultBtn');
-    var result = document.getElementById('recentlyAddedScanResult');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Creating…';
-    result.textContent = '';
-    result.className = 'small mt-2';
-    try {
-        await apiPost('/api/schedules', {
-            name: 'Recently Added Scanner',
-            interval_minutes: 15,
-            library_id: null,
-            library_name: 'All Libraries',
-            enabled: true,
-            priority: 2,
-            config: { job_type: 'recently_added', lookback_hours: 1 },
-        });
-        result.className = 'small mt-2 text-success';
-        result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Scanner created — runs every 15 minutes with a 1 hour lookback. Customize it on the Schedules page.';
-        showToast('Scanner created', 'Recently Added scanner is now running every 15 minutes.', 'success');
-        loadRecentlyAddedScanners();
-    } catch (e) {
-        result.className = 'small mt-2 text-danger';
-        result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + escapeHtml((e && e.message) || 'Failed to create scanner');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>Create default scanner';
-    }
-}
-
-async function scanAllRecentlyAddedNow() {
-    var btn = document.getElementById('recentlyAddedScanNowBtn');
-    var result = document.getElementById('recentlyAddedScanResult');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning…';
-    result.textContent = '';
-    result.className = 'small mt-2';
-    try {
-        var runs = recentlyAddedScanners.map(function(s) {
-            return apiPost('/api/schedules/' + encodeURIComponent(s.id) + '/run', {});
-        });
-        await Promise.all(runs);
-        result.className = 'small mt-2 text-success';
-        result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Triggered ' + recentlyAddedScanners.length + ' scanner run(s). Watch the Activity Log below.';
-        loadHistory();
-    } catch (e) {
-        result.className = 'small mt-2 text-danger';
-        result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + escapeHtml((e && e.message) || 'Scan failed');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-play-circle me-1"></i>Scan all now';
-    }
-}
 
 async function loadWebhookSettings() {
     try {
@@ -830,7 +514,6 @@ async function loadWebhookSettings() {
         } else if (data.webhook_secret === '****') {
             document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
         }
-        // Restart recovery settings
         const autoRequeue = data.auto_requeue_on_restart !== false;
         document.getElementById('autoRequeueOnRestart').checked = autoRequeue;
         const maxAge = Math.min(1440, Math.max(5, parseInt(data.requeue_max_age_minutes, 10) || 720));
@@ -839,190 +522,11 @@ async function loadWebhookSettings() {
         document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
         document.getElementById('requeueMaxAge').disabled = !autoRequeue;
 
-        // Pre-fill the Plex public URL with what's saved (status call may overwrite with default)
-        if (data.plex_webhook_public_url) {
-            document.getElementById('plexWebhookPublicUrl').value = data.plex_webhook_public_url;
-        }
-
-        updateOverviewStatusPills();
-        refreshScrollSpy();
+        try {
+            if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
+        } catch (_e) { }
     } catch (e) {
         console.error('Failed to load webhook settings:', e);
-    }
-}
-
-function refreshScrollSpy() {
-    try {
-        if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
-    } catch (e) { /* no-op */ }
-}
-
-function updateOverviewStatusPills() {
-    // Plex Direct
-    var plexBadge = document.getElementById('plexWebhookStatusBadge');
-    var plexCard = document.getElementById('overviewPlexDirectStatus');
-    if (plexBadge && plexCard) {
-        var label = plexBadge.textContent.trim() || 'Checking…';
-        var cls = 'text-muted';
-        if (/registered/i.test(label) && !/not/i.test(label)) cls = 'text-success';
-        else if (/no plex pass/i.test(label)) cls = 'text-warning';
-        else if (/error/i.test(label)) cls = 'text-danger';
-        else if (/not registered/i.test(label)) cls = 'text-muted';
-        plexCard.innerHTML = '<span class="' + cls + '">' + label + '</span>';
-    }
-
-    // Recently Added scanners — count enabled schedules
-    var raCard = document.getElementById('overviewRecentlyAddedStatus');
-    if (raCard) {
-        var enabledScanners = recentlyAddedScanners.filter(function(s) { return s.enabled !== false; });
-        if (recentlyAddedScanners.length === 0) {
-            raCard.innerHTML = '<span class="text-muted">No scanners</span>';
-        } else if (enabledScanners.length === 0) {
-            raCard.innerHTML = '<span class="text-muted">All disabled</span>';
-        } else {
-            var label = enabledScanners.length === 1 ? '1 scanner' : enabledScanners.length + ' scanners';
-            raCard.innerHTML = '<span class="text-success">' + label + ' active</span>';
-        }
-    }
-}
-
-async function loadPlexWebhookStatus() {
-    try {
-        const data = await apiGet('/api/settings/plex_webhook/status');
-        applyPlexWebhookStatus(data);
-    } catch (e) {
-        console.error('Failed to load Plex webhook status:', e);
-        var badge = document.getElementById('plexWebhookStatusBadge');
-        badge.className = 'badge badge-status bg-secondary';
-        badge.textContent = 'Unknown';
-        updateOverviewStatusPills();
-    }
-}
-
-function applyPlexWebhookStatus(data) {
-    var input = document.getElementById('plexWebhookPublicUrl');
-    if (!input.value) input.value = data.public_url || data.default_url || '';
-
-    var badge = document.getElementById('plexWebhookStatusBadge');
-    var registerBtn = document.getElementById('plexWebhookRegisterBtn');
-    var unregisterBtn = document.getElementById('plexWebhookUnregisterBtn');
-    var noPassWarn = document.getElementById('plexWebhookNoPlexPass');
-    var errBox = document.getElementById('plexWebhookError');
-    var warnBox = document.getElementById('plexWebhookWarning');
-
-    noPassWarn.classList.add('d-none');
-    errBox.classList.add('d-none');
-    errBox.textContent = '';
-    if (warnBox) {
-        warnBox.classList.add('d-none');
-        warnBox.textContent = '';
-        if (data.warning) {
-            warnBox.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + data.warning;
-            warnBox.classList.remove('d-none');
-        }
-    }
-
-    if (data.has_plex_pass === false) {
-        badge.className = 'badge badge-status bg-warning text-dark';
-        badge.textContent = 'No Plex Pass';
-        noPassWarn.classList.remove('d-none');
-        registerBtn.disabled = true;
-        unregisterBtn.classList.add('d-none');
-        updateOverviewStatusPills();
-        return;
-    }
-
-    registerBtn.disabled = false;
-
-    if (data.error && data.error_reason !== 'plex_pass_required') {
-        badge.className = 'badge badge-status bg-warning text-dark';
-        badge.textContent = 'Error';
-        errBox.textContent = data.error;
-        errBox.classList.remove('d-none');
-    }
-
-    if (data.registered_in_plex) {
-        badge.className = 'badge badge-status bg-success';
-        badge.textContent = 'Registered';
-        registerBtn.querySelector('span').textContent = 'Re-register with Plex';
-        unregisterBtn.classList.remove('d-none');
-    } else {
-        if (!data.error) {
-            badge.className = 'badge badge-status bg-secondary';
-            badge.textContent = 'Not registered';
-        }
-        registerBtn.querySelector('span').textContent = 'Register with Plex';
-        unregisterBtn.classList.add('d-none');
-    }
-    updateOverviewStatusPills();
-}
-
-function resetPlexWebhookUrl() {
-    var origin = window.location.origin;
-    document.getElementById('plexWebhookPublicUrl').value = origin + '/api/webhooks/plex';
-    showToast('Reset', 'URL reset to ' + origin + '/api/webhooks/plex', 'info');
-}
-
-async function registerPlexWebhook() {
-    var btn = document.getElementById('plexWebhookRegisterBtn');
-    var url = document.getElementById('plexWebhookPublicUrl').value.trim();
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Registering…';
-    try {
-        await apiPost('/api/settings/plex_webhook/register', { public_url: url });
-        showToast('Success', 'Plex webhook registered.', 'success');
-    } catch (e) {
-        var msg = (e && e.message) ? e.message : 'Failed to register Plex webhook';
-        showToast('Error', msg, 'danger');
-        var errBox = document.getElementById('plexWebhookError');
-        errBox.textContent = msg;
-        errBox.classList.remove('d-none');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-plus-circle me-1"></i><span>Register with Plex</span>';
-        loadPlexWebhookStatus();
-    }
-}
-
-async function unregisterPlexWebhook() {
-    var btn = document.getElementById('plexWebhookUnregisterBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Removing…';
-    try {
-        await apiPost('/api/settings/plex_webhook/unregister', {});
-        showToast('Removed', 'Plex webhook removed from your account.', 'success');
-    } catch (e) {
-        showToast('Error', (e && e.message) || 'Failed to remove webhook', 'danger');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Remove from Plex';
-        loadPlexWebhookStatus();
-    }
-}
-
-async function testPlexWebhookReachability() {
-    var btn = document.getElementById('plexWebhookTestBtn');
-    var result = document.getElementById('plexWebhookTestResult');
-    var url = document.getElementById('plexWebhookPublicUrl').value.trim();
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
-    result.textContent = '';
-    result.className = 'small mt-2';
-    try {
-        const data = await apiPost('/api/settings/plex_webhook/test', { public_url: url });
-        if (data.success) {
-            result.className = 'small mt-2 text-success';
-            result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Reachable (HTTP ' + data.status_code + '). Plex should be able to deliver events here.';
-        } else {
-            result.className = 'small mt-2 text-danger';
-            result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (data.error || ('Unexpected status ' + data.status_code));
-        }
-    } catch (e) {
-        result.className = 'small mt-2 text-danger';
-        result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + ((e && e.message) || 'Test failed');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>Test reachability';
     }
 }
 
@@ -1044,8 +548,6 @@ async function saveWebhookSettings() {
     }
 
     await apiPost('/api/settings', payload);
-    // Refresh status in case secret rotation re-registered the Plex webhook
-    loadPlexWebhookStatus();
 }
 
 async function loadHistory() {

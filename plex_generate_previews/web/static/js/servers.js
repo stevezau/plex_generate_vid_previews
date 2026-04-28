@@ -683,6 +683,15 @@
                 cfgInput.dataset.validatorBound = '1';
             }
             if (cfgInput.value) _validateLocalPathInput(cfgInput);
+
+            // Webhook & Scanner panel: load Plex Direct status + scanner list so
+            // the user sees current state without needing to open the tab first.
+            // Wiring runs once at DOMContentLoaded; loaders are cheap to repeat.
+            try {
+                if (typeof _wirePlexWebhookPanel === 'function') _wirePlexWebhookPanel();
+                if (typeof loadPlexWebhookStatus === 'function') loadPlexWebhookStatus();
+                if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
+            } catch (_e) { }
         }
 
         renderEditLibraries(server.libraries || []);
