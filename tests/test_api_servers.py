@@ -367,3 +367,294 @@ class TestRefreshLibraries:
             headers=auth_headers,
         )
         assert response.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# CRUD endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestCreateServer:
+    def test_creates_emby_server_and_assigns_id(self, client, auth_headers):
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "emby",
+                "name": "Test Emby",
+                "url": "http://emby:8096",
+                "auth": {"method": "api_key", "api_key": "secret"},
+            },
+        )
+        assert response.status_code == 201
+        body = response.get_json()
+        assert body["type"] == "emby"
+        assert body["name"] == "Test Emby"
+        assert body["id"]  # generated server-side
+        # Returned auth is redacted.
+        assert body["auth"]["api_key"] == "***REDACTED***"
+
+        # Persisted to settings.
+        servers = get_settings_manager().get("media_servers")
+        assert any(s["id"] == body["id"] for s in servers)
+
+    def test_400_when_type_missing(self, client, auth_headers):
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={"name": "X", "url": "http://x"},
+        )
+        assert response.status_code == 400
+
+    def test_400_when_unknown_type(self, client, auth_headers):
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={"type": "kodi", "name": "K", "url": "http://k"},
+        )
+        assert response.status_code == 400
+
+    def test_400_when_name_missing(self, client, auth_headers):
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={"type": "emby", "url": "http://emby"},
+        )
+        assert response.status_code == 400
+
+    def test_400_when_url_missing(self, client, auth_headers):
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={"type": "emby", "name": "Emby"},
+        )
+        assert response.status_code == 400
+
+    def test_409_when_id_collides(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "fixed-id",
+                    "type": "emby",
+                    "name": "Existing",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {},
+                }
+            ]
+        )
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "id": "fixed-id",
+                "type": "jellyfin",
+                "name": "New",
+                "url": "http://jelly",
+            },
+        )
+        assert response.status_code == 409
+
+
+class TestUpdateServer:
+    def test_renames_server(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Old Name",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                }
+            ]
+        )
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"name": "New Name"},
+        )
+        assert response.status_code == 200
+        assert response.get_json()["name"] == "New Name"
+        # Other fields untouched.
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["url"] == "http://emby"
+        assert servers[0]["auth"]["api_key"] == "k"
+
+    def test_redacted_auth_does_not_clobber_secret(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "real-secret"},
+                }
+            ]
+        )
+        # Client GETs the redacted form, edits 'name', sends it all back.
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={
+                "name": "Renamed",
+                "auth": {"api_key": "***REDACTED***"},
+            },
+        )
+        assert response.status_code == 200
+        # Real secret preserved despite the redacted echo.
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["auth"]["api_key"] == "real-secret"
+
+    def test_id_field_immutable(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {},
+                }
+            ]
+        )
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"id": "hacked-id", "name": "X"},
+        )
+        assert response.status_code == 200
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["id"] == "s1"  # unchanged
+
+    def test_404_when_unknown_id(self, client, auth_headers):
+        response = client.put(
+            "/api/servers/missing",
+            headers=auth_headers,
+            json={"name": "X"},
+        )
+        assert response.status_code == 404
+
+
+class TestDeleteServer:
+    def test_removes_server(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {},
+                },
+                {
+                    "id": "s2",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin",
+                    "auth": {},
+                },
+            ]
+        )
+        response = client.delete("/api/servers/s1", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.get_json()["deleted"] == "s1"
+        servers = get_settings_manager().get("media_servers")
+        assert {s["id"] for s in servers} == {"s2"}
+
+    def test_404_when_unknown(self, client, auth_headers):
+        response = client.delete("/api/servers/nope", headers=auth_headers)
+        assert response.status_code == 404
+
+
+class TestTestConnection:
+    def test_emby_test_connection_succeeds(self, client, auth_headers, monkeypatch):
+        from plex_generate_previews.servers import ConnectionResult
+        from plex_generate_previews.servers.emby import EmbyServer
+
+        def fake_test(self):
+            return ConnectionResult(
+                ok=True,
+                server_id="abc",
+                server_name="Test Emby",
+                version="4.9",
+                message="OK",
+            )
+
+        monkeypatch.setattr(EmbyServer, "test_connection", fake_test)
+        response = client.post(
+            "/api/servers/test-connection",
+            headers=auth_headers,
+            json={
+                "type": "emby",
+                "name": "Test",
+                "url": "http://emby:8096",
+                "auth": {"method": "api_key", "api_key": "k"},
+            },
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["ok"] is True
+        assert body["server_id"] == "abc"
+        assert body["server_name"] == "Test Emby"
+
+    def test_jellyfin_test_connection_failure_reported(self, client, auth_headers, monkeypatch):
+        from plex_generate_previews.servers import ConnectionResult
+        from plex_generate_previews.servers.jellyfin import JellyfinServer
+
+        def fake_test(self):
+            return ConnectionResult(ok=False, message="connection refused")
+
+        monkeypatch.setattr(JellyfinServer, "test_connection", fake_test)
+        response = client.post(
+            "/api/servers/test-connection",
+            headers=auth_headers,
+            json={
+                "type": "jellyfin",
+                "name": "JF",
+                "url": "http://jellyfin:8096",
+                "auth": {"method": "api_key", "api_key": "k"},
+            },
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["ok"] is False
+        assert "refused" in body["message"]
+
+    def test_test_connection_does_not_persist(self, client, auth_headers, monkeypatch):
+        from plex_generate_previews.servers import ConnectionResult
+        from plex_generate_previews.servers.emby import EmbyServer
+
+        monkeypatch.setattr(
+            EmbyServer,
+            "test_connection",
+            lambda self: ConnectionResult(ok=True, message="OK"),
+        )
+        response = client.post(
+            "/api/servers/test-connection",
+            headers=auth_headers,
+            json={
+                "type": "emby",
+                "name": "Test",
+                "url": "http://emby:8096",
+                "auth": {"method": "api_key", "api_key": "k"},
+            },
+        )
+        assert response.status_code == 200
+        # Nothing persisted.
+        assert get_settings_manager().get("media_servers") in (None, [])
+
+    def test_invalid_payload_returns_400(self, client, auth_headers):
+        response = client.post(
+            "/api/servers/test-connection",
+            headers=auth_headers,
+            json={"type": "emby"},  # no name / url
+        )
+        assert response.status_code == 400
+        assert response.get_json()["ok"] is False
