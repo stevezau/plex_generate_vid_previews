@@ -658,3 +658,134 @@ class TestTestConnection:
         )
         assert response.status_code == 400
         assert response.get_json()["ok"] is False
+
+
+class TestOutputStatus:
+    def _seed_emby(self, *, libraries=None):
+        _seed_media_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": libraries or [],
+                    "output": {"adapter": "emby_sidecar", "width": 320, "frame_interval": 10},
+                }
+            ]
+        )
+
+    def test_emby_reports_missing_when_sidecar_absent(self, client, auth_headers):
+        self._seed_emby()
+        response = client.get(
+            "/api/servers/emby-1/output-status",
+            headers=auth_headers,
+            query_string={"path": "/tmp/nonexistent/Foo.mkv"},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["server_type"] == "emby"
+        assert data["adapter"] == "emby_sidecar"
+        assert data["exists"] is False
+        # The expected sidecar path is reported even though the file is missing.
+        assert any(p.endswith("Foo-320-10.bif") for p in data["paths"])
+        assert any(p.endswith("Foo-320-10.bif") for p in data["missing_paths"])
+
+    def test_emby_reports_exists_when_sidecar_present(self, client, auth_headers, tmp_path):
+        media_dir = tmp_path / "Movies"
+        media_dir.mkdir()
+        media_file = media_dir / "Test.mkv"
+        media_file.write_bytes(b"")
+        # Pre-create the sidecar Emby would write.
+        sidecar = media_dir / "Test-320-10.bif"
+        sidecar.write_bytes(b"\x89BIF\x0d\x0a\x1a\x0a")
+
+        self._seed_emby()
+        response = client.get(
+            "/api/servers/emby-1/output-status",
+            headers=auth_headers,
+            query_string={"path": str(media_file)},
+        )
+        data = response.get_json()
+        assert data["exists"] is True
+        assert data["missing_paths"] == []
+
+    def test_plex_requires_item_id(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "t"},
+                    "output": {"adapter": "plex_bundle", "plex_config_folder": "/cfg"},
+                }
+            ]
+        )
+        response = client.get(
+            "/api/servers/plex-1/output-status",
+            headers=auth_headers,
+            query_string={"path": "/m/foo.mkv"},
+        )
+        data = response.get_json()
+        assert data["needs_item_id"] is True
+        assert data["exists"] is False
+
+    def test_jellyfin_reports_missing_sheets_dir(self, client, auth_headers, tmp_path):
+        # Manifest exists but the tile-sheets directory doesn't yet —
+        # exists must report False because the format requires both.
+        media_dir = tmp_path / "Show" / "S01"
+        media_dir.mkdir(parents=True)
+        media_file = media_dir / "S01E01.mkv"
+        media_file.write_bytes(b"")
+        trickplay_dir = media_dir / "trickplay"
+        trickplay_dir.mkdir()
+        manifest = trickplay_dir / "S01E01-320.json"
+        manifest.write_text("{}")
+        # NOTE: matching tiles dir trickplay/S01E01-320/ deliberately omitted.
+
+        _seed_media_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jelly",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                }
+            ]
+        )
+
+        response = client.get(
+            "/api/servers/jelly-1/output-status",
+            headers=auth_headers,
+            query_string={"path": str(media_file), "item_id": "x"},
+        )
+        data = response.get_json()
+        assert data["server_type"] == "jellyfin"
+        # Manifest was present, but sheets dir wasn't — overall NOT exists.
+        assert data["exists"] is False
+        assert any("S01E01-320" in p for p in data["missing_paths"])
+
+    def test_404_when_server_missing(self, client, auth_headers):
+        _seed_media_servers([])
+        response = client.get(
+            "/api/servers/missing/output-status",
+            headers=auth_headers,
+            query_string={"path": "/x"},
+        )
+        assert response.status_code == 404
+
+    def test_400_when_path_missing(self, client, auth_headers):
+        self._seed_emby()
+        response = client.get(
+            "/api/servers/emby-1/output-status",
+            headers=auth_headers,
+        )
+        assert response.status_code == 400

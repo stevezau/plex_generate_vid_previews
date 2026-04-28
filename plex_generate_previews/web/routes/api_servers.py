@@ -519,6 +519,124 @@ def test_server_connection():
     )
 
 
+@api.route("/servers/<server_id>/output-status", methods=["GET"])
+@setup_or_auth_required
+def get_output_status(server_id: str):
+    """Report whether output files exist for a given canonical path on this server.
+
+    Diagnostic endpoint used by the multi-server BIF viewer + by users who
+    want to verify "did the publisher actually write something for this
+    file?" without shelling into the container.
+
+    Query params:
+        path: Absolute local file path. Required.
+
+    Returns:
+        ``{server_id, server_type, adapter, paths, exists, missing_paths}``.
+        ``exists`` is True only when *every* path the adapter would write
+        is present on disk; ``missing_paths`` lists any that aren't.
+        Multi-file formats like Jellyfin trickplay therefore correctly
+        report ``exists=False`` until the manifest *and* the sheets are
+        all there.
+    """
+    from pathlib import Path as _Path
+
+    from ...processing.multi_server import _adapter_for_server
+
+    canonical_path = (request.args.get("path") or "").strip()
+    if not canonical_path:
+        return jsonify({"error": "path query parameter required"}), 400
+
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except UnsupportedServerTypeError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    adapter = _adapter_for_server(cfg)
+    if adapter is None:
+        return jsonify({"error": f"no adapter wired for server type {cfg.type.value}"}), 400
+
+    # Most adapters need only the canonical path to compute outputs;
+    # Plex needs an item_id (bundle hash). The endpoint accepts an
+    # optional item_id query param for that case.
+    from ...output import BifBundle
+
+    bundle = BifBundle(
+        canonical_path=canonical_path,
+        frame_dir=_Path("."),  # unused — only canonical_path is read
+        bif_path=None,
+        frame_interval=int((cfg.output or {}).get("frame_interval") or 10),
+        width=int((cfg.output or {}).get("width") or 320),
+        height=180,
+        frame_count=0,
+    )
+    item_id = request.args.get("item_id") or None
+
+    if adapter.needs_server_metadata():
+        # Plex: we need the live server to compute the bundle path.
+        # Without an item_id we can't go further; report the limitation.
+        if not item_id:
+            return jsonify(
+                {
+                    "server_id": server_id,
+                    "server_type": cfg.type.value,
+                    "adapter": adapter.name,
+                    "paths": [],
+                    "exists": False,
+                    "missing_paths": [],
+                    "needs_item_id": True,
+                    "message": (
+                        "Plex bundle adapter requires an item_id query param to look up the per-item bundle hash."
+                    ),
+                }
+            )
+        # Build a live PlexServer to query the bundle hash.
+        try:
+            from ...config import load_config
+
+            registry = ServerRegistry.from_settings(raw_servers, legacy_config=load_config())
+            live = registry.get(server_id)
+            if live is None:
+                return jsonify({"error": "could not instantiate Plex server"}), 500
+            paths = adapter.compute_output_paths(bundle, live, item_id)
+        except Exception as exc:
+            return jsonify({"error": f"compute_output_paths failed: {exc}"}), 502
+    else:
+        # Emby / Jellyfin: pure path computation.
+        try:
+            paths = adapter.compute_output_paths(bundle, server=None, item_id=item_id)
+        except Exception as exc:
+            return jsonify({"error": f"compute_output_paths failed: {exc}"}), 400
+
+    str_paths = [str(p) for p in paths]
+    missing = [str(p) for p in paths if not p.exists()]
+    # Jellyfin manifests reference a sibling directory of tile sheets that
+    # also must exist; check the convention.
+    if cfg.type is ServerType.JELLYFIN and paths:
+        sheets_dir = paths[0].with_suffix("")
+        if not sheets_dir.exists():
+            missing.append(str(sheets_dir))
+        else:
+            # Surface that the directory exists for callers who want it.
+            str_paths.append(str(sheets_dir) + "/")
+
+    return jsonify(
+        {
+            "server_id": server_id,
+            "server_type": cfg.type.value,
+            "adapter": adapter.name,
+            "paths": str_paths,
+            "exists": len(missing) == 0 and bool(paths),
+            "missing_paths": missing,
+        }
+    )
+
+
 class _PlexProbeConfig:
     """Minimal config shim used only by the test-connection probe.
 
