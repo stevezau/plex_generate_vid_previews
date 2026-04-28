@@ -356,6 +356,7 @@ def process_canonical_path(
     use_frame_cache: bool = True,
     schedule_retry_on_not_indexed: bool = True,
     retry_attempt: int = 0,
+    server_id_filter: str | None = None,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -394,6 +395,24 @@ def process_canonical_path(
         registry,
         item_id_by_server=item_id_by_server,
     )
+    if server_id_filter:
+        # Job/webhook is pinned to a specific server — drop all other publishers
+        # so we only publish previews for that server. Avoids the same-named-
+        # library ambiguity when both Plex and Emby own the path.
+        before = len(publishers)
+        publishers = [p for p in publishers if p[0].id == server_id_filter]
+        if before and not publishers:
+            logger.info(
+                "Dispatch pinned to server {!r} but that server doesn't own {} — skipping. "
+                "(Other servers own this file but the job/webhook is scoped to one server only.)",
+                server_id_filter,
+                canonical_path,
+            )
+            return MultiServerResult(
+                canonical_path=canonical_path,
+                status=MultiServerStatus.NO_OWNERS,
+                message=f"Pinned server {server_id_filter} does not own this path",
+            )
     if not publishers:
         logger.info(
             "No owners: no configured server's enabled libraries cover {} — "

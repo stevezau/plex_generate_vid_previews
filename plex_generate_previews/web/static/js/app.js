@@ -1291,7 +1291,17 @@ async function updateLibraryList() {
     listEl.innerHTML = html;
 }
 
-function updateLibrarySelects() {
+function updateLibrarySelects(filterServerId) {
+    // Suffix each library with its server identity when more than one server
+    // is present in the cached `libraries` array. Stops the same-name foot-gun
+    // ("Movies" on Plex AND on Emby — which one's this?). When `filterServerId`
+    // is supplied, only render libraries belonging to that server.
+    const distinctServerIds = new Set();
+    for (const l of libraries || []) {
+        if (l && l.server_id) distinctServerIds.add(l.server_id);
+    }
+    const showServerSuffix = distinctServerIds.size > 1;
+
     const selects = ['jobLibrary', 'scheduleLibrary'];
 
     for (const selectId of selects) {
@@ -1302,11 +1312,54 @@ function updateLibrarySelects() {
         select.innerHTML = '<option value="">All Libraries</option>';
 
         for (const lib of libraries) {
+            if (filterServerId && lib.server_id && lib.server_id !== filterServerId) continue;
             const option = document.createElement('option');
             option.value = lib.id;
-            option.textContent = `${lib.name} (${libraryTypeLabel(lib)})`;
+            const typeLabel = libraryTypeLabel(lib);
+            const serverSuffix = showServerSuffix && lib.server_name ? ` — ${lib.server_name}` : '';
+            option.textContent = `${lib.name} (${typeLabel})${serverSuffix}`;
             select.appendChild(option);
         }
+    }
+}
+
+// Refresh the Schedules library dropdown when the user picks a different
+// server in the modal. Hits /api/libraries?server_id=<id> when a specific
+// server is chosen so non-Plex servers (Emby/Jellyfin) are also covered.
+async function onScheduleServerChange() {
+    const sel = document.getElementById('scheduleServer');
+    if (!sel) return;
+    const serverId = sel.value;
+    try {
+        const url = serverId
+            ? `/api/libraries?server_id=${encodeURIComponent(serverId)}`
+            : '/api/libraries';
+        const data = await apiGet(url);
+        libraries = data.libraries || [];
+        updateLibrarySelects(serverId || null);
+    } catch (e) {
+        console.warn('Failed to refresh libraries for server change:', e);
+        showToast('Schedules', 'Could not load libraries for the selected server', 'warning');
+    }
+}
+
+// Populate the Schedules modal's "Media Server" dropdown from /api/servers.
+async function _populateScheduleServerPicker(currentServerId) {
+    const sel = document.getElementById('scheduleServer');
+    if (!sel) return;
+    try {
+        const data = await apiGet('/api/servers');
+        const servers = (data.servers || []).filter(s => s.enabled !== false);
+        sel.innerHTML = '<option value="">All servers</option>';
+        for (const s of servers) {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = `${s.name} (${(s.type || '').toUpperCase()})`;
+            if (currentServerId && currentServerId === s.id) opt.selected = true;
+            sel.appendChild(opt);
+        }
+    } catch (e) {
+        console.warn('Could not load servers for schedule picker:', e);
     }
 }
 
@@ -1397,6 +1450,20 @@ async function setJobPriority(jobId, priority) {
         loadJobs();
         showToast('Error', 'Failed to update priority', 'danger');
     }
+}
+
+// Render a small per-server badge for jobs/schedules tables. Returns an
+// empty string when the row has no server attribution (back-compat with
+// jobs created before the multi-server transition).
+function _serverBadge(item) {
+    const stype = (item && (item.server_type || (item.server && item.server.type) || '')).toLowerCase();
+    const sname = item && (item.server_name || (item.server && item.server.name) || '');
+    if (!stype && !sname) return '';
+    const palette = { plex: 'bg-warning text-dark', emby: 'bg-success', jellyfin: 'bg-info text-dark' };
+    const cls = palette[stype] || 'bg-secondary';
+    const label = sname || stype.toUpperCase() || 'Server';
+    const tooltip = stype ? `${stype.toUpperCase()}` : '';
+    return ` <span class="badge ${cls} ms-1" title="${escapeHtmlAttr(tooltip)}">${escapeHtmlText(label)}</span>`;
 }
 
 let _jobQueueUpdatePending = false;
@@ -1505,7 +1572,7 @@ function updateJobQueue() {
         html += `
             <tr id="job-row-${escapeHtml(job.id)}">
                 <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
-                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${retryLabel}${filesToggleBtn}</td>
+                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${_serverBadge(job)}${retryLabel}${filesToggleBtn}</td>
                 <td>${statusBadge}</td>
                 <td>${priorityCell}</td>
                 <td>${progressCell}</td>
@@ -1698,7 +1765,7 @@ function updateActiveJobs(runningJobs) {
                 </button>
             </div>
             <div class="mb-2 small">
-                <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${webhookFilesHtml}
+                <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${_serverBadge(job)}${webhookFilesHtml}
             </div>
             ${startedLine ? `<div class="mb-2">${startedLine}</div>` : ''}
             <div class="progress" style="height: 24px;">
@@ -2749,7 +2816,7 @@ function updateScheduleList() {
         html += `
             <tr>
                 <td>${escapeHtml(schedule.name)}${typeBadge}</td>
-                <td>${escapeHtml(schedule.library_name) || 'All Libraries'}</td>
+                <td>${escapeHtml(schedule.library_name) || 'All Libraries'}${_serverBadge(schedule)}</td>
                 <td><code>${escapeHtml(cronDisplay)}</code></td>
                 <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
                 <td>${nextRun}</td>
@@ -3175,6 +3242,8 @@ function _getSelectedScheduleType() {
 function _resetScheduleForm() {
     document.getElementById('scheduleName').value = '';
     document.getElementById('scheduleLibrary').value = '';
+    const srvSel = document.getElementById('scheduleServer');
+    if (srvSel) srvSel.value = '';
     document.getElementById('scheduleCron').value = '';
     document.getElementById('scheduleEditId').value = '';
     document.getElementById('scheduleEnabled').checked = true;
@@ -3213,6 +3282,7 @@ function showNewScheduleModal() {
     document.getElementById('scheduleSubmitBtn').innerHTML =
         '<i class="bi bi-check me-1"></i>Create Schedule';
 
+    _populateScheduleServerPicker();
     const modal = new bootstrap.Modal(document.getElementById('newScheduleModal'));
     modal.show();
 }
@@ -3231,6 +3301,15 @@ function showEditScheduleModal(scheduleId) {
     document.getElementById('scheduleLibrary').value = schedule.library_id || '';
     document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
     document.getElementById('schedulePriority').value = String(schedule.priority || 2);
+
+    // Populate server picker, then refresh libraries scoped to it.
+    _populateScheduleServerPicker(schedule.server_id || '').then(() => {
+        if (schedule.server_id) {
+            onScheduleServerChange().then(() => {
+                document.getElementById('scheduleLibrary').value = schedule.library_id || '';
+            });
+        }
+    });
 
     // Pre-fill scan mode + lookback from the schedule's config
     const cfg = schedule.config || {};
@@ -3330,10 +3409,14 @@ async function saveSchedule() {
         }
     }
 
+    const serverSelect = document.getElementById('scheduleServer');
+    const serverId = serverSelect ? serverSelect.value : '';
+
     const payload = {
         name: name,
         library_id: libraryId || null,
         library_name: library ? library.name : 'All Libraries',
+        server_id: serverId || null,
         enabled: document.getElementById('scheduleEnabled').checked,
         priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2,
         config: scheduleConfig,

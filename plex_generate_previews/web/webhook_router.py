@@ -481,6 +481,7 @@ def _dispatch_canonical_path(
     item_id_by_server: dict[str, str],
     *,
     kind: str,
+    server_id_filter: str | None = None,
 ):
     """Hand the canonical path to :func:`process_canonical_path` and shape the response."""
     config = _load_config_or_minimal()
@@ -490,6 +491,7 @@ def _dispatch_canonical_path(
         registry=registry,
         config=config,
         item_id_by_server=item_id_by_server,
+        server_id_filter=server_id_filter,
     )
 
     body = {

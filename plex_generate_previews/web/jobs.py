@@ -109,6 +109,12 @@ class Job:
     completed_at: str | None = None
     library_id: str | None = None
     library_name: str = ""
+    # Multi-server attribution: which configured server this job targets.
+    # Optional / nullable for back-compat with jobs created before the
+    # multi-server transition (those render as "All servers" in the UI).
+    server_id: str | None = None
+    server_name: str | None = None
+    server_type: str | None = None  # plex / emby / jellyfin
     progress: JobProgress = field(default_factory=JobProgress)
     error: str | None = None
     config: dict[str, Any] = field(default_factory=dict)
@@ -137,6 +143,9 @@ class Job:
             "completed_at": self.completed_at,
             "library_id": self.library_id,
             "library_name": self.library_name,
+            "server_id": self.server_id,
+            "server_name": self.server_name,
+            "server_type": self.server_type,
             "progress": self.progress.to_dict(),
             "error": self.error,
             "config": self.config,
@@ -414,27 +423,41 @@ class JobManager:
         library_name: str = "",
         config: dict[str, Any] | None = None,
         priority: int = PRIORITY_NORMAL,
+        server_id: str | None = None,
+        server_name: str | None = None,
+        server_type: str | None = None,
     ) -> Job:
         """Create a new job.
 
         Args:
-            library_id: Plex library section ID.
+            library_id: Library section ID (vendor-specific).
             library_name: Human-readable library name.
             config: Job configuration overrides.
             priority: Dispatch priority (1=high, 2=normal, 3=low).
+            server_id: Configured media-server id this job targets (optional).
+            server_name: Display name of the targeted server (optional).
+            server_type: Vendor type — "plex" / "emby" / "jellyfin".
         """
         with self._lock:
             job = Job(
                 id=str(uuid.uuid4()),
                 library_id=library_id,
                 library_name=library_name,
+                server_id=server_id,
+                server_name=server_name,
+                server_type=server_type,
                 config=config or {},
                 priority=parse_priority(priority),
             )
             self._jobs[job.id] = job
             self._save_jobs()
             self._emit_event("job_created", job.to_dict())
-        logger.info("Created job {} for library {}", job.id, library_name)
+        logger.info(
+            "Created job {} for library {} (server={})",
+            job.id,
+            library_name or "(all)",
+            server_name or server_id or "(all)",
+        )
         return job
 
     def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> list[Job]:

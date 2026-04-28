@@ -205,6 +205,11 @@ def schedule_retry_for_unindexed(
                 # alongside ours.
                 schedule_retry_on_not_indexed=False,
                 retry_attempt=fired_attempt,
+                server_id_filter=(
+                    config.server_id_filter
+                    if isinstance(getattr(config, "server_id_filter", None), str) and config.server_id_filter
+                    else None
+                ),
             )
         except Exception as exc:
             logger.exception(

@@ -29,28 +29,47 @@ socketio = SocketIO()
 csrf = CSRFProtect()
 
 
-def run_scheduled_job(library_id=None, library_name="", config=None, priority=None):
+def run_scheduled_job(library_id=None, library_name="", config=None, priority=None, server_id=None):
     """Callback for running scheduled jobs.
 
     Must be at module level (not inside create_app) so APScheduler
     can pickle it for the SQLAlchemy jobstore.
 
     Args:
-        library_id: Plex library section ID
+        library_id: Library section ID (vendor-agnostic)
         library_name: Human-readable library name
         config: Job configuration dict
         priority: Dispatch priority (1=high, 2=normal, 3=low)
+        server_id: Optional configured-server id to pin the job to.
 
     """
     from .jobs import PRIORITY_NORMAL
 
     job_manager = get_job_manager()
 
+    # Resolve server context once so the job UI shows the originating server.
+    server_name = None
+    server_type = None
+    if server_id:
+        try:
+            from .settings_manager import get_settings_manager
+
+            raw = get_settings_manager().get("media_servers") or []
+            entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == server_id), None)
+            if entry:
+                server_name = entry.get("name") or entry.get("id")
+                server_type = (entry.get("type") or "").lower() or None
+        except Exception:
+            pass
+
     job = job_manager.create_job(
         library_id=library_id,
         library_name=library_name,
         config=config or {},
         priority=priority if priority is not None else PRIORITY_NORMAL,
+        server_id=server_id,
+        server_name=server_name,
+        server_type=server_type,
     )
 
     job_config = dict(config) if config else {}
@@ -58,6 +77,8 @@ def run_scheduled_job(library_id=None, library_name="", config=None, priority=No
         job_config["selected_libraries"] = [library_id]
     else:
         job_config["selected_libraries"] = []
+    if server_id:
+        job_config["server_id"] = server_id
 
     from .routes import _start_job_async
 

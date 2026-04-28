@@ -1423,22 +1423,133 @@ def _fetch_libraries_via_http(
                 "type": section_type,
                 "agent": agent,
                 "display_type": classify_library_type(section_type, agent),
+                "server_id": None,  # setup-wizard fast path: media_servers entry doesn't exist yet
+                "server_name": None,
+                "server_type": "plex",
             }
         )
     return libraries
 
 
+def _libraries_for_configured_server(server_id: str) -> tuple[list[dict] | None, str | None, int]:
+    """List libraries for one configured media server via the registry.
+
+    Returns ``(libraries, error_message, http_status)``. ``libraries`` is None
+    when ``error_message`` is set. Used by the multi-server library picker so
+    the same endpoint serves Plex, Emby, and Jellyfin uniformly — each row is
+    tagged with the originating ``server_id`` / ``server_name`` / ``server_type``
+    so the Schedules picker can disambiguate same-named libraries.
+    """
+    from ...servers import ServerRegistry
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    raw_servers = settings.get("media_servers") or []
+    if not isinstance(raw_servers, list):
+        raw_servers = []
+
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return None, f"server {server_id!r} not configured", 404
+    if not target.get("enabled", True):
+        return [], None, 200
+
+    try:
+        registry = ServerRegistry.from_settings(raw_servers, legacy_config=None)
+    except Exception as exc:
+        logger.warning(
+            "Could not build server registry to list libraries for {} ({}: {}). "
+            "Verify the server's configuration on the Servers page.",
+            server_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None, f"server registry unavailable: {exc}", 500
+
+    server = registry.get(server_id)
+    if server is None:
+        return None, f"server {server_id!r} not instantiable", 500
+
+    rows: list[dict] = []
+    try:
+        for lib in server.list_libraries():
+            rows.append(
+                {
+                    "id": str(lib.id),
+                    "name": lib.name,
+                    "type": lib.kind or "",
+                    "agent": "",
+                    "display_type": (lib.kind or "").lower() or "library",
+                    "server_id": server_id,
+                    "server_name": target.get("name") or "",
+                    "server_type": (target.get("type") or "").lower(),
+                }
+            )
+    except Exception as exc:
+        logger.warning(
+            "Could not list libraries for {} ({}: {}). The schedules library picker will show no entries for this server. "
+            "Verify the server is reachable on the Servers page (Test Connection).",
+            target.get("name") or server_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None, f"failed to list libraries: {exc}", 502
+    return rows, None, 200
+
+
+def _libraries_for_all_configured_servers() -> list[dict]:
+    """Aggregate libraries across every configured + enabled media server.
+
+    Each row is tagged with ``server_id`` / ``server_name`` / ``server_type``
+    so a single picker can disambiguate "Movies (Home Plex)" from
+    "Movies (Living Room Emby)". Servers that fail to enumerate are skipped
+    silently after a warning — one bad server can't block the picker.
+    """
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    raw_servers = settings.get("media_servers") or []
+    if not isinstance(raw_servers, list):
+        return []
+
+    rows: list[dict] = []
+    for entry in raw_servers:
+        if not isinstance(entry, dict) or not entry.get("enabled", True):
+            continue
+        sid = entry.get("id")
+        if not sid:
+            continue
+        libs, err, _status = _libraries_for_configured_server(sid)
+        if err:
+            continue
+        rows.extend(libs or [])
+    return rows
+
+
 @api.route("/libraries")
 @api_token_required
 def get_libraries():
-    """Get available Plex libraries.
+    """Get available libraries from one or all configured media servers.
 
-    Accepts optional query params 'url' and 'token' to override saved
-    settings (used during setup wizard before config is persisted).
+    Modes:
+      * ``?server_id=<id>`` — list libraries from that configured server
+        (Plex / Emby / Jellyfin). Each row is tagged with its server identity.
+      * ``?url=&token=`` — Setup-wizard fast path: hit Plex directly with
+        credentials that haven't been persisted yet (Plex-only).
+      * (no params) — list libraries across every enabled configured server,
+        tagged with ``server_id`` / ``server_name`` / ``server_type`` so a
+        single picker can disambiguate same-named libraries.
 
-    Results are cached for 5 minutes when using saved credentials to
-    avoid hitting the Plex server on every settings page load.
+    Results from saved credentials are cached for 5 minutes to avoid hitting
+    the server on every page load.
     """
+    server_id_arg = (request.args.get("server_id") or "").strip()
+    if server_id_arg:
+        libs, err, status = _libraries_for_configured_server(server_id_arg)
+        if err:
+            return jsonify({"error": err, "libraries": []}), status
+        return jsonify({"libraries": libs})
+
     try:
         import requests as req_lib
 
@@ -1449,6 +1560,11 @@ def get_libraries():
         plex_url = request.args.get("url")
         plex_token = request.args.get("token")
         verify_ssl = _param_to_bool(request.args.get("verify_ssl"), settings.plex_verify_ssl)
+        # When no overrides AND no Plex configured, aggregate across all
+        # media servers — this is what the Schedules picker wants when the
+        # user hasn't selected a specific server yet.
+        if not plex_url and not plex_token and not settings.plex_url:
+            return jsonify({"libraries": _libraries_for_all_configured_servers()})
 
         # Track whether explicit overrides were provided (setup wizard)
         has_overrides = bool(plex_url or plex_token)
@@ -1473,6 +1589,20 @@ def get_libraries():
 
                 plex = plex_server(config)
 
+                # Tag rows with server_id when the Plex entry exists in
+                # media_servers (it almost always does post-migration); falls
+                # back to None for the rare legacy-globals-only install.
+                plex_entry = next(
+                    (
+                        e
+                        for e in (settings.get("media_servers") or [])
+                        if isinstance(e, dict) and (e.get("type") or "").lower() == "plex" and e.get("enabled", True)
+                    ),
+                    None,
+                )
+                plex_sid = (plex_entry or {}).get("id") or None
+                plex_sname = (plex_entry or {}).get("name") or None
+
                 libraries = []
                 for section in plex.library.sections():
                     if section.type in ("movie", "show"):
@@ -1484,6 +1614,9 @@ def get_libraries():
                                 "type": section.type,
                                 "agent": agent,
                                 "display_type": classify_library_type(section.type, agent),
+                                "server_id": plex_sid,
+                                "server_name": plex_sname,
+                                "server_type": "plex",
                             }
                         )
 

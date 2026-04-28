@@ -174,6 +174,11 @@ class Config:
     webhook_paths: list[str] | None = None
     # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
     exclude_paths: list[dict[str, str]] | None = None
+    # When a job is pinned to one configured media-server (via the Schedules
+    # picker, manual scan, or per-server webhook URL), the dispatcher drops
+    # publishers from every other server. None = legacy "publish to every
+    # owning server" behaviour.
+    server_id_filter: str | None = None
 
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""

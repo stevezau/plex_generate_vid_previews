@@ -27,6 +27,33 @@ from ._helpers import (
 from .job_runner import _start_job_async
 
 
+def _resolve_server_context(server_id: str | None) -> tuple[str | None, str | None, str | None]:
+    """Look up a configured media-server by id and return (id, name, type).
+
+    Returns (None, None, None) when ``server_id`` is missing or unknown — the
+    job is then treated as "all servers" (legacy behaviour). Used by job
+    creation endpoints to attribute the job to the right server.
+    """
+    if not server_id:
+        return None, None, None
+    try:
+        from ..settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("media_servers") or []
+    except Exception:
+        return None, None, None
+    if not isinstance(raw, list):
+        return None, None, None
+    entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == server_id), None)
+    if entry is None:
+        return None, None, None
+    return (
+        entry.get("id"),
+        entry.get("name") or entry.get("id"),
+        (entry.get("type") or "").lower() or None,
+    )
+
+
 @api.route("/auth/status")
 def auth_status():
     """Check authentication status and auth method."""
@@ -172,12 +199,17 @@ def create_job():
 
     priority = data.get("priority", PRIORITY_NORMAL)
 
+    server_id, server_name, server_type = _resolve_server_context(data.get("server_id"))
+
     job_manager = get_job_manager()
     job = job_manager.create_job(
         library_id=",".join(library_names) if library_names else (",".join(library_ids) if library_ids else None),
         library_name=data.get("library_name", ""),
         config=data.get("config", {}),
         priority=priority,
+        server_id=server_id,
+        server_name=server_name,
+        server_type=server_type,
     )
 
     config_overrides = data.get("config", {})
@@ -187,6 +219,9 @@ def create_job():
         config_overrides["selected_library_ids"] = library_ids
     else:
         config_overrides["selected_libraries"] = []
+    if server_id:
+        # Pin the dispatcher to this server only — handled in job_runner.
+        config_overrides["server_id"] = server_id
 
     _start_job_async(job.id, config_overrides)
 
@@ -232,6 +267,8 @@ def create_manual_job():
     else:
         label = f"Manual: {len(resolved_paths)} files"
 
+    server_id, server_name, server_type = _resolve_server_context(data.get("server_id"))
+
     job_manager = get_job_manager()
     job = job_manager.create_job(
         library_name=label,
@@ -240,12 +277,17 @@ def create_manual_job():
             "force_generate": force_regenerate,
         },
         priority=priority,
+        server_id=server_id,
+        server_name=server_name,
+        server_type=server_type,
     )
 
     config_overrides = {
         "webhook_paths": resolved_paths,
         "force_generate": force_regenerate,
     }
+    if server_id:
+        config_overrides["server_id"] = server_id
     _start_job_async(job.id, config_overrides)
 
     return jsonify(job.to_dict()), 201
@@ -824,6 +866,9 @@ def reprocess_job(job_id):
         library_name=library_name,
         config=new_config,
         priority=job.priority,
+        server_id=job.server_id,
+        server_name=job.server_name,
+        server_type=job.server_type,
     )
     from ..settings_manager import get_settings_manager
 

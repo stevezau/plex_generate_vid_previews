@@ -2559,19 +2559,25 @@ class TestLibrariesAPI:
         assert data["libraries"][0]["name"] == "Movies"
 
     def test_get_libraries_no_config(self, client):
-        """Libraries endpoint with no plex config falls back gracefully."""
+        """Libraries endpoint with no Plex AND no other media servers returns
+        empty (multi-server world: 'no config' = no media servers configured,
+        which is a clean empty list, not an error).
+        """
         from plex_generate_previews.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
         sm.delete("plex_token")
+        sm.set("media_servers", [])
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PLEX_URL", None)
             os.environ.pop("PLEX_TOKEN", None)
             with patch("plex_generate_previews.config.get_cached_config", return_value=None):
                 resp = client.get("/api/libraries", headers=_api_headers())
-        assert resp.status_code == 400
-        assert "libraries" in resp.get_json()
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert "libraries" in body
+        assert body["libraries"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -109,6 +109,13 @@
                         <div class="form-text">How far back to look for newly added items. Items that already have previews are skipped automatically — a generous window is safe.</div>
                     </div>
                     <div class="mb-3">
+                        <label for="scheduleServer" class="form-label">Media Server</label>
+                        <select class="form-select" id="scheduleServer" onchange="onScheduleServerChange()">
+                            <option value="">All servers</option>
+                        </select>
+                        <div class="form-text">Pin this schedule to one configured server. Required if multiple servers share a library name (e.g. both Plex and Emby have "Movies").</div>
+                    </div>
+                    <div class="mb-3">
                         <label for="scheduleLibrary" class="form-label">Library</label>
                         <select class="form-select" id="scheduleLibrary">
                             <option value="">All Libraries</option>

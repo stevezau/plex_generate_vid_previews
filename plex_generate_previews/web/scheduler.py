@@ -26,6 +26,7 @@ def execute_scheduled_job(
     library_name: str = "",
     config: dict | None = None,
     priority: int | None = None,
+    server_id: str | None = None,
 ) -> None:
     """Execute a scheduled job — module-level function for APScheduler pickling.
 
@@ -36,21 +37,27 @@ def execute_scheduled_job(
 
     * ``"recently_added"`` — runs the Recently Added scanner against the
       schedule's library (or all libraries when ``library_id`` is None).
-      Uses ``config["lookback_hours"]`` (default 1).
+      Uses ``config["lookback_hours"]`` (default 1). Plex-only.
     * anything else (including missing) — legacy **full library** scan via
       ``manager.run_job_callback``, which creates a job processing every
       item in the targeted library.
 
     Args:
         schedule_id: The ID of the schedule triggering this job
-        library_id: Plex library section ID (``None`` = all libraries)
+        library_id: Library section ID (``None`` = all libraries)
         library_name: Human-readable library name
         config: Job configuration dict — may include ``job_type`` and
             ``lookback_hours``
         priority: Dispatch priority (1=high, 2=normal, 3=low)
+        server_id: Configured-server id this schedule targets (optional).
+            Pinned through to the created job so per-server attribution
+            works in the Jobs UI and the dispatcher routes only to that
+            server.
 
     """
-    cfg = config or {}
+    cfg = dict(config or {})
+    if server_id and "server_id" not in cfg:
+        cfg["server_id"] = server_id
     job_type = str(cfg.get("job_type", "full_library"))
     manager = get_schedule_manager()
 
@@ -89,10 +96,12 @@ def execute_scheduled_job(
             kwargs = {
                 "library_id": library_id,
                 "library_name": library_name,
-                "config": config or {},
+                "config": cfg,
             }
             if priority is not None:
                 kwargs["priority"] = priority
+            if server_id:
+                kwargs["server_id"] = server_id
             manager.run_job_callback(**kwargs)
             manager._update_last_run(schedule_id)
         except Exception as e:
@@ -238,6 +247,7 @@ class ScheduleManager:
         config: dict | None = None,
         enabled: bool = True,
         priority: int | None = None,
+        server_id: str | None = None,
     ) -> dict:
         """Create a new schedule.
 
@@ -245,11 +255,15 @@ class ScheduleManager:
             name: Human-readable name for the schedule
             cron_expression: Cron expression (e.g., "0 2 * * *" for 2 AM daily)
             interval_minutes: Interval in minutes (alternative to cron)
-            library_id: Optional Plex library ID to process
+            library_id: Optional library ID to process
             library_name: Library name for display
             config: Optional configuration overrides
             enabled: Whether the schedule is enabled
             priority: Dispatch priority for jobs created by this schedule (1-3)
+            server_id: Optional configured-server id this schedule targets.
+                When set, jobs created by this schedule are pinned to that
+                server only — important when multiple servers share a
+                library name (e.g. both Plex and Emby have "Movies").
 
         Returns:
             Schedule metadata dict
@@ -277,6 +291,7 @@ class ScheduleManager:
             "trigger_value": trigger_value,
             "library_id": library_id,
             "library_name": library_name,
+            "server_id": server_id,
             "config": config or {},
             "enabled": enabled,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -295,7 +310,7 @@ class ScheduleManager:
                 execute_scheduled_job,
                 trigger=trigger,
                 id=schedule_id,
-                args=[schedule_id, library_id, library_name, config, priority],
+                args=[schedule_id, library_id, library_name, config, priority, server_id],
                 replace_existing=True,
             )
             schedule_meta["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
@@ -317,6 +332,7 @@ class ScheduleManager:
         config: dict = None,
         enabled: bool = None,
         priority: int = None,
+        server_id: str | None = None,
     ) -> dict | None:
         """Update an existing schedule."""
         if schedule_id not in self._schedules:
@@ -337,6 +353,9 @@ class ScheduleManager:
             schedule["enabled"] = enabled
         if priority is not None:
             schedule["priority"] = priority
+        if server_id is not None:
+            # Empty string means "clear the pin", null means "leave alone".
+            schedule["server_id"] = server_id or None
 
         # Update trigger if changed
         if cron_expression is not None:
@@ -369,6 +388,7 @@ class ScheduleManager:
                     schedule["library_name"],
                     schedule["config"],
                     schedule.get("priority"),
+                    schedule.get("server_id"),
                 ],
                 replace_existing=True,
             )
@@ -442,6 +462,8 @@ class ScheduleManager:
             schedule.get("library_id"),
             schedule.get("library_name", ""),
             schedule.get("config"),
+            schedule.get("priority"),
+            schedule.get("server_id"),
         )
         self._save_schedules()
         return True

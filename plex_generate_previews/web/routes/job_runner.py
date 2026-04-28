@@ -247,6 +247,9 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         config.regenerate_thumbnails = bool(value)
                     elif key == "webhook_paths":
                         config.webhook_paths = [str(path).strip() for path in value if str(path).strip()]
+                    elif key == "server_id":
+                        # Pin downstream dispatchers to publish for this server only.
+                        config.server_id_filter = str(value) if value else None
                     elif hasattr(config, key):
                         setattr(config, key, value)
 

@@ -1593,12 +1593,17 @@ def _fan_out_secondary_publishers(
         from .multi_server import process_canonical_path
 
         registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
+        # Coerce to a real string-or-None — defensive against mocks in tests
+        # and against any caller that left the attr unset on a non-Config object.
+        sid_filter_raw = getattr(config, "server_id_filter", None)
+        sid_filter = str(sid_filter_raw) if isinstance(sid_filter_raw, str) and sid_filter_raw else None
         result = process_canonical_path(
             canonical_path=canonical_path,
             registry=registry,
             config=config,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
+            server_id_filter=sid_filter,
         )
         published = [p for p in result.publishers if p.status.value == "published"]
         if published:

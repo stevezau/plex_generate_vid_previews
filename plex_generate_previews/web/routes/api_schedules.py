@@ -50,6 +50,7 @@ def create_schedule():
             config=data.get("config", {}),
             enabled=data.get("enabled", True),
             priority=data.get("priority"),
+            server_id=data.get("server_id") or None,
         )
         return jsonify(schedule), 201
     except ValueError as e:
@@ -91,6 +92,7 @@ def update_schedule(schedule_id):
         config=data.get("config"),
         enabled=data.get("enabled"),
         priority=data.get("priority"),
+        server_id=data.get("server_id"),
     )
 
     if schedule:
