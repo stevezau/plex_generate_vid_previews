@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}Servers · Plex Preview Generator{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="mb-0">
+                <i class="bi bi-hdd-stack me-2"></i>Media Servers
+            </h1>
+            <p class="text-muted mb-0">
+                Plex, Emby, and Jellyfin servers this tool publishes preview thumbnails to.
+            </p>
+        </div>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
+            <i class="bi bi-plus-lg me-1"></i>Add Server
+        </button>
+    </div>
+
+    <div id="serverList" class="row g-3">
+        <div class="col-12 text-center text-muted py-5">
+            <div class="spinner-border" role="status"></div>
+            <div class="mt-2">Loading servers…</div>
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-body">
+            <h5 class="card-title">
+                <i class="bi bi-info-circle me-2"></i>Webhook URL
+            </h5>
+            <p class="card-text mb-2">
+                A single URL handles every vendor (Plex / Emby / Jellyfin / Sonarr / Radarr).
+                Vendor is auto-detected by payload shape; the source server is matched
+                by the identifier embedded in every vendor's payload.
+            </p>
+            <div class="input-group">
+                <input id="webhookUrl" type="text" class="form-control font-monospace" readonly>
+                <button class="btn btn-outline-secondary" type="button" id="copyWebhookUrl">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+            </div>
+            <small class="text-muted d-block mt-2">
+                See <a href="/static/docs/multi-server.md" target="_blank">the multi-server guide</a>
+                for vendor-specific webhook configuration tips.
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- Add / Edit Server Modal -->
+<div class="modal fade" id="addServerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="serverModalTitle">Add Server</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Step 1: pick a type -->
+                <div id="step-type" class="server-step">
+                    <h6 class="text-muted mb-3">1. Choose server type</h6>
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-primary w-100 py-3 server-type-btn" data-type="plex">
+                                <i class="bi bi-play-circle fs-2 d-block mb-1"></i>Plex
+                            </button>
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-success w-100 py-3 server-type-btn" data-type="emby">
+                                <i class="bi bi-circle-fill fs-2 d-block mb-1"></i>Emby
+                            </button>
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-info w-100 py-3 server-type-btn" data-type="jellyfin">
+                                <i class="bi bi-circle fs-2 d-block mb-1"></i>Jellyfin
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: connection -->
+                <div id="step-connect" class="server-step d-none">
+                    <h6 class="text-muted mb-3">2. Connect to <span id="step-connect-vendor"></span></h6>
+                    <div class="mb-3">
+                        <label class="form-label">Server URL</label>
+                        <input type="text" id="serverUrl" class="form-control" placeholder="http://hostname:port" autocomplete="off">
+                        <div class="form-text">Examples: <code>http://emby.local:8096</code>, <code>http://192.168.1.10:32400</code></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Display name</label>
+                        <input type="text" id="serverName" class="form-control" placeholder="e.g. Home Plex">
+                    </div>
+
+                    <!-- Auth method picker (Emby / Jellyfin only) -->
+                    <div id="auth-method-section" class="mb-3 d-none">
+                        <label class="form-label">Authentication</label>
+                        <div class="btn-group w-100" role="group">
+                            <input type="radio" class="btn-check" name="authMethod" id="auth-quick" value="quick_connect" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="auth-quick">Quick Connect</label>
+                            <input type="radio" class="btn-check" name="authMethod" id="auth-pw" value="password" autocomplete="off" checked>
+                            <label class="btn btn-outline-primary" for="auth-pw">Username + Password</label>
+                            <input type="radio" class="btn-check" name="authMethod" id="auth-key" value="api_key" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="auth-key">API Key</label>
+                        </div>
+                    </div>
+
+                    <div id="auth-fields-password" class="d-none">
+                        <div class="mb-2">
+                            <label class="form-label">Username</label>
+                            <input type="text" id="authUsername" class="form-control" autocomplete="username">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Password</label>
+                            <input type="password" id="authPassword" class="form-control" autocomplete="current-password">
+                            <div class="form-text">The password is forwarded once to the server and never persisted by this tool.</div>
+                        </div>
+                    </div>
+                    <div id="auth-fields-api-key" class="d-none">
+                        <div class="mb-2">
+                            <label class="form-label">API key</label>
+                            <input type="password" id="authApiKey" class="form-control" autocomplete="off">
+                            <div class="form-text">Generate one in your server admin UI under API Keys.</div>
+                        </div>
+                    </div>
+                    <div id="auth-fields-quick-connect" class="d-none">
+                        <p class="text-muted small mb-1">
+                            Click <strong>Start Quick Connect</strong> to get a code; enter it in your Jellyfin
+                            profile menu and we'll finish the auth automatically.
+                            <em>Quick Connect must be enabled by your Jellyfin admin.</em>
+                        </p>
+                        <button type="button" class="btn btn-primary mb-2" id="quickConnectStart">
+                            <i class="bi bi-magic me-1"></i>Start Quick Connect
+                        </button>
+                        <div id="quickConnectCode" class="alert alert-info d-none"></div>
+                    </div>
+
+                    <div id="auth-fields-token-plex" class="d-none">
+                        <div class="mb-2">
+                            <label class="form-label">Plex token</label>
+                            <input type="password" id="plexToken" class="form-control" autocomplete="off">
+                            <div class="form-text">Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>. OAuth flow lives in the Setup wizard.</div>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
+                            <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <button type="button" class="btn btn-link" id="step-connect-back">← Back</button>
+                        <button type="button" class="btn btn-primary" id="step-connect-test">
+                            Test connection →
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 3: test result -->
+                <div id="step-result" class="server-step d-none">
+                    <div id="connectResult" class="alert"></div>
+                    <div class="d-flex justify-content-between">
+                        <button type="button" class="btn btn-link" id="step-result-back">← Edit</button>
+                        <button type="button" class="btn btn-success" id="step-result-save">
+                            <i class="bi bi-save me-1"></i>Save server
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/servers.js') }}"></script>
+{% endblock %}

@@ -106,6 +106,20 @@ def bif_viewer():
     return render_template("bif_viewer.html")
 
 
+@main.route("/servers")
+@login_required
+def servers_page():
+    """Multi-media-server management page.
+
+    Renders a list of configured Plex / Emby / Jellyfin servers with
+    add / edit / delete controls and a per-server connection status.
+    The page itself is dumb HTML — all data + auth flows go through
+    the ``/api/servers/*`` REST endpoints surfaced by ``api_servers.py``
+    and ``api_server_auth.py``.
+    """
+    return render_template("servers.html")
+
+
 @main.route("/setup")
 def setup_wizard():
     """Setup wizard page."""
