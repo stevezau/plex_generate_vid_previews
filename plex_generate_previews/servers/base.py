@@ -168,6 +168,25 @@ class MediaServer(ABC):
         the dispatcher can canonicalise.
         """
 
+    def resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
+        """Inverse of :meth:`resolve_item_to_remote_path`.
+
+        Given a server-side absolute path, return that server's item id
+        (Plex ratingKey, Emby/Jellyfin ItemId), or ``None`` when no
+        matching item exists. Used by the secondary-publisher fan-out
+        from the legacy single-Plex scan path: when a scheduled scan
+        produces a file at ``/data/movies/Foo.mkv``, this helper lets
+        us populate the ``item_id_by_server`` hint for the Jellyfin
+        publisher (whose manifest is keyed by item id) without waiting
+        for a Jellyfin webhook to fire.
+
+        Default implementation returns ``None`` — the dispatcher then
+        skips publishers that need an item id. Concrete subclasses
+        override when their API supports a reverse lookup.
+        """
+        del remote_path  # unused in base; override
+        return None
+
     @abstractmethod
     def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
         """Notify the server that media or sidecar files changed.

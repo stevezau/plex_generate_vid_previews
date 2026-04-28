@@ -1340,6 +1340,123 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     logger.info(f"Generated BIF file: {bif_filename} ({len(images)} thumbnails)")
 
 
+def _fan_out_secondary_publishers(
+    canonical_path: str,
+    frame_dir: str,
+    bundle_hash: str,
+    config: Config,
+    *,
+    progress_callback=None,
+    cancel_check=None,
+    worker_name: str = "",
+) -> None:
+    """Fan out the Plex-extracted frames to every non-Plex configured server.
+
+    Hooked into :func:`process_item`'s success path so a scheduled scan
+    (or any other legacy single-Plex code path) also feeds Emby /
+    Jellyfin / additional Plex servers configured in ``media_servers``
+    — without a second FFmpeg pass.
+
+    Mechanism: pre-populate the multi-server frame cache with the
+    ``frame_dir`` Plex just used, then dispatch through
+    :func:`process_canonical_path`. Its built-in skip-if-output-exists
+    logic auto-skips the originating Plex (its bundle BIF is already
+    on disk); other publishers see a cache hit and run their packing
+    step only.
+
+    Failures here are *non-fatal* — the legacy Plex output already
+    succeeded; this is best-effort additional fan-out. Logged at
+    debug/warning so they show up in diagnostics without crashing the
+    scan.
+    """
+    import shutil
+
+    try:
+        from ..web.settings_manager import get_settings_manager
+
+        settings = get_settings_manager()
+        raw_servers = settings.get("media_servers") or []
+    except Exception as exc:
+        logger.debug("Secondary fan-out: settings unavailable ({}); skipping", exc)
+        return
+
+    if not isinstance(raw_servers, list) or not raw_servers:
+        return
+
+    # Cheap precheck: do we have any non-Plex servers to fan out to?
+    has_secondary = any(
+        isinstance(s, dict) and str(s.get("type") or "").lower() != "plex" and s.get("enabled", True)
+        for s in raw_servers
+    )
+    if not has_secondary:
+        return
+
+    # Move the Plex tmp frames into the cache slot so process_canonical_path
+    # finds them via the cache instead of re-running FFmpeg. The legacy
+    # cleanup at the end of process_item then has nothing to remove from
+    # tmp_path; harmless because shutil.rmtree on a missing dir is a
+    # logged-warning, not a raise.
+    try:
+        from .frame_cache import get_frame_cache
+
+        cache = get_frame_cache(base_dir=os.path.join(config.working_tmp_folder, "frame_cache"))
+        cache_slot = cache.frame_dir_for(canonical_path)
+
+        # If the cache already has a stale entry for this path, evict it
+        # before the rename so the fresh frames take its place.
+        if cache_slot.exists():
+            shutil.rmtree(cache_slot)
+
+        cache_slot.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(frame_dir, cache_slot)
+
+        # Count frames so cache.put records something sensible.
+        frame_count = sum(1 for f in os.listdir(cache_slot) if f.lower().endswith(".jpg"))
+        cache.put(canonical_path, frame_dir=cache_slot, frame_count=frame_count)
+    except Exception as exc:
+        logger.warning(
+            "Secondary fan-out: failed to populate frame cache for {}: {}",
+            canonical_path,
+            exc,
+        )
+        return
+
+    # Build registry + dispatch. Plex publishers in the registry
+    # auto-skip via skip-if-output-exists (their bundle BIF is already
+    # on disk from this very call's process_item run); Emby/Jellyfin
+    # publishers fire.
+    try:
+        from ..servers import ServerRegistry
+        from .multi_server import process_canonical_path
+
+        registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
+        result = process_canonical_path(
+            canonical_path=canonical_path,
+            registry=registry,
+            config=config,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+            worker_name=worker_name,
+        )
+        del bundle_hash  # accepted for future Plex item-id propagation; unused today
+        published = [p for p in result.publishers if p.status.value == "published"]
+        if published:
+            logger.info(
+                "Multi-server fan-out for {}: {} publisher(s) succeeded ({})",
+                canonical_path,
+                len(published),
+                ", ".join(p.adapter_name for p in published),
+            )
+    except Exception as exc:
+        # NEVER raise out of the fan-out: the legacy Plex output is
+        # already a success and we don't want to flip the result.
+        logger.warning(
+            "Secondary fan-out raised for {}: {}",
+            canonical_path,
+            exc,
+        )
+
+
 def process_item(
     item_key: str,
     gpu: str | None,
@@ -1520,6 +1637,15 @@ def process_item(
                     ProcessingResult.GENERATED,
                     "",
                     worker_name,
+                )
+                _fan_out_secondary_publishers(
+                    media_file,
+                    tmp_path,
+                    bundle_hash,
+                    config,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    worker_name=worker_name,
                 )
             except (CancellationError, CodecNotSupportedError):
                 raise

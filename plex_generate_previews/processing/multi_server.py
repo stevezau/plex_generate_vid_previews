@@ -196,20 +196,24 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
     """Get an item id for a server, preferring the dispatcher's hint.
 
     When the caller (webhook router, scan loop) already knows the
-    server's item id we use it directly. Otherwise we walk the
-    server's API once to recover one — Plex, Emby, and Jellyfin all
-    support a path-based lookup but the implementations vary; the
-    abstract :class:`MediaServer` doesn't expose it. For now, lacking
-    a hint means ``None`` is passed to adapters; only Plex and
-    Jellyfin's manifest path actually need the id, and both raise an
-    intelligible error when it's missing.
+    server's item id we use it directly. Otherwise we ask the server
+    via :meth:`MediaServer.resolve_remote_path_to_item_id`; servers
+    without a reverse-lookup implementation return ``None`` (only
+    Plex's bundle path and Jellyfin's manifest actually need the id,
+    and the corresponding adapters degrade gracefully when missing).
     """
     if hint:
         return hint
-    # Future: extend MediaServer with a resolve_path_to_item_id() method
-    # so we can recover the id from a webhook that only carried the path.
-    del server, canonical_path
-    return None
+    try:
+        return server.resolve_remote_path_to_item_id(canonical_path)
+    except Exception as exc:
+        logger.debug(
+            "resolve_remote_path_to_item_id failed for {} on {}: {}",
+            canonical_path,
+            server.name,
+            exc,
+        )
+        return None
 
 
 def _publish_one(

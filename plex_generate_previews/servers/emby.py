@@ -257,6 +257,57 @@ class EmbyServer(MediaServer):
         path = str(data.get("Path") or "")
         return path or None
 
+    def resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
+        """Search Emby for an item whose stored ``Path`` matches ``remote_path``.
+
+        Used by the secondary-publisher fan-out from the legacy single-Plex
+        scan path: when Plex finishes processing a file at the canonical
+        local path, we ask Emby (and Jellyfin) for their item id so the
+        manifest-keyed adapters (Jellyfin) can publish without waiting for
+        a vendor-native webhook.
+
+        The lookup is by **basename** (we don't know whether ``remote_path``
+        is canonical-local or server-view), then we verify the match by
+        comparing the trailing two path components — accurate enough for
+        the typical ``/library/Show/Season X/EpisodeName.mkv`` layout.
+        """
+        import os as _os
+
+        basename = _os.path.basename(remote_path or "")
+        if not basename:
+            return None
+
+        stem = _os.path.splitext(basename)[0]
+        params = {
+            "searchTerm": stem,
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie,Episode",
+            "Fields": "Path",
+            "Limit": 50,
+        }
+        try:
+            response = self._request("GET", "/Items", params=params)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.debug("Emby reverse-lookup search failed for {}: {}", remote_path, exc)
+            return None
+
+        # Compare the final two components (parent dir + basename) so we
+        # don't false-match on episode names that recur across shows.
+        target_tail = "/".join(remote_path.rstrip("/").split("/")[-2:])
+        for raw in data.get("Items", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            path = str(raw.get("Path") or "")
+            if not path:
+                continue
+            if _os.path.basename(path) == basename and path.replace("\\", "/").endswith(target_tail):
+                item_id = str(raw.get("Id") or "")
+                if item_id:
+                    return item_id
+        return None
+
     def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
         """Notify Emby that a media path changed.
 
