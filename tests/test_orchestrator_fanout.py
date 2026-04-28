@@ -139,7 +139,6 @@ class TestFanOut:
             _fan_out_secondary_publishers(
                 canonical_path=ctx["media_file"],
                 frame_dir=ctx["plex_tmp_path"],
-                bundle_hash="abcd1234",
                 config=ctx["config"],
             )
 
@@ -176,7 +175,6 @@ class TestFanOut:
             _fan_out_secondary_publishers(
                 canonical_path=ctx["media_file"],
                 frame_dir=ctx["plex_tmp_path"],
-                bundle_hash="abcd1234",
                 config=ctx["config"],
             )
 
@@ -205,7 +203,6 @@ class TestFanOut:
         _fan_out_secondary_publishers(
             canonical_path=str(tmp_path / "Foo.mkv"),
             frame_dir=str(plex_tmp),
-            bundle_hash="xyz",
             config=mock_config,
         )
 
@@ -241,7 +238,6 @@ class TestFanOut:
         _fan_out_secondary_publishers(
             canonical_path=str(tmp_path / "Foo.mkv"),
             frame_dir=str(plex_tmp),
-            bundle_hash="abc",
             config=mock_config,
         )
 
@@ -266,7 +262,6 @@ class TestFanOut:
         _fan_out_secondary_publishers(
             canonical_path=str(tmp_path / "Foo.mkv"),
             frame_dir=str(plex_tmp),
-            bundle_hash="abc",
             config=mock_config,
         )
 
@@ -298,9 +293,42 @@ class TestFanOut:
         _fan_out_secondary_publishers(
             canonical_path=str(tmp_path / "Foo.mkv"),
             frame_dir=str(plex_tmp),
-            bundle_hash="abc",
             config=mock_config,
         )
 
         # Disabled server: no fan-out, frames untouched.
         assert plex_tmp.exists()
+
+    def test_frame_dir_none_dispatches_extraction_to_canonical_pipeline(self, fanout_setup):
+        """When Plex skipped extraction (BIF already exists), pass frame_dir=None.
+
+        The fan-out should still dispatch through process_canonical_path so
+        Emby/Jellyfin servers added later get backfilled — even though
+        there are no Plex-extracted frames to seed the cache with.
+        """
+        ctx = fanout_setup
+
+        # The helper does a deferred import; patch at source.
+        from plex_generate_previews.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
+        with patch(
+            "plex_generate_previews.processing.multi_server.process_canonical_path",
+            return_value=MultiServerResult(
+                canonical_path=ctx["media_file"],
+                status=MultiServerStatus.SKIPPED,
+                publishers=[],
+            ),
+        ) as proc_orch:
+            _fan_out_secondary_publishers(
+                canonical_path=ctx["media_file"],
+                frame_dir=None,
+                config=ctx["config"],
+            )
+
+        # Dispatched once; no frame-cache seeding happened.
+        proc_orch.assert_called_once()
+        # Plex tmp dir is untouched because frame_dir was None.
+        assert os.path.exists(ctx["plex_tmp_path"])

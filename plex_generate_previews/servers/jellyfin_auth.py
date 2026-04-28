@@ -2,18 +2,18 @@
 
 Two flows are exposed because they have very different UX:
 
-* **Quick Connect** is the friendliest path for users on a desktop browser
-  — we ask Jellyfin for a 6-character code; the user opens their
-  Jellyfin web UI and types the code in their profile menu; once
-  approved we fetch an ``AccessToken``. The user's password never
-  leaves their browser.
-* **Username + password** mirrors the Emby helper: ``POST
-  /Users/AuthenticateByName`` with the same strict
-  ``MediaBrowser`` ``Authorization`` header (Jellyfin forked the
-  scheme from Emby).
+* **Quick Connect** is the friendliest path — Jellyfin issues a
+  6-character code; the user opens their Jellyfin web UI and enters
+  the code in their profile menu; once approved we fetch an
+  ``AccessToken``. The user's password never leaves their browser.
+* **Username + password** delegates to the shared
+  :func:`._mediabrowser_auth.authenticate_with_password` (Jellyfin
+  inherited Emby's ``/Users/AuthenticateByName`` endpoint and never
+  replaced it).
 
-Both flows surface :class:`JellyfinAuthResult` with the same shape so
-the setup wizard can branch on ``method`` without duplicate plumbing.
+Both flows surface :class:`JellyfinAuthResult` (an alias of the shared
+:class:`MediaBrowserAuthResult`) so the setup wizard can branch on
+``method`` without duplicate plumbing.
 """
 
 from __future__ import annotations
@@ -25,28 +25,15 @@ import requests
 import urllib3
 from loguru import logger
 
-from .emby_auth import _emby_authorization_header  # same Authorization scheme
+from ._mediabrowser_auth import (
+    _AUTH_DEVICE_ID,
+    MediaBrowserAuthResult,
+    authenticate_with_password,
+    mediabrowser_authorization_header,
+)
 
-
-@dataclass(frozen=True)
-class JellyfinAuthResult:
-    """Outcome of a Jellyfin authentication attempt.
-
-    Attributes:
-        ok: True when the server returned a usable token.
-        access_token: The ``AccessToken`` field, suitable for X-Emby-Token.
-        user_id: The authenticated user's id.
-        server_id: The server's reported id.
-        server_name: Friendly name for surfacing in the UI.
-        message: Human-readable status / error string.
-    """
-
-    ok: bool
-    access_token: str | None = None
-    user_id: str | None = None
-    server_id: str | None = None
-    server_name: str | None = None
-    message: str = ""
+# Backwards-compatible alias — callers and tests use ``JellyfinAuthResult``.
+JellyfinAuthResult = MediaBrowserAuthResult
 
 
 @dataclass(frozen=True)
@@ -63,12 +50,7 @@ class QuickConnectInitiation:
 
 
 def _device_id() -> str:
-    """Return the namespaced device id used by both Emby and Jellyfin."""
-    # Reuse the Emby module's namespaced device id so a Jellyfin user
-    # who later switches to Emby (or vice versa) ends up on the same
-    # session row in either server's "Devices" list.
-    from .emby_auth import _AUTH_DEVICE_ID
-
+    """Namespaced device id shared by Emby and Jellyfin sessions."""
     return _AUTH_DEVICE_ID
 
 
@@ -81,70 +63,15 @@ def authenticate_jellyfin_with_password(
     timeout: int = 30,
     device_id_override: str | None = None,
 ) -> JellyfinAuthResult:
-    """Exchange username+password for a Jellyfin ``AccessToken``.
-
-    Identical wire format to Emby's ``/Users/AuthenticateByName``;
-    Jellyfin retained the inherited Emby endpoint.
-    """
-    if not base_url:
-        return JellyfinAuthResult(ok=False, message="Jellyfin URL is required")
-    if not username:
-        return JellyfinAuthResult(ok=False, message="Jellyfin username is required")
-
-    if not verify_ssl:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-    headers = {
-        "Authorization": _emby_authorization_header(device_id=device_id_override or _device_id()),
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    try:
-        response = requests.post(
-            f"{base_url.rstrip('/')}/Users/AuthenticateByName",
-            json={"Username": username, "Pw": password},
-            headers=headers,
-            timeout=timeout,
-            verify=verify_ssl,
-        )
-    except requests.exceptions.SSLError as exc:
-        return JellyfinAuthResult(ok=False, message=f"SSL verification failed: {exc}")
-    except requests.exceptions.Timeout:
-        return JellyfinAuthResult(ok=False, message=f"Connection to {base_url} timed out")
-    except requests.exceptions.ConnectionError as exc:
-        return JellyfinAuthResult(ok=False, message=f"Could not connect to Jellyfin at {base_url}: {exc}")
-    except requests.RequestException as exc:
-        return JellyfinAuthResult(ok=False, message=f"Request failed: {exc}")
-
-    if response.status_code == 401:
-        return JellyfinAuthResult(ok=False, message="Jellyfin rejected the username/password (401)")
-    if response.status_code == 403:
-        return JellyfinAuthResult(ok=False, message="Access denied by Jellyfin server (403)")
-    if response.status_code >= 400:
-        return JellyfinAuthResult(
-            ok=False,
-            message=f"Jellyfin returned HTTP {response.status_code}: {response.text[:200]}",
-        )
-
-    try:
-        data = response.json()
-    except ValueError:
-        return JellyfinAuthResult(ok=False, message="Jellyfin auth response was not valid JSON")
-
-    access_token = str(data.get("AccessToken") or "")
-    user = data.get("User") or {}
-
-    if not access_token:
-        return JellyfinAuthResult(ok=False, message="Jellyfin auth response missing AccessToken")
-
-    return JellyfinAuthResult(
-        ok=True,
-        access_token=access_token,
-        user_id=str(user.get("Id") or "") or None,
-        server_id=str(data.get("ServerId") or "") or None,
-        server_name=str(user.get("ServerName") or "") or None,
-        message="Authenticated",
+    """Exchange username+password for a Jellyfin ``AccessToken``."""
+    return authenticate_with_password(
+        vendor="Jellyfin",
+        base_url=base_url,
+        username=username,
+        password=password,
+        verify_ssl=verify_ssl,
+        timeout=timeout,
+        device_id_override=device_id_override,
     )
 
 
@@ -173,7 +100,7 @@ def initiate_quick_connect(
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     headers = {
-        "Authorization": _emby_authorization_header(device_id=device_id_override or _device_id()),
+        "Authorization": mediabrowser_authorization_header(device_id=device_id_override or _device_id()),
         "Accept": "application/json",
     }
 
@@ -226,7 +153,7 @@ def poll_quick_connect(
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     headers = {
-        "Authorization": _emby_authorization_header(device_id=device_id_override or _device_id()),
+        "Authorization": mediabrowser_authorization_header(device_id=device_id_override or _device_id()),
         "Accept": "application/json",
     }
 
@@ -277,7 +204,7 @@ def exchange_quick_connect(
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     headers = {
-        "Authorization": _emby_authorization_header(device_id=device_id_override or _device_id()),
+        "Authorization": mediabrowser_authorization_header(device_id=device_id_override or _device_id()),
         "Content-Type": "application/json",
         "Accept": "application/json",
     }

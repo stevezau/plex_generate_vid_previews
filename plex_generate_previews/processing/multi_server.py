@@ -64,7 +64,8 @@ class PublisherStatus(str, Enum):
 class MultiServerStatus(str, Enum):
     """Aggregate outcome for a single canonical-path processing call."""
 
-    PUBLISHED = "published"  # at least one publisher succeeded
+    PUBLISHED = "published"  # at least one publisher actually wrote new output
+    SKIPPED = "skipped"  # owners exist but every one was skipped (output already there or not yet indexed)
     NO_OWNERS = "no_owners"  # no enabled library covers the path
     FAILED = "failed"  # generation or every publisher failed
     NO_FRAMES = "no_frames"  # FFmpeg produced 0 frames (unrecoverable)
@@ -306,7 +307,6 @@ def process_canonical_path(
     progress_callback=None,
     ffmpeg_threads_override: int | None = None,
     cancel_check=None,
-    worker_name: str = "",
     regenerate: bool = False,
     use_frame_cache: bool = True,
 ) -> MultiServerResult:
@@ -460,12 +460,11 @@ def process_canonical_path(
         elif all_failed:
             status = MultiServerStatus.FAILED
         else:
-            # Mixture of skipped (output exists / not yet indexed) — treat
-            # as published-equivalent for the dispatcher; the per-publisher
-            # statuses preserve the detail.
-            status = MultiServerStatus.PUBLISHED
-
-        del worker_name  # accepted for parity with process_item; not consumed yet
+            # No publisher actually wrote, but at least one wasn't a
+            # hard failure — every publisher was skipped (output exists /
+            # not yet indexed). Reserve PUBLISHED for "≥1 wrote" so
+            # callers don't conflate the two.
+            status = MultiServerStatus.SKIPPED
         return MultiServerResult(
             canonical_path=canonical_path,
             status=status,
