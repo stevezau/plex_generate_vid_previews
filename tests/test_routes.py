@@ -3981,6 +3981,85 @@ class TestPerServerPlexWebhook:
         assert "Plex-only" in resp.get_json()["error"]
 
 
+class TestBackupRestore:
+    """J6 — /api/settings/backups + /restore inspect and atomically swap .bak files."""
+
+    def test_lists_backups_with_mtime_and_bak_newer_flag(self, client, monkeypatch, tmp_path):
+        """GET returns one row per managed file with bak_newer=True when applicable."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Force the inspector to look at our temp dir, not the test config.
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        # Live file older, .bak newer → bak_newer should be True.
+        live = tmp_path / "settings.json"
+        bak = tmp_path / "settings.json.bak"
+        live.write_text('{"v": "live"}')
+        bak.write_text('{"v": "newer-backup"}')
+        os.utime(live, (1000, 1000))
+        os.utime(bak, (2000, 2000))
+
+        resp = client.get("/api/settings/backups", headers=_api_headers())
+        assert resp.status_code == 200
+        rows = {r["name"]: r for r in resp.get_json()["files"]}
+        assert rows["settings.json"]["bak_newer"] is True
+        assert rows["schedules.json"]["has_bak"] is False
+
+    def test_restore_swaps_live_and_bak_atomically(self, client, monkeypatch, tmp_path):
+        """POST /restore swaps live ↔ .bak so a second call rolls back the first."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        live = tmp_path / "settings.json"
+        bak = tmp_path / "settings.json.bak"
+        live.write_text('{"label": "current"}')
+        bak.write_text('{"label": "previous"}')
+
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        assert live.read_text() == '{"label": "previous"}'
+        assert bak.read_text() == '{"label": "current"}'
+
+        # Second call rolls back the first — confirms the swap is symmetric.
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json"},
+        )
+        assert resp.status_code == 200
+        assert live.read_text() == '{"label": "current"}'
+
+    def test_restore_rejects_unknown_file(self, client):
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "/etc/passwd"},
+        )
+        assert resp.status_code == 400
+
+    def test_restore_404_when_no_bak(self, client, monkeypatch, tmp_path):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+        # Live file but no .bak.
+        (tmp_path / "settings.json").write_text("{}")
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json"},
+        )
+        assert resp.status_code == 404
+
+
 class TestSettingsManagerWebhookMigration:
     """Settings load migrates legacy global Plex webhook keys onto the Plex server."""
 

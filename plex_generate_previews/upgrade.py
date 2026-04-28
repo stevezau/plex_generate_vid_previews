@@ -19,6 +19,17 @@ from loguru import logger
 # -------------------------------------------------------------------------
 _CURRENT_SCHEMA_VERSION = 8
 
+
+class SchemaDowngradeError(RuntimeError):
+    """Raised when settings.json was written by a newer binary than this one.
+
+    We refuse to start in that case because allowing the load would mean
+    silently dropping unknown fields on the next save — exactly the failure
+    mode that wiped a user's job history during a tag-drift incident on
+    feat/multi-media-server.
+    """
+
+
 # -------------------------------------------------------------------------
 # Env-var-to-settings migration map
 # -------------------------------------------------------------------------
@@ -195,7 +206,19 @@ def _migrate_schema(sm) -> None:
               migration once all callers have been updated.
     """
     current = sm.get("_schema_version", 1)
-    if current >= _CURRENT_SCHEMA_VERSION:
+    if current > _CURRENT_SCHEMA_VERSION:
+        # J3: refuse to boot when settings.json is newer than the binary.
+        # Silent acceptance would drop unknown fields on the next save —
+        # the exact failure mode that wiped jobs.json on tag-drift.
+        settings_path = getattr(sm, "settings_file", None)
+        bak_path = f"{settings_path}.bak" if settings_path else "<settings>.bak"
+        raise SchemaDowngradeError(
+            f"settings.json was written by schema v{current} but this binary supports up to "
+            f"v{_CURRENT_SCHEMA_VERSION}. Refusing to start (would silently drop fields on next save). "
+            f"Either run a newer build of the app, or restore the previous settings.json "
+            f"(a backup is at {bak_path}) and start the older app version that wrote it."
+        )
+    if current == _CURRENT_SCHEMA_VERSION:
         return
 
     all_notes: list[str] = []
@@ -225,6 +248,23 @@ def _migrate_schema(sm) -> None:
 
     if all_notes:
         logger.info("Settings schema migrated to v{}: {}", _CURRENT_SCHEMA_VERSION, ", ".join(all_notes))
+        # J5: drop a one-shot flag the dashboard's notification bell reads
+        # so the user sees a single "we migrated your config" card on next
+        # login. Dismissal removes the flag (see notifications.py).
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        bak_path = f"{getattr(sm, 'settings_file', '')}.bak" if getattr(sm, "settings_file", None) else ""
+        sm.set(
+            "_pending_migration_notice",
+            {
+                "from": current,
+                "to": _CURRENT_SCHEMA_VERSION,
+                "at": _dt.now(_tz.utc).isoformat(),
+                "backup": bak_path,
+                "notes": all_notes,
+            },
+        )
 
 
 def _migrate_to_v2(sm) -> list:

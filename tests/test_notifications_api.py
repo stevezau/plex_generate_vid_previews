@@ -37,6 +37,32 @@ def _reset_notification_session():
 
 
 @pytest.fixture(autouse=True)
+def _suppress_pending_migration_notice(client):
+    """Stop the J5 schema-migration card from leaking into unrelated tests.
+
+    The ``client`` fixture transitively builds the Flask app, which runs the
+    schema migration on the fresh fixture's bare ``settings.json`` (no
+    ``_schema_version`` → migrates v1→v8 → sets ``_pending_migration_notice``).
+    Tests for *other* notifications expect a clean baseline, so we clear the
+    flag right after the app boots and again after the test runs. Tests for
+    the migration card itself re-set the flag inside their bodies.
+    """
+    try:
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set("_pending_migration_notice", None)
+    except Exception:
+        pass
+    yield
+    try:
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set("_pending_migration_notice", None)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _mock_healthy_timezone():
     """Force the timezone probe to report healthy.
 
@@ -292,3 +318,50 @@ class TestSettingsManagerDismissedNotifications:
         mgr = self._fresh_manager(tmp_path, {"dismissed_notifications": ["foo", "bar"]})
         mgr.reset_dismissed_notifications()
         assert mgr.dismissed_notifications == []
+
+
+class TestSchemaMigrationNotification:
+    """J5 — one-shot 'we migrated your settings' card."""
+
+    def test_card_appears_after_migration_runs(self, client):
+        """When _pending_migration_notice is set, the bell shows one info card."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set(
+            "_pending_migration_notice",
+            {
+                "from": 6,
+                "to": 8,
+                "at": "2026-04-29T00:00:00+00:00",
+                "backup": "/config/settings.json.bak",
+                "notes": ["v8: did a thing"],
+            },
+        )
+        try:
+            resp = client.get("/api/system/notifications")
+            assert resp.status_code == 200
+            ids = [n["id"] for n in resp.get_json()["notifications"]]
+            assert "schema_migration_completed" in ids
+        finally:
+            # Always clean up — the singleton SettingsManager is shared across
+            # tests in the same xdist worker; a leaked flag pollutes every
+            # subsequent build_active_notifications() call.
+            sm.set("_pending_migration_notice", None)
+
+    def test_dismissing_card_clears_pending_flag(self, client):
+        """Clicking dismiss must remove _pending_migration_notice from settings.
+
+        Without this the card would re-render on every page reload (the
+        flag's still in settings.json) — defeats the "one-shot" promise.
+        """
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("_pending_migration_notice", {"from": 6, "to": 8})
+        try:
+            resp = client.post("/api/system/notifications/schema_migration_completed/dismiss")
+            assert resp.status_code == 200
+            assert sm.get("_pending_migration_notice") is None
+        finally:
+            sm.set("_pending_migration_notice", None)

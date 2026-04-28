@@ -82,11 +82,11 @@ def _save_history_to_disk() -> None:
     Best-effort — failures are logged but never propagated.
     """
     try:
-        from ..utils import atomic_json_save
+        from ..utils import atomic_json_save_with_backup
 
         with _history_lock:
             snapshot = list(_webhook_history)
-        atomic_json_save(str(_history_file_path()), snapshot)
+        atomic_json_save_with_backup(str(_history_file_path()), snapshot)
     except Exception as exc:
         logger.debug("Failed to persist webhook history: {}", exc)
 

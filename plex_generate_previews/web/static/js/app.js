@@ -3961,3 +3961,83 @@ function _renderMarkdownBasic(md) {
 
 // checkWhatsNew() is called from the dashboard page (index.html) only,
 // to avoid hitting the GitHub API on every page navigation.
+
+
+// ============================================================================
+// J6 — Settings > Backups panel
+// ============================================================================
+//
+// Lists every (live, .bak) pair this app maintains and lets the user one-click
+// swap them. The panel only shows on Settings (the trigger is the panel
+// element itself; absent on every other page).
+
+function _formatBackupTime(epoch) {
+    if (!epoch) return '—';
+    const d = new Date(epoch * 1000);
+    return d.toLocaleString();
+}
+
+async function refreshBackupsPanel() {
+    const panel = document.getElementById('backupRestorePanel');
+    if (!panel) return;
+    panel.innerHTML = '<div class="text-muted small"><span class="spinner-border spinner-border-sm me-1"></span>Checking for backups…</div>';
+    try {
+        const data = await apiGet('/api/settings/backups');
+        const files = data.files || [];
+        if (!files.length) {
+            panel.innerHTML = '<div class="text-muted small">No backup-tracked config files found.</div>';
+            return;
+        }
+        const rows = files.map((f) => {
+            const liveAge = _formatBackupTime(f.live_mtime);
+            const bakAge = _formatBackupTime(f.bak_mtime);
+            const bakBadge = f.bak_newer
+                ? '<span class="badge bg-warning text-dark ms-2">backup is newer</span>'
+                : (f.has_bak ? '' : '<span class="badge bg-secondary ms-2">no backup yet</span>');
+            const restoreBtn = f.has_bak
+                ? `<button type="button" class="btn btn-sm btn-outline-warning ms-2" data-restore-file="${escapeHtmlAttr(f.name)}">
+                       <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
+                   </button>`
+                : '';
+            return `
+                <div class="d-flex justify-content-between align-items-center border-bottom py-2">
+                    <div>
+                        <div><code>${escapeHtmlText(f.name)}</code>${bakBadge}</div>
+                        <div class="small text-muted">
+                            Live saved: ${escapeHtmlText(liveAge)} · Backup: ${escapeHtmlText(bakAge)}
+                        </div>
+                    </div>
+                    <div>${restoreBtn}</div>
+                </div>
+            `;
+        }).join('');
+        panel.innerHTML = rows;
+        panel.querySelectorAll('[data-restore-file]').forEach((btn) => {
+            btn.addEventListener('click', async (ev) => {
+                const file = ev.currentTarget.dataset.restoreFile;
+                if (!confirm(`Restore ${file} from its .bak? The current file will be moved to the backup slot so you can swap back.`)) return;
+                ev.currentTarget.disabled = true;
+                ev.currentTarget.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restoring…';
+                try {
+                    const r = await apiPost('/api/settings/backups/restore', { file });
+                    showToast('Backup restored', `${file} swapped with its .bak. Reload the page for caches to pick it up.`, 'success');
+                    refreshBackupsPanel();
+                } catch (e) {
+                    showToast('Restore failed', (e && e.message) || 'Unknown error', 'danger');
+                    ev.currentTarget.disabled = false;
+                    ev.currentTarget.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Restore';
+                }
+            });
+        });
+    } catch (e) {
+        panel.innerHTML = `<div class="text-warning small"><i class="bi bi-exclamation-triangle me-1"></i>Could not list backups: ${escapeHtmlText((e && e.message) || 'unknown error')}</div>`;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById('backupRestorePanel')) {
+        refreshBackupsPanel();
+        const btn = document.getElementById('refreshBackupsBtn');
+        if (btn) btn.addEventListener('click', refreshBackupsPanel);
+    }
+});

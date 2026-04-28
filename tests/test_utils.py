@@ -253,3 +253,63 @@ class TestSetupWorkingDirectory:
             # Should create the full path
             assert os.path.exists(result)
             assert os.path.isdir(result)
+
+
+class TestAtomicJsonSaveWithBackup:
+    """J1 — backup-then-write helper for hand-editable config files."""
+
+    def test_first_write_no_bak(self, tmp_path):
+        """When the target doesn't exist, no .bak is created."""
+        from plex_generate_previews.utils import atomic_json_save_with_backup
+
+        target = tmp_path / "config.json"
+        atomic_json_save_with_backup(str(target), {"hello": "world"})
+        assert target.exists()
+        assert not (tmp_path / "config.json.bak").exists()
+
+    def test_subsequent_write_creates_bak_with_old_contents(self, tmp_path):
+        """The .bak holds the file contents *before* this write."""
+        import json as _json
+
+        from plex_generate_previews.utils import atomic_json_save_with_backup
+
+        target = tmp_path / "config.json"
+        atomic_json_save_with_backup(str(target), {"v": 1})
+        atomic_json_save_with_backup(str(target), {"v": 2})
+
+        assert _json.loads(target.read_text())["v"] == 2
+        bak = tmp_path / "config.json.bak"
+        assert bak.exists()
+        assert _json.loads(bak.read_text())["v"] == 1
+
+    def test_bak_is_a_rolling_single_copy(self, tmp_path):
+        """A third write overwrites the .bak with the v2 contents (no v1 left)."""
+        import json as _json
+
+        from plex_generate_previews.utils import atomic_json_save_with_backup
+
+        target = tmp_path / "config.json"
+        atomic_json_save_with_backup(str(target), {"v": 1})
+        atomic_json_save_with_backup(str(target), {"v": 2})
+        atomic_json_save_with_backup(str(target), {"v": 3})
+
+        assert _json.loads(target.read_text())["v"] == 3
+        assert _json.loads((tmp_path / "config.json.bak").read_text())["v"] == 2
+
+    def test_backup_failure_does_not_block_primary_write(self, tmp_path, monkeypatch):
+        """If shutil.copy2 raises, the primary write still happens."""
+        import json as _json
+        import shutil as _shutil
+
+        from plex_generate_previews import utils
+
+        target = tmp_path / "config.json"
+        target.write_text('{"v": 1}')
+
+        def boom(*a, **kw):
+            raise OSError("fake disk error")
+
+        monkeypatch.setattr(_shutil, "copy2", boom)
+        # This should NOT raise — backup is best-effort.
+        utils.atomic_json_save_with_backup(str(target), {"v": 2})
+        assert _json.loads(target.read_text())["v"] == 2

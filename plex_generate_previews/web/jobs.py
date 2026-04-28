@@ -1,11 +1,19 @@
 """Job management for the web interface.
 
 Provides JobManager class for tracking job state, emitting SocketIO events,
-and persisting job data to disk.
+and persisting job data to disk via SQLite.
+
+Storage moved from jobs.json (per-write whole-file rewrite, schema-fragile)
+to jobs.db (per-row upserts, schema-stable) in Phase J8 — see ``JobStorage``
+below. Free-form fields (progress, config, publishers) stay as JSON blobs
+inside their columns so adding a new field there is a no-op at the schema
+level. The first start of the new code imports any existing jobs.json then
+renames it ``jobs.json.imported.bak``.
 """
 
 import json
 import os
+import sqlite3
 import threading
 import uuid
 from collections import deque
@@ -160,6 +168,159 @@ class Job:
         }
 
 
+class JobStorage:
+    """SQLite-backed persistence for jobs (Phase J8).
+
+    One table, one connection (gunicorn runs a single worker, so no
+    multi-process write contention). Free-form data — JobProgress, the
+    per-job config dict, the publishers list — lives in JSON-text columns
+    so adding a field inside any of those structures is a no-op at the
+    schema level. That's the whole point of moving off jobs.json: schema
+    drift on those fields can never wipe history again.
+
+    Columns we *do* break out are the ones the UI / API filter or sort
+    on (status, created_at, server_id) so the common queries hit indexes.
+    """
+
+    _SCHEMA_SQL = (
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id              TEXT PRIMARY KEY,
+            status          TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            started_at      TEXT,
+            completed_at    TEXT,
+            library_id      TEXT,
+            library_name    TEXT,
+            server_id       TEXT,
+            server_name     TEXT,
+            server_type     TEXT,
+            priority        INTEGER NOT NULL DEFAULT 2,
+            paused          INTEGER NOT NULL DEFAULT 0,
+            error           TEXT,
+            progress_json   TEXT NOT NULL DEFAULT '{}',
+            config_json     TEXT NOT NULL DEFAULT '{}',
+            publishers_json TEXT NOT NULL DEFAULT '[]'
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);",
+    )
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        parent = os.path.dirname(db_path) or "."
+        os.makedirs(parent, exist_ok=True)
+        # check_same_thread=False so worker threads can persist progress
+        # without going through the main thread; isolation_level=None puts
+        # us in autocommit mode (we want every UPSERT durable immediately).
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        self._conn.row_factory = sqlite3.Row
+        # WAL: concurrent reads + a single writer with no fsync stalls on
+        # every commit. Safe with one gunicorn worker (project default).
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._lock = threading.RLock()
+        for stmt in self._SCHEMA_SQL:
+            self._conn.execute(stmt)
+
+    def upsert(self, job: "Job") -> None:
+        d = job.to_dict()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO jobs (id, status, created_at, started_at, completed_at,
+                                  library_id, library_name, server_id, server_name, server_type,
+                                  priority, paused, error,
+                                  progress_json, config_json, publishers_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    started_at=excluded.started_at,
+                    completed_at=excluded.completed_at,
+                    library_id=excluded.library_id,
+                    library_name=excluded.library_name,
+                    server_id=excluded.server_id,
+                    server_name=excluded.server_name,
+                    server_type=excluded.server_type,
+                    priority=excluded.priority,
+                    paused=excluded.paused,
+                    error=excluded.error,
+                    progress_json=excluded.progress_json,
+                    config_json=excluded.config_json,
+                    publishers_json=excluded.publishers_json
+                """,
+                (
+                    d["id"],
+                    d["status"],
+                    d["created_at"],
+                    d["started_at"],
+                    d["completed_at"],
+                    d["library_id"],
+                    d["library_name"],
+                    d["server_id"],
+                    d["server_name"],
+                    d["server_type"],
+                    int(d["priority"]),
+                    1 if d["paused"] else 0,
+                    d["error"],
+                    json.dumps(d["progress"]),
+                    json.dumps(d["config"]),
+                    json.dumps(d["publishers"]),
+                ),
+            )
+
+    def delete(self, job_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+    def all_jobs(self) -> list["Job"]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM jobs ORDER BY created_at ASC").fetchall()
+        return [self._row_to_job(r) for r in rows]
+
+    def row_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()
+        return int(row["c"]) if row else 0
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self._conn.close()
+            except sqlite3.Error:
+                pass
+
+    @staticmethod
+    def _row_to_job(row) -> "Job":
+        def _safe_json(blob, fallback):
+            if not blob:
+                return fallback
+            try:
+                return json.loads(blob)
+            except (json.JSONDecodeError, TypeError):
+                return fallback
+
+        return Job(
+            id=row["id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            library_id=row["library_id"],
+            library_name=row["library_name"] or "",
+            server_id=row["server_id"],
+            server_name=row["server_name"],
+            server_type=row["server_type"],
+            priority=row["priority"],
+            paused=bool(row["paused"]),
+            error=row["error"],
+            progress=_safe_json(row["progress_json"], {}),
+            config=_safe_json(row["config_json"], {}),
+            publishers=_safe_json(row["publishers_json"], []),
+        )
+
+
 class JobManager:
     """Manages job queue and state for the web interface.
 
@@ -170,11 +331,15 @@ class JobManager:
     def __init__(self, config_dir: str = "/config", socketio=None):
         """Initialize job manager with config directory and optional SocketIO instance."""
         self.config_dir = config_dir
+        # Pre-J8 path, kept on the instance only so the legacy-import code
+        # path can find any old jobs.json that's still on disk.
         self.jobs_file = os.path.join(config_dir, "jobs.json")
+        self.jobs_db_path = os.path.join(config_dir, "jobs.db")
         self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
         self._job_file_results_dir = os.path.join(config_dir, "logs", "job_file_results")
         self.socketio = socketio
         self._jobs: dict[str, Job] = {}
+        self._storage: JobStorage | None = None
         self._lock = threading.RLock()
         self._running_job_ids: set = set()
         self._on_progress_callbacks: list[Callable] = []
@@ -219,86 +384,156 @@ class JobManager:
         self.socketio = socketio
 
     def _load_jobs(self) -> None:
-        """Load jobs from persistent storage."""
-        if os.path.exists(self.jobs_file):
-            try:
-                with open(self.jobs_file) as f:
-                    data = json.load(f)
-                    needs_save = False
-                    # Allowed Job constructor kwargs — filter unknowns so a
-                    # future field rename / removal in the dataclass doesn't
-                    # mass-delete history. The "malformed" except clause below
-                    # would otherwise silently drop every job in jobs.json.
-                    _job_field_names = {f.name for f in fields(Job)}
-                    for job_data in data.get("jobs", []):
-                        try:
-                            filtered_data = {k: v for k, v in (job_data or {}).items() if k in _job_field_names}
-                            job = Job(**filtered_data)
-                            # Mark any "running" jobs as failed on startup
-                            # (they were interrupted by restart/crash)
-                            if job.status == JobStatus.RUNNING:
-                                logger.warning(
-                                    "Job {} was still running when the app last shut down — marking it as failed. "
-                                    "If auto-requeue-on-restart is enabled (Settings → Jobs), it will be revived shortly; "
-                                    "otherwise re-run it from the Jobs page when you're ready.",
-                                    job.id,
-                                )
-                                job.status = JobStatus.FAILED
-                                job.error = "Job was interrupted by server restart"
-                                job.completed_at = datetime.now(timezone.utc).isoformat()
-                                needs_save = True
-                                self._interrupted_jobs.append(job)
-                            elif job.status == JobStatus.PENDING:
-                                self._interrupted_jobs.append(job)
-                            self._jobs[job.id] = job
-                        except (TypeError, KeyError, ValueError) as job_error:
-                            job_id = job_data.get("id", "unknown")
-                            logger.warning(
-                                "Skipping job {} from saved jobs file: its record is malformed ({}: {}). "
-                                "Other jobs in the file will still load — most likely a leftover from an older "
-                                "version. If you don't need to keep it, you can clear it from the Jobs page.",
-                                job_id,
-                                type(job_error).__name__,
-                                job_error,
-                            )
-                            continue
-                logger.info("Loaded {} jobs from {}", len(self._jobs), self.jobs_file)
-                if self._interrupted_jobs:
-                    logger.info("Found {} interrupted/pending job(s) from previous run", len(self._interrupted_jobs))
-                if needs_save:
-                    self._save_jobs()
-            except (OSError, json.JSONDecodeError) as e:
-                logger.warning(
-                    "Could not read the saved jobs file at {} ({}: {}). "
-                    "Starting with an empty jobs list — your job history won't appear, "
-                    "but new jobs will still run and save normally.",
-                    self.jobs_file,
-                    type(e).__name__,
-                    e,
-                )
-            except Exception as e:
-                logger.error(
-                    "Unexpected error loading jobs from {} ({}: {}). "
-                    "Starting with an empty jobs list — please open an issue with the recent log lines "
-                    "if you need the history recovered.",
-                    self.jobs_file,
-                    type(e).__name__,
-                    e,
-                )
+        """Open the SQLite store, import any legacy jobs.json once, hydrate cache.
 
-    def _save_jobs(self) -> None:
-        """Save jobs to persistent storage. Caller must hold _lock."""
+        Mirrors the prior JSON loader's behaviour: any RUNNING job from the
+        previous process becomes FAILED with a clear error, and PENDING jobs
+        join self._interrupted_jobs so the app can offer to revive them.
+        """
         try:
-            from ..utils import atomic_json_save
-
-            jobs_data = {"jobs": [job.to_dict() for job in self._jobs.values()]}
-            atomic_json_save(self.jobs_file, jobs_data)
-        except OSError as e:
+            self._storage = JobStorage(self.jobs_db_path)
+        except sqlite3.Error as e:
             logger.error(
-                "Could not save the jobs file to {} ({}: {}). "
-                "Job state will be lost when the app restarts — "
-                "check that the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
-                self.jobs_file,
+                "Could not open jobs database at {} ({}: {}). "
+                "Jobs will run this session but their state will not survive a restart. "
+                "Check that the config directory is writable (Docker: confirm volume mount + PUID/PGID).",
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+            self._storage = None
+            return
+
+        self._maybe_import_legacy_json()
+
+        try:
+            stored_jobs = self._storage.all_jobs()
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not read jobs from {} ({}: {}). Starting this session with an empty jobs list — "
+                "your history is still on disk and should reappear on the next clean start.",
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+            return
+
+        needs_resave: list[Job] = []
+        for job in stored_jobs:
+            # Mark any "running" jobs as failed on startup (interrupted by
+            # restart/crash). Same policy as the legacy JSON loader had.
+            if job.status == JobStatus.RUNNING:
+                logger.warning(
+                    "Job {} was still running when the app last shut down — marking it as failed. "
+                    "If auto-requeue-on-restart is enabled (Settings → Jobs), it will be revived shortly; "
+                    "otherwise re-run it from the Jobs page when you're ready.",
+                    job.id,
+                )
+                job.status = JobStatus.FAILED
+                job.error = "Job was interrupted by server restart"
+                job.completed_at = datetime.now(timezone.utc).isoformat()
+                needs_resave.append(job)
+                self._interrupted_jobs.append(job)
+            elif job.status == JobStatus.PENDING:
+                self._interrupted_jobs.append(job)
+            self._jobs[job.id] = job
+
+        for job in needs_resave:
+            self._persist_job(job)
+
+        logger.info("Loaded {} jobs from {}", len(self._jobs), self.jobs_db_path)
+        if self._interrupted_jobs:
+            logger.info("Found {} interrupted/pending job(s) from previous run", len(self._interrupted_jobs))
+
+    def _maybe_import_legacy_json(self) -> None:
+        """One-shot import of pre-J8 jobs.json into the SQLite store.
+
+        Only runs when the DB is empty (so a manually restored jobs.json
+        doesn't double-import on top of an existing DB). After import, the
+        legacy file is renamed ``jobs.json.imported.bak`` so we never try
+        again. Each record uses the same kwarg-filtering pattern the JSON
+        loader had — one bad row never blocks the rest.
+        """
+        legacy = self.jobs_file
+        if not os.path.exists(legacy):
+            return
+        if self._storage is None or self._storage.row_count() > 0:
+            return
+
+        try:
+            with open(legacy) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Could not import legacy {} ({}: {}). Starting with an empty jobs DB.",
+                legacy,
+                type(e).__name__,
+                e,
+            )
+            return
+
+        _job_field_names = {f.name for f in fields(Job)}
+        imported = skipped = 0
+        for job_data in data.get("jobs", []):
+            try:
+                filtered = {k: v for k, v in (job_data or {}).items() if k in _job_field_names}
+                job = Job(**filtered)
+                self._storage.upsert(job)
+                imported += 1
+            except (TypeError, KeyError, ValueError, AttributeError, sqlite3.Error) as exc:
+                # AttributeError covers untrusted-data shapes like progress="str"
+                # — Job.__post_init__ keeps it as a string, then to_dict() trips.
+                # Per-record skip mirrors the legacy JSON loader's behaviour
+                # (Phase H Fix-5) — one bad row never blocks the rest.
+                skipped += 1
+                logger.warning(
+                    "Skipping job {} during legacy import ({}: {}).",
+                    (job_data or {}).get("id", "<no id>"),
+                    type(exc).__name__,
+                    exc,
+                )
+
+        archive = legacy + ".imported.bak"
+        try:
+            os.replace(legacy, archive)
+        except OSError as exc:
+            logger.warning("Imported {} jobs but could not rename {} → {}: {}", imported, legacy, archive, exc)
+
+        logger.info(
+            "Imported {} job(s) from {} into {} ({} skipped). Legacy file preserved at {}.",
+            imported,
+            legacy,
+            self.jobs_db_path,
+            skipped,
+            archive,
+        )
+
+    def _persist_job(self, job: "Job") -> None:
+        """Upsert a single job's row to disk. No-op if storage couldn't open."""
+        if self._storage is None:
+            return
+        try:
+            self._storage.upsert(job)
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not persist job {} to {} ({}: {}). Job state will be lost on restart.",
+                job.id,
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+
+    def _persist_delete(self, job_id: str) -> None:
+        """Delete a single job's row from disk."""
+        if self._storage is None:
+            return
+        try:
+            self._storage.delete(job_id)
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not delete job {} from {} ({}: {}).",
+                job_id,
+                self.jobs_db_path,
                 type(e).__name__,
                 e,
             )
@@ -373,7 +608,7 @@ class JobManager:
                 self._delete_file_results(job_id)
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
-            self._save_jobs()
+                self._persist_delete(job_id)
             logger.info("Retention: removed {} job(s) older than {} day(s)", len(expired_ids), days)
 
         # Clean orphaned job log files
@@ -462,7 +697,7 @@ class JobManager:
                 priority=parse_priority(priority),
             )
             self._jobs[job.id] = job
-            self._save_jobs()
+            self._persist_job(job)
             self._emit_event("job_created", job.to_dict())
         logger.info(
             "Created job {} for library {} (server={})",
@@ -531,7 +766,8 @@ class JobManager:
 
         if revived:
             with self._lock:
-                self._save_jobs()
+                for job in revived:
+                    self._persist_job(job)
 
         # Clear the list so it's not processed again
         self._interrupted_jobs = []
@@ -577,7 +813,7 @@ class JobManager:
             job = self._jobs.get(job_id)
             if job:
                 job.config = dict(config)
-                self._save_jobs()
+                self._persist_job(job)
 
     def update_job_priority(self, job_id: str, priority: int) -> Job | None:
         """Update the dispatch priority of a job.
@@ -595,7 +831,7 @@ class JobManager:
             if not job:
                 return None
             job.priority = priority
-            self._save_jobs()
+            self._persist_job(job)
             self._emit_event("job_updated", job.to_dict())
         return job
 
@@ -618,7 +854,7 @@ class JobManager:
                 self._pause_flags[job_id] = False
                 self._pause_events[job_id] = threading.Event()
                 self._pause_events[job_id].set()
-                self._save_jobs()
+                self._persist_job(job)
                 self._emit_event("job_started", job.to_dict())
                 started = True
         if started:
@@ -641,7 +877,7 @@ class JobManager:
             existing = list(job.publishers or [])
             existing.extend(publisher_rows)
             job.publishers = existing
-            self._save_jobs()
+            self._persist_job(job)
             self._emit_event("job_updated", job.to_dict())
 
     def update_progress(
@@ -717,7 +953,7 @@ class JobManager:
                     self.clear_pause_flag(job_id)
                     self.clear_cancellation_flag(job_id)
                     self.clear_active_worker_pool(job_id)
-                    self._save_jobs()
+                    self._persist_job(job)
                     log_msg = f"Job {job_id} already cancelled; skipping completion update"
                     # Early return after logging outside the lock
                 else:
@@ -747,7 +983,7 @@ class JobManager:
                     self.clear_pause_flag(job_id)
                     self.clear_cancellation_flag(job_id)
                     self.clear_active_worker_pool(job_id)
-                    self._save_jobs()
+                    self._persist_job(job)
 
         if log_msg:
             getattr(logger, log_level)(log_msg)
@@ -768,7 +1004,7 @@ class JobManager:
                 if not was_running:
                     self.clear_cancellation_flag(job_id)
                 self.clear_active_worker_pool(job_id)
-                self._save_jobs()
+                self._persist_job(job)
                 self._emit_event("job_cancelled", job.to_dict())
                 cancelled = True
         if cancelled:
@@ -787,7 +1023,7 @@ class JobManager:
                 if job_id in self._job_logs:
                     del self._job_logs[job_id]
                 del self._jobs[job_id]
-                self._save_jobs()
+                self._persist_delete(job_id)
                 self._emit_event("job_deleted", {"job_id": job_id})
                 deleted = True
         if deleted:
@@ -815,8 +1051,8 @@ class JobManager:
                 self._delete_file_results(job_id)
                 self._job_logs.pop(job_id, None)
                 del self._jobs[job_id]
+                self._persist_delete(job_id)
             if to_delete:
-                self._save_jobs()
                 self._emit_event("jobs_cleared", {"count": len(to_delete)})
             return len(to_delete)
 
@@ -1096,7 +1332,7 @@ class JobManager:
             event.clear()
             job.paused = True
             status_val = job.status.value
-            self._save_jobs()
+            self._persist_job(job)
             self._emit_event("job_paused", {"job_id": job_id, "paused": True})
             paused = True
         if paused:
@@ -1123,7 +1359,7 @@ class JobManager:
             event.set()
             job.paused = False
             status_val = job.status.value
-            self._save_jobs()
+            self._persist_job(job)
             self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
             resumed = True
         if resumed:

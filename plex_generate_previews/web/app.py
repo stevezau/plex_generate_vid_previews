@@ -6,6 +6,7 @@ Creates and configures the Flask application with SocketIO support.
 import atexit
 import hashlib
 import hmac
+import json
 import logging  # stdlib logging only — required to mute werkzeug's own logger; app code must use loguru
 import os
 from datetime import timedelta
@@ -294,6 +295,29 @@ def _requeue_interrupted_on_startup(config_dir: str) -> None:
         )
 
 
+def _log_build_provenance() -> None:
+    """Log the running build's branch / SHA / build date at INFO.
+
+    Designed to make tag-drift incidents grep-able from `docker logs`. The
+    Dockerfile writes /app/build_info.json (preferred) and also exposes
+    GIT_BRANCH / GIT_SHA / BUILD_DATE env vars (fallback). Either source is
+    fine; the file wins when both are present so a re-tagged image can't
+    inherit env from elsewhere.
+    """
+    branch = sha = built = "unknown"
+    try:
+        with open("/app/build_info.json") as f:
+            info = json.load(f) or {}
+            branch = info.get("branch") or branch
+            sha = info.get("sha") or sha
+            built = info.get("built") or built
+    except (OSError, ValueError):
+        branch = os.environ.get("GIT_BRANCH") or branch
+        sha = os.environ.get("GIT_SHA") or sha
+        built = os.environ.get("BUILD_DATE") or built
+    logger.info("Build: {} @ {}, built {}", branch, sha, built)
+
+
 def create_app(config_dir: str = None) -> Flask:
     """Create and configure the Flask application.
 
@@ -304,6 +328,8 @@ def create_app(config_dir: str = None) -> Flask:
         Configured Flask application
 
     """
+    _log_build_provenance()
+
     if config_dir is None:
         config_dir = os.environ.get("CONFIG_DIR", "/config")
 

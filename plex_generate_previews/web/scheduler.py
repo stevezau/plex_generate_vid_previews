@@ -188,7 +188,29 @@ class ScheduleManager:
             try:
                 with open(self.schedules_file) as f:
                     data = json.load(f)
-                    self._schedules = data.get("schedules", {})
+                raw_schedules = data.get("schedules", {})
+
+                # J4: filter per-record so one bad schedule doesn't wipe the rest.
+                # Mirrors web/jobs.py:_load_jobs (Fix-5 Phase H pattern). A
+                # corrupt entry is logged + skipped; valid entries still load.
+                self._schedules = {}
+                bad_count = 0
+                for sched_id, sched in raw_schedules.items():
+                    if not isinstance(sched, dict):
+                        bad_count += 1
+                        logger.warning(
+                            "Skipping schedule {!r}: not an object on disk (got {}).",
+                            sched_id,
+                            type(sched).__name__,
+                        )
+                        continue
+                    self._schedules[sched_id] = sched
+                if bad_count:
+                    logger.warning(
+                        "Skipped {} malformed schedule record(s); valid ones loaded normally.",
+                        bad_count,
+                    )
+
                 # Phase H7 migration: legacy schedules stored a single
                 # ``library_id``. Promote to ``library_ids`` (list) so the
                 # rest of the codebase can treat them uniformly. We do NOT
@@ -197,8 +219,6 @@ class ScheduleManager:
                 # reads it.
                 migrated = 0
                 for sched in self._schedules.values():
-                    if not isinstance(sched, dict):
-                        continue
                     if "library_ids" not in sched or not isinstance(sched.get("library_ids"), list):
                         legacy = sched.get("library_id")
                         sched["library_ids"] = [str(legacy)] if legacy else []
@@ -211,21 +231,28 @@ class ScheduleManager:
                     )
                     self._save_schedules()
             except (OSError, json.JSONDecodeError) as e:
+                bak = self.schedules_file + ".bak"
+                bak_hint = (
+                    f" A backup is at {bak} — `mv` it to {self.schedules_file} and restart to recover."
+                    if os.path.exists(bak)
+                    else ""
+                )
                 logger.warning(
-                    "Could not read saved schedules from {} ({}: {}). "
-                    "Starting with an empty schedule list — your existing schedules will reappear "
+                    "Could not read saved schedules from {} ({}: {}).{}"
+                    " Starting with an empty schedule list — your existing schedules will reappear "
                     "if the file becomes readable; otherwise re-create them on the Schedules page.",
                     self.schedules_file,
                     type(e).__name__,
                     e,
+                    bak_hint,
                 )
 
     def _save_schedules(self) -> None:
         """Save schedule metadata to persistent storage."""
         try:
-            from ..utils import atomic_json_save
+            from ..utils import atomic_json_save_with_backup
 
-            atomic_json_save(self.schedules_file, {"schedules": self._schedules})
+            atomic_json_save_with_backup(self.schedules_file, {"schedules": self._schedules})
         except OSError as e:
             logger.error(
                 "Could not save schedules to {} ({}: {}). "

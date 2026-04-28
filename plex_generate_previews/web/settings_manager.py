@@ -91,14 +91,24 @@ class SettingsManager:
                     self._settings = json.load(f)
                 logger.debug("Loaded settings from {}", self.settings_file)
             except Exception as e:
+                # J4: when a .bak exists from a prior atomic_json_save_with_backup,
+                # surface its path in the log so users have a one-line recovery
+                # hint without having to dig through docs.
+                bak = self.settings_file.with_suffix(self.settings_file.suffix + ".bak")
+                bak_hint = (
+                    f" A backup is at {bak} (mv it to {self.settings_file} and restart to recover)."
+                    if bak.exists()
+                    else ""
+                )
                 logger.error(
-                    "Could not read settings file at {} ({}: {}). "
-                    "Falling back to defaults — your previously-saved configuration will not be loaded. "
+                    "Could not read settings file at {} ({}: {}).{}"
+                    " Falling back to defaults — your previously-saved configuration will not be loaded. "
                     "The file may be corrupted or have wrong permissions; check it is valid JSON and readable "
                     "by this process. Back up the file before any manual edits.",
                     self.settings_file,
                     type(e).__name__,
                     e,
+                    bak_hint,
                 )
                 self._settings = {}
         else:
@@ -143,9 +153,9 @@ class SettingsManager:
     def _save(self) -> None:
         """Save settings to file atomically."""
         try:
-            from ..utils import atomic_json_save
+            from ..utils import atomic_json_save_with_backup
 
-            atomic_json_save(str(self.settings_file), self._settings, permissions=0o600)
+            atomic_json_save_with_backup(str(self.settings_file), self._settings, permissions=0o600)
             logger.debug("Saved settings to {}", self.settings_file)
             try:
                 from ..config import clear_config_cache
@@ -187,9 +197,9 @@ class SettingsManager:
     def _save_setup_state(self) -> None:
         """Save setup wizard state to file atomically."""
         try:
-            from ..utils import atomic_json_save
+            from ..utils import atomic_json_save_with_backup
 
-            atomic_json_save(str(self.setup_state_file), self._setup_state)
+            atomic_json_save_with_backup(str(self.setup_state_file), self._setup_state)
             logger.debug("Saved setup state to {}", self.setup_state_file)
         except Exception as e:
             logger.error(

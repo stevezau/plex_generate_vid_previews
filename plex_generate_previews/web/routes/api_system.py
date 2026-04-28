@@ -742,10 +742,23 @@ def dismiss_notification_session(notification_id: str):
     """Dismiss a notification for the current process session only.
 
     Cleared on container restart.  No authentication required.
+
+    The schema-migration card is special: dismissing it clears the
+    persistent ``_pending_migration_notice`` flag too, so the card never
+    reappears (it was a one-shot announcement, not a recurring warning).
     """
-    from ..notifications import dismiss_session
+    from ..notifications import (
+        SCHEMA_MIGRATION_ID,
+        dismiss_schema_migration_notice,
+        dismiss_session,
+    )
 
     dismiss_session(notification_id)
+    if notification_id == SCHEMA_MIGRATION_ID:
+        try:
+            dismiss_schema_migration_notice()
+        except Exception:
+            logger.debug("Could not clear pending migration notice on dismiss", exc_info=True)
     return jsonify({"ok": True, "id": notification_id, "persisted": False})
 
 

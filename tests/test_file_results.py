@@ -169,7 +169,7 @@ class TestFileResultRetention:
 
         old_time = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         jm._jobs[job.id].completed_at = old_time
-        jm._save_jobs()
+        jm._persist_job(jm._jobs[job.id])
 
         with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30

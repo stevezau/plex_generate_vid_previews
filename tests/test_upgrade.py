@@ -234,6 +234,25 @@ class TestMigrateSchema:
         _migrate_schema(settings_manager)
         assert settings_manager.get("gpu_threads") == 4
 
+    def test_refuses_when_disk_schema_is_newer_than_binary(self, settings_manager):
+        """J3: a settings.json from a newer release must refuse to start.
+
+        Silent acceptance would drop unknown fields on the next save — the
+        exact failure mode that wiped jobs.json on the tag-drift incident.
+        """
+        from plex_generate_previews.upgrade import (
+            _CURRENT_SCHEMA_VERSION,
+            SchemaDowngradeError,
+            _migrate_schema,
+        )
+
+        settings_manager.set("_schema_version", _CURRENT_SCHEMA_VERSION + 5)
+        with pytest.raises(SchemaDowngradeError) as exc_info:
+            _migrate_schema(settings_manager)
+        msg = str(exc_info.value)
+        assert "Refusing to start" in msg
+        assert ".bak" in msg  # always points users at the recovery file
+
     def test_builds_gpu_config_from_flat_gpu_threads(self, settings_manager):
         """Flat gpu_threads is converted to per-GPU gpu_config."""
         from plex_generate_previews.upgrade import _migrate_schema

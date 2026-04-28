@@ -108,7 +108,7 @@ class TestLogRetentionEnforcement:
         # Backdate completed_at to 60 days ago
         old_time = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         jm._jobs[job.id].completed_at = old_time
-        jm._save_jobs()
+        jm._persist_job(jm._jobs[job.id])
 
         with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
@@ -550,3 +550,135 @@ class TestJobUnknownFieldTolerance:
         loaded = jm.get_job("j1")
         assert loaded is not None
         assert loaded.library_name == "Movies"
+
+
+class TestSqliteJobsBackend:
+    """Phase J8: jobs persistence moved from jobs.json to jobs.db."""
+
+    def test_creates_jobs_db_on_first_start(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        assert os.path.isfile(os.path.join(config_dir, "jobs.db"))
+        assert jm._storage is not None
+        assert jm._storage.row_count() == 0
+
+    def test_create_job_persists_one_row_not_a_full_file(self, config_dir):
+        """The backup helper rewrites whole files; SQLite writes one row.
+
+        Crucially, jobs.json should never appear after a fresh start — only
+        jobs.db. This is what makes a future schema-drift incident structurally
+        impossible.
+        """
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        jm.create_job(library_name="Movies")
+        jm.create_job(library_name="TV")
+        assert jm._storage.row_count() == 2
+        assert not os.path.exists(os.path.join(config_dir, "jobs.json"))
+
+    def test_state_survives_manager_recreation(self, config_dir):
+        """Recreate the JobManager (simulating a restart) and verify history persists."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Persistent")
+        jm.start_job(job.id)
+        jm.complete_job(job.id)
+
+        # Force the singleton reset so a "fresh" manager is rebuilt.
+        import plex_generate_previews.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm._storage.close()
+
+        jm2 = JobManager(config_dir=config_dir)
+        recovered = jm2.get_job(job.id)
+        assert recovered is not None
+        assert recovered.status == JobStatus.COMPLETED
+        assert recovered.library_name == "Persistent"
+
+    def test_legacy_json_imports_then_renames(self, config_dir):
+        """A pre-J8 jobs.json gets imported once, then renamed to .imported.bak."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        legacy = os.path.join(config_dir, "jobs.json")
+        with open(legacy, "w") as f:
+            _json.dump(
+                {
+                    "jobs": [
+                        {"id": "good-1", "library_name": "Movies", "status": "completed"},
+                        {"id": "good-2", "library_name": "TV", "status": "failed"},
+                    ]
+                },
+                f,
+            )
+
+        jm = JobManager(config_dir=config_dir)
+        assert jm.get_job("good-1") is not None
+        assert jm.get_job("good-2") is not None
+        assert jm.get_job("good-2").status == JobStatus.FAILED
+        # Legacy file is preserved, just out of the way
+        assert not os.path.exists(legacy)
+        assert os.path.isfile(legacy + ".imported.bak")
+
+    def test_legacy_import_skips_corrupt_records(self, config_dir):
+        """One bad record never blocks the others (Fix-5 pattern, J4 mirror)."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "jobs.json"), "w") as f:
+            _json.dump(
+                {
+                    "jobs": [
+                        {"id": "ok-1", "library_name": "Movies"},
+                        # priority must be int / known label — "garbage" is neither
+                        {"id": "bad", "library_name": "X", "priority": object()}
+                        if False
+                        else {"id": "ok-2", "library_name": "TV"},
+                        {"id": "bad", "progress": "not-a-dict-or-progress-shape"},
+                    ]
+                },
+                f,
+            )
+
+        jm = JobManager(config_dir=config_dir)
+        assert jm.get_job("ok-1") is not None
+        assert jm.get_job("ok-2") is not None
+        # The bad row's progress assignment ends up as a TypeError in __post_init__
+        # which gets caught + logged. Either way the good rows survive.
+
+    def test_does_not_reimport_when_db_already_populated(self, config_dir):
+        """Restoring jobs.json on top of a populated DB must not duplicate."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        jm.create_job(library_name="Direct")
+        baseline = jm._storage.row_count()
+        jm._storage.close()
+
+        # Drop a stale jobs.json next to the now-populated jobs.db.
+        with open(os.path.join(config_dir, "jobs.json"), "w") as f:
+            _json.dump({"jobs": [{"id": "stale", "library_name": "Should not appear"}]}, f)
+
+        # Reset singleton + reopen.
+        import plex_generate_previews.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm2 = JobManager(config_dir=config_dir)
+        assert jm2._storage.row_count() == baseline
+        assert jm2.get_job("stale") is None
+        # The legacy file is left in place — we did NOT consume it because the
+        # DB was already populated. This is intentional: don't silently merge.
+        assert os.path.isfile(os.path.join(config_dir, "jobs.json"))
+
+    def test_delete_removes_row(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Doomed")
+        assert jm._storage.row_count() == 1
+        jm.delete_job(job.id)
+        assert jm._storage.row_count() == 0
+        assert jm.get_job(job.id) is None

@@ -170,6 +170,44 @@ def atomic_json_save(filepath: str, data: Any, *, permissions: int = None) -> No
             pass
 
 
+def atomic_json_save_with_backup(filepath: str, data: Any, *, permissions: int = None) -> None:
+    """Atomic JSON write that keeps a single rolling ``.bak`` copy of the prior contents.
+
+    Same atomicity guarantees as ``atomic_json_save``, plus: before writing,
+    if ``filepath`` already exists, copy it to ``filepath + ".bak"``
+    (overwriting any previous backup). Backup is best-effort — failures are
+    logged but never block the primary write, since the caller's data is
+    more important than the recovery copy.
+
+    Designed for the small, hand-editable JSON files this app owns
+    (settings.json, schedules.json, webhook_history.json, setup_state.json).
+    For high-write-rate state, prefer SQLite (see web/jobs.py).
+
+    Args:
+        filepath: Destination file path.
+        data: JSON-serializable data to write.
+        permissions: Optional octal file permissions (e.g. 0o600).
+
+    Raises:
+        IOError: If the primary write or replace fails. Backup failures do not raise.
+    """
+    if os.path.exists(filepath):
+        bak_path = filepath + ".bak"
+        try:
+            shutil.copy2(filepath, bak_path)
+        except OSError as exc:
+            # Don't import loguru at module load — keep this dep-light. Log
+            # via stderr so we don't pull in the logging stack just for a
+            # backup hiccup.
+            import sys
+
+            print(
+                f"[atomic_json_save_with_backup] Could not write backup {bak_path}: {exc}",
+                file=sys.stderr,
+            )
+    atomic_json_save(filepath, data, permissions=permissions)
+
+
 def setup_working_directory(tmp_folder: str) -> str:
     """Create and set up a unique working temporary directory.
 

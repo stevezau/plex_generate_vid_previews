@@ -26,6 +26,7 @@ from loguru import logger
 
 VULKAN_SOFTWARE_FALLBACK_ID = "vulkan_software_fallback"
 TIMEZONE_MISCONFIGURED_ID = "timezone_misconfigured"
+SCHEMA_MIGRATION_ID = "schema_migration_completed"
 
 
 _SESSION_DISMISSED: set[str] = set()
@@ -112,11 +113,71 @@ def _build_timezone_misconfigured_notification() -> dict[str, Any] | None:
     }
 
 
+def _build_schema_migration_notification() -> dict[str, Any] | None:
+    """One-shot card shown after run_migrations actually moved the schema.
+
+    Reads ``_pending_migration_notice`` from settings.json — set by
+    ``upgrade._migrate_schema`` — and renders a friendly "we migrated your
+    config" card with a pointer at the .bak file. Dismissing the card
+    clears the flag so it never reappears (see ``dismiss_schema_migration_notice``).
+    """
+    from .settings_manager import get_settings_manager
+
+    notice = get_settings_manager().get("_pending_migration_notice")
+    if not isinstance(notice, dict):
+        return None
+    from_v = notice.get("from", "?")
+    to_v = notice.get("to", "?")
+    backup = notice.get("backup") or ""
+    notes = notice.get("notes") or []
+    notes_html = ""
+    if isinstance(notes, list) and notes:
+        notes_html = (
+            "<details class='mt-2'><summary class='small text-muted' style='cursor:pointer;'>"
+            "What changed</summary><ul class='small mb-0'>"
+            + "".join(f"<li>{n}</li>" for n in notes)
+            + "</ul></details>"
+        )
+    backup_html = (
+        f"<div class='small mt-2'>A backup of your previous settings is at "
+        f"<code>{backup}</code> &mdash; safe to ignore unless you need to roll back.</div>"
+        if backup
+        else ""
+    )
+    body = (
+        f"<p class='mb-0'>Your settings were migrated from schema "
+        f"<strong>v{from_v}</strong> to <strong>v{to_v}</strong>.</p>{backup_html}{notes_html}"
+    )
+    return {
+        "id": SCHEMA_MIGRATION_ID,
+        "severity": "info",
+        "title": "Settings migrated",
+        "body_html": body,
+        "dismissable": True,
+        "source": "schema_migration",
+    }
+
+
+def dismiss_schema_migration_notice() -> None:
+    """Clear the one-shot migration flag from settings.
+
+    Called by the notification dismiss endpoint when the user closes the
+    "Settings migrated" card. Survives a restart (the flag stays gone),
+    unlike session-only dismissals.
+    """
+    from .settings_manager import get_settings_manager
+
+    sm = get_settings_manager()
+    if sm.get("_pending_migration_notice") is not None:
+        sm.set("_pending_migration_notice", None)
+
+
 def _notification_sources() -> list[dict[str, Any] | None]:
     """All notification builders.  Add new sources here as they arrive."""
     return [
         _build_vulkan_software_fallback_notification(),
         _build_timezone_misconfigured_notification(),
+        _build_schema_migration_notification(),
     ]
 
 

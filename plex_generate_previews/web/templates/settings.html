@@ -16,6 +16,7 @@
                 <a class="nav-link" href="#section-processing"><i class="bi bi-speedometer2 me-2"></i>Processing Options</a>
                 <a class="nav-link" href="#section-logging"><i class="bi bi-journal-text me-2"></i>Logging</a>
                 <a class="nav-link" href="#section-auth"><i class="bi bi-key me-2"></i>Authentication</a>
+                <a class="nav-link" href="#section-backups"><i class="bi bi-clock-history me-2"></i>Backups</a>
                 <a class="nav-link" href="#section-about"><i class="bi bi-info-circle me-2"></i>About</a>
             </div>
         </nav>
@@ -270,6 +271,32 @@
                 <div class="form-text mt-2">
                     Warning: Either action logs out all current sessions.
                 </div>
+            </div>
+        </div>
+
+        <!-- Backups -->
+        <div class="card section-card" id="section-backups">
+            <div class="card-header">
+                <i class="bi bi-clock-history me-2"></i>Backups
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    Each save to a config file (settings, schedules, webhook history) leaves a single rolling
+                    <code>.bak</code> next to it. If the live file ever gets clobbered &mdash; bad release, edit-by-mistake,
+                    truncation by an old container &mdash; you can restore from the most recent backup here.
+                </p>
+                <p class="form-text mt-0 mb-3">
+                    Job history lives in <code>jobs.db</code> (SQLite) and isn't backed up via this mechanism;
+                    rolling that back is a container-revert plus optional volume-snapshot restore.
+                </p>
+                <div id="backupRestorePanel" class="mb-2">
+                    <div class="text-muted small">
+                        <span class="spinner-border spinner-border-sm me-1"></span>Checking for backups&hellip;
+                    </div>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshBackupsBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
             </div>
         </div>
 

@@ -1327,3 +1327,101 @@ def validate_paths():
         result["info"].append("No path mapping configured (media mounted at same path as Plex)")
 
     return jsonify(result)
+
+
+# ============================================================================
+# J6 — Backup recovery (settings.json / schedules.json / webhook_history.json)
+# ============================================================================
+#
+# Each writer that uses ``atomic_json_save_with_backup`` (J1+J2) leaves a
+# rolling ``.bak`` next to the live file. These endpoints surface that on the
+# Settings page so a clobbered live file is one click away from recovery.
+# Job history (jobs.db) is not included — see the panel description.
+
+_BACKUP_FILES = ("settings.json", "schedules.json", "webhook_history.json", "setup_state.json")
+
+
+def _backup_inventory() -> list[dict]:
+    """Inspect the config directory and report every (live, .bak) pair we manage."""
+    from ..settings_manager import get_settings_manager
+
+    cfg_dir = str(get_settings_manager().config_dir)
+    rows = []
+    for name in _BACKUP_FILES:
+        live = os.path.join(cfg_dir, name)
+        bak = live + ".bak"
+        live_mtime = os.path.getmtime(live) if os.path.exists(live) else None
+        bak_mtime = os.path.getmtime(bak) if os.path.exists(bak) else None
+        rows.append(
+            {
+                "name": name,
+                "live_path": live,
+                "live_mtime": live_mtime,
+                "bak_path": bak,
+                "bak_mtime": bak_mtime,
+                # The whole point of the panel: when the bak is *newer* than
+                # the live file (i.e. the live file was just clobbered), the
+                # restore button stops being a curiosity and starts being
+                # actively useful.
+                "bak_newer": (bak_mtime is not None and live_mtime is not None and bak_mtime > live_mtime),
+                "has_bak": bak_mtime is not None,
+            }
+        )
+    return rows
+
+
+@api.route("/settings/backups")
+@setup_or_auth_required
+def list_backups():
+    """List per-file backup status for the Settings > Backups panel."""
+    return jsonify({"files": _backup_inventory()})
+
+
+@api.route("/settings/backups/restore", methods=["POST"])
+@api_token_required
+def restore_backup():
+    """Atomically swap a live config file with its .bak.
+
+    Three-leg swap: live → .bak.swap, .bak → live, .bak.swap → .bak. So
+    after a successful restore the user can immediately roll *back* the
+    restore by clicking again — the swap is symmetric and lossless.
+    """
+    import shutil
+
+    data = request.get_json() or {}
+    name = (data.get("file") or "").strip()
+    if name not in _BACKUP_FILES:
+        return jsonify({"success": False, "error": f"Refusing to restore unknown file {name!r}"}), 400
+
+    from ..settings_manager import get_settings_manager
+
+    cfg_dir = str(get_settings_manager().config_dir)
+    live = os.path.join(cfg_dir, name)
+    bak = live + ".bak"
+    if not os.path.exists(bak):
+        return jsonify({"success": False, "error": f"No backup at {bak}"}), 404
+
+    swap_tmp = live + ".bak.swap"
+    try:
+        if os.path.exists(live):
+            shutil.copy2(live, swap_tmp)
+        os.replace(bak, live)
+        if os.path.exists(swap_tmp):
+            os.replace(swap_tmp, bak)
+    except OSError as exc:
+        # Best-effort cleanup of the temp file.
+        try:
+            if os.path.exists(swap_tmp):
+                os.unlink(swap_tmp)
+        except OSError:
+            pass
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    logger.info("Restored {} from {}", live, bak)
+    return jsonify(
+        {
+            "success": True,
+            "file": name,
+            "note": "Reload the app (or click Refresh) for in-memory caches to pick up the restored content.",
+        }
+    )

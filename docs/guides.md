@@ -542,6 +542,34 @@ Enable detailed logs when diagnosing persistent issues. In **Settings** → **Pr
 
 ---
 
+## Rolling back to a previous version
+
+Schema downgrades are **not automated**. If you need to revert from a release that ran a settings migration, do it manually:
+
+1. **Stop the container.**
+   ```bash
+   docker stop plex-generate-previews
+   ```
+2. **Restore the relevant `.bak` files** from your config volume. Each JSON file the app owns leaves a single rolling `.bak` next to it on every save:
+   ```bash
+   cd /your/config/dir
+   mv settings.json.bak settings.json          # required
+   mv schedules.json.bak schedules.json        # if you use Schedules
+   mv webhook_history.json.bak webhook_history.json  # optional
+   mv setup_state.json.bak setup_state.json    # optional
+   ```
+   `jobs.db` does **not** have a JSON `.bak` (jobs moved to SQLite as of this release). To recover an older job database, restore your full config-volume snapshot.
+3. **Start the older app version** that wrote those files.
+   ```bash
+   docker run ... your/image:older-tag
+   ```
+
+> **Multi-server caveat.** Multi-server installs cannot meaningfully downgrade to a single-server release without losing the second / third server's settings. The newer schema holds richer data than the older one can represent. The downgrade-refusal guard (introduced in this release) intentionally refuses to start the older binary against a newer `settings.json` — its log message names the `.bak` path so you have a one-line recovery hint.
+
+> **Why it refuses to "just work".** Silent acceptance would drop unknown fields on the next save — exactly the failure mode that wiped a user's job history during a tag-drift incident on the multi-server branch. Refusing to boot is loud and recoverable; silent truncation is quiet and final.
+
+---
+
 ## Support
 
 Open a [GitHub Issue](https://github.com/stevezau/plex_generate_vid_previews/issues).
