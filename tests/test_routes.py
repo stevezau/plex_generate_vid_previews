@@ -263,6 +263,74 @@ class TestTokenEndpoints:
         assert data["token"].startswith("****")
         assert "source" in data
 
+    def test_set_custom_token_requires_auth(self, client):
+        # No auth header → 401 regardless of env-var state.
+        resp = client.post("/api/token/set", json={"token": "newtoken123", "confirm_token": "newtoken123"})
+        assert resp.status_code == 401
+
+    def test_set_custom_token_persists_to_disk(self, client, monkeypatch):
+        # The fixture pins WEB_AUTH_TOKEN in env, which would normally make the
+        # endpoint 409. Bypass only the env-control gate so the new token lands
+        # on disk; we don't assert that the new token grants access (the env
+        # var still wins until container restart, which is the documented
+        # behaviour).
+        monkeypatch.setattr(
+            "plex_generate_previews.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "supersecret-12345", "confirm_token": "supersecret-12345"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["token"].startswith("****")
+        from plex_generate_previews.web.auth import load_auth_config
+
+        assert load_auth_config()["token"] == "supersecret-12345"
+
+    def test_set_custom_token_rejects_mismatch(self, client, monkeypatch):
+        # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
+        # env-control so the endpoint reaches its real validation paths.
+        monkeypatch.setattr(
+            "plex_generate_previews.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "abc12345", "confirm_token": "different-token"},
+        )
+        assert resp.status_code == 400
+        assert "match" in resp.get_json()["error"].lower()
+
+    def test_set_custom_token_rejects_too_short(self, client, monkeypatch):
+        # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
+        # env-control so the endpoint reaches its real validation paths.
+        monkeypatch.setattr(
+            "plex_generate_previews.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "short", "confirm_token": "short"},
+        )
+        assert resp.status_code == 400
+
+    def test_set_custom_token_rejects_when_env_controlled(self, client):
+        # The fixture already has WEB_AUTH_TOKEN set, so any /api/token/set
+        # call should 409 with the env-var message.
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "newtoken123", "confirm_token": "newtoken123"},
+        )
+        assert resp.status_code == 409
+        assert "WEB_AUTH_TOKEN" in resp.get_json()["error"]
+
 
 # ---------------------------------------------------------------------------
 # Jobs API

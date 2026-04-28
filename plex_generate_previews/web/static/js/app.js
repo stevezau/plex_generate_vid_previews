@@ -502,6 +502,7 @@ const _MEDIA_SERVER_TYPE_ICONS = {
 // Empty state nudges the user to /servers.
 async function updateMediaServersStatus() {
     const container = document.getElementById('mediaServersStatus');
+    const emptyCard = document.getElementById('noServersEmptyState');
     if (!container) return;
 
     let payload;
@@ -519,6 +520,8 @@ async function updateMediaServersStatus() {
 
     const servers = (payload && payload.servers) || [];
     if (servers.length === 0) {
+        // Show the dashboard empty-state card (Phase H1) and a small inline note.
+        if (emptyCard) emptyCard.classList.remove('d-none');
         container.innerHTML =
             '<div class="small text-muted">' +
             '<i class="bi bi-hdd-network me-2"></i>' +
@@ -527,6 +530,8 @@ async function updateMediaServersStatus() {
             '</div>';
         return;
     }
+    // Hide the empty-state once at least one server is configured.
+    if (emptyCard) emptyCard.classList.add('d-none');
 
     const rows = servers.map(s => {
         const badge = _MEDIA_SERVER_STATUS_BADGES[s.status]

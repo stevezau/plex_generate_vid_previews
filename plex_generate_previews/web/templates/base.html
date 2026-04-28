@@ -56,11 +56,6 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.settings' %}active{% endif %}" href="{{ url_for('main.settings') }}">
-                            <i class="bi bi-gear me-1"></i>Settings
-                        </a>
-                    </li>
-                    <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'main.servers_page' %}active{% endif %}" href="{{ url_for('main.servers_page') }}">
                             <i class="bi bi-hdd-stack me-1"></i>Servers
                         </a>
@@ -68,6 +63,11 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'main.automation_page' %}active{% endif %}" href="{{ url_for('main.automation_page') }}">
                             <i class="bi bi-magic me-1"></i>Automation
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.settings' %}active{% endif %}" href="{{ url_for('main.settings') }}">
+                            <i class="bi bi-gear me-1"></i>Settings
                         </a>
                     </li>
                     <li class="nav-item">

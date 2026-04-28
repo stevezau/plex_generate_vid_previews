@@ -235,12 +235,40 @@
                     The authentication token secures access to this web interface.
                 </p>
 
-                <button class="btn btn-outline-danger" onclick="regenerateToken()">
+                <h6 class="mb-2"><i class="bi bi-pencil-square me-1"></i>Set a custom token</h6>
+                <p class="form-text mt-0 mb-2">
+                    Use your own static passphrase instead of the auto-generated random token. Useful when
+                    sharing a token with scripts or password managers. Minimum 8 characters.
+                </p>
+                <div class="row g-2 mb-2">
+                    <div class="col-md-5">
+                        <label class="form-label small mb-1" for="customAuthToken">New token</label>
+                        <input type="password" class="form-control form-control-sm" id="customAuthToken" autocomplete="new-password" placeholder="At least 8 characters">
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label small mb-1" for="customAuthTokenConfirm">Confirm</label>
+                        <input type="password" class="form-control form-control-sm" id="customAuthTokenConfirm" autocomplete="new-password" placeholder="Repeat the token">
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button class="btn btn-primary btn-sm w-100" onclick="setCustomToken()">
+                            <i class="bi bi-check-lg me-1"></i>Set
+                        </button>
+                    </div>
+                </div>
+                <div id="customTokenResult" class="small mb-3"></div>
+
+                <hr class="my-3">
+
+                <h6 class="mb-2"><i class="bi bi-arrow-repeat me-1"></i>Regenerate token</h6>
+                <p class="form-text mt-0 mb-2">
+                    Generate a fresh random token. Useful when you suspect the existing token has leaked.
+                </p>
+                <button class="btn btn-outline-danger btn-sm" onclick="regenerateToken()">
                     <i class="bi bi-arrow-repeat me-1"></i>Regenerate Token
                 </button>
 
                 <div class="form-text mt-2">
-                    Warning: This will log out all current sessions.
+                    Warning: Either action logs out all current sessions.
                 </div>
             </div>
         </div>
@@ -665,6 +693,58 @@ async function regenerateToken() {
         }
     } catch (error) {
         showToast('Failed to regenerate token', 'danger');
+    }
+}
+
+// Settings → Web Authentication → "Set custom token" form (Phase H2).
+// Posts to /api/token/set, surfaces server-side errors inline (env var locked,
+// length, mismatch). On success the server already cleared the session, so
+// just send the user to /login to enter the new token.
+async function setCustomToken() {
+    const tok = document.getElementById('customAuthToken').value;
+    const conf = document.getElementById('customAuthTokenConfirm').value;
+    const result = document.getElementById('customTokenResult');
+    result.className = 'small mb-3';
+    result.textContent = '';
+
+    if (!tok) {
+        result.classList.add('text-danger');
+        result.textContent = 'Enter a token first.';
+        return;
+    }
+    if (tok.length < 8) {
+        result.classList.add('text-danger');
+        result.textContent = 'Token must be at least 8 characters.';
+        return;
+    }
+    if (tok !== conf) {
+        result.classList.add('text-danger');
+        result.textContent = 'Tokens do not match.';
+        return;
+    }
+    if (!confirm('Set the new token? This will log out every open session, including this one.')) {
+        return;
+    }
+    try {
+        const response = await fetch('/api/token/set', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
+            },
+            body: JSON.stringify({ token: tok, confirm_token: conf }),
+        });
+        const data = await response.json();
+        if (data.success) {
+            alert('Token updated. You will now be logged out — log back in with the new token.');
+            window.location.href = '/login';
+        } else {
+            result.classList.add('text-danger');
+            result.textContent = data.error || 'Failed to set token.';
+        }
+    } catch (error) {
+        result.classList.add('text-danger');
+        result.textContent = 'Network error: ' + (error && error.message ? error.message : 'unknown');
     }
 }
 

@@ -17,6 +17,26 @@
     <a href="/setup" class="alert-link ms-2">Complete the setup wizard</a>
 </div>
 
+<!-- No-servers empty state (shown when /api/system/media-servers returns []). -->
+<div id="noServersEmptyState" class="card d-none mb-4 border-primary border-opacity-25">
+    <div class="card-body d-flex align-items-start">
+        <div class="me-3 fs-1 text-primary">
+            <i class="bi bi-hdd-stack"></i>
+        </div>
+        <div class="flex-grow-1">
+            <h5 class="mb-1">No media servers configured yet</h5>
+            <p class="mb-2 text-muted">
+                Add a Plex, Emby, or Jellyfin server so this app knows where to generate
+                preview thumbnails. Each server has its own libraries, path mappings, and
+                exclude rules.
+            </p>
+            <a class="btn btn-primary btn-sm" href="/servers">
+                <i class="bi bi-plus-lg me-1"></i>Add a media server
+            </a>
+        </div>
+    </div>
+</div>
+
 <div class="row">
     <!-- System & Workers Card -->
     <div class="col-lg-4 col-md-6 mb-4">
