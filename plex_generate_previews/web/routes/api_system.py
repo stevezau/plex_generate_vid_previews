@@ -273,7 +273,11 @@ def _get_vulkan_info() -> dict:
             gpus = list(_gpu_cache["result"] or [])
     except Exception as exc:
         logger.warning(
-            f"Vulkan warning: GPU cache lookup raised {exc!r}; proceeding with an empty GPU list for the warning body."
+            "Dolby Vision warning: could not list detected GPUs while building the diagnostic message "
+            "({}: {}). The warning will still be shown but won't include your GPU model name. "
+            "This is cosmetic only — your GPU detection itself isn't affected.",
+            type(exc).__name__,
+            exc,
         )
         gpus = []
 
@@ -469,9 +473,13 @@ def _get_vulkan_info() -> dict:
             # loader still rejected the ICD. This is the "please file
             # an issue with diagnostics" path.
             logger.warning(
-                f"Vulkan warning: selected Case A4 (all diagnostic "
-                f"checks pass but loader still fell back to software) "
-                f"for {nvidia_name!r}"
+                "Dolby Vision Profile 5 warning: your NVIDIA driver looks correctly installed in this "
+                "container ({!r}, all toolkit checks pass), but the Vulkan loader still rejected it. "
+                "This is rare — please open a GitHub issue and include the diagnostic bundle from "
+                "the 'Copy diagnostic bundle' button on the Settings page (or GET /api/system/vulkan/debug). "
+                "Software fallback is in use, which can cause green overlays on DV5 thumbnails only; "
+                "all other thumbnails are unaffected.",
+                nvidia_name,
             )
             body = (
                 f"<strong>Your GPU:</strong> {nvidia_name_esc}"
@@ -711,7 +719,14 @@ def list_notifications():
     try:
         dismissed = get_settings_manager().dismissed_notifications
     except Exception as exc:
-        logger.warning(f"Notifications: settings lookup failed ({exc!r}); treating dismissal list as empty.")
+        logger.warning(
+            "Notifications: could not read the list of notifications you've previously dismissed "
+            "({}: {}). For now, every active notification will be shown — including any you'd "
+            "previously hidden. They'll hide again automatically once the settings file becomes "
+            "readable. Check the recent log lines for any settings-load errors.",
+            type(exc).__name__,
+            exc,
+        )
         dismissed = []
 
     notifications = build_active_notifications(dismissed_permanent=dismissed)
@@ -741,7 +756,14 @@ def dismiss_notification_permanent(notification_id: str):
     try:
         get_settings_manager().dismiss_notification_permanent(notification_id)
     except Exception as exc:
-        logger.error(f"Notifications: failed to persist dismissal for {notification_id}: {exc}")
+        logger.error(
+            "Notifications: could not save your dismissal of notification {!r} ({}: {}). "
+            "The notification will reappear on the next page reload. "
+            "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
+            notification_id,
+            type(exc).__name__,
+            exc,
+        )
         return (
             jsonify({"ok": False, "error": "Failed to persist dismissal"}),
             500,
@@ -764,7 +786,13 @@ def reset_dismissed_notifications():
     try:
         get_settings_manager().reset_dismissed_notifications()
     except Exception as exc:
-        logger.error(f"Notifications: failed to reset dismissed list: {exc}")
+        logger.error(
+            "Notifications: could not reset your list of dismissed notifications ({}: {}). "
+            "Your dismissals are unchanged and the previously-hidden notifications will remain hidden. "
+            "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
+            type(exc).__name__,
+            exc,
+        )
         return jsonify({"ok": False, "error": "Failed to reset"}), 500
     reset_session()
     return jsonify({"ok": True})
@@ -782,7 +810,14 @@ def rescan_gpus():
             gpus = _gpu_cache["result"] or []
         return jsonify({"gpus": gpus})
     except Exception as e:
-        logger.error(f"Failed to rescan GPUs: {e}")
+        logger.error(
+            "GPU re-scan failed ({}: {}). "
+            "The GPU list shown in Settings won't refresh — the previous list is still in effect. "
+            "Check the recent log lines above; if your GPU isn't visible to the container, "
+            "verify the device is forwarded (Docker: --runtime=nvidia or --device /dev/dri:/dev/dri).",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "GPU scan failed"}), 500
 
 
@@ -810,7 +845,14 @@ def get_system_status():
         }
         return jsonify(resp)
     except Exception as e:
-        logger.error(f"Failed to get system status: {e}")
+        logger.error(
+            "Could not load the system status panel for the dashboard ({}: {}). "
+            "GPU info and running-job summary won't load until this is resolved — "
+            "actual job processing is unaffected. "
+            "Check the recent log lines above for the underlying cause.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to retrieve system status"}), 500
 
 
@@ -861,7 +903,14 @@ def get_config():
             )
         return jsonify(resp)
     except Exception as e:
-        logger.error(f"Failed to get config: {e}")
+        logger.error(
+            "Could not load the runtime config for the API ({}: {}). "
+            "The /api/system/config endpoint will return an error until this is resolved. "
+            "Check the recent log lines above for the underlying cause; "
+            "verify settings.json is readable and valid JSON.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to retrieve configuration"}), 500
 
 
@@ -1335,7 +1384,13 @@ def get_libraries():
 
                 return jsonify({"libraries": libraries})
             except Exception as e:
-                logger.error(f"Failed to get libraries via config: {e}")
+                logger.error(
+                    "Could not load Plex libraries using the saved configuration ({}: {}). "
+                    "The library picker will show 'Plex not configured. Complete setup in Settings.' "
+                    "Verify the Plex URL and token in Settings, and that Plex is reachable from this app.",
+                    type(e).__name__,
+                    e,
+                )
                 return jsonify(
                     {
                         "error": "Plex not configured. Complete setup in Settings.",
@@ -1367,7 +1422,12 @@ def get_libraries():
 
     except req_lib.ConnectionError:
         detail = f"Could not connect to Plex at {plex_url}"
-        logger.error(f"Failed to get libraries: {detail}")
+        logger.error(
+            "Plex libraries: could not connect to Plex at {} (network unreachable / refused). "
+            "The library picker will fail until Plex is reachable. "
+            "Verify the URL is correct and that Plex is running and reachable from this app.",
+            plex_url,
+        )
         return jsonify(
             {
                 "error": f"{detail}. Check the server URL and ensure Plex is running and reachable from this host.",
@@ -1376,7 +1436,12 @@ def get_libraries():
         ), 502
     except req_lib.Timeout:
         detail = f"Connection to Plex at {plex_url} timed out"
-        logger.error(f"Failed to get libraries: {detail}")
+        logger.error(
+            "Plex libraries: connection to Plex at {} timed out. "
+            "The library picker will fail until Plex responds. "
+            "Plex may be overloaded or unreachable — try again in a minute.",
+            plex_url,
+        )
         return jsonify(
             {
                 "error": f"{detail}. The server may be overloaded or unreachable.",
@@ -1394,8 +1459,20 @@ def get_libraries():
         else:
             detail = f"Plex returned HTTP {status}"
             hint = "Check Plex server logs for details."
-        logger.error(f"Failed to get libraries: {detail} (HTTP {status})")
+        logger.error(
+            "Plex libraries: Plex returned HTTP {} — {}. The library picker will fail until this is resolved. {}",
+            status,
+            detail,
+            hint,
+        )
         return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except Exception as e:
-        logger.error(f"Failed to get libraries: {e}")
+        logger.error(
+            "Plex libraries: could not retrieve the library list ({}: {}). "
+            "The library picker will show an error until this is fixed. "
+            "Check the recent log lines for the underlying cause; "
+            "verify the Plex URL/token in Settings and that Plex is reachable.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": f"Failed to retrieve libraries: {e}", "libraries": []}), 500

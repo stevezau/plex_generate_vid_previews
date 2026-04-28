@@ -137,7 +137,14 @@ def get_jobs():
             }
         )
     except Exception as e:
-        logger.error(f"Failed to get jobs: {e}")
+        logger.error(
+            "Could not load the jobs list for the dashboard ({}: {}). "
+            "The Jobs page will show empty until this is resolved — running jobs are unaffected. "
+            "Check the recent log lines above for the underlying cause; "
+            "if it persists, please open a GitHub issue with these lines.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to retrieve jobs", "jobs": []}), 500
 
 
@@ -639,7 +646,14 @@ def get_worker_statuses():
 
         return jsonify({"workers": [w.to_dict() if hasattr(w, "to_dict") else w for w in workers]})
     except Exception as e:
-        logger.error(f"Failed to get worker statuses: {e}")
+        logger.error(
+            "Could not load the worker statuses for the dashboard ({}: {}). "
+            "The 'Workers' panel will be empty until this is resolved — "
+            "actual job processing is unaffected. "
+            "Check the recent log lines above for the underlying cause.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to retrieve worker statuses", "workers": []}), 500
 
 
@@ -846,5 +860,12 @@ def get_job_stats():
         job_manager = get_job_manager()
         return jsonify(job_manager.get_stats())
     except Exception as e:
-        logger.error(f"Failed to get job stats: {e}")
+        logger.error(
+            "Could not compute job statistics for the dashboard ({}: {}). "
+            "The stat counters will show empty until this is resolved — "
+            "running jobs are unaffected. "
+            "Check the recent log lines above for the underlying cause.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to retrieve job statistics"}), 500

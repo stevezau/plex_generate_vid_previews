@@ -243,7 +243,13 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
 
             tmp_ok, tmp_messages = _verify_tmp_folder_health(config.working_tmp_folder)
             for message in tmp_messages:
-                logger.warning(message)
+                logger.warning(
+                    "Working temp folder health check on {}: {}. "
+                    "If the message above mentions disk space or permissions, fix that and the next job "
+                    "should succeed; otherwise jobs may fail. The current job will still attempt to run.",
+                    config.working_tmp_folder,
+                    message,
+                )
                 job_manager.add_log(job_id, f"WARNING - {message}")
             if not tmp_ok:
                 raise RuntimeError(f"Working temp folder is not healthy: {config.working_tmp_folder}")
@@ -702,7 +708,15 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     logger.debug(f"Working temp folder already absent, skipping cleanup: {config.working_tmp_folder}")
 
         except Exception as e:
-            logger.error(f"Job {job_id} failed: {e}")
+            logger.error(
+                "Job {} failed with an unexpected error ({}: {}). "
+                "The job is marked failed in the Jobs page; you can re-run it from there once the cause "
+                "is fixed. Check the recent log lines above for the underlying cause; "
+                "if it's not obvious, please open a GitHub issue with these lines.",
+                job_id,
+                type(e).__name__,
+                e,
+            )
             if job_manager is None:
                 job_manager = get_job_manager()
             job_manager.add_log(job_id, f"ERROR - Job failed: {e}")

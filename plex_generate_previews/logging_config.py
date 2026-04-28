@@ -210,7 +210,14 @@ def setup_logging(
             )
             _managed_handler_ids.append(hid)
         except (PermissionError, OSError) as exc:
-            logger.warning(f"Could not create log files: {exc}")
+            logger.warning(
+                "Could not create the persistent log file at {}: {}. "
+                "Logging continues to the console and the live web log viewer, but log history won't survive restarts. "
+                "Usually a permissions problem — make sure the user running this app can write to that folder "
+                "(check PUID/PGID and the volume mount).",
+                os.path.join(log_dir, "app.log"),
+                exc,
+            )
 
         # --- 3. SocketIO broadcaster (live log viewer) ---
         broadcaster = get_log_broadcaster()

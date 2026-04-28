@@ -125,8 +125,13 @@ def record_failure(file_path: str, exit_code: int, reason: str, worker_type: str
     job_id = _failure_job_id_var.get()
     if job_id is None:
         logger.warning(
-            f"record_failure called outside failure_scope; dropping "
-            f"failure for {file_path!r} (exit={exit_code}, reason={reason!r})"
+            "Internal bookkeeping bug: failure for {!r} (exit={}, reason={!r}) was reported "
+            "outside an active job and could not be recorded in the run summary. "
+            "The file itself was processed normally; only the summary entry is missing. "
+            "Please report this if you see it — it indicates a missed `failure_scope` block.",
+            file_path,
+            exit_code,
+            reason,
         )
         return
     with _failure_lock:
@@ -201,13 +206,21 @@ def log_failure_summary() -> None:
     if not failures:
         return
 
-    logger.warning(f"{'=' * 80}")
-    logger.warning(f"FAILURE SUMMARY — {len(failures)} file(s) failed during this run")
-    logger.warning(f"{'=' * 80}")
+    logger.warning(
+        "Run finished with {} failed file(s). Each line below shows the exit code, "
+        "the short reason, and the file path — scroll up for the full FFmpeg output.",
+        len(failures),
+    )
     for i, f in enumerate(failures, 1):
         wt = f"[{f['worker_type']}] " if f["worker_type"] else ""
-        logger.warning(f"  {i:3d}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}")
-    logger.warning(f"{'=' * 80}")
+        logger.warning(
+            "  {:3d}. {}exit={} | {} | {}",
+            i,
+            wt,
+            f["exit_code"],
+            f["reason"],
+            f["file"],
+        )
 
 
 try:
@@ -216,11 +229,19 @@ try:
     # Test that native library is available
     MediaInfo.can_parse()
 except ImportError:
-    logger.error("pymediainfo Python package not found. Please install: pip install pymediainfo")
+    logger.error(
+        "Required package 'pymediainfo' is missing — the app cannot read video metadata "
+        "and will exit. If you're using the official Docker image this indicates a broken "
+        "build (please report as a bug). For local development, run: pip install pymediainfo"
+    )
     sys.exit(1)
 except OSError as e:
     if "libmediainfo" in str(e).lower():
-        logger.error("MediaInfo native library not found. Please install MediaInfo:")
+        logger.error(
+            "The native MediaInfo library is missing — the app cannot read video metadata "
+            "and will exit. If you're using the official Docker image this indicates a broken "
+            "build (please report as a bug). For local installs, install MediaInfo via:"
+        )
         if sys.platform == "darwin":
             logger.error("  macOS: brew install media-info")
         elif sys.platform.startswith("linux"):
@@ -230,8 +251,13 @@ except OSError as e:
             logger.error("  See: https://mediaarea.net/en/MediaInfo/Download")
         sys.exit(1)
 except Exception as e:
-    logger.warning(f"Could not validate MediaInfo library: {e}")
-    logger.warning("Proceeding anyway, but errors may occur during processing")
+    logger.warning(
+        "Could not verify the MediaInfo library on startup ({}: {}). "
+        "Continuing anyway — preview generation may still work, but if processing fails "
+        "with metadata-related errors, reinstalling MediaInfo usually fixes it.",
+        type(e).__name__,
+        e,
+    )
 
 from ..config import Config, is_path_excluded, plex_path_to_local  # noqa: E402
 from ..plex_client import retry_plex_call  # noqa: E402
@@ -764,12 +790,13 @@ def generate_images(
                 vk_is_software = vulkan_info.is_software
                 if vk_is_software or vk_device is None:
                     logger.warning(
-                        f"Dolby Vision Profile 5 detected for {video_file} "
-                        f"but Vulkan is unavailable or software only "
-                        f"(device={vk_device!r}); skipping libplacebo and "
-                        "using the DV-safe filter chain (dim but colour-"
-                        "correct thumbnails).  See the dashboard notification "
-                        "centre for the specific remediation steps."
+                        "Dolby Vision Profile 5 file {} needs a real GPU with Vulkan to produce bright, "
+                        "correctly-coloured thumbnails. No working Vulkan device was found "
+                        "(detected device: {!r}), so this file will get colour-correct but visibly dim "
+                        "thumbnails instead. The file is still processed — only the thumbnail brightness "
+                        "is reduced. See the dashboard notification centre for steps to enable Vulkan.",
+                        video_file,
+                        vk_device,
                     )
                     dv5_software_fallback = True
                 else:
@@ -893,7 +920,11 @@ def generate_images(
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_retry = True
-        logger.warning(f"No thumbnails generated from {video_file} with -skip_frame; retrying without skip-frame")
+        logger.warning(
+            "Fast keyframe-only decode produced no thumbnails for {} — retrying with full-frame "
+            "decode (slower but more compatible). No action needed; this is automatic.",
+            video_file,
+        )
         # Clean up any partial files from first attempt (no need to rename if we're retrying)
         _clean_output_images(output_folder)
         retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False, init_vulkan=use_libplacebo)
@@ -933,9 +964,13 @@ def generate_images(
         else:
             reason = "VAAPI→Vulkan libplacebo interop upstream bug (Mesa ANV / amdvlk on some driver+GPU combos)"
         logger.warning(
-            f"Hardware {hw_name} DV5 path unavailable for {video_file} "
-            f"({reason}); falling back to software decode + libplacebo "
-            f"(correct DV tonemapping, ~5-10× typical)"
+            "Hardware-accelerated Dolby Vision processing ({}) failed for {} — {}. "
+            "Falling back to CPU + software tone mapping. Output will be correct but slower "
+            "(typically 5-10x realtime instead of 15-25x). No action needed unless this happens "
+            "for every Dolby Vision file, in which case it's worth investigating GPU drivers.",
+            hw_name,
+            video_file,
+            reason,
         )
         stderr_excerpt = "\n".join(stderr_lines_all[-5:]) if stderr_lines_all else "No stderr output"
         logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
@@ -976,7 +1011,13 @@ def generate_images(
             stderr_excerpt = (
                 "\n".join(stderr_excerpt_source[-5:]) if len(stderr_excerpt_source) > 0 else "No stderr output"
             )
-            logger.warning(f"{diag_label} detected for {video_file}; retrying with DV-safe filter chain (fps+scale)")
+            logger.warning(
+                "{} for {} — retrying with a simpler filter chain that avoids tone mapping. "
+                "Thumbnails will be colour-correct but may look dimmer than the source. "
+                "No action needed; this is automatic.",
+                diag_label,
+                video_file,
+            )
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
 
             # Clean up any partial files before retrying
@@ -1001,10 +1042,12 @@ def generate_images(
                 else:
                     # Already on CPU: no further fallback available without remuxing/bitstream filtering.
                     logger.error(
-                        f"{diag_label} detected for {video_file}; unable to generate thumbnails on CPU even with DV-safe filter"
-                    )
-                    logger.info(
-                        "If this persists, try upgrading FFmpeg or re-encoding/remuxing the file to remove Dolby Vision metadata."
+                        "{} for {} — both hardware and CPU paths failed even with the simpler filter chain. "
+                        "This file will be skipped. Try upgrading FFmpeg to a newer build, or remux the file "
+                        "with `ffmpeg -i input -map 0 -c copy -bsf:v hevc_metadata=remove_dovi=1 output` to "
+                        "strip Dolby Vision metadata. Other files in the queue continue processing.",
+                        diag_label,
+                        video_file,
                     )
 
     # Check for codec errors or crash signals after every prior retry tier
@@ -1029,7 +1072,12 @@ def generate_images(
             # Log relevant stderr excerpt for debugging
             stderr_excerpt = "\n".join(stderr_lines[-5:]) if len(stderr_lines) > 0 else "No stderr output"
             logger.warning(
-                f"GPU processing failed with {fallback_reason} (exit code {rc}) for {video_file}; will hand off to CPU worker"
+                "GPU processing failed for {} (reason: {}, exit code {}) — automatically handing off "
+                "to a CPU worker. No action needed unless this happens to most files, which usually "
+                "indicates a GPU driver problem worth checking under Settings → GPU.",
+                video_file,
+                fallback_reason,
+                rc,
             )
             logger.debug(f"FFmpeg stderr excerpt (last 5 lines): {stderr_excerpt}")
             # Clean up any partial files from GPU attempts
@@ -1040,7 +1088,12 @@ def generate_images(
     if rc != 0 and image_count == 0 and gpu is None:
         if _detect_codec_error(rc, stderr_lines):
             logger.warning(
-                f"Processing failed with codec error (exit code {rc}) for {video_file}; file may be corrupted or unsupported"
+                "Could not process {} on CPU either (exit code {}). The file is most likely corrupt "
+                "or in a codec your FFmpeg build doesn't support. Try playing it in a media player to "
+                "confirm; if it plays fine, your FFmpeg may need an upgrade. This file is skipped; "
+                "the rest of the queue keeps processing.",
+                video_file,
+                rc,
             )
 
     # Rename images only after all retries and error checks are complete
@@ -1071,11 +1124,13 @@ def generate_images(
             else (" after sw libplacebo retry" if did_sw_libplacebo_retry else (" after retry" if did_retry else ""))
         )
         logger.error(
-            f"FFmpeg produced no preview frames for {video_file}{fallback_suffix}. "
-            f"Common causes: video file is corrupted, codec is unsupported by your FFmpeg build, "
-            f"or hardware acceleration failed silently. Try playing the file in a media player to "
-            f"confirm it's intact, then enable Debug logging (Settings → Logging) to see FFmpeg's "
-            f"detailed output."
+            "FFmpeg produced no preview frames for {}{}. "
+            "Common causes: video file is corrupted, codec is unsupported by your FFmpeg build, "
+            "or hardware acceleration failed silently. Try playing the file in a media player to "
+            "confirm it's intact, then enable Debug logging (Settings → Logging) to see FFmpeg's "
+            "detailed output. The rest of the queue continues; only this file is skipped.",
+            video_file,
+            fallback_suffix,
         )
         error_summary = _extract_ffmpeg_error_summary(stderr_lines_all)
         worker_ctx = "GPU" if gpu is not None else "CPU"
@@ -1134,17 +1189,24 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
             os.makedirs(indexes_path)
         except PermissionError as e:
             logger.error(
-                f"Cannot create Plex preview folder at {indexes_path} (needed for "
-                f"{media_file}): permission denied. The user running this tool needs WRITE access "
-                f"to {os.path.dirname(indexes_path)}. In Docker, check your Plex config volume "
-                f"is mounted read-write and PUID/PGID match the file owner. "
-                f"Original error: {e}"
+                "Cannot create Plex preview folder at {} (needed for {}): permission denied. "
+                "The user running this tool needs WRITE access to {}. In Docker, check your "
+                "Plex config volume is mounted read-write and PUID/PGID match the file owner. "
+                "This file is skipped; other files keep processing. Original error: {}",
+                indexes_path,
+                media_file,
+                os.path.dirname(indexes_path),
+                e,
             )
             return False
         except OSError as e:
             logger.error(
-                f"Cannot create Plex preview folder at {indexes_path} (needed for "
-                f"{media_file}): {e}. Verify the parent path exists and the disk isn't full."
+                "Cannot create Plex preview folder at {} (needed for {}): {}. "
+                "Verify the parent path exists and the disk isn't full. This file is skipped; "
+                "other files keep processing.",
+                indexes_path,
+                media_file,
+                e,
             )
             return False
 
@@ -1153,16 +1215,24 @@ def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bo
             os.makedirs(tmp_path)
         except PermissionError as e:
             logger.error(
-                f"Cannot create temporary working folder at {tmp_path} (needed for {media_file}): "
-                f"permission denied. Verify {os.path.dirname(tmp_path)} is writable, or change "
-                f"the working folder under Settings → Advanced. Original error: {e}"
+                "Cannot create temporary working folder at {} (needed for {}): permission denied. "
+                "Verify {} is writable, or change the working folder under Settings → Advanced. "
+                "This file is skipped; other files keep processing. Original error: {}",
+                tmp_path,
+                media_file,
+                os.path.dirname(tmp_path),
+                e,
             )
             return False
         except OSError as e:
             logger.error(
-                f"Cannot create temporary working folder at {tmp_path} (needed for {media_file}): "
-                f"{e}. Most likely the disk is full or the path doesn't exist. Free up space or "
-                f"change the working folder under Settings → Advanced."
+                "Cannot create temporary working folder at {} (needed for {}): {}. "
+                "Most likely the disk is full or the path doesn't exist. Free up space or "
+                "change the working folder under Settings → Advanced. This file is skipped; "
+                "other files keep processing.",
+                tmp_path,
+                media_file,
+                e,
             )
             return False
 
@@ -1185,9 +1255,11 @@ def _cleanup_temp_directory(tmp_path: str) -> None:
             logger.debug(f"Temp directory already absent, skipping cleanup: {tmp_path}")
     except Exception as cleanup_error:
         logger.warning(
-            f"Could not delete temporary working folder {tmp_path}: {cleanup_error}. "
-            f"This won't break preview generation, but the folder will accumulate over time — "
-            f"watch your disk space and manually delete it if it grows large."
+            "Could not delete temporary working folder {}: {}. "
+            "This won't break preview generation, but the folder will accumulate over time — "
+            "watch your disk space and manually delete it if it grows large.",
+            tmp_path,
+            cleanup_error,
         )
 
 
@@ -1238,7 +1310,12 @@ def _generate_and_save_bif(
         raise
     except Exception as e:
         logger.error(
-            f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating images"
+            "Could not extract preview frames from {} ({}: {}). "
+            "This file will be skipped; the rest of the queue keeps processing. "
+            "Enable Debug logging under Settings → Logging to see FFmpeg's detailed output.",
+            media_file,
+            type(e).__name__,
+            e,
         )
         _cleanup_temp_directory(tmp_path)
         raise RuntimeError(f"Failed to generate images: {e}") from e
@@ -1256,11 +1333,12 @@ def _generate_and_save_bif(
 
     if image_count == 0:
         logger.error(
-            f"No preview frames extracted from {media_file} — cannot create the preview file. "
-            f"FFmpeg ran but produced zero JPGs. Most likely the file is corrupted, the codec "
-            f"isn't supported by your FFmpeg build, or hardware acceleration silently failed. "
-            f"Try playing the file in a media player to confirm it's intact, or enable Debug "
-            f"logging to see FFmpeg's detailed output."
+            "No preview frames extracted from {} — cannot create the preview file. "
+            "FFmpeg ran but produced zero JPGs. Most likely the file is corrupted, the codec "
+            "isn't supported by your FFmpeg build, or hardware acceleration silently failed. "
+            "Try playing the file in a media player to confirm it's intact, or enable Debug "
+            "logging to see FFmpeg's detailed output. This file is skipped; the queue continues.",
+            media_file,
         )
         _cleanup_temp_directory(tmp_path)
         detail = f" ({ffmpeg_error})" if ffmpeg_error else ""
@@ -1276,16 +1354,32 @@ def _generate_and_save_bif(
                 os.remove(index_bif)
         except Exception as remove_error:
             logger.warning(
-                f"Could not delete the partially-written preview file at {index_bif}: {remove_error}. "
-                f"You may need to delete this file manually so the next run can recreate it cleanly."
+                "Could not delete the partially-written preview file at {}: {}. "
+                "You may need to delete this file manually so the next run can recreate it cleanly. "
+                "The rest of the queue continues processing.",
+                index_bif,
+                remove_error,
             )
-        logger.error(f"Permission denied generating BIF file {index_bif} for {media_file}: {e}")
-        logger.info(f"Please check write permissions for: {os.path.dirname(index_bif)}")
+        logger.error(
+            "Cannot write the Plex preview file at {} (for {}): permission denied. "
+            "The user running this tool needs WRITE access to {}. In Docker, check your "
+            "Plex config volume is mounted read-write and PUID/PGID match the file owner. "
+            "This file is skipped; the rest of the queue continues. Original error: {}",
+            index_bif,
+            media_file,
+            os.path.dirname(index_bif),
+            e,
+        )
         raise
     except Exception as e:
         # PermissionError is already handled above, so this catches other exceptions
         logger.error(
-            f"Error generating images for {media_file}. `{type(e).__name__}:{str(e)}` error when generating bif"
+            "Could not pack the preview file (BIF) for {} ({}: {}). "
+            "Most likely the working folder ran out of space or the destination became unwritable. "
+            "This file is skipped; the queue continues. Enable Debug logging for full traceback.",
+            media_file,
+            type(e).__name__,
+            e,
         )
         # Remove BIF if generation failed
         try:
@@ -1293,8 +1387,11 @@ def _generate_and_save_bif(
                 os.remove(index_bif)
         except Exception as remove_error:
             logger.warning(
-                f"Could not delete the partially-written preview file at {index_bif}: {remove_error}. "
-                f"You may need to delete this file manually so the next run can recreate it cleanly."
+                "Could not delete the partially-written preview file at {}: {}. "
+                "You may need to delete this file manually so the next run can recreate it cleanly. "
+                "The rest of the queue continues processing.",
+                index_bif,
+                remove_error,
             )
         raise
 
@@ -1317,16 +1414,28 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     try:
         images = [img for img in os.listdir(images_path) if os.path.splitext(img)[1] == ".jpg"]
     except PermissionError as e:
-        logger.error(f"Permission denied reading images directory {images_path}: {e}")
-        logger.info(f"Please check read permissions for: {images_path}")
+        logger.error(
+            "Cannot read the temporary thumbnails folder at {}: permission denied ({}). "
+            "Verify the working folder (Settings → Advanced) is readable by the user running this "
+            "tool. In Docker, check PUID/PGID. This file is skipped; the queue continues.",
+            images_path,
+            e,
+        )
         raise
     images.sort()
 
     try:
         f = open(bif_filename, "wb")
     except PermissionError as e:
-        logger.error(f"Permission denied writing BIF file {bif_filename}: {e}")
-        logger.info(f"Please check write permissions for: {os.path.dirname(bif_filename)}")
+        logger.error(
+            "Cannot write the preview file at {}: permission denied ({}). "
+            "The user running this tool needs WRITE access to {}. In Docker, check your "
+            "Plex config volume is mounted read-write and PUID/PGID match the file owner. "
+            "This file is skipped; the queue continues.",
+            bif_filename,
+            e,
+            os.path.dirname(bif_filename),
+        )
         raise
 
     try:
@@ -1346,8 +1455,14 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
                 try:
                     statinfo = os.stat(os.path.join(images_path, image))
                 except PermissionError as e:
-                    logger.error(f"Permission denied reading image file {os.path.join(images_path, image)}: {e}")
-                    logger.info(f"Please check read permissions for: {images_path}")
+                    logger.error(
+                        "Cannot read a thumbnail file at {}: permission denied ({}). "
+                        "Verify {} is readable by the user running this tool (in Docker, check PUID/PGID). "
+                        "This file is skipped; the queue continues.",
+                        os.path.join(images_path, image),
+                        e,
+                        images_path,
+                    )
                     raise
                 f.write(struct.pack("<I", timestamp))
                 f.write(struct.pack("<I", image_index))
@@ -1363,8 +1478,14 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
                     with open(os.path.join(images_path, image), "rb") as img_file:
                         data = img_file.read()
                 except PermissionError as e:
-                    logger.error(f"Permission denied reading image file {os.path.join(images_path, image)}: {e}")
-                    logger.info(f"Please check read permissions for: {images_path}")
+                    logger.error(
+                        "Cannot read a thumbnail file at {}: permission denied ({}). "
+                        "Verify {} is readable by the user running this tool (in Docker, check PUID/PGID). "
+                        "This file is skipped; the queue continues.",
+                        os.path.join(images_path, image),
+                        e,
+                        images_path,
+                    )
                     raise
                 f.write(data)
     except PermissionError:
@@ -1450,7 +1571,9 @@ def _fan_out_secondary_publishers(
             cache.put(canonical_path, frame_dir=cache_slot, frame_count=frame_count)
         except Exception as exc:
             logger.warning(
-                "Secondary fan-out: failed to populate frame cache for {}: {}",
+                "Could not share extracted frames with secondary servers for {}: {}. "
+                "Plex previews succeeded; Emby/Jellyfin previews will be regenerated from scratch on "
+                "their next trigger (slower, but produces the same result).",
                 canonical_path,
                 exc,
             )
@@ -1482,7 +1605,10 @@ def _fan_out_secondary_publishers(
         # NEVER raise out of the fan-out: the legacy Plex output is
         # already a success and we don't want to flip the result.
         logger.warning(
-            "Secondary fan-out raised for {}: {}",
+            "Could not publish previews to your secondary media servers (Emby/Jellyfin) for {}: {}. "
+            "Plex previews already succeeded — only the secondary servers were affected. "
+            "They will retry on the next webhook or scheduled scan. If this happens repeatedly, "
+            "check the secondary server's status and credentials in Settings → Media Servers.",
             canonical_path,
             exc,
         )
@@ -1536,10 +1662,14 @@ def process_item(
         request_url = getattr(getattr(e, "request", None), "url", None)
         url_hint = f" (request URL: {request_url})" if request_url else ""
         logger.error(
-            f"Could not fetch metadata for Plex item {item_key} after several retries "
-            f"({type(e).__name__}: {e}){url_hint}. "
-            f"This usually means Plex is offline, restarting, or the token in Settings has "
-            f"expired. Confirm Plex is running and re-test the connection in Settings → Plex."
+            "Could not fetch metadata for Plex item {} after several retries ({}: {}){}. "
+            "This usually means Plex is offline, restarting, or the token in Settings has "
+            "expired. Confirm Plex is running and re-test the connection in Settings → Plex. "
+            "This item is skipped; the queue continues.",
+            item_key,
+            type(e).__name__,
+            e,
+            url_hint,
         )
         _notify_file_result(
             f"item:{item_key}",
@@ -1580,7 +1710,13 @@ def process_item(
             if not bundle_hash or len(bundle_hash) < 2:
                 hash_value = f'"{bundle_hash}"' if bundle_hash else "(empty)"
                 logger.warning(
-                    f"Skipping {media_file} due to invalid bundle hash from Plex: {hash_value} (length: {len(bundle_hash) if bundle_hash else 0}, required: >= 2)"
+                    "Skipping {} — Plex returned an invalid internal ID for this file ({}, length {}). "
+                    "This usually means Plex hasn't finished scanning the file yet. Wait for Plex's "
+                    "library scan to complete and re-trigger, or let the next scheduled scan pick it up. "
+                    "Other files in the queue continue.",
+                    media_file,
+                    hash_value,
+                    len(bundle_hash) if bundle_hash else 0,
                 )
                 _update_best(ProcessingResult.SKIPPED_INVALID_HASH)
                 _notify_file_result(
@@ -1592,7 +1728,12 @@ def process_item(
                 continue
 
             if not os.path.isfile(media_file):
-                logger.warning(f"Skipping as file not found {media_file}")
+                logger.warning(
+                    "Skipping {} — Plex says this file should exist on disk, but it doesn't. "
+                    "This usually means the file was moved/deleted, or the path mapping under "
+                    "Settings → Plex doesn't match your actual mount. Other files keep processing.",
+                    media_file,
+                )
                 _update_best(ProcessingResult.SKIPPED_FILE_NOT_FOUND)
                 _notify_file_result(
                     media_file,
@@ -1606,11 +1747,14 @@ def process_item(
                 indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
             except Exception as e:
                 logger.error(
-                    f"Could not set up the Plex preview folder for {media_file}: "
-                    f"{type(e).__name__}: {e}. "
-                    f"This usually means the Plex config folder in Settings doesn't match the "
-                    f"actual mount path, or the folder isn't writable. Check Settings → Plex "
-                    f"and verify the path exists and is read-write inside this container."
+                    "Could not set up the Plex preview folder for {} ({}: {}). "
+                    "This usually means the Plex config folder in Settings doesn't match the "
+                    "actual mount path, or the folder isn't writable. Check Settings → Plex "
+                    "and verify the path exists and is read-write inside this container. "
+                    "This file is skipped; the queue continues.",
+                    media_file,
+                    type(e).__name__,
+                    e,
                 )
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
@@ -1626,7 +1770,15 @@ def process_item(
                 try:
                     os.remove(index_bif)
                 except Exception as e:
-                    logger.error(f"Error {type(e).__name__} deleting index file {media_file}: {str(e)}")
+                    logger.error(
+                        "Could not delete the existing preview file before regenerating for {} ({}: {}). "
+                        "Most likely a permission problem on your Plex config folder — check that PUID/PGID "
+                        "match the file owner and the volume is mounted read-write. "
+                        "This file is skipped; the queue continues.",
+                        media_file,
+                        type(e).__name__,
+                        e,
+                    )
                     _update_best(ProcessingResult.FAILED)
                     _notify_file_result(
                         media_file,
@@ -1701,9 +1853,12 @@ def process_item(
                 raise
             except RuntimeError as e:
                 logger.error(
-                    f"Preview generation failed for {media_file}: {e}. "
-                    f"This file will be skipped. The cause is in the message above — usually "
-                    f"a codec issue, corrupted file, or write-permission problem."
+                    "Preview generation failed for {}: {}. "
+                    "This file will be skipped. The cause is in the message above — usually "
+                    "a codec issue, corrupted file, or write-permission problem. "
+                    "Other files in the queue continue processing.",
+                    media_file,
+                    e,
                 )
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(
@@ -1715,10 +1870,13 @@ def process_item(
                 continue
             except Exception as e:
                 logger.error(
-                    f"Unexpected error generating previews for {media_file}: "
-                    f"{type(e).__name__}: {e}. "
-                    f"This file will be skipped. If you keep seeing this, enable Debug logging "
-                    f"under Settings → Logging and report the full traceback as an issue."
+                    "Unexpected error generating previews for {} ({}: {}). "
+                    "This file will be skipped. If you keep seeing this, enable Debug logging "
+                    "under Settings → Logging and report the full traceback as a bug. "
+                    "Other files in the queue continue processing.",
+                    media_file,
+                    type(e).__name__,
+                    e,
                 )
                 _update_best(ProcessingResult.FAILED)
                 _notify_file_result(

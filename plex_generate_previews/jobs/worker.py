@@ -370,7 +370,15 @@ class Worker:
                     else:
                         self.fallback_active = True
                         self.fallback_reason = reason
-                        ctx_logger.warning(f"{self.display_name} switching to CPU for {display_name}: {reason}")
+                        ctx_logger.warning(
+                            "{} couldn't process {} on the GPU and is retrying on CPU. Reason: {}. "
+                            "No action needed — the file will still get a preview, it'll just be slower. "
+                            "If this happens for many files, your GPU may not support the codec; consider raising "
+                            "CPU worker count under Settings → CPU.",
+                            self.display_name,
+                            display_name,
+                            reason,
+                        )
                         try:
                             result = process_item(
                                 item_key,
@@ -396,17 +404,37 @@ class Worker:
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
                         except Exception as retry_exc:
-                            ctx_logger.error(f"{self.display_name} CPU fallback failed for {display_name}: {retry_exc}")
+                            ctx_logger.error(
+                                "{} also couldn't process {} on CPU after the GPU attempt failed: {}. "
+                                "Marking this file as failed; other items keep processing. "
+                                "Check Settings → Failed items for details and re-queue if you want to try again later.",
+                                self.display_name,
+                                display_name,
+                                retry_exc,
+                            )
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
                 else:
                     # CPU worker received codec error - this is unexpected, treat as failure
-                    ctx_logger.error(f"{self.display_name} encountered codec error for {display_name}: {e}")
-                    ctx_logger.error("Codec errors should not occur on CPU workers - file may be corrupted")
+                    ctx_logger.error(
+                        "CPU worker {} couldn't decode {}: {}. The file may be corrupt or use a codec FFmpeg "
+                        "doesn't support. Marking this file as failed; other items keep processing. "
+                        "Try playing the file in Plex to confirm it works there; if it doesn't, the file itself is the problem.",
+                        self.display_name,
+                        display_name,
+                        e,
+                    )
                     self.outcome_counts["failed"] += 1
                     self.failed += 1
             except Exception as e:
-                ctx_logger.error(f"{self.display_name} failed to process {display_name}: {e}")
+                ctx_logger.error(
+                    "{} failed to generate a preview for {}: {}. "
+                    "Marking this file as failed; other items keep processing. "
+                    "Enable Debug logging under Settings → Logging and re-run for the full traceback if you want to dig in.",
+                    self.display_name,
+                    display_name,
+                    e,
+                )
                 self.outcome_counts["failed"] += 1
                 self.failed += 1
             finally:

@@ -125,7 +125,10 @@ def _adapter_for_server(server_config: ServerConfig) -> OutputAdapter | None:
         plex_config_folder = str(output.get("plex_config_folder") or "")
         if not plex_config_folder:
             logger.warning(
-                "Plex server {!r} has no plex_config_folder configured; cannot publish",
+                "Cannot publish Plex previews for server {!r}: its Plex config folder is not set. "
+                "Open Settings → Media Servers, edit this server, and set the Plex config folder "
+                "(the directory containing 'Media/localhost/...'). Other configured servers continue "
+                "working normally.",
                 server_config.name,
             )
             return None
@@ -139,9 +142,11 @@ def _adapter_for_server(server_config: ServerConfig) -> OutputAdapter | None:
         return JellyfinTrickplayAdapter(width=width, frame_interval=frame_interval)
 
     logger.warning(
-        "Unknown output adapter {!r} for server {!r}; skipping",
-        adapter_name,
+        "Server {!r} is configured for an unknown preview format ({!r}); skipping it. "
+        "Edit this server in Settings → Media Servers and choose a supported format "
+        "(plex_bundle, emby_sidecar, jellyfin_trickplay). Other servers continue working.",
         server_config.name,
+        adapter_name,
     )
     return None
 
@@ -390,7 +395,14 @@ def process_canonical_path(
     )
 
     if not os.path.isfile(canonical_path):
-        logger.warning("Source file missing on disk: {}", canonical_path)
+        logger.warning(
+            "Source video file is missing on disk: {}. "
+            "This often happens when a webhook fires before the file finishes copying, or "
+            "when the file was moved/deleted between scan and dispatch. "
+            "If the file is supposed to be there, check your media mount and the path mapping "
+            "under Settings → Media Servers. The rest of the queue is unaffected.",
+            canonical_path,
+        )
         return MultiServerResult(
             canonical_path=canonical_path,
             status=MultiServerStatus.FAILED,
@@ -543,13 +555,23 @@ def process_canonical_path(
                 )
             except CodecNotSupportedError:
                 # Re-raised so callers can fall back to CPU; not a publisher failure.
-                logger.warning(
-                    "FFmpeg codec not supported for {} (caller will retry on CPU)",
+                logger.info(
+                    "Hardware acceleration could not handle the codec for {} — retrying on CPU automatically. "
+                    "No action needed; this is a normal fallback for codecs your GPU doesn't support.",
                     canonical_path,
                 )
                 raise
             except Exception as exc:
-                logger.exception("Frame generation failed for {}: {}", canonical_path, exc)
+                logger.exception(
+                    "Could not extract preview frames from {} ({}: {}). "
+                    "This file will be marked failed and skipped — the rest of the queue keeps running. "
+                    "Common causes: corrupt video file, unsupported codec, or a crash inside FFmpeg's "
+                    "hardware acceleration. The traceback above shows the exact failure; if it keeps "
+                    "happening on the same file try toggling hardware acceleration off in Settings → GPU.",
+                    canonical_path,
+                    type(exc).__name__,
+                    exc,
+                )
                 return MultiServerResult(
                     canonical_path=canonical_path,
                     status=MultiServerStatus.FAILED,
@@ -570,7 +592,10 @@ def process_canonical_path(
 
         if frame_count == 0:
             logger.warning(
-                "FFmpeg produced 0 frames for {} — possible: corrupt source, unsupported codec, or zero-length stream",
+                "FFmpeg ran but produced no preview frames for {}. "
+                "Most likely the file is corrupt, the codec is not supported by your FFmpeg build, "
+                "or the video stream is zero-length. Try playing the file in a media player to "
+                "confirm it's intact. Other files in the queue keep processing; this one is skipped.",
                 canonical_path,
             )
             return MultiServerResult(

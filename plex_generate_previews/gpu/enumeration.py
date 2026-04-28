@@ -357,10 +357,13 @@ def _get_gpu_vendor_from_driver(driver_name: str) -> str:
         # This helps detect NVIDIA GPUs in WSL2 where lspci doesn't work
         if vendor == "UNKNOWN" and _is_wsl2():
             logger.debug("WSL2 detected and lspci failed, attempting nvidia-smi detection")
-            logger.warning("⚠️  WSL2 environment detected - GPU vendor detection via lspci is unreliable")
-            logger.warning("⚠️  NVIDIA GPUs are unofficially supported in WSL2 (via CUDA passthrough)")
-            logger.warning("⚠️  Other GPU vendors (AMD, Intel) are NOT supported in WSL2")
-            logger.warning("⚠️  For non-NVIDIA GPUs in WSL2, please use CPU-only processing (disable GPUs in Settings)")
+            logger.warning(
+                "WSL2 detected — GPU vendor detection via lspci is unreliable in WSL2. "
+                "Only NVIDIA GPUs are supported in WSL2 (via CUDA passthrough), and that support is unofficial. "
+                "AMD and Intel GPUs are NOT usable under WSL2. "
+                "If you have an AMD or Intel GPU, disable GPU acceleration in Settings → GPU "
+                "(CPU-only processing will still work, just slower)."
+            )
             nvidia_vendor = _detect_nvidia_via_nvidia_smi()
             if nvidia_vendor == "NVIDIA":
                 vendor = "NVIDIA"

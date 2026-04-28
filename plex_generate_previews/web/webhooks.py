@@ -136,7 +136,10 @@ def _authenticate_webhook(f):
 
         if not candidates:
             logger.warning(
-                "Webhook: authentication failed (no token provided) — Remote={}, Path={}, Method={}",
+                "Webhook from {} rejected: no authentication token in the request (URL={}, method={}). "
+                "Add the webhook secret as either an Authorization Bearer header, an X-Auth-Token header, "
+                "or a ?token= query parameter. Plex's webhook UI doesn't allow headers, so use the "
+                "?token= form for Plex.",
                 request.remote_addr,
                 request.path,
                 request.method,
@@ -153,10 +156,13 @@ def _authenticate_webhook(f):
                 return f(*args, **kwargs)
 
         logger.warning(
-            "Webhook: authentication failed (invalid token via {}) — Remote={}, Path={}",
-            candidates[0][0],
+            "Webhook from {} rejected: token did not match (URL={}, supplied via {}). "
+            "Other webhooks with the correct secret are still being accepted. "
+            "Check the webhook secret in Settings → Webhooks matches what your sender is sending; "
+            "regenerate the secret on this page if you need to rotate it.",
             request.remote_addr,
             request.path,
+            candidates[0][0],
         )
         return jsonify({"error": "Authentication required"}), 401
 
@@ -379,7 +385,15 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
     safe_title = str(title or "Unknown")
     normalized_input_path = str(file_path or "").strip()
     if not normalized_input_path:
-        logger.warning(f"Webhook: {safe_source} Download for '{safe_title}' ignored (missing file path)")
+        logger.warning(
+            "Webhook from {}: ignored {!r} — the payload didn't carry a file path. "
+            "Other webhooks from this source are still being processed. "
+            "If this keeps happening, check the sending tool's webhook template includes the file path "
+            "(Radarr: 'movieFile.path' or 'movie.folderPath'+'movieFile.relativePath'; "
+            "Sonarr: 'episodeFile.path' or 'series.path'+'episodeFile.relativePath').",
+            safe_source,
+            safe_title,
+        )
         return False
 
     settings = get_settings_manager()
@@ -465,7 +479,13 @@ def _execute_webhook_job(debounce_key: str) -> None:
     try:
         webhook_paths = sorted(path for path in batch.get("file_paths", set()) if isinstance(path, str) and path)
         if not webhook_paths:
-            logger.warning(f"Webhook: debounced batch for source '{source}' had no valid paths")
+            logger.warning(
+                "Webhook from {}: debounced batch had no valid file paths after de-duplication, "
+                "so no job was created. Other webhooks are still being processed. "
+                "If you expected files here, the sender most likely posted blank or duplicate paths — "
+                "check the recent webhook history on the Webhooks page for the raw payloads.",
+                source,
+            )
             _add_history_entry(source, "Download", "", "ignored_no_paths")
             return
 
@@ -522,7 +542,10 @@ def _execute_webhook_job(debounce_key: str) -> None:
     except Exception:
         title_label = batch_titles[0] if batch_titles else source
         logger.exception(
-            "Webhook: failed to execute debounced job for source '{}' ({})",
+            "Webhook from {}: could not start the processing job for {!r} due to an unexpected error. "
+            "Other webhooks are still being accepted, but this batch is lost. "
+            "See the traceback below for the underlying cause; if it repeats, please open a GitHub issue "
+            "with the recent log lines.",
             source,
             title_label,
         )
@@ -541,12 +564,13 @@ def radarr_webhook():
     data = request.get_json(force=True, silent=True)
     if not data:
         logger.warning(
-            "Webhook: Radarr request ignored (invalid or missing JSON body) "
-            "— Host={}, Content-Type={}, Content-Length={}, Remote={}",
-            request.host,
+            "Webhook from {}: Radarr request ignored — the body wasn't valid JSON "
+            "(Content-Type={}, Content-Length={}). Other webhooks are still being accepted. "
+            "Make sure Radarr is configured to send JSON (Settings → Connect → your webhook → "
+            "Method = POST). If you've added a custom proxy, check it isn't transforming the body.",
+            request.remote_addr,
             request.content_type,
             request.content_length,
-            request.remote_addr,
         )
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
@@ -610,13 +634,15 @@ def _handle_sonarr_compatible_webhook(source: str):
     data = request.get_json(force=True, silent=True)
     if not data:
         logger.warning(
-            "Webhook: {} request ignored (invalid or missing JSON body) "
-            "— Host={}, Content-Type={}, Content-Length={}, Remote={}",
+            "Webhook from {}: {} request ignored — the body wasn't valid JSON "
+            "(Content-Type={}, Content-Length={}). Other webhooks are still being accepted. "
+            "Check the {} Connect webhook is configured for POST with JSON body; if you've added a "
+            "proxy in front, confirm it isn't transforming the body.",
+            request.remote_addr,
             label,
-            request.host,
             request.content_type,
             request.content_length,
-            request.remote_addr,
+            label,
         )
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 
@@ -754,21 +780,37 @@ def _resolve_plex_paths_from_rating_key(
     try:
         config = load_config()
     except Exception as exc:
-        logger.warning("Webhook: failed to load config for Plex lookup: {}", exc)
+        logger.warning(
+            "Plex webhook lookup: could not load the app's saved settings ({}: {}). "
+            "The incoming Plex webhook for this item is being ignored — open the Settings page and "
+            "confirm it saves cleanly, then try again.",
+            type(exc).__name__,
+            exc,
+        )
         return [], None
 
     try:
         plex = plex_server(config)
     except Exception as exc:
-        logger.warning("Webhook: failed to connect to Plex for lookup: {}", exc)
+        logger.warning(
+            "Plex webhook lookup: could not connect to Plex to look up the item ({}: {}). "
+            "The incoming webhook for this item is being skipped this time. "
+            "Verify the Plex URL/token in Settings and that Plex is reachable from this app.",
+            type(exc).__name__,
+            exc,
+        )
         return [], None
 
     try:
         item = retry_plex_call(plex.fetchItem, int(rating_key))
     except Exception as exc:
         logger.warning(
-            "Webhook: Plex item lookup failed for ratingKey={}: {}",
+            "Plex webhook lookup: Plex returned an error when asked for item ratingKey={} ({}: {}). "
+            "This webhook is being skipped — Plex itself is reachable, but doesn't recognise that "
+            "ratingKey. The item may still be analysing; another library.new event should fire when "
+            "Plex finishes. If it doesn't, trigger 'Refresh Metadata' on the item.",
             rating_key,
+            type(exc).__name__,
             exc,
         )
         return [], None
@@ -805,11 +847,13 @@ def plex_webhook():
     data, parse_error = _extract_plex_payload(request)
     if data is None:
         logger.warning(
-            "Webhook: Plex request ignored ({}) — Host={}, Content-Type={}, Remote={}",
-            parse_error,
-            request.host,
-            request.content_type,
+            "Webhook from {}: Plex request ignored — {} (Content-Type={}). "
+            "Other Plex webhooks are still being accepted. "
+            "Plex normally sends multipart/form-data with a 'payload' field; if you're seeing this "
+            "repeatedly, re-register the webhook from Settings → Webhooks → Re-register with Plex.",
             request.remote_addr,
+            parse_error,
+            request.content_type,
         )
         return jsonify({"success": False, "error": parse_error}), 400
 
@@ -877,7 +921,10 @@ def plex_webhook():
 
     if not paths:
         logger.warning(
-            "Webhook: Plex library.new for '{}' (ratingKey={}) had no file paths",
+            "Plex 'library.new' webhook for {!r} (ratingKey={}) had no file paths attached and we "
+            "couldn't recover any from a Plex API lookup either. The item won't be processed. "
+            "This usually means Plex hasn't finished analyzing the file yet — it should fire again "
+            "when analysis completes. If it doesn't, trigger a 'Refresh Metadata' on that item in Plex.",
             display_title,
             rating_key,
         )
@@ -932,12 +979,13 @@ def custom_webhook():
     data = request.get_json(force=True, silent=True)
     if not data:
         logger.warning(
-            "Webhook: Custom request ignored (invalid or missing JSON body) "
-            "— Host={}, Content-Type={}, Content-Length={}, Remote={}",
-            request.host,
+            "Webhook from {}: Custom request ignored — the body wasn't valid JSON "
+            "(Content-Type={}, Content-Length={}). Other webhooks are still being accepted. "
+            "Custom webhooks need a JSON body with at least 'file_path' (string) or 'file_paths' "
+            "(array of strings). Confirm Content-Type: application/json on the sender's side.",
+            request.remote_addr,
             request.content_type,
             request.content_length,
-            request.remote_addr,
         )
         return jsonify({"success": False, "error": "Invalid or missing JSON body"}), 400
 

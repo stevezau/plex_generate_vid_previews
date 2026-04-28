@@ -136,7 +136,15 @@ def get_or_create_flask_secret(config_dir: str) -> str:
                 logger.debug(f"Using Flask secret derived from seed in {seed_file}")
                 return _derive_secret(seed, config_dir)
         except OSError as e:
-            logger.warning(f"Failed to read Flask secret seed file: {e}")
+            logger.warning(
+                "Could not read the saved Flask secret seed file at {} ({}: {}). "
+                "We'll generate a new one and keep going — the only side effect is that "
+                "any active web sessions will be signed out and need to log in again. "
+                "Check the file's permissions if you'd like to preserve sessions across restarts.",
+                seed_file,
+                type(e).__name__,
+                e,
+            )
 
     # Generate new random seed and persist it with restrictive permissions.
     # os.open with 0o600 creates the file atomically with the correct mode
@@ -151,7 +159,15 @@ def get_or_create_flask_secret(config_dir: str) -> str:
             os.close(fd)
         logger.info(f"Generated new Flask secret seed and saved to {seed_file}")
     except OSError as e:
-        logger.warning(f"Failed to save Flask secret seed to file: {e}")
+        logger.warning(
+            "Could not save the Flask secret seed to {} ({}: {}). "
+            "The web app will keep running with an in-memory secret, but every restart will sign all "
+            "users out (because the secret will be different each time). "
+            "Check the config directory is writable (Docker: confirm the volume mount permissions and PUID/PGID).",
+            seed_file,
+            type(e).__name__,
+            e,
+        )
 
     return _derive_secret(random_seed, config_dir)
 

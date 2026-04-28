@@ -110,7 +110,14 @@ def _migrate_env_vars(sm) -> None:
             updates[settings_key] = value
             migrated_keys.append(f"{env_name} -> {settings_key}")
         except (ValueError, TypeError):
-            logger.warning(f"Could not migrate env var {env_name}={raw!r}: invalid value")
+            logger.warning(
+                "Could not import the {} environment variable (value {!r} isn't a valid {}). "
+                "Other settings migrated normally — only this one was skipped. "
+                "Set the value in Settings instead, then remove the env var.",
+                env_name,
+                raw,
+                val_type.__name__,
+            )
 
     if sm.get("gpu_config") is None:
         gpu_config = _build_gpu_config_from_env()
@@ -139,8 +146,8 @@ def _migrate_env_vars(sm) -> None:
     for env_name in _DEPRECATED_ENV_VARS:
         if os.environ.get(env_name):
             logger.warning(
-                f"Environment variable {env_name} is deprecated and ignored. "
-                "Use the Settings page in the web UI instead."
+                "Environment variable {} is deprecated and ignored. Use the Settings page in the web UI instead.",
+                env_name,
             )
 
 
@@ -401,7 +408,9 @@ def _migrate_to_v4(sm) -> list:
                 pass
         except Exception as exc:
             logger.warning(
-                "v4 migration: failed to create recently-added schedule(s): {}",
+                "Could not migrate your old 'Recently Added' scanner settings into the new schedules system: {}. "
+                "Your other settings are intact and the app will start normally; you'll just need to recreate the "
+                "scanner manually under Settings → Schedules (Add → Recently Added Scanner).",
                 exc,
             )
 
@@ -585,7 +594,11 @@ def _build_gpu_config_from_env() -> list[dict[str, Any]] | None:
         ffmpeg_threads = int(ffmpeg_threads_str) if ffmpeg_threads_str else 2
     except (ValueError, TypeError):
         logger.warning(
-            f"Invalid GPU_THREADS={gpu_threads_str!r} or FFMPEG_THREADS={ffmpeg_threads_str!r}, using defaults"
+            "The legacy GPU_THREADS ({!r}) or FFMPEG_THREADS ({!r}) environment variable wasn't a valid number. "
+            "Falling back to defaults (1 GPU worker, 2 ffmpeg threads). "
+            "Open Settings → GPU after startup and configure the values you actually want.",
+            gpu_threads_str,
+            ffmpeg_threads_str,
         )
         gpu_threads = 1
         ffmpeg_threads = 2

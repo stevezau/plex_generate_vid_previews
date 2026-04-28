@@ -289,12 +289,20 @@ def _run_vulkan_probe(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         logger.warning(
-            f"Vulkan probe failed (subprocess error: {exc}); falling back to 'no Vulkan device' for DV5 diagnosis."
+            "Vulkan probe failed to launch ffmpeg ({}). "
+            "Dolby Vision Profile 5 thumbnails will render in software (which can show a green overlay). "
+            "Non-DV5 content is unaffected. "
+            "Fix: confirm `ffmpeg` is on PATH inside the container.",
+            exc,
         )
         return None, str(exc)
     except Exception as exc:
         logger.warning(
-            f"Vulkan probe raised unexpected exception: {exc}; falling back to 'no Vulkan device' for DV5 diagnosis."
+            "Vulkan probe raised an unexpected error ({}). "
+            "Dolby Vision Profile 5 thumbnails will render in software (which can show a green overlay). "
+            "Non-DV5 content is unaffected. "
+            "Please open a GitHub issue with the exception text above so we can handle this case explicitly.",
+            exc,
         )
         return None, str(exc)
     stderr = result.stderr or ""
@@ -538,9 +546,12 @@ def _probe_vulkan_device() -> str | None:
     # when everything else has already failed — i.e. the user DOES have
     # a real problem worth seeing in the main log.
     logger.warning(
-        f"Vulkan probe: all strategies exhausted. Captured "
-        f"{len(_VULKAN_DEBUG_BUFFER)} bytes of VK_LOADER_DEBUG=all output "
-        "for issue reports (GET /api/system/vulkan/debug)."
+        "Vulkan hardware setup couldn't be detected on this container, even after trying NVIDIA-specific fixes. "
+        "Dolby Vision Profile 5 thumbnails will render in software, which can show a green overlay on those titles. "
+        "Everything else (regular previews, HDR10, non-DV content) still works. "
+        "Fix: open Settings → System in the dashboard and click 'Copy Vulkan diagnostic bundle' "
+        "({} bytes captured), or include it when filing a GitHub issue.",
+        len(_VULKAN_DEBUG_BUFFER),
     )
     if _VULKAN_DEBUG_BUFFER:
         # Surface the last few informative lines to the main log at
@@ -595,11 +606,12 @@ def get_vulkan_device_info() -> VulkanProbeResult:
             )
         elif _is_software_vulkan_device(probe_device):
             logger.warning(
-                f"Vulkan probe selected a software rasterizer "
-                f"({probe_device}); Dolby Vision Profile 5 thumbnails "
-                "will show a green overlay. Open the dashboard or "
-                "GET /api/system/vulkan/debug for GPU-specific "
-                "remediation steps and a full diagnostic bundle."
+                "Vulkan picked a software rasterizer ({}) instead of your GPU. "
+                "Dolby Vision Profile 5 thumbnails will show a green overlay; everything else still works "
+                "(regular previews, HDR10, non-DV content). "
+                "Fix: open Settings → System in the dashboard for GPU-specific remediation steps and "
+                "a diagnostic bundle you can attach to a GitHub issue.",
+                probe_device,
             )
         else:
             via = ""

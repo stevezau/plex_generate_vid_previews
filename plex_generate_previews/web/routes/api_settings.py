@@ -66,7 +66,13 @@ def _reconcile_live_gpu_workers(settings) -> None:
         new_selected = _build_selected_gpus(settings)
         pool.reconcile_gpu_workers(new_selected)
     except Exception:
-        logger.warning("Failed to reconcile GPU workers", exc_info=True)
+        logger.warning(
+            "Could not reconcile the live worker pool with the new GPU settings. "
+            "The settings were saved, but you may need to restart the app for the GPU changes to fully "
+            "take effect. Currently-running jobs are unaffected. "
+            "See the traceback below for the underlying cause.",
+            exc_info=True,
+        )
 
 
 def _auto_pause_if_needed(settings) -> None:
@@ -231,7 +237,12 @@ def save_settings():
 
         ok, thread_warning = validate_processing_thread_totals(settings.get_all())
         if not ok:
-            logger.warning(thread_warning)
+            logger.warning(
+                "Worker count check: {}. "
+                "Processing has been auto-paused so no new jobs run until you increase a worker count. "
+                "Open Settings → Workers and set GPU and/or CPU workers > 0, then save.",
+                thread_warning,
+            )
             _auto_pause_if_needed(settings)
         elif settings.processing_paused:
             _auto_resume_if_needed(settings)
@@ -260,7 +271,10 @@ def save_settings():
                     logger.info("Plex webhook re-registered with new auth token after secret rotation")
             except Exception:
                 logger.warning(
-                    "Failed to re-register Plex webhook after secret change",
+                    "Could not re-register the Plex webhook on plex.tv after the webhook secret was rotated. "
+                    "Your settings saved fine, but Plex will keep posting with the OLD token until you "
+                    "re-register manually. Fix: Settings → Webhooks → Plex → 'Re-register with Plex'. "
+                    "See the traceback below for the underlying cause.",
                     exc_info=True,
                 )
 
@@ -820,7 +834,14 @@ def validate_paths():
                             f"Plex data folder ({resolved_plex_data_path}): structure looks incomplete ({len(hex_dirs)}/16 hash directories)"
                         )
                 except Exception as e:
-                    logger.warning(f"Could not verify Plex structure: {e}")
+                    logger.warning(
+                        "Setup Wizard: could not verify the Plex data folder's internal structure ({}: {}). "
+                        "The wizard will continue with a 'structure unverified' note instead of blocking. "
+                        "Check the folder is the correct Plex 'Media' parent (it should contain a 'localhost' "
+                        "subfolder with single-character hex directories like 0/1/2/.../f).",
+                        type(e).__name__,
+                        e,
+                    )
                     result["warnings"].append(
                         f"Plex data folder ({resolved_plex_data_path}): could not verify structure"
                     )
@@ -858,7 +879,14 @@ def validate_paths():
                     contents = os.listdir(resolved)
                     result["info"].append(f"✓ {row_label} ({path_desc}): accessible ({len(contents)} items)")
                 except Exception as e:
-                    logger.error(f"Cannot read mapping local path: {e}")
+                    logger.error(
+                        "Setup Wizard: cannot read the local path for one of the path-mapping rows ({}: {}). "
+                        "The wizard's validation will flag this row in the UI. "
+                        "Check the folder exists, is readable by the app's user (Docker: PUID/PGID), "
+                        "and is inside the configured media root.",
+                        type(e).__name__,
+                        e,
+                    )
                     result["errors"].append(f"{row_label} ({path_desc}): cannot read folder")
                     result["valid"] = False
     elif plex_media_path or local_media_path:
@@ -891,7 +919,14 @@ def validate_paths():
                             f"✓ Local media path ({resolved_local_media}): accessible ({len(contents)} items)"
                         )
                 except Exception as e:
-                    logger.error(f"Cannot read Local Media Path: {e}")
+                    logger.error(
+                        "Setup Wizard: cannot read the configured Local Media Path ({}: {}). "
+                        "The wizard's validation will flag this in the UI. "
+                        "Check the folder exists, is readable by the app's user (Docker: PUID/PGID), "
+                        "and is inside the configured media root.",
+                        type(e).__name__,
+                        e,
+                    )
                     result["errors"].append(f"Local media path ({resolved_local_media}): cannot read folder")
                     result["valid"] = False
     else:

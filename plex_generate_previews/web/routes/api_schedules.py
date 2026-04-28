@@ -53,7 +53,14 @@ def create_schedule():
         )
         return jsonify(schedule), 201
     except ValueError as e:
-        logger.warning(f"Schedule validation error: {e}")
+        logger.warning(
+            "New schedule rejected — invalid parameters ({}: {}). "
+            "The Schedules page will show the validation error to you; "
+            "common causes are an empty name, missing trigger (need either a cron expression "
+            "or an interval in minutes), or a malformed cron syntax.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Invalid schedule parameters"}), 400
     except Exception as e:
         logger.exception(

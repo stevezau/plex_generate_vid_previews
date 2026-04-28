@@ -175,19 +175,39 @@ def _test_hwaccel_functionality(
                         device_gid = stat_info.st_gid
                         user_groups = os.getgroups()
 
-                        logger.warning(f"⚠ VAAPI device {device_path} is not accessible (permission denied)")
-                        logger.warning(f"⚠ Device group: {device_gid}, your groups: {user_groups}")
-
                         if device_gid not in user_groups:
-                            logger.warning("⚠ The container should auto-detect GPU device groups at startup")
-                            logger.warning("⚠ Verify you are passing --device /dev/dri:/dev/dri (not a single device)")
+                            logger.warning(
+                                "VAAPI hardware decoding unavailable on {}: permission denied. "
+                                "Device is owned by group {}, but the container is running as groups {}. "
+                                "CPU fallback will be used for any GPU job that needed this device. "
+                                "Fix: make sure your docker run / compose passes --device /dev/dri:/dev/dri "
+                                "(the whole directory, not a single sub-device); the container auto-detects "
+                                "the render group at startup. On the host, check `ls -l {}` to see the owning group.",
+                                device_path,
+                                device_gid,
+                                user_groups,
+                                device_path,
+                            )
                         else:
-                            logger.warning(f"⚠ You are in group {device_gid}, but device is still not accessible")
-                            logger.warning(f"⚠ Check host device permissions: ls -l {device_path}")
+                            logger.warning(
+                                "VAAPI hardware decoding unavailable on {}: permission denied even though the "
+                                "container is in the device's group ({}). This usually means host-side permissions "
+                                "on the device node are restricted. CPU fallback will be used for jobs that needed "
+                                "this GPU. Fix: on the host, run `ls -l {}` and confirm the render group has rw "
+                                "access (typical: `crw-rw---- root render`). Adjust host udev rules if needed.",
+                                device_path,
+                                device_gid,
+                                device_path,
+                            )
                     except Exception:
-                        logger.warning(f"⚠ VAAPI device {device_path} is not accessible (permission denied)")
                         logger.warning(
-                            "⚠ Verify --device /dev/dri:/dev/dri is passed and the device is readable on the host"
+                            "VAAPI hardware decoding unavailable on {}: permission denied (could not inspect "
+                            "device ownership to give a more specific hint). CPU fallback will be used for jobs "
+                            "that needed this GPU. Fix: make sure your docker run / compose passes "
+                            "--device /dev/dri:/dev/dri (the whole directory, not a single sub-device), "
+                            "and that the device is readable on the host (run `ls -l {}`).",
+                            device_path,
+                            device_path,
                         )
                 # If device doesn't exist, just skip silently (expected for wrong GPU type)
                 return False
@@ -274,14 +294,26 @@ def _test_hwaccel_functionality(
 
                 # VAAPI failures directly affect user-visible GPU status — log at WARNING
                 if hwaccel == "vaapi":
-                    logger.warning(f"⚠ FFmpeg VAAPI test failed on {device_path} (exit code {result.returncode}):")
+                    logger.warning(
+                        "FFmpeg VAAPI hardware-decode test failed on {} (exit code {}). "
+                        "This GPU will be marked failed; CPU fallback still works for affected jobs. "
+                        "FFmpeg's last 15 lines of output follow — paste them into a GitHub issue if "
+                        "you can't tell what driver is missing:",
+                        device_path,
+                        result.returncode,
+                    )
                     for line in stderr_text.splitlines()[-15:]:
                         if line.strip():
-                            logger.warning(f"  {line.rstrip()}")
+                            logger.warning("  {}", line.rstrip())
 
                     if "permission denied" in stderr_lower:
-                        logger.warning("⚠ The container should auto-detect GPU device groups at startup")
-                        logger.warning("⚠ Verify --device /dev/dri:/dev/dri is passed (not a single device)")
+                        logger.warning(
+                            "FFmpeg reported 'permission denied' for the VAAPI device. "
+                            "Fix: (1) the container auto-detects the GPU device group at startup — check the "
+                            "container's earlier startup logs for lines about 'adding' and 'permissions'; "
+                            "(2) verify your docker run / compose passes --device /dev/dri:/dev/dri "
+                            "(the whole directory, not a single sub-device)."
+                        )
                 else:
                     logger.debug(f"FFmpeg {hwaccel} stderr: {stderr_text[-500:]}")
 
@@ -293,18 +325,27 @@ def _test_hwaccel_functionality(
             return False
 
     except subprocess.TimeoutExpired as e:
-        logger.warning(f"⚠ {hwaccel} test timed out on {device_path or 'default device'} (>20s)")
+        logger.warning(
+            "{} hardware-decode test timed out after 20s on {}. "
+            "This usually means the driver is hanging during init (common with broken VA-API drivers, "
+            "stuck NVIDIA contexts, or an over-loaded host). "
+            "This GPU will be marked failed; CPU fallback still works for affected jobs.",
+            hwaccel,
+            device_path or "default device",
+        )
         if e.stderr:
             stderr_text = e.stderr.decode("utf-8", "ignore").strip()
             if stderr_text:
-                logger.warning("⚠ FFmpeg output before hang:")
+                logger.warning("FFmpeg output captured before the hang (last 15 lines follow):")
                 for line in stderr_text.splitlines()[-15:]:
                     if line.strip():
-                        logger.warning(f"  {line.rstrip()}")
+                        logger.warning("  {}", line.rstrip())
         if hwaccel == "vaapi" and device_path:
             logger.warning(
-                f"⚠ Debug: run 'vainfo --display drm --device {device_path}' "
-                f"inside the container to check driver support"
+                "To diagnose the hang, run this inside the container: "
+                "vainfo --display drm --device {} . "
+                "It will report whether the VA-API driver is loaded and which codecs it advertises.",
+                device_path,
             )
         return False
     except Exception as e:
@@ -494,7 +535,11 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
         if smi_gpus:
             logger.debug(f"=== Testing {len(smi_gpus)} NVIDIA GPU(s) via nvidia-smi ===")
             if _is_wsl2():
-                logger.warning("  ⚠️  WSL2 NVIDIA GPU support is unofficial and may have limitations")
+                logger.warning(
+                    "WSL2 detected. NVIDIA GPU support inside WSL2 is unofficial. "
+                    "If detection or decoding misbehaves, prefer running the container directly on a Linux "
+                    "or Windows host. Intel/AMD GPUs are NOT supported under WSL2 — disable them in Settings → GPU."
+                )
             for g in smi_gpus:
                 idx = g["index"]
                 device = f"cuda:{idx}"
@@ -519,12 +564,16 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                     # behaviour) — the warning below tells the user what
                     # to check without cluttering the UI with a failed
                     # row that they can't act on individually.
-                    logger.warning(f"  ⚠️  NVIDIA GPU {idx} ({g['name']}): CUDA test failed")
                     logger.warning(
-                        "  ⚠️  Container may be missing driver capabilities "
-                        "(set NVIDIA_DRIVER_CAPABILITIES=all; 'graphics' is also "
-                        "required for Dolby Vision Profile 5 thumbnails) or "
-                        "/dev/nvidia* devices"
+                        "NVIDIA GPU {} ({}): CUDA hardware-decode test failed. "
+                        "This GPU will not be used — CPU fallback still works for jobs targeted at it. "
+                        "Fix: (1) set NVIDIA_DRIVER_CAPABILITIES=all on the container (the 'graphics' "
+                        "capability is also required for Dolby Vision Profile 5 thumbnails); "
+                        "(2) confirm /dev/nvidia* devices are exposed: docker run --gpus all ... "
+                        "or use the NVIDIA Container Toolkit runtime; "
+                        "(3) check: nvidia-smi (inside the container) — if it fails, the toolkit isn't wired up.",
+                        idx,
+                        g["name"],
                     )
 
     # Enumerate physical GPUs from /dev/dri
@@ -609,7 +658,10 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                     vendor = "NVIDIA"
                     if _is_wsl2():
                         logger.warning(
-                            "  ⚠️  WSL2 environment detected - NVIDIA GPU support is unofficial and may have limitations"
+                            "WSL2 detected and the GPU vendor couldn't be identified via the usual channels — "
+                            "treating as NVIDIA because nvidia-smi succeeded. NVIDIA support in WSL2 is unofficial. "
+                            "If GPU jobs misbehave, run the container on Linux or Windows directly. "
+                            "Intel/AMD GPUs are NOT supported under WSL2 — disable them in Settings → GPU."
                         )
                 else:
                     # Even if nvidia-smi didn't confirm, try CUDA anyway if available
@@ -626,10 +678,11 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                             # CUDA works! Treat as NVIDIA even though we couldn't confirm
                             vendor = "NVIDIA"
                             logger.warning(
-                                "  ⚠️  CUDA acceleration works but vendor detection failed - treating as NVIDIA"
-                            )
-                            logger.warning(
-                                "  ⚠️  WSL2 environment detected - NVIDIA GPU support is unofficial and may have limitations"
+                                "CUDA hardware-decode works on this GPU but the vendor couldn't be confirmed — "
+                                "treating it as NVIDIA. This is the unofficial WSL2 NVIDIA pathway. "
+                                "Things may still work, but if GPU jobs misbehave, run the container on Linux "
+                                "or Windows directly. Intel/AMD GPUs are NOT supported under WSL2 — disable them "
+                                "in Settings → GPU."
                             )
                             # Fall through to normal NVIDIA processing
                         else:
@@ -690,11 +743,23 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
 
         # Primary failed, log appropriate message
         if accel_config.get("requires_runtime"):
-            logger.warning(f"  ⚠️  {card_name}: {vendor} {primary_method} test failed")
-            logger.warning("  ⚠️  This usually means the required runtime is not configured")
             if primary_method == "CUDA":
                 logger.warning(
-                    "  ⚠️  See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+                    "{}: {} CUDA hardware-decode test failed. "
+                    "This usually means the NVIDIA Container Toolkit runtime isn't configured. "
+                    "This GPU is unusable until fixed; CPU fallback still works for affected jobs. "
+                    "Install/configure the toolkit: "
+                    "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html",
+                    card_name,
+                    vendor,
+                )
+            else:
+                logger.warning(
+                    "{}: {} {} hardware-decode test failed and the required runtime isn't configured. "
+                    "This GPU is unusable; CPU fallback still works for affected jobs.",
+                    card_name,
+                    vendor,
+                    primary_method,
                 )
         else:
             logger.debug(f"  ✗ {card_name}: {primary_method} test failed")
@@ -720,7 +785,14 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                 detected_vendors.add(vendor)
                 logger.info(f"  ✅ {card_name}: {vendor} {fallback_method} working (fallback)")
             else:
-                logger.warning(f"  ❌ {card_name}: All acceleration methods failed")
+                logger.warning(
+                    "{}: every hardware-acceleration method tested ({} primary, {} fallback) failed. "
+                    "This GPU will be skipped; CPU fallback still works for jobs that targeted it. "
+                    "See Settings → GPU for the per-device error detail.",
+                    card_name,
+                    primary_method,
+                    fallback_method,
+                )
                 error, error_detail = _build_gpu_error_detail(primary_method, device_path, render_device, accel_config)
                 gpu_name = get_gpu_name(vendor, device_path or render_device)
                 gpu_info = {
@@ -736,7 +808,14 @@ def _detect_linux_gpus() -> list[tuple[str, str, dict]]:
                 }
                 detected_gpus.append((vendor, device_path or render_device, gpu_info))
         else:
-            logger.warning(f"  ❌ {card_name}: No fallback available, GPU unusable")
+            logger.warning(
+                "{}: {} {} test failed and there's no fallback acceleration method for this vendor. "
+                "This GPU will be skipped; CPU fallback still works for jobs that targeted it. "
+                "See Settings → GPU for the per-device error detail.",
+                card_name,
+                vendor,
+                primary_method,
+            )
             error, error_detail = _build_gpu_error_detail(primary_method, device_path, render_device, accel_config)
             gpu_name = get_gpu_name(vendor, device_path or render_device)
             gpu_info = {
@@ -826,7 +905,12 @@ def _detect_macos_gpus() -> list[tuple[str, str, dict]]:
         detected_gpus.append(("APPLE", "videotoolbox", gpu_info))
         logger.info("  ✅ Apple VideoToolbox working")
     else:
-        logger.warning("  ❌ Apple VideoToolbox test failed")
+        logger.warning(
+            "Apple VideoToolbox hardware-decode test failed on this Mac. "
+            "All preview generation will fall back to CPU, which is slow on large libraries. "
+            "Fix: confirm `ffmpeg -hwaccels` lists 'videotoolbox' on this machine, "
+            "and that you're not running ffmpeg under Rosetta. See Settings → GPU for details."
+        )
 
     return detected_gpus
 

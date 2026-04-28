@@ -500,7 +500,13 @@ def create_ffmpeg_runner(
                         pass
                 if time.time() - last_progress_time > FFMPEG_STALL_TIMEOUT_SEC:
                     logger.warning(
-                        f"FFmpeg stalled (no progress for {FFMPEG_STALL_TIMEOUT_SEC}s), killing process for {video_file}"
+                        "FFmpeg stopped making progress for {}s while processing {} — killing it. "
+                        "This usually means a slow disk, a stuck hardware decoder, or a damaged file. "
+                        "Other files in the queue will keep processing; this one will be marked failed. "
+                        "If it happens often on the same file, try toggling hardware acceleration off "
+                        "in Settings → GPU.",
+                        FFMPEG_STALL_TIMEOUT_SEC,
+                        video_file,
                     )
                     stalled = True
                     proc.kill()
@@ -535,12 +541,15 @@ def create_ffmpeg_runner(
         if proc.returncode != 0 and not stalled:
             exit_diagnosis = _diagnose_ffmpeg_exit_code(proc.returncode)
             logger.error(
-                f"FFmpeg failed while extracting frames from {video_file} "
-                f"(exit code {proc.returncode}: {exit_diagnosis}). "
-                f"See the FFmpeg stderr lines logged below — they usually point at the cause "
-                f"(unsupported codec, broken hardware acceleration, corrupted file, full disk). "
-                f"If this happens often on the same file, try toggling hardware acceleration off "
-                f"in Settings → GPU."
+                "FFmpeg failed while extracting frames from {} (exit code {}: {}). "
+                "See the FFmpeg stderr lines logged below — they usually point at the cause "
+                "(unsupported codec, broken hardware acceleration, corrupted file, full disk). "
+                "Other files in the queue will keep processing. "
+                "If this happens often on the same file, try toggling hardware acceleration off "
+                "in Settings → GPU.",
+                video_file,
+                proc.returncode,
+                exit_diagnosis,
             )
 
             # Log last few stderr lines at WARNING level so users can diagnose
@@ -548,23 +557,42 @@ def create_ffmpeg_runner(
             if _is_signal_killed(proc.returncode):
                 signal_detail = _diagnose_ffmpeg_exit_code(proc.returncode).split(":", 1)[1]
                 logger.warning(
-                    f"FFmpeg exited with code {proc.returncode} due to signal {signal_detail} for {video_file}"
+                    "FFmpeg was killed by the operating system (exit code {}, signal {}) while processing {}. "
+                    "Common causes: the system ran out of memory, the container was OOM-killed, "
+                    "or someone manually stopped the process. Check container memory limits and "
+                    "system free RAM. Other files in the queue will keep processing.",
+                    proc.returncode,
+                    signal_detail,
+                    video_file,
                 )
             elif exit_diagnosis == "io_error":
                 logger.warning(
-                    f"FFmpeg reported an I/O error while writing temp output for {video_file}; "
-                    f"temp_directory={output_folder}, exists={os.path.isdir(output_folder)}"
+                    "FFmpeg could not write temporary thumbnail files for {} (working folder: {}, exists: {}). "
+                    "This usually means the working folder is full, missing, or not writable. "
+                    "Free up disk space or change the working folder under Settings → Advanced. "
+                    "Other files in the queue will keep processing.",
+                    video_file,
+                    output_folder,
+                    os.path.isdir(output_folder),
                 )
             elif exit_diagnosis == "high_exit_non_signal":
                 logger.warning(
-                    f"FFmpeg exited with high non-signal code {proc.returncode} for {video_file}; "
-                    "likely a runtime/internal failure rather than process signal termination"
+                    "FFmpeg crashed with an unusual exit code ({}) while processing {}. "
+                    "This usually points to an internal FFmpeg bug, a broken hardware acceleration "
+                    "driver, or a malformed video file. The stderr lines below should explain. "
+                    "Other files in the queue will keep processing.",
+                    proc.returncode,
+                    video_file,
                 )
             if ffmpeg_output_lines:
                 tail = ffmpeg_output_lines[-5:]
-                logger.warning(f"FFmpeg stderr (last {len(tail)} lines) for {video_file}:")
+                logger.warning(
+                    "FFmpeg's last {} stderr lines for {} (these usually identify the cause):",
+                    len(tail),
+                    video_file,
+                )
                 for line in tail:
-                    logger.warning(f"  {line}")
+                    logger.warning("  {}", line)
 
             # Check for permission-related errors in FFmpeg output
             # FFmpeg outputs "Permission denied" in messages like "av_interleaved_write_frame(): Permission denied"

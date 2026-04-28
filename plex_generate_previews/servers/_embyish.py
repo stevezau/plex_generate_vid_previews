@@ -162,12 +162,12 @@ class EmbyApiClient(MediaServer):
 
         if not isinstance(data, list):
             logger.warning(
-                "{} server {!r} returned an unexpected response when listing libraries "
-                "(got {} instead of a list). The server may be misconfigured or running an "
-                "incompatible version.",
+                "{} server {!r} returned an unexpected library list — the response wasn't in the format we expected. "
+                "This usually means the server is misconfigured or running a version this app doesn't support. "
+                "Library scanning is paused for this server; other servers continue normally. "
+                "Check the server's version, then restart it and try again.",
                 self.vendor_name,
                 self.name,
-                type(data).__name__,
             )
             return []
 

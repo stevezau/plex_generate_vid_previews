@@ -185,7 +185,12 @@ def is_path_excluded(
                 if re.search(value, path):
                     return True
             except re.error:
-                logger.warning(f"Invalid exclude regex, skipping: {value[:50]!r}")
+                logger.warning(
+                    "Skipping an invalid exclude-paths regex: {!r}. The other exclude rules are still active. "
+                    "Open Settings → Exclude paths and either fix or delete this rule "
+                    "(test regex syntax at regex101.com if unsure).",
+                    value[:50],
+                )
                 continue
         else:
             prefix = os.path.normpath(value).replace("\\", "/").rstrip("/")

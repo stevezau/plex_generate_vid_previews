@@ -308,7 +308,13 @@ def bif_search():
         resp.raise_for_status()
         hubs = resp.json().get("MediaContainer", {}).get("Hub", [])
     except req.RequestException as e:
-        logger.error(f"BIF viewer: Plex search failed: {e}")
+        logger.error(
+            "BIF Viewer: Plex search request failed ({}: {}). "
+            "The viewer's search box can't return results until this is resolved — "
+            "verify the Plex URL and token in Settings, and that Plex is reachable from this app.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": f"Plex search failed: {e}", "results": []}), 502
 
     results: list[dict] = []
@@ -567,7 +573,15 @@ def bif_servers_search(server_id: str):
             if len(results) >= _MAX_SEARCH_RESULTS:
                 break
     except Exception as exc:
-        logger.warning("BIF servers search failed for {}: {}", server_id, exc)
+        logger.warning(
+            "BIF Viewer: search on media server {!r} failed ({}: {}). "
+            "Searches against other configured servers still work. "
+            "Verify the server's URL, credentials, and reachability under Settings → Media Servers; "
+            "use 'Test Connection' to confirm it's healthy.",
+            server_id,
+            type(exc).__name__,
+            exc,
+        )
         return jsonify({"error": f"search failed: {exc}", "results": []}), 502
 
     return jsonify(

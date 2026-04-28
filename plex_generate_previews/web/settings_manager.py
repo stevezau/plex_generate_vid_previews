@@ -92,11 +92,13 @@ class SettingsManager:
                 logger.debug(f"Loaded settings from {self.settings_file}")
             except Exception as e:
                 logger.error(
-                    f"Could not read settings file at {self.settings_file}: {e}. "
-                    f"Falling back to defaults — your previously-saved configuration will not "
-                    f"be loaded. The file may be corrupted or have wrong permissions; check it "
-                    f"is valid JSON and readable by this process. Back up the file before any "
-                    f"manual edits."
+                    "Could not read settings file at {} ({}: {}). "
+                    "Falling back to defaults — your previously-saved configuration will not be loaded. "
+                    "The file may be corrupted or have wrong permissions; check it is valid JSON and readable "
+                    "by this process. Back up the file before any manual edits.",
+                    self.settings_file,
+                    type(e).__name__,
+                    e,
                 )
                 self._settings = {}
         else:
@@ -117,9 +119,12 @@ class SettingsManager:
                 pass
         except Exception as e:
             logger.error(
-                f"Could not save settings to {self.settings_file}: {e}. "
-                f"Your changes were NOT persisted and will be lost on restart. Check the config "
-                f"directory exists and is writable, and that the disk isn't full."
+                "Could not save settings to {} ({}: {}). "
+                "Your changes were NOT persisted and will be lost on restart. Check the config "
+                "directory exists and is writable, and that the disk isn't full.",
+                self.settings_file,
+                type(e).__name__,
+                e,
             )
             raise
 
@@ -132,9 +137,12 @@ class SettingsManager:
                 logger.debug(f"Loaded setup state from {self.setup_state_file}")
             except Exception as e:
                 logger.error(
-                    f"Could not read setup-state file at {self.setup_state_file}: {e}. "
-                    f"The setup wizard will treat this as a fresh install — you may be asked "
-                    f"to re-complete first-run setup. Check the file is valid JSON and readable."
+                    "Could not read setup-state file at {} ({}: {}). "
+                    "The setup wizard will treat this as a fresh install — you may be asked "
+                    "to re-complete first-run setup. Check the file is valid JSON and readable.",
+                    self.setup_state_file,
+                    type(e).__name__,
+                    e,
                 )
                 self._setup_state = {}
         else:
@@ -149,8 +157,11 @@ class SettingsManager:
             logger.debug(f"Saved setup state to {self.setup_state_file}")
         except Exception as e:
             logger.error(
-                f"Could not save setup-state to {self.setup_state_file}: {e}. "
-                f"Wizard progress was NOT persisted; check the config directory is writable."
+                "Could not save setup-state to {} ({}: {}). "
+                "Wizard progress was NOT persisted; check the config directory is writable.",
+                self.setup_state_file,
+                type(e).__name__,
+                e,
             )
             raise
 
@@ -454,7 +465,12 @@ class SettingsManager:
             )
             return response.status_code == 200
         except Exception as e:
-            logger.warning(f"Failed to validate Plex token: {e}")
+            logger.warning(
+                "Could not check whether the saved Plex token is still valid ({}: {}). "
+                "If you can't open the dashboard or libraries, re-authenticate via the Setup Wizard.",
+                type(e).__name__,
+                e,
+            )
             return False
 
     # =========================================================================
@@ -543,7 +559,14 @@ class SettingsManager:
                 try:
                     self.setup_state_file.unlink()
                 except Exception as e:
-                    logger.warning(f"Failed to delete setup state file: {e}")
+                    logger.warning(
+                        "Could not delete the setup-state file at {} ({}: {}). "
+                        "Setup is complete and the app will keep working — the leftover file is harmless and "
+                        "will be ignored. If it bothers you, remove it manually from the config directory.",
+                        self.setup_state_file,
+                        type(e).__name__,
+                        e,
+                    )
 
     def complete_setup(self) -> None:
         """Mark setup as complete and clear setup state."""

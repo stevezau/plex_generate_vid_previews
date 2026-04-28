@@ -52,7 +52,14 @@ def create_plex_pin():
             }
         )
     except requests.RequestException as e:
-        logger.error(f"Failed to create Plex PIN: {e}")
+        logger.error(
+            "Plex sign-in: could not create a Plex PIN ({}: {}). "
+            "The Setup Wizard's 'Sign in with Plex' button won't work until this is resolved. "
+            "Check this app can reach https://plex.tv (no firewall blocking outbound HTTPS), "
+            "and try again.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to create PIN"}), 500
 
 
@@ -93,7 +100,13 @@ def check_plex_pin(pin_id: int):
             }
         )
     except requests.RequestException as e:
-        logger.error(f"Failed to check Plex PIN: {e}")
+        logger.error(
+            "Plex sign-in: could not check the PIN status with plex.tv ({}: {}). "
+            "If you're mid-way through the Setup Wizard, refresh and try again. "
+            "If this keeps happening, verify this app can reach https://plex.tv from inside the container.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to check PIN"}), 500
 
 
@@ -178,7 +191,13 @@ def get_plex_servers():
 
         return jsonify({"servers": servers})
     except requests.RequestException as e:
-        logger.error(f"Failed to get Plex servers: {e}")
+        logger.error(
+            "Plex server list: plex.tv request failed ({}: {}). "
+            "The Setup Wizard's server picker will be empty until this is resolved. "
+            "Check this app can reach https://plex.tv (outbound HTTPS) and that your Plex token is valid.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": "Failed to get servers", "servers": []}), 500
 
 
@@ -209,7 +228,12 @@ def get_plex_libraries():
         return jsonify({"libraries": libraries})
     except requests.ConnectionError:
         detail = f"Could not connect to Plex at {plex_url}"
-        logger.error(f"Failed to get Plex libraries: {detail}")
+        logger.error(
+            "Plex libraries: could not connect to Plex at {} (network unreachable / refused). "
+            "The Settings page library picker will fail until this is fixed. "
+            "Verify the Plex URL is correct and that Plex is reachable from this app's container.",
+            plex_url,
+        )
         return jsonify(
             {
                 "error": f"{detail}. Check the server URL and ensure Plex is running and reachable from this host.",
@@ -218,7 +242,12 @@ def get_plex_libraries():
         ), 502
     except requests.Timeout:
         detail = f"Connection to Plex at {plex_url} timed out"
-        logger.error(f"Failed to get Plex libraries: {detail}")
+        logger.error(
+            "Plex libraries: connection to Plex at {} timed out after the request limit. "
+            "The Settings page library picker will fail until Plex responds. "
+            "Plex may be overloaded, restarting, or unreachable from this app — try again in a minute.",
+            plex_url,
+        )
         return jsonify(
             {
                 "error": f"{detail}. The server may be overloaded or unreachable.",
@@ -236,10 +265,21 @@ def get_plex_libraries():
         else:
             detail = f"Plex returned HTTP {status}"
             hint = "Check Plex server logs for details."
-        logger.error(f"Failed to get Plex libraries: {detail} (HTTP {status})")
+        logger.error(
+            "Plex libraries: Plex returned HTTP {} — {}. The library picker will fail until this is resolved. {}",
+            status,
+            detail,
+            hint,
+        )
         return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except requests.RequestException as e:
-        logger.error(f"Failed to get Plex libraries: {e}")
+        logger.error(
+            "Plex libraries: request to Plex failed ({}: {}). "
+            "The Settings page library picker will fail until this is fixed. "
+            "Verify the Plex URL/token in Settings and that Plex is reachable from this app.",
+            type(e).__name__,
+            e,
+        )
         return jsonify({"error": f"Failed to get libraries: {e}", "libraries": []}), 500
 
 
@@ -283,7 +323,14 @@ def test_plex_connection():
             }
         )
     except requests.exceptions.SSLError as e:
-        logger.error(f"Plex connection test failed (SSL): {e}")
+        logger.error(
+            "Plex connection test: SSL certificate verification failed for {} ({}: {}). "
+            "If you're using a self-signed certificate or an internal CA, uncheck 'Verify SSL' "
+            "in Settings → Plex; otherwise check that Plex's certificate is valid and trusted.",
+            plex_url,
+            type(e).__name__,
+            e,
+        )
         return jsonify(
             {
                 "success": False,
@@ -296,7 +343,13 @@ def test_plex_connection():
             }
         )
     except requests.exceptions.Timeout:
-        logger.error(f"Plex connection test failed: timed out contacting {plex_url}")
+        logger.error(
+            "Plex connection test: timed out contacting {} after 10 seconds. "
+            "The Test Connection button will report failure. "
+            "Plex may be unreachable, overloaded, or behind a firewall — "
+            "verify the URL and try opening it in a browser from inside the container's network.",
+            plex_url,
+        )
         return jsonify(
             {
                 "success": False,
@@ -307,7 +360,14 @@ def test_plex_connection():
             }
         )
     except requests.exceptions.ConnectionError as e:
-        logger.error(f"Plex connection test failed: {e}")
+        logger.error(
+            "Plex connection test: could not connect to {} ({}: {}). "
+            "The Test Connection button will report failure. "
+            "Check the URL is correct and that Plex is running and reachable from this app's container/host.",
+            plex_url,
+            type(e).__name__,
+            e,
+        )
         return jsonify(
             {
                 "success": False,
@@ -328,7 +388,12 @@ def test_plex_connection():
             detail = f"URL reachable but did not return Plex server identity (404). Check '{plex_url}' is your Plex base URL."
         else:
             detail = f"Plex returned HTTP {status}."
-        logger.error(f"Plex connection test failed: HTTP {status}")
+        logger.error(
+            "Plex connection test: Plex at {} returned HTTP {}. The Test Connection button will report failure. {}",
+            plex_url,
+            status,
+            detail,
+        )
         return jsonify({"success": False, "server_name": None, "error": detail})
     except requests.exceptions.MissingSchema:
         return jsonify(
@@ -347,7 +412,14 @@ def test_plex_connection():
             }
         )
     except requests.RequestException as e:
-        logger.error(f"Plex connection test failed: {e}")
+        logger.error(
+            "Plex connection test: request to {} failed ({}: {}). "
+            "The Test Connection button will report failure. "
+            "Verify the URL is correct and Plex is reachable from this app.",
+            plex_url,
+            type(e).__name__,
+            e,
+        )
         return jsonify(
             {
                 "success": False,
@@ -356,7 +428,15 @@ def test_plex_connection():
             }
         )
     except ValueError as e:
-        logger.error(f"Plex connection test failed (invalid JSON): {e}")
+        logger.error(
+            "Plex connection test: {} responded but didn't return valid Plex data ({}: {}). "
+            "The Test Connection button will report failure. "
+            "The URL may not be pointing at a Plex server — check the URL ends at the Plex root, "
+            "e.g. http://plex:32400 (no trailing path).",
+            plex_url,
+            type(e).__name__,
+            e,
+        )
         return jsonify(
             {
                 "success": False,

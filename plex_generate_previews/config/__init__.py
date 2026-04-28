@@ -397,7 +397,12 @@ def load_config() -> Config:
 
     ffmpeg_path = _resolve_ffmpeg_path()
     if not ffmpeg_path:
-        logger.error("FFmpeg not found. FFmpeg must be installed and available in PATH.")
+        logger.error(
+            "FFmpeg is not installed (or not on the system PATH). This app cannot generate any previews without it — "
+            "the process will exit now. If you're using Docker, the official image already includes FFmpeg; this error usually "
+            "means a custom image is missing it. If you're running from source, install FFmpeg from your package manager "
+            "(apt install ffmpeg / brew install ffmpeg) and restart."
+        )
         sys.exit(1)
 
     # Test FFmpeg actually works and log its version
@@ -414,20 +419,37 @@ def load_config() -> Config:
         )
         _ffmpeg_elapsed = time.monotonic() - _ffmpeg_start
         if result.returncode != 0:
-            logger.error(f"FFmpeg exited with code {result.returncode} after {_ffmpeg_elapsed:.1f}s")
-            if result.stderr:
-                logger.error(f"FFmpeg stderr: {result.stderr.strip()[:500]}")
+            logger.error(
+                "FFmpeg is installed but failed to run (it returned an error after {:.1f}s). "
+                "Without a working FFmpeg this app can't generate any previews. "
+                "Try running 'ffmpeg -version' on the host or inside the container — if that also fails, your "
+                "FFmpeg install is broken (re-install or rebuild the container). FFmpeg's own error output: {}",
+                _ffmpeg_elapsed,
+                (result.stderr or "").strip()[:500] or "(no error output)",
+            )
             if result.stdout:
-                logger.debug(f"FFmpeg stdout: {result.stdout.strip()[:500]}")
+                logger.debug("FFmpeg stdout: {}", result.stdout.strip()[:500])
             validation_errors.append("FFmpeg found but not working properly")
         else:
             version_line = result.stdout.split("\n")[0].strip() if result.stdout else "unknown"
             logger.debug(f"FFmpeg: {version_line} (checked in {_ffmpeg_elapsed:.1f}s)")
     except subprocess.TimeoutExpired:
-        logger.error(f"FFmpeg version check timed out after 30s (path: {ffmpeg_path})")
+        logger.error(
+            "FFmpeg didn't respond within 30 seconds when asked for its version (binary at {}). "
+            "This usually means FFmpeg is hung or the binary is corrupt. The app cannot generate previews until "
+            "this is fixed — try running 'ffmpeg -version' manually; if it also hangs, re-install FFmpeg or "
+            "rebuild the container.",
+            ffmpeg_path,
+        )
         validation_errors.append("FFmpeg found but cannot execute properly")
     except OSError as exc:
-        logger.error(f"FFmpeg version check failed with OS error: {exc} (path: {ffmpeg_path})")
+        logger.error(
+            "Could not run FFmpeg at {}: {}. This is usually a permission problem (the binary isn't executable) "
+            "or a missing system library. The app cannot generate previews until FFmpeg works — fix the binary "
+            "permissions (chmod +x) or rebuild the container.",
+            ffmpeg_path,
+            exc,
+        )
         validation_errors.append("FFmpeg found but cannot execute properly")
 
     # Validate configuration using helper functions

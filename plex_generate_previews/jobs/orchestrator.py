@@ -279,15 +279,13 @@ def run_processing(
             logger.info(f"Processing complete: {summary}")
 
         if total_processed > 0 and not_found > 0 and generated == 0:
-            logger.warning("=" * 80)
             logger.warning(
-                f"WARNING: {not_found} of {total_processed} items were skipped "
-                "because the media file was not found locally."
+                "All {} item(s) finished with the file not found locally — no previews were generated this run. "
+                "This almost always means your path mappings are wrong: Plex reports the file at one path, but this "
+                "app can't see it at that path. Open Settings → Path mappings and add a row that translates Plex's "
+                "path to the local path this app sees. The Plex server itself is fine — only file access is broken.",
+                not_found,
             )
-            logger.warning(
-                "This usually means your path mappings are incorrect. Check your path mapping settings in the web UI."
-            )
-            logger.warning("=" * 80)
 
         log_failure_summary()
 
@@ -308,9 +306,11 @@ def run_processing(
         return None
     except Exception as e:
         logger.error(
-            f"Unexpected error during preview-generation job: {type(e).__name__}: {e}. "
-            f"This is a bug — the job will abort. Enable Debug logging under Settings → Logging "
-            f"to capture the full traceback and report it on GitHub."
+            "Unexpected error during the preview-generation job — aborting this job. Underlying cause: {}. "
+            "This is likely a bug. The web UI and other jobs keep running. "
+            "Enable Debug logging under Settings → Logging, re-run the job to capture the full traceback, "
+            "then report it at https://github.com/stevezau/plex_generate_vid_previews/issues.",
+            e,
         )
         raise
     finally:
@@ -319,9 +319,10 @@ def run_processing(
                 worker_pool.shutdown()
         except Exception as worker_error:
             logger.warning(
-                f"Worker pool didn't shut down cleanly: {worker_error}. "
-                f"Background threads may still be running — usually harmless, but if you see "
-                f"orphan FFmpeg processes after the job ends, restart the container."
+                "Worker pool didn't shut down cleanly: {}. "
+                "Background threads may still be running — usually harmless, but if you see orphan FFmpeg "
+                "processes after the job ends, restart the container.",
+                worker_error,
             )
         finally:
             if not job_id and worker_pool_callback:
@@ -333,7 +334,9 @@ def run_processing(
                 logger.debug(f"Cleaned up working temp folder: {config.working_tmp_folder}")
         except Exception as cleanup_error:
             logger.warning(
-                f"Could not delete the working temp folder at {config.working_tmp_folder}: "
-                f"{cleanup_error}. This won't break future runs but the folder will accumulate "
-                f"data over time — watch your disk and manually clear it if it grows large."
+                "Could not delete the working temp folder at {}: {}. "
+                "This won't break future runs but the folder will accumulate data over time — "
+                "watch your disk and manually clear it if it grows large.",
+                config.working_tmp_folder,
+                cleanup_error,
             )

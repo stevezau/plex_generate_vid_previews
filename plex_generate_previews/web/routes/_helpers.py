@@ -108,7 +108,14 @@ def _ensure_gpu_cache() -> None:
             _gpu_cache["result"] = gpus
         logger.debug(f"GPU detection complete: {len(gpus)} GPU(s)")
     except Exception as e:
-        logger.warning(f"GPU detection failed: {e}")
+        logger.warning(
+            "GPU detection failed ({}: {}). "
+            "The app will fall back to CPU-only processing — jobs will still run, just slower. "
+            "If you have a GPU, check it's visible inside the container "
+            "(Docker: --runtime=nvidia / --device /dev/dri:/dev/dri) and use Settings → Re-scan GPUs.",
+            type(e).__name__,
+            e,
+        )
         with _gpu_cache_lock:
             _gpu_cache["result"] = []
 

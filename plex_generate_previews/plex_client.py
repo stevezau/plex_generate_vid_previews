@@ -54,12 +54,22 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
         except xml.etree.ElementTree.ParseError as e:
             last_exception = e
             if attempt < max_retries:
-                logger.warning(f"XML parsing error on attempt {attempt + 1}/{max_retries + 1}: {e}")
-                logger.info(f"Retrying in {retry_delay} seconds... (Plex may be busy)")
+                logger.warning(
+                    "Plex returned a malformed response (attempt {} of {}); will retry in {:.1f}s. "
+                    "This usually means Plex is busy or restarting — no action needed unless every attempt fails.",
+                    attempt + 1,
+                    max_retries + 1,
+                    retry_delay,
+                )
                 time.sleep(retry_delay)
                 retry_delay *= 1.5  # Exponential backoff
             else:
-                logger.error(f"XML parsing failed after {max_retries + 1} attempts: {e}")
+                logger.error(
+                    "Plex kept returning malformed responses after {} attempts — giving up on this call. "
+                    "Plex is likely overloaded or in the middle of a restart. Wait a minute and retry, "
+                    "or restart Plex Media Server if it keeps happening. Other queued work continues; only this call failed.",
+                    max_retries + 1,
+                )
         except (
             ConnectionError,
             TimeoutError,
@@ -69,12 +79,26 @@ def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
         ) as e:
             last_exception = e
             if attempt < max_retries:
-                logger.warning(f"Network error on attempt {attempt + 1}/{max_retries + 1}: {e}")
-                logger.info(f"Retrying in {retry_delay} seconds...")
+                logger.warning(
+                    "Couldn't reach Plex (attempt {} of {}); will retry in {:.1f}s. Underlying cause: {}. "
+                    "If retries succeed, no action needed; if they all fail, check that Plex is running "
+                    "and the URL in Settings → Plex is reachable.",
+                    attempt + 1,
+                    max_retries + 1,
+                    retry_delay,
+                    e,
+                )
                 time.sleep(retry_delay)
                 retry_delay *= 1.5
             else:
-                logger.error(f"Network error failed after {max_retries + 1} attempts: {e}")
+                logger.error(
+                    "Could not reach Plex after {} attempts — giving up on this call. Last error: {}. "
+                    "Check that Plex is running, the URL and token in Settings → Plex are correct, and that "
+                    "nothing on the network (firewall, VPN) is blocking the connection. The current job will "
+                    "abort but other jobs and the web UI keep running.",
+                    max_retries + 1,
+                    e,
+                )
         except Exception:
             # For other errors, don't retry
             raise
@@ -135,13 +159,15 @@ def plex_server(config: Config):
         requests.exceptions.ReadTimeout,
         requests.exceptions.RequestException,
     ) as e:
-        logger.error(f"Failed to connect to Plex server at {config.plex_url}")
-        logger.error(f"Connection error: {e}")
-        logger.error("Please check:")
-        logger.error("  - Plex server is running and accessible")
-        logger.error("  - Plex URL is correct (including http:// or https://)")
-        logger.error("  - Network connectivity to Plex server")
-        logger.error("  - Firewall settings allow connections to port 32400")
+        logger.error(
+            "Could not connect to Plex at {}. Underlying cause: {}. "
+            "Things to check: (1) Plex Media Server is running and reachable from this container/host; "
+            "(2) the Plex URL in Settings → Plex is correct, including http:// or https:// and the port "
+            "(usually 32400); (3) no firewall is blocking the connection. The current job will abort; the "
+            "web UI and other servers continue working.",
+            config.plex_url,
+            e,
+        )
         raise ConnectionError(f"Unable to connect to Plex server at {config.plex_url}: {e}") from e
 
 
@@ -229,11 +255,11 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
         xml.etree.ElementTree.ParseError,
     ) as e:
         logger.error(
-            f"Could not list Plex libraries after several retries — aborting this run. "
-            f"{type(e).__name__}: {e}. "
-            f"Most likely Plex is offline, the URL or token in Settings is wrong, or the network "
-            f"between this tool and Plex is broken. Confirm Plex is reachable at the configured "
-            f"URL, then click Test Connection in Settings → Plex."
+            "Could not list Plex libraries after several retries — aborting this run. Underlying cause: {}. "
+            "Most likely Plex is offline, the URL or token in Settings is wrong, or the network "
+            "between this tool and Plex is broken. Confirm Plex is reachable at the configured "
+            "URL, then click Test Connection in Settings → Plex.",
+            e,
         )
         return
 
@@ -326,11 +352,12 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
             xml.etree.ElementTree.ParseError,
         ) as e:
             logger.error(
-                f"Could not fetch items from Plex library '{section.title}' after several "
-                f"retries — skipping it for this run. {type(e).__name__}: {e}. "
-                f"This usually means Plex is overloaded, restarting, or the library is huge "
-                f"and timing out. Try again in a few minutes; if it keeps failing, increase "
-                f"the Plex timeout under Settings → Plex."
+                "Could not fetch items from Plex library {!r} after several retries — skipping it for this run. "
+                "Underlying cause: {}. This usually means Plex is overloaded, restarting, or the library is huge "
+                "and timing out. Try again in a few minutes; if it keeps failing, increase the Plex timeout under "
+                "Settings → Plex. Other libraries are unaffected and will still be processed.",
+                section.title,
+                e,
             )
             continue
 
@@ -534,7 +561,12 @@ def trigger_plex_partial_scan(
         resp.raise_for_status()
         sections = resp.json().get("MediaContainer", {}).get("Directory", [])
     except requests.RequestException as e:
-        logger.warning(f"Could not fetch Plex library sections for partial scan: {e}")
+        logger.warning(
+            "Could not ask Plex for its library list to trigger a targeted scan: {}. "
+            "Preview files were still saved — Plex just won't know about the new files until its own "
+            "scheduled scan runs (or you trigger a scan manually in Plex). Verify Plex is reachable.",
+            e,
+        )
         return []
 
     # Build lookup: normalised location prefix -> (section_key, raw_location),
@@ -585,14 +617,20 @@ def trigger_plex_partial_scan(
                     triggered = True
                 else:
                     logger.warning(
-                        f"Plex partial scan returned HTTP {scan_resp.status_code} "
-                        f"for section {section_key}, path {scan_folder}"
+                        "Plex refused to start a targeted scan (HTTP {}) for library section {} at {!r}. "
+                        "Preview files were saved successfully — only the scan-trigger nudge failed; "
+                        "Plex's next scheduled scan will pick the file up. If you see this often, "
+                        "verify the Plex token in Settings → Plex still has admin permissions.",
+                        scan_resp.status_code,
+                        section_key,
+                        scan_folder,
                     )
             except requests.RequestException as e:
                 logger.warning(
-                    f"Could not ask Plex to scan the folder {scan_folder!r}: {e}. "
-                    f"The preview file was still saved — Plex just won't know about it until "
-                    f"its own scheduled scan runs (or you trigger one manually)."
+                    "Could not ask Plex to scan the folder {!r}: {}. The preview file was still saved — "
+                    "Plex just won't know about it until its own scheduled scan runs (or you trigger one manually).",
+                    scan_folder,
+                    e,
                 )
 
         if triggered:
@@ -659,8 +697,12 @@ def _expand_directory_to_media_files(
                 expanded.extend(media_files)
             else:
                 logger.warning(
-                    f"Directory '{resolved_dir}' contains no recognized media "
-                    f"files; passing through original path as-is"
+                    "Folder {!r} doesn't contain any recognised video files "
+                    "(.mkv/.mp4/.avi/.m4v/.ts/.wmv/.mov/.flv/.webm). "
+                    "Skipping this folder — the file path is being kept in the queue so other resolution "
+                    "attempts can try it. If you expected videos here, check the file extensions and "
+                    "folder permissions.",
+                    resolved_dir,
                 )
                 expanded.append(path)
         else:
@@ -742,9 +784,10 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
         xml.etree.ElementTree.ParseError,
     ) as e:
         logger.error(
-            f"Could not list Plex libraries to resolve incoming webhook paths: {e}. "
-            f"Webhooks for files this run can't be processed; verify Plex is reachable and the "
-            f"token is valid, then re-fire the webhook (or wait for the next scheduled scan)."
+            "Could not list Plex libraries to resolve incoming webhook paths: {}. "
+            "Webhooks for files this run can't be processed; verify Plex is reachable and the "
+            "token is valid, then re-fire the webhook (or wait for the next scheduled scan).",
+            e,
         )
         return WebhookResolutionResult(items=[], unresolved_paths=[], skipped_paths=[], path_hints=[])
 
@@ -826,7 +869,13 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
                     http.client.BadStatusLine,
                     xml.etree.ElementTree.ParseError,
                 ) as e:
-                    logger.warning(f"Skipping library '{section_title}' file-path search: {e}")
+                    logger.warning(
+                        "Couldn't search Plex library {!r} for the webhook file (Plex error: {}). "
+                        "This library will be skipped for this webhook only — other libraries are still being checked. "
+                        "Re-fire the webhook in a minute or two if Plex was busy.",
+                        section_title,
+                        e,
+                    )
                     continue
                 if not items:
                     logger.debug(
@@ -1087,14 +1136,16 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
         logger.info(f"Excluded {excluded_count} file(s) by path rule (see Settings → Exclude paths)")
     if skipped_input_paths:
         logger.warning(
-            f"Skipped {len(skipped_input_paths)} input file(s): matched Plex items in unselected "
-            f"libraries ({', '.join(sorted(skipped_library_names))}). "
-            f"Selected scope: "
-            + (
+            "Skipped {} file(s) from this webhook because they belong to Plex libraries you haven't "
+            "selected for processing (found in: {}). Currently selected libraries: {}. "
+            "If you want previews for these files too, open Settings → Plex and tick the additional libraries.",
+            len(skipped_input_paths),
+            ", ".join(sorted(skipped_library_names)),
+            (
                 ", ".join(sorted(selected_library_titles))
                 if selected_library_titles
                 else ", ".join(sorted(selected_library_ids))
-            )
+            ),
         )
     path_hints: list[str] = []
     if unresolved_input_paths:
@@ -1102,11 +1153,22 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
         paths_to_log = unresolved_input_paths[:cap]
         if len(unresolved_input_paths) > cap:
             logger.warning(
-                f"  Unresolved (first {cap} of {len(unresolved_input_paths)}): "
-                + ", ".join(repr(p) for p in paths_to_log)
+                "Could not match {} of {} webhook file(s) to anything in Plex (showing the first {}): {}. "
+                "Most often this means Plex hasn't indexed the file yet, or the path the webhook sent doesn't "
+                "match how Plex sees the file. Check Settings → Path mappings and the hints below.",
+                len(paths_to_log),
+                len(unresolved_input_paths),
+                cap,
+                ", ".join(repr(p) for p in paths_to_log),
             )
         else:
-            logger.warning("  Unresolved: " + ", ".join(repr(p) for p in paths_to_log))
+            logger.warning(
+                "Could not match these {} webhook file(s) to anything in Plex: {}. "
+                "Most often this means Plex hasn't indexed the file yet, or the path the webhook sent doesn't "
+                "match how Plex sees the file. Check Settings → Path mappings and the hints below.",
+                len(paths_to_log),
+                ", ".join(repr(p) for p in paths_to_log),
+            )
 
         plex_roots = sorted(
             {

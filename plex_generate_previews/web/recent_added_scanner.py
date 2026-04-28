@@ -169,8 +169,11 @@ def _iter_window_items(section, libtype: str, cutoff: datetime):
             )
         except Exception as exc2:
             logger.warning(
-                "Recently Added: section search failed for '{}': {}",
+                "Recently Added scan: could not search the Plex library {!r} ({}: {}). "
+                "This library is being skipped for this run — other libraries will still scan. "
+                "Verify the Plex server is reachable and the library hasn't been removed.",
                 getattr(section, "title", "?"),
+                type(exc2).__name__,
                 exc2,
             )
             return

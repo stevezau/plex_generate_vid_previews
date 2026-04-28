@@ -1334,7 +1334,10 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"])
         assert result.items == []
-        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
+        assert any(
+            "haven't selected" in str(call).lower() or "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
         assert any(
             "skipped" in str(call).lower() and "excluded" in str(call).lower() for call in mock_info.call_args_list
         )
@@ -1374,7 +1377,10 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"])
 
         assert result.items == []
-        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
+        assert any(
+            "haven't selected" in str(call).lower() or "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
 
 
 class TestExpandDirectoryToMediaFiles:

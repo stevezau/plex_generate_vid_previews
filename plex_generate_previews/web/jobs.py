@@ -188,7 +188,15 @@ class JobManager:
             os.makedirs(self._job_file_results_dir, exist_ok=True)
             self._enforce_log_retention()
         except OSError as e:
-            logger.warning(f"Could not create job logs directory {self._job_logs_dir}: {e}")
+            logger.warning(
+                "Could not create the job-logs directory at {} ({}: {}). "
+                "Jobs will still run, but per-job log lines won't be saved to disk — "
+                "they'll only show in the live Job Detail page while the job is running. "
+                "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
+                self._job_logs_dir,
+                type(e).__name__,
+                e,
+            )
         self._start_retention_timer()
 
     def set_socketio(self, socketio) -> None:
@@ -208,7 +216,12 @@ class JobManager:
                             # Mark any "running" jobs as failed on startup
                             # (they were interrupted by restart/crash)
                             if job.status == JobStatus.RUNNING:
-                                logger.warning(f"Job {job.id} was running when server stopped - marking as failed")
+                                logger.warning(
+                                    "Job {} was still running when the app last shut down — marking it as failed. "
+                                    "If auto-requeue-on-restart is enabled (Settings → Jobs), it will be revived shortly; "
+                                    "otherwise re-run it from the Jobs page when you're ready.",
+                                    job.id,
+                                )
                                 job.status = JobStatus.FAILED
                                 job.error = "Job was interrupted by server restart"
                                 job.completed_at = datetime.now(timezone.utc).isoformat()

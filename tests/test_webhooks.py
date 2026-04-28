@@ -564,7 +564,10 @@ def test_radarr_download_missing_file_path_logs_warning(mock_warning, client):
     payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
-    assert any("missing file path" in str(call) for call in mock_warning.call_args_list)
+    assert any(
+        "missing file path" in str(call) or "didn't carry a file path" in str(call)
+        for call in mock_warning.call_args_list
+    )
 
 
 def test_sonarr_download_missing_file_path_is_ignored(client):

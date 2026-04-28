@@ -38,7 +38,15 @@ def load_auth_config() -> dict:
             with open(AUTH_FILE) as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError) as e:
-            logger.warning(f"Failed to load auth config: {e}")
+            logger.warning(
+                "Could not read the saved authentication config at {} ({}: {}). "
+                "A new auth token will be generated on first use — your previous token (and anything that "
+                "still has it stored, like Plex/Sonarr/Radarr webhook configs) will stop working until "
+                "you re-paste the new one. Set WEB_AUTH_TOKEN as an env var to make the token fixed.",
+                AUTH_FILE,
+                type(e).__name__,
+                e,
+            )
     return {}
 
 
@@ -50,7 +58,15 @@ def save_auth_config(config: dict) -> None:
     try:
         atomic_json_save(AUTH_FILE, config, permissions=0o600)
     except OSError as e:
-        logger.error(f"Failed to save auth config: {e}")
+        logger.error(
+            "Could not save the authentication config to {} ({}: {}). "
+            "Token changes will not survive a restart — check the config directory is writable "
+            "(Docker: confirm volume mount permissions and PUID/PGID). "
+            "The web UI will keep working with the current in-memory token until then.",
+            AUTH_FILE,
+            type(e).__name__,
+            e,
+        )
 
 
 _logged_env_token = False
@@ -95,7 +111,12 @@ def regenerate_token() -> str:
     """Regenerate the authentication token."""
     # Don't regenerate if using environment variable
     if os.environ.get("WEB_AUTH_TOKEN"):
-        logger.warning("Cannot regenerate token when WEB_AUTH_TOKEN is set")
+        logger.warning(
+            "Token regeneration was requested but ignored — the token is being set by the "
+            "WEB_AUTH_TOKEN environment variable, which always wins. "
+            "To regenerate, unset WEB_AUTH_TOKEN (remove it from your docker-compose / docker run "
+            "command) and restart the container, then try again."
+        )
         return os.environ.get("WEB_AUTH_TOKEN")
 
     new_token = generate_token()

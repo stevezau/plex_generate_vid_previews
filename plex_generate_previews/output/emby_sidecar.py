@@ -99,7 +99,11 @@ class EmbyBifAdapter(OutputAdapter):
         # diagnosable in the field.
         if not sidecar.name.endswith(f"-{self._width}-{self._frame_interval}.bif"):
             logger.warning(
-                "Emby sidecar BIF written to non-standard name {} (Emby expects <basename>-<width>-<interval>.bif)",
+                "Emby preview file saved with an unexpected name: {}. "
+                "The file is on disk and is valid, but Emby looks for the pattern "
+                "'<video-name>-<width>-<interval>.bif' to auto-discover previews — "
+                "with this name Emby will likely ignore it. This is a configuration "
+                "bug worth reporting; previews on other servers are unaffected.",
                 sidecar.name,
             )
 
