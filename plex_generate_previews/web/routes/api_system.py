@@ -1714,3 +1714,90 @@ def get_libraries():
             e,
         )
         return jsonify({"error": f"Failed to retrieve libraries: {e}", "libraries": []}), 500
+
+
+# Folders considered system-internal — never browsable through the UI even
+# though docker would happily mount them. The picker is for media + config
+# folders, not /proc inspection.
+_BROWSE_DENYLIST = (
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "/var/run",
+    "/var/log",
+    "/boot",
+)
+
+
+def _is_in_denylist(path: str) -> bool:
+    """True when the canonical path lives under one of the system dirs."""
+    p = os.path.normpath(path)
+    for prefix in _BROWSE_DENYLIST:
+        if p == prefix or p.startswith(prefix + "/"):
+            return True
+    return False
+
+
+@api.route("/system/browse")
+@api_token_required
+def browse_directories():
+    """List sub-directories of an absolute path on the running container.
+
+    Used by the folder-picker modal so users can pick path-mapping locals or
+    the Plex config folder without typing. Lists directories only — files are
+    omitted, since every input that opens this picker stores a directory path.
+
+    Query params:
+        path: absolute path to list (default ``/``).
+        show_hidden: ``1`` to include dot-prefixed entries (default ``0``).
+
+    Returns JSON:
+        ``{"path": str, "parent": str|null, "entries": [{"name", "path"}], "error": str|null}``
+    """
+    raw_path = (request.args.get("path") or "/").strip() or "/"
+    show_hidden = request.args.get("show_hidden") in ("1", "true", "yes")
+
+    if "\x00" in raw_path:
+        return jsonify({"path": "/", "parent": None, "entries": [], "error": "Invalid path"}), 400
+
+    if not raw_path.startswith("/"):
+        return jsonify({"path": "/", "parent": None, "entries": [], "error": "Path must be absolute"}), 400
+
+    try:
+        canonical = os.path.realpath(raw_path)
+    except OSError as exc:
+        return jsonify({"path": raw_path, "parent": None, "entries": [], "error": str(exc)}), 400
+
+    if _is_in_denylist(canonical):
+        return jsonify({"path": canonical, "parent": None, "entries": [], "error": "Path is not browsable"}), 403
+
+    if not os.path.exists(canonical):
+        return jsonify({"path": canonical, "parent": None, "entries": [], "error": "Folder not found"}), 404
+    if not os.path.isdir(canonical):
+        return jsonify({"path": canonical, "parent": None, "entries": [], "error": "Not a directory"}), 400
+
+    parent = None if canonical == "/" else os.path.dirname(canonical) or "/"
+
+    try:
+        with os.scandir(canonical) as it:
+            entries = []
+            for entry in it:
+                if not show_hidden and entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                child = os.path.join(canonical, entry.name)
+                if _is_in_denylist(child):
+                    continue
+                entries.append({"name": entry.name, "path": child})
+    except PermissionError:
+        return jsonify({"path": canonical, "parent": parent, "entries": [], "error": "Permission denied"}), 403
+    except OSError as exc:
+        return jsonify({"path": canonical, "parent": parent, "entries": [], "error": str(exc)}), 500
+
+    entries.sort(key=lambda e: e["name"].lower())
+    return jsonify({"path": canonical, "parent": parent, "entries": entries, "error": None})

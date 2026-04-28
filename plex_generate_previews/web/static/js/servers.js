@@ -684,13 +684,16 @@
             }
             if (cfgInput.value) _validateLocalPathInput(cfgInput);
 
-            // Webhook & Scanner panel: load Plex Direct status + scanner list so
-            // the user sees current state without needing to open the tab first.
-            // Wiring runs once at DOMContentLoaded; loaders are cheap to repeat.
+            // Webhook & Scanner panel: scope all panel calls to this Plex
+            // server (Phase I5), then load status + scanner list so the user
+            // sees current state without needing to open the tab first.
             try {
+                if (typeof setPlexWebhookPanelServerId === 'function') setPlexWebhookPanelServerId(server.id);
                 if (typeof _wirePlexWebhookPanel === 'function') _wirePlexWebhookPanel();
                 if (typeof loadPlexWebhookStatus === 'function') loadPlexWebhookStatus();
                 if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
+                const caption = document.getElementById('editPlexWebhookServerCaption');
+                if (caption) caption.innerHTML = `This webhook will be registered with <strong>${escapeHtml(server.name || 'this Plex server')}</strong> using its own Plex token.`;
             } catch (_e) { }
         }
 
@@ -740,9 +743,14 @@
         tr.innerHTML = `
             <td><input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data/movies"></td>
             <td>
-                <input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies">
-                <div class="invalid-feedback small"></div>
-                <div class="valid-feedback small">Path exists</div>
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies">
+                    <button type="button" class="btn btn-outline-secondary pm-browse" title="Browse folders">
+                        <i class="bi bi-folder2-open"></i>
+                    </button>
+                    <div class="invalid-feedback small"></div>
+                    <div class="valid-feedback small">Path exists</div>
+                </div>
             </td>
             <td><button type="button" class="btn btn-sm btn-outline-danger pm-remove"><i class="bi bi-x-lg"></i></button></td>
         `;
@@ -750,6 +758,13 @@
         const localInput = tr.querySelector('.pm-local');
         localInput.addEventListener('input', _debouncedValidatePath(localInput));
         if (localVal) _validateLocalPathInput(localInput);
+        tr.querySelector('.pm-browse').addEventListener('click', () => {
+            const start = (localInput.value || '').trim() || '/';
+            window.openFolderPicker(start, (picked) => {
+                localInput.value = picked;
+                _validateLocalPathInput(localInput);
+            });
+        });
         tbody.appendChild(tr);
     }
 
@@ -767,12 +782,20 @@
     async function _validateLocalPathInput(input) {
         const path = (input.value || '').trim();
         const feedback = input.parentElement.querySelector('.invalid-feedback');
+        const success = input.parentElement.querySelector('.valid-feedback');
         if (!path) {
             input.classList.remove('is-invalid', 'is-valid');
             return;
         }
+        // The Plex config folder field gets the deeper structural check so
+        // the success message can confidently say "this is a real Plex config
+        // folder". Other path-mapping inputs only need existence + readable.
+        const useStructuralCheck = input.id === 'editPlexConfigFolder';
+        const endpoint = useStructuralCheck
+            ? '/api/settings/validate-plex-config-folder'
+            : '/api/settings/validate-local-path';
         try {
-            const resp = await fetch('/api/settings/validate-local-path', {
+            const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -781,8 +804,6 @@
                 body: JSON.stringify({ path }),
             });
             const data = await resp.json();
-            // Bail if the user kept typing in the meantime — the later call
-            // will paint the final state.
             if (input.value.trim() !== path) return;
             if (data.error) {
                 input.classList.remove('is-valid');
@@ -795,6 +816,13 @@
             } else {
                 input.classList.remove('is-invalid');
                 input.classList.add('is-valid');
+                if (success && useStructuralCheck && data.detail) {
+                    success.textContent = `Looks like a ${data.detail}`;
+                } else if (success && useStructuralCheck) {
+                    success.textContent = 'Valid Plex config folder';
+                } else if (success) {
+                    success.textContent = 'Path exists';
+                }
             }
         } catch {
             input.classList.remove('is-valid', 'is-invalid');
@@ -952,6 +980,32 @@
         }
     }
 
+    async function refreshLibrariesFromModal(btn) {
+        const id = ($('#editServerId').value || '').trim();
+        if (!id) return;
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Refreshing…';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/refresh-libraries`);
+            if (!r.ok) {
+                alert(`Failed to refresh: ${(r.data && r.data.error) || r.status}`);
+                return;
+            }
+            // Re-fetch the server payload so the Libraries tab repaints with
+            // fresh names without forcing the user to close and re-open.
+            const fresh = await api('GET', `/api/servers/${encodeURIComponent(id)}`);
+            if (fresh.ok && fresh.data && fresh.data.server) {
+                renderEditLibraries(fresh.data.server.libraries || []);
+            }
+            // Also refresh the cards on the page (counts changed).
+            loadServers();
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         $('#editAddPathMapping').addEventListener('click', () => addPathMappingRow());
         $('#editAddExcludePath').addEventListener('click', () => addExcludePathRow());
@@ -962,5 +1016,19 @@
         $('#editApplyExcludePathsAll').addEventListener('click', (ev) =>
             applyListToAllServers('exclude_paths', readExcludePathsFromForm, ev.currentTarget)
         );
+        const refreshBtn = document.getElementById('editRefreshLibrariesBtn');
+        if (refreshBtn) refreshBtn.addEventListener('click', (ev) => refreshLibrariesFromModal(ev.currentTarget));
+
+        const plexBrowseBtn = document.getElementById('editPlexConfigBrowseBtn');
+        if (plexBrowseBtn) {
+            plexBrowseBtn.addEventListener('click', () => {
+                const cfgInput = document.getElementById('editPlexConfigFolder');
+                const start = ((cfgInput && cfgInput.value) || '').trim() || '/';
+                window.openFolderPicker(start, (picked) => {
+                    cfgInput.value = picked;
+                    _validateLocalPathInput(cfgInput);
+                });
+            });
+        }
     });
 })();

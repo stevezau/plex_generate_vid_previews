@@ -925,10 +925,10 @@ def plex_webhook():
         return jsonify({"success": True, "message": "Plex webhook endpoint reachable"})
 
     settings = get_settings_manager()
-    if not settings.get("webhook_enabled", True) or not settings.get("plex_webhook_enabled", False):
+    if not settings.get("webhook_enabled", True):
         _add_history_entry("plex", event or "Plex", "", "disabled")
-        logger.info("Webhook: Plex event '{}' ignored (Plex webhook disabled)", event)
-        return jsonify({"success": True, "message": "Plex webhook disabled"})
+        logger.info("Webhook: Plex event '{}' ignored (master webhook switch off)", event)
+        return jsonify({"success": True, "message": "Webhooks disabled"})
 
     if event != "library.new":
         # Plex always sends every event the user has subscribed the URL to —

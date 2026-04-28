@@ -303,28 +303,15 @@ def _migrate_to_v2(sm) -> list:
 
 
 def _migrate_to_v3(sm) -> list:
-    """Seed defaults for the Plex direct webhook (off by default).
+    """No-op as of multi-server.
 
-    The legacy Recently Added keys that used to be seeded here are now
-    cleaned up by ``_migrate_to_v4`` since the scanner is a first-class
-    schedule type.
+    Used to seed top-level ``plex_webhook_enabled`` / ``plex_webhook_public_url``
+    defaults. Those keys are now per-server (under ``media_servers[i].output``)
+    and SettingsManager._load() migrates legacy installs at boot. Kept here so
+    the schema-version chain stays linear and existing installs at v2 still
+    advance to v3 cleanly.
     """
-    notes: list[str] = []
-    updates: dict[str, Any] = {}
-
-    plex_webhook_defaults = {
-        "plex_webhook_enabled": False,
-        "plex_webhook_public_url": "",
-    }
-    for key, default in plex_webhook_defaults.items():
-        if sm.get(key) is None:
-            updates[key] = default
-
-    if updates:
-        sm.apply_changes(updates=updates)
-        notes.append(f"seeded {len(updates)} auto-trigger default(s)")
-
-    return notes
+    return []
 
 
 def _migrate_to_v4(sm) -> list:

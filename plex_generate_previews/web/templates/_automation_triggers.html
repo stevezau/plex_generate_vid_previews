@@ -40,14 +40,6 @@
                     </div>
                 </div>
 
-                <div class="alert alert-secondary small mb-3">
-                    <i class="bi bi-info-circle me-1"></i>
-                    <strong>Where did Plex Direct and the Recently Added Scanner go?</strong>
-                    They're now per-Plex-server controls on the
-                    <a href="/servers">Servers</a> page — open your Plex card &rarr; Edit &rarr; <em>Webhook &amp; Scanner</em>.
-                    The settings below still apply to all incoming webhooks (Plex, *arr, Custom).
-                </div>
-
                 <div class="upgrade-caveat">
                     <strong><i class="bi bi-exclamation-triangle me-1"></i>Note about file upgrades:</strong>
                     The Plex auto-trigger options (Plex Direct webhook and Recently Added Scanner — both now on the Servers page) only fire on <em>brand-new</em> library items. When Sonarr or Radarr <em>upgrades</em> an existing file in place, Plex keeps the same library item and neither option notices. Use the Sonarr/Radarr webhook for that case — it has an "On Upgrade" event that handles in-place replacements.

@@ -76,7 +76,6 @@ def app(tmp_path):
             {
                 "setup_complete": True,
                 "webhook_enabled": True,
-                "plex_webhook_enabled": True,
             },
             f,
         )
@@ -190,20 +189,28 @@ def test_plex_webhook_missing_rating_key_returns_400(client):
     assert "ratingKey" in body["error"]
 
 
-def test_plex_webhook_disabled_when_setting_off(client, app):
-    """When plex_webhook_enabled is False, library.new should be ignored."""
+def test_plex_webhook_disabled_when_master_off(client, app):
+    """When the master webhook_enabled switch is False, library.new is ignored.
+
+    Phase I5 dropped the per-source plex_webhook_enabled gate — Plex Direct is
+    "enabled" implicitly by the per-server registration. Pausing all webhooks
+    is now a single global toggle.
+    """
     from plex_generate_previews.web.settings_manager import get_settings_manager
 
     sm = get_settings_manager()
-    sm.set("plex_webhook_enabled", False)
-    payload = {
-        "event": "library.new",
-        "Metadata": {"ratingKey": "1", "title": "Should be ignored"},
-    }
-    resp = _multipart_post(client, payload)
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert "disabled" in body["message"].lower()
+    sm.set("webhook_enabled", False)
+    try:
+        payload = {
+            "event": "library.new",
+            "Metadata": {"ratingKey": "1", "title": "Should be ignored"},
+        }
+        resp = _multipart_post(client, payload)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert "disabled" in body["message"].lower()
+    finally:
+        sm.set("webhook_enabled", True)
 
 
 def test_plex_webhook_requires_auth(client):

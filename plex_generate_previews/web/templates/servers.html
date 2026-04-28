@@ -273,8 +273,13 @@
                         <!-- Plex-only: config folder -->
                         <div id="editPlexConfigGroup" class="mb-3 d-none">
                             <label class="form-label">Plex config folder</label>
-                            <div>
+                            <div class="input-group">
                                 <input type="text" id="editPlexConfigFolder" class="form-control">
+                                <button type="button" class="btn btn-outline-secondary"
+                                        id="editPlexConfigBrowseBtn"
+                                        title="Browse folders">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
                                 <div class="invalid-feedback small"></div>
                                 <div class="valid-feedback small">Path exists</div>
                             </div>
@@ -292,7 +297,12 @@
 
                     <!-- Libraries -->
                     <div class="tab-pane fade" id="edit-tab-libraries">
-                        <p class="small text-muted">Tick the libraries this app should publish previews for. Click "Refresh libraries" on the server card to fetch fresh names from the server.</p>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <p class="small text-muted mb-0">Tick the libraries this app should publish previews for.</p>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editRefreshLibrariesBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
+                            </button>
+                        </div>
                         <div id="editLibraryList" class="list-group small"></div>
                     </div>
 
@@ -342,13 +352,7 @@
                          Plex token at app level; per-server registration in a multi-Plex
                          install is tracked as a follow-up. -->
                     <div class="tab-pane fade" id="edit-tab-automation">
-                        <div class="alert alert-info small py-2 mb-3">
-                            <i class="bi bi-info-circle me-1"></i>
-                            <strong>Multi-Plex note:</strong> these controls operate on the
-                            global Plex token. If you've configured more than one Plex server,
-                            the registration here applies to whichever Plex token this app
-                            currently holds. Per-server registration is a planned follow-up.
-                        </div>
+                        <div id="editPlexWebhookServerCaption" class="small text-muted mb-3"></div>
 
                         <!-- Plex Direct Webhook -->
                         <div class="card mb-3">

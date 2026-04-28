@@ -306,8 +306,6 @@ def get_settings():
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
-            "plex_webhook_enabled": bool(settings.get("plex_webhook_enabled", False)),
-            "plex_webhook_public_url": settings.get("plex_webhook_public_url", "") or "",
         }
     )
 
@@ -351,16 +349,9 @@ def save_settings():
         "webhook_secret",
         "auto_requeue_on_restart",
         "requeue_max_age_minutes",
-        "plex_webhook_enabled",
-        "plex_webhook_public_url",
     ]
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}
-
-    if "plex_webhook_public_url" in updates:
-        updates["plex_webhook_public_url"] = str(updates.get("plex_webhook_public_url") or "").strip()
-    if "plex_webhook_enabled" in updates:
-        updates["plex_webhook_enabled"] = bool(updates["plex_webhook_enabled"])
 
     # Sanitize gpu_config: must be a list of dicts with a device key.
     # Normalize: workers <= 0 forces enabled=false (contradictory state).
@@ -420,26 +411,40 @@ def save_settings():
 
             clear_library_cache()
 
-        # Rotating the webhook secret invalidates the token embedded in
-        # the registered Plex webhook URL — re-register so Plex picks up
-        # the new value.  Best-effort; failures are logged but don't
-        # block the settings save.
-        if "webhook_secret" in updates and settings.get("plex_webhook_enabled"):
+        # Rotating the webhook secret invalidates the token embedded in any
+        # registered Plex webhook URL. Re-register every Plex server that has
+        # a stored webhook URL so Plex picks up the new auth token. Best-effort
+        # per server — one failure shouldn't block the others or the save.
+        if "webhook_secret" in updates:
             try:
                 from .. import plex_webhook_registration as pwh
 
-                plex_token = settings.plex_token or ""
-                public_url = (settings.get("plex_webhook_public_url") or "").strip() or _default_plex_webhook_url()
                 new_auth = _plex_webhook_auth_token()
-                if plex_token and new_auth:
-                    pwh.register(plex_token, public_url, auth_token=new_auth)
-                    logger.info("Plex webhook re-registered with new auth token after secret rotation")
+                if new_auth:
+                    for entry in settings.get("media_servers") or []:
+                        if not isinstance(entry, dict) or (entry.get("type") or "").lower() != "plex":
+                            continue
+                        token = (entry.get("token") or "").strip()
+                        public_url = ((entry.get("output") or {}).get("webhook_public_url") or "").strip()
+                        if not token or not public_url:
+                            continue
+                        try:
+                            pwh.register(token, public_url, auth_token=new_auth)
+                            logger.info(
+                                "Plex webhook re-registered for {!r} after secret rotation",
+                                entry.get("name") or entry.get("id"),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Could not re-register Plex webhook for {!r} after secret rotation. "
+                                "Plex will keep posting with the OLD token until you re-register from "
+                                "Servers → Edit → Webhook & Scanner.",
+                                entry.get("name") or entry.get("id"),
+                                exc_info=True,
+                            )
             except Exception:
                 logger.warning(
-                    "Could not re-register the Plex webhook on plex.tv after the webhook secret was rotated. "
-                    "Your settings saved fine, but Plex will keep posting with the OLD token until you "
-                    "re-register manually. Fix: Settings → Webhooks → Plex → 'Re-register with Plex'. "
-                    "See the traceback below for the underlying cause.",
+                    "Webhook secret rotation re-registration failed unexpectedly.",
                     exc_info=True,
                 )
 
@@ -536,6 +541,143 @@ def validate_local_path():
     return jsonify({"exists": True, "readable": True, "error": None})
 
 
+@api.route("/settings/validate-plex-config-folder", methods=["POST"])
+@setup_or_auth_required
+def validate_plex_config_folder():
+    """Inline check that a path looks like a real Plex config folder.
+
+    Used by the Servers > Edit Plex > General tab to give the user a confident
+    "yes this is the right folder" message, instead of just "directory exists".
+    Mirrors the structural checks in /setup/validate-paths but returns a tight,
+    boolean-friendly shape suitable for live form validation.
+
+    Request JSON: ``{"path": "/plex"}``
+
+    Returns JSON:
+        ``{"exists": bool, "valid_plex_structure": bool, "shard_count": int,
+           "writable": bool, "detail": str, "error": str|null}``
+    """
+    data = request.get_json() or {}
+    raw_path = (data.get("path") or "").strip()
+    if not raw_path:
+        return jsonify(
+            {
+                "exists": False,
+                "valid_plex_structure": False,
+                "shard_count": 0,
+                "writable": False,
+                "detail": "",
+                "error": None,
+            }
+        )
+    if "\x00" in raw_path:
+        return jsonify(
+            {
+                "exists": False,
+                "valid_plex_structure": False,
+                "shard_count": 0,
+                "writable": False,
+                "detail": "",
+                "error": "Invalid path",
+            }
+        )
+
+    resolved = _safe_resolve_within(raw_path, PLEX_DATA_ROOT)
+    if resolved is None:
+        return jsonify(
+            {
+                "exists": False,
+                "valid_plex_structure": False,
+                "shard_count": 0,
+                "writable": False,
+                "detail": "",
+                "error": "Path is outside the allowed Plex data root",
+            }
+        )
+    if not os.path.exists(resolved):
+        return jsonify(
+            {
+                "exists": False,
+                "valid_plex_structure": False,
+                "shard_count": 0,
+                "writable": False,
+                "detail": "",
+                "error": "Folder not found",
+            }
+        )
+
+    media_path = os.path.join(resolved, "Media")
+    localhost_path = os.path.join(media_path, "localhost")
+
+    if not os.path.exists(media_path):
+        return jsonify(
+            {
+                "exists": True,
+                "valid_plex_structure": False,
+                "shard_count": 0,
+                "writable": os.access(resolved, os.W_OK),
+                "detail": "",
+                "error": 'Missing "Media" subfolder — this does not look like a Plex config folder',
+            }
+        )
+    if not os.path.exists(localhost_path):
+        return jsonify(
+            {
+                "exists": True,
+                "valid_plex_structure": False,
+                "shard_count": 0,
+                "writable": os.access(resolved, os.W_OK),
+                "detail": "",
+                "error": 'Missing "Media/localhost" subfolder — this does not look like a Plex config folder',
+            }
+        )
+
+    try:
+        contents = os.listdir(localhost_path)
+        shard_count = sum(1 for d in contents if len(d) == 1 and d in "0123456789abcdef")
+    except OSError as exc:
+        logger.warning(
+            "validate-plex-config-folder: could not enumerate {} ({}: {})",
+            localhost_path,
+            type(exc).__name__,
+            exc,
+        )
+        shard_count = 0
+
+    writable = os.access(resolved, os.W_OK)
+    if not writable:
+        return jsonify(
+            {
+                "exists": True,
+                "valid_plex_structure": True,
+                "shard_count": shard_count,
+                "writable": False,
+                "detail": "",
+                "error": "Folder is not writable — check PUID/PGID on the container",
+            }
+        )
+
+    if shard_count >= 10:
+        detail = f"valid Plex structure ({shard_count}/16 hash shards under Media/localhost)"
+    elif shard_count > 0:
+        detail = (
+            f"Plex structure looks new — only {shard_count}/16 hash shards present (will populate as previews generate)"
+        )
+    else:
+        detail = "Media/localhost exists but has no hash shards yet (will populate as previews generate)"
+
+    return jsonify(
+        {
+            "exists": True,
+            "valid_plex_structure": True,
+            "shard_count": shard_count,
+            "writable": True,
+            "detail": detail,
+            "error": None,
+        }
+    )
+
+
 # ============================================================================
 # Auto-trigger sources (Plex direct webhook + Recently Added scanner)
 # ============================================================================
@@ -554,6 +696,80 @@ def _default_plex_webhook_url() -> str:
     return f"{base}/api/webhooks/plex"
 
 
+def _resolve_plex_server_for_webhook(server_id: str | None) -> tuple[dict | None, str | None, int | None]:
+    """Look up the Plex server entry the webhook endpoint should operate on.
+
+    Returns (server_entry, error_message, status_code). On success the second
+    and third members are None. When ``server_id`` is provided we require an
+    exact match in ``media_servers``; when it's omitted we fall back to the
+    first Plex entry (handles the setup-wizard / single-server case).
+    """
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    media_servers = settings.get("media_servers") or []
+    if server_id:
+        match = next(
+            (s for s in media_servers if isinstance(s, dict) and s.get("id") == server_id),
+            None,
+        )
+        if not match:
+            return None, f"Server {server_id!r} not configured", 404
+        if (match.get("type") or "").lower() != "plex":
+            return None, "Plex Direct webhook is Plex-only", 400
+        return match, None, None
+    plex_entry = next(
+        (s for s in media_servers if isinstance(s, dict) and (s.get("type") or "").lower() == "plex"),
+        None,
+    )
+    return plex_entry, None, None
+
+
+def _server_token(server_entry: dict | None) -> str:
+    """Extract the Plex token from a server entry, falling back to the legacy global one.
+
+    Server entries store the token under ``auth.token`` (matching the
+    multi-server schema). A flat ``token`` key is also accepted for
+    forward-compat with any future re-shape.
+    """
+    from ..settings_manager import get_settings_manager
+
+    if server_entry:
+        token = (server_entry.get("auth") or {}).get("token") or server_entry.get("token") or ""
+        token = str(token).strip()
+        if token:
+            return token
+    return (get_settings_manager().plex_token or "").strip()
+
+
+def _server_webhook_url(server_entry: dict | None) -> str:
+    """Stored public URL for the given Plex server, or the per-request default."""
+    if server_entry:
+        url = ((server_entry.get("output") or {}).get("webhook_public_url") or "").strip()
+        if url:
+            return url
+    return _default_plex_webhook_url()
+
+
+def _persist_server_webhook_url(server_entry: dict | None, public_url: str) -> None:
+    """Write the public URL back onto the server entry's ``output``."""
+    from ..settings_manager import get_settings_manager
+
+    if not server_entry:
+        return
+    settings = get_settings_manager()
+    media_servers = list(settings.get("media_servers") or [])
+    for i, s in enumerate(media_servers):
+        if isinstance(s, dict) and s.get("id") == server_entry.get("id"):
+            entry = dict(s)
+            output = dict(entry.get("output") or {})
+            output["webhook_public_url"] = public_url
+            entry["output"] = output
+            media_servers[i] = entry
+            break
+    settings.update({"media_servers": media_servers})
+
+
 @api.route("/settings/plex_webhook/status")
 @setup_or_auth_required
 def plex_webhook_status():
@@ -562,17 +778,20 @@ def plex_webhook_status():
     Probes plex.tv on every call so the UI reflects reality (e.g. the
     user revoked the webhook in Plex Web Settings).  Returns Plex Pass
     detection so the UI can disable the toggle when unsupported.
+
+    Accepts ``?server_id=<id>`` to scope the check to one specific Plex
+    server (each Plex server has its own token + URL). Without server_id,
+    falls back to the first configured Plex server.
     """
     from .. import plex_webhook_registration as pwh
-    from ..settings_manager import get_settings_manager
 
-    settings = get_settings_manager()
-    token = settings.plex_token or ""
-    public_url = (settings.get("plex_webhook_public_url") or "").strip()
-    if not public_url:
-        public_url = _default_plex_webhook_url()
+    server_id = (request.args.get("server_id") or "").strip() or None
+    server_entry, err, status = _resolve_plex_server_for_webhook(server_id)
+    if err:
+        return jsonify({"error": err, "error_reason": "server_not_found"}), status
 
-    enabled_in_settings = bool(settings.get("plex_webhook_enabled", False))
+    token = _server_token(server_entry)
+    public_url = _server_webhook_url(server_entry)
 
     has_pass: bool | None
     registered = False
@@ -601,7 +820,8 @@ def plex_webhook_status():
 
     return jsonify(
         {
-            "enabled_in_settings": enabled_in_settings,
+            "server_id": server_entry.get("id") if server_entry else None,
+            "server_name": server_entry.get("name") if server_entry else None,
             "registered_in_plex": registered,
             "public_url": public_url,
             "default_url": _default_plex_webhook_url(),
@@ -644,16 +864,20 @@ def plex_webhook_register():
     to authenticate against the receiving endpoint.
     """
     from .. import plex_webhook_registration as pwh
-    from ..settings_manager import get_settings_manager
 
-    settings = get_settings_manager()
-    token = settings.plex_token or ""
+    data = request.get_json() or {}
+    server_id = (data.get("server_id") or request.args.get("server_id") or "").strip() or None
+    server_entry, err, status = _resolve_plex_server_for_webhook(server_id)
+    if err:
+        return jsonify({"success": False, "error": err, "reason": "server_not_found"}), status
+
+    token = _server_token(server_entry)
     if not token:
         return (
             jsonify(
                 {
                     "success": False,
-                    "error": "Plex token not configured. Re-run the Setup Wizard.",
+                    "error": "Plex token not configured for this server. Re-authenticate from the Edit modal.",
                     "reason": "missing_token",
                 }
             ),
@@ -677,9 +901,8 @@ def plex_webhook_register():
             400,
         )
 
-    data = request.get_json() or {}
     raw_url = (data.get("public_url") or "").strip()
-    public_url = raw_url or _default_plex_webhook_url()
+    public_url = raw_url or _server_webhook_url(server_entry)
 
     try:
         pwh.register(token, public_url, auth_token=auth_token)
@@ -692,16 +915,12 @@ def plex_webhook_register():
             status_code,
         )
 
-    settings.update(
-        {
-            "plex_webhook_enabled": True,
-            "plex_webhook_public_url": public_url,
-        }
-    )
+    _persist_server_webhook_url(server_entry, public_url)
 
     return jsonify(
         {
             "success": True,
+            "server_id": server_entry.get("id") if server_entry else None,
             "registered_in_plex": True,
             "public_url": public_url,
         }
@@ -713,46 +932,37 @@ def plex_webhook_register():
 def plex_webhook_unregister():
     """Remove the Plex direct webhook from the user's plex.tv account."""
     from .. import plex_webhook_registration as pwh
-    from ..settings_manager import get_settings_manager
 
-    settings = get_settings_manager()
-    token = settings.plex_token or ""
-    public_url = (settings.get("plex_webhook_public_url") or "").strip()
-    if not public_url:
-        public_url = _default_plex_webhook_url()
+    data = request.get_json() or {}
+    server_id = (data.get("server_id") or request.args.get("server_id") or "").strip() or None
+    server_entry, err, status = _resolve_plex_server_for_webhook(server_id)
+    if err:
+        return jsonify({"success": False, "error": err, "reason": "server_not_found"}), status
+
+    token = _server_token(server_entry)
+    public_url = _server_webhook_url(server_entry)
 
     if token:
         try:
             pwh.unregister(token, public_url)
         except pwh.PlexWebhookError as exc:
-            # Surface the error but still flip the local toggle off so
-            # the UI doesn't get stuck in a confusing in-between state.
             logger.warning(
                 "Could not remove the Plex webhook registration on plex.tv ({}). "
-                "We've still turned the toggle off here, but Plex may keep firing webhooks at us "
-                "until you remove the entry manually at https://app.plex.tv/desktop#!/account → Webhooks. "
-                "Check your Plex token is still valid in Settings.",
+                "Plex may keep firing webhooks at us until you remove the entry manually at "
+                "https://app.plex.tv/desktop#!/account → Webhooks. "
+                "Check your Plex token is still valid for this server.",
                 exc,
             )
-            settings.update({"plex_webhook_enabled": False})
             return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": str(exc),
-                        "reason": exc.reason,
-                        "enabled_in_settings": False,
-                    }
-                ),
+                jsonify({"success": False, "error": str(exc), "reason": exc.reason}),
                 502,
             )
 
-    settings.update({"plex_webhook_enabled": False})
     return jsonify(
         {
             "success": True,
+            "server_id": server_entry.get("id") if server_entry else None,
             "registered_in_plex": False,
-            "enabled_in_settings": False,
         }
     )
 
@@ -774,12 +984,15 @@ def plex_webhook_test_reachability():
     import requests
 
     from .. import plex_webhook_registration as pwh
-    from ..settings_manager import get_settings_manager
 
-    settings = get_settings_manager()
     data = request.get_json() or {}
+    server_id = (data.get("server_id") or request.args.get("server_id") or "").strip() or None
+    server_entry, err, status = _resolve_plex_server_for_webhook(server_id)
+    if err:
+        return jsonify({"success": False, "error": err}), status
+
     raw_url = (data.get("public_url") or "").strip()
-    public_url = raw_url or ((settings.get("plex_webhook_public_url") or "").strip() or _default_plex_webhook_url())
+    public_url = raw_url or _server_webhook_url(server_entry)
 
     auth_token = _plex_webhook_auth_token()
     if not auth_token:

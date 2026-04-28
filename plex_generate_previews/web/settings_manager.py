@@ -103,6 +103,42 @@ class SettingsManager:
                 self._settings = {}
         else:
             self._settings = {}
+        self._migrate_global_plex_webhook_to_per_server()
+
+    def _migrate_global_plex_webhook_to_per_server(self) -> None:
+        """One-shot migration: move legacy global Plex webhook keys onto the Plex server entry.
+
+        Pre-multi-server installs stored ``plex_webhook_public_url`` /
+        ``plex_webhook_enabled`` at the top level. With multi-server they need
+        to live on each Plex server's ``output`` so the registration can use
+        the right per-server token. Multi-server is brand-new on this branch
+        so any settings.json hitting this code holds at most one Plex server;
+        the migration is a straight copy.
+        """
+        legacy_url = (self._settings.get("plex_webhook_public_url") or "").strip()
+        legacy_enabled = self._settings.get("plex_webhook_enabled")
+        if not legacy_url and legacy_enabled is None:
+            return  # nothing to migrate
+
+        media_servers = self._settings.get("media_servers") or []
+        plex_entry = next(
+            (s for s in media_servers if isinstance(s, dict) and s.get("type") == "plex"),
+            None,
+        )
+        if plex_entry is not None:
+            output = plex_entry.setdefault("output", {})
+            if legacy_url and not output.get("webhook_public_url"):
+                output["webhook_public_url"] = legacy_url
+            if legacy_enabled is not None and "webhook_enabled" not in output:
+                output["webhook_enabled"] = bool(legacy_enabled)
+            logger.info(
+                "Migrated legacy global plex_webhook_* keys onto Plex server {!r}",
+                plex_entry.get("name") or plex_entry.get("id"),
+            )
+
+        self._settings.pop("plex_webhook_public_url", None)
+        self._settings.pop("plex_webhook_enabled", None)
+        self._save()
 
     def _save(self) -> None:
         """Save settings to file atomically."""

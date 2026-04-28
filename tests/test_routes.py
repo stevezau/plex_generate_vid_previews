@@ -3746,3 +3746,297 @@ class TestBifSearchPhases:
         resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
 
         assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Phase I7 — Folder browser endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestFolderBrowse:
+    """Verify /api/system/browse safety + behaviour."""
+
+    def test_browse_lists_subdirectories(self, client, tmp_path):
+        # Use a private subdir so the test fixture's "config/" sibling
+        # (created by the autouse temp-config fixture) doesn't pollute results.
+        sandbox = tmp_path / "browse_sandbox"
+        sandbox.mkdir()
+        (sandbox / "movies").mkdir()
+        (sandbox / "tv").mkdir()
+        (sandbox / "readme.txt").write_text("ignored")
+
+        resp = client.get(
+            f"/api/system/browse?path={sandbox}",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        names = {e["name"] for e in body["entries"]}
+        assert names == {"movies", "tv"}  # files filtered out
+
+    def test_browse_hides_dot_dirs_by_default(self, client, tmp_path):
+        sandbox = tmp_path / "dot_sandbox"
+        sandbox.mkdir()
+        (sandbox / ".secret").mkdir()
+        (sandbox / "public").mkdir()
+
+        resp = client.get(
+            f"/api/system/browse?path={sandbox}",
+            headers=_api_headers(),
+        )
+        assert {e["name"] for e in resp.get_json()["entries"]} == {"public"}
+
+        resp = client.get(
+            f"/api/system/browse?path={sandbox}&show_hidden=1",
+            headers=_api_headers(),
+        )
+        assert {e["name"] for e in resp.get_json()["entries"]} == {".secret", "public"}
+
+    def test_browse_rejects_relative_paths(self, client):
+        resp = client.get("/api/system/browse?path=relative/dir", headers=_api_headers())
+        assert resp.status_code == 400
+        assert "absolute" in resp.get_json()["error"].lower()
+
+    def test_browse_rejects_denylisted_paths(self, client):
+        for path in ("/proc", "/sys", "/dev"):
+            resp = client.get(
+                f"/api/system/browse?path={path}",
+                headers=_api_headers(),
+            )
+            assert resp.status_code == 403
+
+    def test_browse_404_on_missing_path(self, client):
+        resp = client.get(
+            "/api/system/browse?path=/nonexistent/path/zzz",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase I3 — validate-plex-config-folder endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePlexConfigFolder:
+    """Validate the new structural check used by Servers > Edit Plex."""
+
+    def test_valid_plex_structure_returns_shard_count(self, client, tmp_path, monkeypatch):
+        plex_root = tmp_path / "plex"
+        localhost = plex_root / "Media" / "localhost"
+        localhost.mkdir(parents=True)
+        for d in "0123456789abcdef":
+            (localhost / d).mkdir()
+
+        # PLEX_DATA_ROOT is captured into api_settings.py at import time;
+        # rebinding the module-level attr there is what actually changes the
+        # bound name the endpoint reads.
+        from plex_generate_previews.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": str(plex_root)},
+        )
+        body = resp.get_json()
+        assert body["exists"] is True
+        assert body["valid_plex_structure"] is True
+        assert body["shard_count"] == 16
+        assert "16/16" in body["detail"]
+
+    def test_missing_media_folder_reports_clear_error(self, client, tmp_path, monkeypatch):
+        not_plex = tmp_path / "random"
+        not_plex.mkdir()
+        from plex_generate_previews.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": str(not_plex)},
+        )
+        body = resp.get_json()
+        assert body["exists"] is True
+        assert body["valid_plex_structure"] is False
+        assert "Media" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# Phase I5 — Per-server Plex webhook endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestPerServerPlexWebhook:
+    """The status / register / unregister endpoints route by server_id."""
+
+    def _seed_two_plex_servers(self):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set(
+            "media_servers",
+            [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "name": "Living Room",
+                    "enabled": True,
+                    "url": "http://a:32400",
+                    "auth": {"method": "token", "token": "TOKEN-A"},
+                    "output": {"adapter": "plex_bundle", "webhook_public_url": "https://a.example/api/webhooks/plex"},
+                },
+                {
+                    "id": "plex-b",
+                    "type": "plex",
+                    "name": "Bedroom",
+                    "enabled": True,
+                    "url": "http://b:32400",
+                    "auth": {"method": "token", "token": "TOKEN-B"},
+                    "output": {"adapter": "plex_bundle"},
+                },
+            ],
+        )
+
+    def test_status_uses_per_server_token(self, client, monkeypatch):
+        self._seed_two_plex_servers()
+        seen = {}
+
+        def fake_is_registered(token, url):
+            seen["token"] = token
+            seen["url"] = url
+            return True
+
+        from plex_generate_previews.web import plex_webhook_registration as pwh
+
+        monkeypatch.setattr(pwh, "is_registered", fake_is_registered)
+
+        resp = client.get("/api/settings/plex_webhook/status?server_id=plex-a", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["server_id"] == "plex-a"
+        assert body["server_name"] == "Living Room"
+        assert body["registered_in_plex"] is True
+        assert seen["token"] == "TOKEN-A"
+        assert seen["url"] == "https://a.example/api/webhooks/plex"
+
+    def test_register_persists_url_onto_target_server(self, client, monkeypatch):
+        self._seed_two_plex_servers()
+        from plex_generate_previews.web import plex_webhook_registration as pwh
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        seen = {}
+
+        def fake_register(token, url, auth_token=None):
+            seen["token"] = token
+            seen["url"] = url
+            seen["auth_token"] = auth_token
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "plex-b", "public_url": "https://b.example/api/webhooks/plex"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["server_id"] == "plex-b"
+        assert seen["token"] == "TOKEN-B"
+        assert seen["url"] == "https://b.example/api/webhooks/plex"
+
+        # Verify the URL got persisted onto plex-b only.
+        servers = get_settings_manager().get("media_servers")
+        plex_b = next(s for s in servers if s["id"] == "plex-b")
+        assert plex_b["output"]["webhook_public_url"] == "https://b.example/api/webhooks/plex"
+        plex_a = next(s for s in servers if s["id"] == "plex-a")
+        assert plex_a["output"]["webhook_public_url"] == "https://a.example/api/webhooks/plex"
+
+    def test_register_rejects_unknown_server(self, client):
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "does-not-exist"},
+        )
+        assert resp.status_code == 404
+        assert resp.get_json()["reason"] == "server_not_found"
+
+    def test_register_rejects_non_plex_server(self, client):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set(
+            "media_servers",
+            [{"id": "emby-1", "type": "emby", "name": "Emby", "enabled": True, "url": "http://e", "auth": {}}],
+        )
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "emby-1"},
+        )
+        assert resp.status_code == 400
+        assert "Plex-only" in resp.get_json()["error"]
+
+
+class TestSettingsManagerWebhookMigration:
+    """Settings load migrates legacy global Plex webhook keys onto the Plex server."""
+
+    def test_migration_moves_url_onto_plex_server(self, tmp_path):
+        import json as _json
+
+        from plex_generate_previews.web.settings_manager import SettingsManager
+
+        cfg = tmp_path / "config"
+        cfg.mkdir()
+        (cfg / "settings.json").write_text(
+            _json.dumps(
+                {
+                    "plex_webhook_public_url": "http://legacy.example/api/webhooks/plex",
+                    "plex_webhook_enabled": True,
+                    "media_servers": [
+                        {
+                            "id": "plex-1",
+                            "type": "plex",
+                            "name": "Plex",
+                            "enabled": True,
+                            "url": "http://p:32400",
+                            "auth": {},
+                            "output": {"adapter": "plex_bundle"},
+                        }
+                    ],
+                }
+            )
+        )
+
+        sm = SettingsManager(config_dir=str(cfg))
+
+        # Legacy keys gone
+        assert sm.get("plex_webhook_public_url") is None
+        assert sm.get("plex_webhook_enabled") is None
+        # Migrated onto plex-1 output
+        plex = sm.get("media_servers")[0]
+        assert plex["output"]["webhook_public_url"] == "http://legacy.example/api/webhooks/plex"
+        assert plex["output"]["webhook_enabled"] is True
+
+    def test_migration_drops_keys_when_no_plex_server(self, tmp_path):
+        import json as _json
+
+        from plex_generate_previews.web.settings_manager import SettingsManager
+
+        cfg = tmp_path / "config"
+        cfg.mkdir()
+        (cfg / "settings.json").write_text(
+            _json.dumps(
+                {
+                    "plex_webhook_public_url": "http://legacy/api/webhooks/plex",
+                    "media_servers": [],
+                }
+            )
+        )
+
+        sm = SettingsManager(config_dir=str(cfg))
+        assert sm.get("plex_webhook_public_url") is None
+        assert sm.get("media_servers") == []

@@ -1198,7 +1198,7 @@ function renderDashboardGpuConfig() {
         }
         html += `</div>`;
     }
-    html += `<div class="mt-1"><a href="/settings" class="small text-decoration-none"><i class="bi bi-gear me-1"></i>Configure GPUs in Settings</a></div>`;
+    html += `<div class="mt-1"><a href="/settings#gpu-configuration" class="small text-decoration-none"><i class="bi bi-gear me-1"></i>Configure GPUs in Settings</a></div>`;
     container.innerHTML = html;
 
     container.querySelectorAll('[data-bs-toggle="popover"]').forEach(el => {
@@ -2979,6 +2979,27 @@ async function onJobServerChange() {
 function _renderJobLibraryList(libs, filterServerId) {
     const listEl = document.getElementById('jobLibraryList');
     if (!listEl) return;
+
+    // Visual confirmation that the picker actually filtered the list. Reads
+    // the current selection's text directly from the picker so it matches
+    // exactly what the user clicked, including the (PLEX) / (EMBY) suffix.
+    const captionEl = document.getElementById('jobLibraryListCaption');
+    if (captionEl) {
+        if (filterServerId) {
+            const sel = document.getElementById('jobServerScope');
+            const serverLabel = sel ? sel.options[sel.selectedIndex].textContent : filterServerId;
+            captionEl.innerHTML = `<i class="bi bi-funnel me-1"></i>Filtered to <strong>${escapeHtml(serverLabel)}</strong> &mdash; ${(libs || []).length} librar${(libs || []).length === 1 ? 'y' : 'ies'}`;
+        } else {
+            const distinctServers = new Set();
+            for (const l of libs || []) {
+                if (l && l.server_id) distinctServers.add(l.server_id);
+            }
+            const serverCount = distinctServers.size;
+            captionEl.innerHTML = serverCount > 0
+                ? `<i class="bi bi-collection me-1"></i>Showing all servers &mdash; ${(libs || []).length} libraries across ${serverCount} server${serverCount === 1 ? '' : 's'}`
+                : '';
+        }
+    }
     if (!libs || libs.length === 0) {
         if (librariesLoadError) {
             listEl.innerHTML =

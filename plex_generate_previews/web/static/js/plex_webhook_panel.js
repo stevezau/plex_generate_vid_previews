@@ -3,8 +3,29 @@
 // the same code can run on both /servers (modal-driven) and /automation (legacy
 // shim during migration). DOM wiring runs once at DOMContentLoaded; loaders are
 // also re-invoked from servers.js when the Edit modal opens for a Plex server.
+//
+// Phase I5: every call now scopes to the currently-edited Plex server via
+// `_pwpServerId`. servers.js sets it on modal open; without it the endpoints
+// fall back to the first configured Plex server (handles setup wizard).
 
 let recentlyAddedScanners = [];
+let _pwpServerId = null;
+
+function setPlexWebhookPanelServerId(serverId) {
+    _pwpServerId = serverId || null;
+}
+
+function _withServerId(url) {
+    if (!_pwpServerId) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}server_id=${encodeURIComponent(_pwpServerId)}`;
+}
+
+function _serverIdBody(extra) {
+    const body = Object.assign({}, extra || {});
+    if (_pwpServerId) body.server_id = _pwpServerId;
+    return body;
+}
 
 function _formatScannerInterval(mins) {
     if (!mins) return '';
@@ -29,7 +50,7 @@ async function loadPlexWebhookStatus() {
     const badge = document.getElementById('plexWebhookStatusBadge');
     if (!badge) return;
     try {
-        const data = await apiGet('/api/settings/plex_webhook/status');
+        const data = await apiGet(_withServerId('/api/settings/plex_webhook/status'));
         applyPlexWebhookStatus(data);
     } catch (e) {
         console.error('Failed to load Plex webhook status:', e);
@@ -119,7 +140,7 @@ async function registerPlexWebhook() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Registering…';
     try {
-        await apiPost('/api/settings/plex_webhook/register', { public_url: url });
+        await apiPost('/api/settings/plex_webhook/register', _serverIdBody({ public_url: url }));
         showToast('Success', 'Plex webhook registered.', 'success');
     } catch (e) {
         const msg = (e && e.message) ? e.message : 'Failed to register Plex webhook';
@@ -142,7 +163,7 @@ async function unregisterPlexWebhook() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Removing…';
     try {
-        await apiPost('/api/settings/plex_webhook/unregister', {});
+        await apiPost('/api/settings/plex_webhook/unregister', _serverIdBody({}));
         showToast('Removed', 'Plex webhook removed from your account.', 'success');
     } catch (e) {
         showToast('Error', (e && e.message) || 'Failed to remove webhook', 'danger');
@@ -164,7 +185,7 @@ async function testPlexWebhookReachability() {
     result.textContent = '';
     result.className = 'small mt-2';
     try {
-        const data = await apiPost('/api/settings/plex_webhook/test', { public_url: url });
+        const data = await apiPost('/api/settings/plex_webhook/test', _serverIdBody({ public_url: url }));
         if (data.success) {
             result.className = 'small mt-2 text-success';
             result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Reachable (HTTP ' + data.status_code + '). Plex should be able to deliver events here.';
