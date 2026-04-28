@@ -384,13 +384,26 @@ def webhook_incoming():
     source.
     """
     kind, payload, parse_error = _classify_payload(request)
+    # Single line capturing the classification — useful for "what came
+    # in?" debugging without enabling DEBUG-level logs in production.
+    logger.info(
+        "Webhook arrived: kind={} remote={} content_type={} content_length={}",
+        kind,
+        request.remote_addr,
+        request.content_type,
+        request.content_length,
+    )
     if payload is None:
-        logger.warning("Webhook router: {}", parse_error or "unrecognised payload")
+        logger.warning("Webhook router: rejected — {}", parse_error or "unrecognised payload")
         return jsonify({"status": "ignored", "reason": parse_error or "unrecognised"}), 400
 
     if kind == "unknown":
         # Body parsed but didn't match any vendor signature — caller error.
-        logger.warning("Webhook router: unrecognised payload shape")
+        logger.warning(
+            "Webhook router: unrecognised payload shape from {} (Content-Type={})",
+            request.remote_addr,
+            request.content_type,
+        )
         return (
             jsonify({"status": "ignored", "kind": kind, "reason": parse_error or "unrecognised"}),
             400,
@@ -404,9 +417,20 @@ def webhook_incoming():
     )
 
     if not canonical:
-        logger.info("Webhook router: ignoring {} payload — {}", kind, error)
+        logger.info(
+            "Webhook router: ignoring {} payload from {} — {}",
+            kind,
+            request.remote_addr,
+            error,
+        )
         return jsonify({"status": "ignored", "kind": kind, "reason": error}), 202
 
+    logger.info(
+        "Webhook router: routing {} payload to canonical_path={} (item hints: {})",
+        kind,
+        canonical,
+        item_id_by_server or "{}",
+    )
     return _dispatch_canonical_path(canonical, registry, item_id_by_server, kind=kind)
 
 

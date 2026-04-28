@@ -232,6 +232,8 @@
         $('#step-result-save').addEventListener('click', saveServer);
         $('#quickConnectStart').addEventListener('click', startQuickConnect);
         $('#plexOAuthStart').addEventListener('click', startPlexOAuth);
+        const addSelected = $('#plexAddSelected');
+        if (addSelected) addSelected.addEventListener('click', addSelectedPlexServers);
     });
 
     // ---------- Plex OAuth + auto-discovery ------------------------------------
@@ -287,43 +289,118 @@
         }
     }
 
+    // Stash the discovered set so the batch-add path can look up
+    // each server's machine_id + uri without re-fetching.
+    let plexDiscoveredCache = [];
+
     function renderPlexDiscovered(servers) {
         const list = $('#plexDiscoveredServers');
+        plexDiscoveredCache = servers || [];
         if (servers.length === 0) {
             list.innerHTML = '<div class="text-muted small">No Plex servers found on your account.</div>';
             $('#plexDiscoveredList').classList.remove('d-none');
             return;
         }
-        list.innerHTML = servers.map((s) => {
+        list.innerHTML = servers.map((s, idx) => {
             const ownedBadge = s.owned ? '<span class="badge bg-success">owned</span>' : '<span class="badge bg-secondary">shared</span>';
-            const localBadge = s.local ? '<span class="badge bg-info">local</span>' : '';
+            const localBadge = s.local ? '<span class="badge bg-info ms-1">local</span>' : '';
+            const sslBadge = s.ssl ? '<span class="badge bg-secondary ms-1">https</span>' : '';
             return `
-                <button type="button" class="list-group-item list-group-item-action plex-server-pick"
-                        data-uri="${escapeHtml(s.uri || '')}"
-                        data-name="${escapeHtml(s.name || '')}">
-                    <div class="d-flex justify-content-between align-items-start">
-                        <div>
-                            <strong>${escapeHtml(s.name || 'Unnamed Plex')}</strong><br>
-                            <small class="text-muted">${escapeHtml(s.uri || s.host || '')}</small>
-                        </div>
-                        <div>${ownedBadge} ${localBadge}</div>
+                <label class="list-group-item d-flex align-items-start gap-2">
+                    <input type="checkbox" class="form-check-input mt-1 plex-server-pick"
+                           data-idx="${idx}"
+                           data-uri="${escapeHtml(s.uri || '')}"
+                           data-name="${escapeHtml(s.name || '')}"
+                           data-machine-id="${escapeHtml(s.machine_id || '')}">
+                    <div class="flex-grow-1">
+                        <strong>${escapeHtml(s.name || 'Unnamed Plex')}</strong>
+                        ${ownedBadge}${localBadge}${sslBadge}
+                        <br>
+                        <small class="text-muted">${escapeHtml(s.uri || s.host || '')}</small>
                     </div>
-                </button>
+                </label>
             `;
         }).join('');
         $('#plexDiscoveredList').classList.remove('d-none');
 
         $$('.plex-server-pick').forEach((el) => {
-            el.addEventListener('click', () => {
-                const uri = el.dataset.uri;
-                const name = el.dataset.name;
-                $('#serverUrl').value = uri;
-                if (!$('#serverName').value) $('#serverName').value = name;
-                // Visually mark the picked server.
-                $$('.plex-server-pick').forEach((x) => x.classList.remove('active'));
-                el.classList.add('active');
+            el.addEventListener('change', () => {
+                const checked = $$('.plex-server-pick:checked');
+                const count = checked.length;
+                $('#plexSelectedCount').textContent = String(count);
+                $('#plexAddSelected').classList.toggle('d-none', count < 1);
+
+                // Single-pick convenience: when exactly one is ticked,
+                // populate the wizard fields so the user can hit "Test
+                // connection" and customise. Multi-pick clears them
+                // (the batch path doesn't need them).
+                if (count === 1) {
+                    const one = checked[0];
+                    $('#serverUrl').value = one.dataset.uri;
+                    if (!$('#serverName').value) $('#serverName').value = one.dataset.name;
+                } else {
+                    $('#serverUrl').value = '';
+                }
             });
         });
+    }
+
+    /**
+     * Batch-add every ticked Plex server in one go. Each becomes its
+     * own ``media_servers`` entry with the same Plex token + the
+     * machine_id pulled from /api/v2/resources as ``server_identity``.
+     * Avoids the connection-test step (already trusted: user just
+     * proved control of the plex.tv account).
+     */
+    async function addSelectedPlexServers() {
+        const checked = Array.from($$('.plex-server-pick:checked'));
+        if (checked.length === 0) return;
+        const plexConfigFolder = $('#plexConfigFolder').value.trim() || '/config/plex';
+        const btn = $('#plexAddSelected');
+        const orig = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Adding…';
+
+        const results = [];
+        for (const el of checked) {
+            const idx = parseInt(el.dataset.idx, 10);
+            const server = plexDiscoveredCache[idx] || {};
+            const payload = {
+                type: 'plex',
+                name: server.name || el.dataset.name || 'Plex',
+                enabled: true,
+                url: server.uri || el.dataset.uri,
+                auth: { method: 'token', token: wizard.plexToken },
+                server_identity: server.machine_id || el.dataset.machineId || null,
+                libraries: [],
+                path_mappings: [],
+                output: {
+                    adapter: 'plex_bundle',
+                    plex_config_folder: plexConfigFolder,
+                    frame_interval: 10,
+                },
+            };
+            const r = await api('POST', '/api/servers', payload);
+            results.push({ name: payload.name, ok: r.ok, message: r.data && r.data.error });
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = orig;
+
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length === 0) {
+            // All saved — close modal + reload list.
+            const modalEl = document.getElementById('addServerModal');
+            if (modalEl && window.bootstrap) {
+                const inst = window.bootstrap.Modal.getInstance(modalEl);
+                if (inst) inst.hide();
+            }
+            loadServers();
+        } else {
+            alert(`Saved ${results.length - failed.length}/${results.length}; failures:\n` +
+                  failed.map((f) => `${f.name}: ${f.message || 'unknown error'}`).join('\n'));
+            loadServers();
+        }
     }
 
     function configureAuthForType(type) {

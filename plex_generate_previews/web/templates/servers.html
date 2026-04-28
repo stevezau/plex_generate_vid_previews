@@ -128,12 +128,19 @@
                         <p class="text-muted small mb-1">
                             Click <strong>Start Quick Connect</strong> to get a code; enter it in your Jellyfin
                             profile menu and we'll finish the auth automatically.
-                            <em>Quick Connect must be enabled by your Jellyfin admin.</em>
+                            <em>Quick Connect must be enabled by your Jellyfin admin under Server → Quick Connect.</em>
                         </p>
                         <button type="button" class="btn btn-primary mb-2" id="quickConnectStart">
                             <i class="bi bi-magic me-1"></i>Start Quick Connect
                         </button>
                         <div id="quickConnectCode" class="alert alert-info d-none"></div>
+                        <div class="alert alert-warning small mb-0 mt-2">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <strong>Heads up:</strong> after adding Jellyfin you may need to enable
+                            <em>"Trickplay image extraction"</em> on each library — without it Jellyfin
+                            won't display the previews we publish. The Servers page has a one-click
+                            <strong>Fix trickplay</strong> button that does this automatically.
+                        </div>
                     </div>
 
                     <div id="auth-fields-token-plex" class="d-none">
@@ -147,8 +154,22 @@
                         </div>
 
                         <div id="plexDiscoveredList" class="d-none mb-3">
-                            <label class="form-label">Pick a server to add</label>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label mb-0">Discovered Plex servers</label>
+                                <small class="text-muted">Tick one or more to add</small>
+                            </div>
                             <div id="plexDiscoveredServers" class="list-group"></div>
+                            <div class="d-flex justify-content-between align-items-center mt-2">
+                                <small class="form-text"><span id="plexSelectedCount">0</span> selected</small>
+                                <button type="button" class="btn btn-success btn-sm d-none" id="plexAddSelected">
+                                    <i class="bi bi-check2-circle me-1"></i>Add selected servers
+                                </button>
+                            </div>
+                            <div class="form-text mt-1">
+                                Tick a single server to fill the wizard fields below (lets you customise the
+                                config folder per server). Tick multiple servers to add them all at once with
+                                shared defaults — you can still edit each one from the Servers page afterwards.
+                            </div>
                         </div>
 
                         <details class="mb-2">
@@ -163,6 +184,11 @@
                         <div class="mb-2">
                             <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
                             <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
+                            <div class="form-text">
+                                This tool writes BIF files into <code>{this folder}/Media/localhost/.../*.bundle/Contents/Indexes/</code>.
+                                Must be readable + writable by this container.
+                                Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.
+                            </div>
                         </div>
                     </div>
 

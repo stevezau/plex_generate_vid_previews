@@ -15,6 +15,11 @@ This page covers:
 - [Per-vendor output formats](#per-vendor-output-formats)
 - [Webhook configuration per vendor](#webhook-configuration-per-vendor)
 - [Library ownership and retry semantics](#library-ownership-and-retry-semantics)
+- [Smart dedup: skipping work that's already done](#smart-dedup-skipping-work-thats-already-done)
+- [Slow-backoff retry queue](#slow-backoff-retry-queue)
+- [Jellyfin trickplay extraction flag (the most common gotcha)](#jellyfin-trickplay-extraction-flag-the-most-common-gotcha)
+- [BIF Viewer (multi-server)](#bif-viewer-multi-server)
+- [Plex multi-server auto-discovery](#plex-multi-server-auto-discovery)
 - [REST API summary](#rest-api-summary)
 
 ---
@@ -217,14 +222,152 @@ The dispatcher distinguishes three cases when a webhook fires:
 
 | Case | Response |
 |---|---|
-| 1. Path is under no enabled library on this server | **Skip permanently** |
-| 2. Path is under an enabled library, but the server hasn't scanned the file yet | **Slow-backoff retry** (Phase 4 in progress; surfaces as `skipped_not_indexed` per-publisher status today) |
+| 1. Path is under no enabled library on this server | **Skip permanently** (status `no_owners`) |
+| 2. Path is under an enabled library, but the server hasn't scanned the file yet | **Slow-backoff retry** queue (status `skipped_not_indexed`) |
 | 3. Server is unreachable | Tight transport retry, eventual failure |
 
 Ownership is decided from the cached `libraries[]` snapshot in each
 server config — no per-file index. Toggle a library off via the
 per-library `enabled` flag and the dispatcher will skip files in
 that library cleanly with no retry storm.
+
+---
+
+## Smart dedup: skipping work that's already done
+
+Two layers of dedup prevent the same file being re-processed:
+
+1. **Frame cache** (process-wide, 10-minute TTL, 32-entry LRU): a
+   second webhook arriving for the same file within the TTL window
+   skips FFmpeg and reuses the extracted JPGs. Concurrent webhooks
+   for the same file (5 simultaneous fires from a webhook storm) all
+   collapse into **one** FFmpeg pass via a per-canonical-path
+   generation lock.
+
+2. **Per-output `.meta` journal**: every published output gets a
+   sidecar `<file>.bif.meta` JSON recording the source's `(mtime,
+   size)`. On a subsequent webhook the dispatcher checks the journal
+   *before* running FFmpeg — if every publisher's outputs exist and
+   the source hasn't changed, it skips the entire pipeline. This
+   handles the common case of "Sonarr fires immediately, then Plex's
+   own webhook fires 30 minutes later for the same file."
+
+   The journal also detects **source replacement** (Sonarr quality
+   upgrade swapping the file in place). When mtime/size change the
+   journal short-circuit fails and FFmpeg re-runs. Force regeneration
+   manually via the `regenerate` flag — that bypasses both layers
+   *and* clears stale `.meta` sidecars to avoid mismatched fingerprints
+   on the next pass.
+
+Migration safety: outputs from before the journal feature shipped
+have no `.meta` sidecar; those are treated as fresh on the first
+post-upgrade webhook (no regeneration storm), then stamped on the
+next publish.
+
+---
+
+## Slow-backoff retry queue
+
+When a publisher returns `SKIPPED_NOT_INDEXED` (most commonly Plex,
+because publishing needs the bundle hash from `/library/metadata/{id}/tree`
+which only exists *after* Plex has scanned the file), the dispatcher
+schedules a retry instead of waiting for the user to fire a manual
+re-run.
+
+**Backoff schedule:** 30 s → 2 m → 5 m → 15 m → 60 m, then give up
+and log. Total ~80 minutes — covers slow Plex full-scan windows
+without becoming a runaway loop.
+
+**Coalescing:** one pending retry per canonical path. Subsequent
+webhooks for the same file while a retry is pending replace the
+existing timer rather than piling up new ones.
+
+**Reuses the dedup machinery:** retries call back into the same
+dispatch code path, so the journal short-circuit, frame cache, and
+per-publisher skip-if-exists all apply on retry. Retries are cheap
+when the publish has already succeeded through some other path
+(e.g. Plex's own webhook firing after its scan completes).
+
+---
+
+## Jellyfin trickplay extraction flag (the most common gotcha)
+
+**Symptom:** every publish reports success, the trickplay tile sheets
+land on disk in the right format at the right path, but Jellyfin's
+web client shows no scrubbing thumbnails.
+
+**Cause:** Jellyfin libraries default `EnableTrickplayImageExtraction`
+to `false`. With that flag off, Jellyfin **ignores sidecar trickplay
+files** in the media folder.
+
+**Fix:** Connect to Jellyfin's web UI → *Dashboard → Libraries →
+edit each library → enable "Trickplay image extraction"*.
+
+Or use the **one-click auto-fix** built into this tool:
+
+* Add Server wizard surfaces a `jellyfin_trickplay_disabled` warning
+  in the connection-test response when libraries have it off.
+* Servers list page shows a **"Fix trickplay"** button on every
+  Jellyfin card. One click flips `EnableTrickplayImageExtraction` and
+  `ExtractTrickplayImagesDuringLibraryScan` to `true` on every library
+  via Jellyfin's `/Library/VirtualFolders/LibraryOptions` POST.
+* Or call the API directly:
+  ```
+  POST /api/servers/<server_id>/jellyfin/fix-trickplay
+  {
+    "library_ids": ["..."]   # optional; omit to fix every library
+  }
+  ```
+
+The button is idempotent — clicking on an already-correctly-configured
+server is a no-op.
+
+---
+
+## BIF Viewer (multi-server)
+
+The BIF Viewer at `/bif-viewer` lets you visually inspect a published
+preview to see exactly what a player would render. It works for all
+three vendors:
+
+* **Plex / Emby**: parses the BIF file directly via `bif_reader`,
+  renders frames as JPEG via `/api/bif/frame?path=…&index=…`.
+* **Jellyfin**: parses the trickplay manifest, slices individual
+  thumbnails out of the tile-grid sheets via Pillow, serves them via
+  `/api/bif/trickplay/frame?server_id=…&sheets_dir=…&index=…&tile_width=10&tile_height=10`.
+
+Use the server-picker dropdown at the top of the page to switch
+between configured servers; the search results, frame list, and
+thumbnail grid all refresh per server.
+
+**Multi-server search endpoint:**
+```
+GET /api/bif/servers/<server_id>/search?q=<query>
+```
+Returns up to 15 results: `{title, type, year, media_file,
+preview_path, preview_kind, preview_exists}`. `preview_kind` is
+`"bif"` (Plex/Emby) or `"trickplay"` (Jellyfin) — the viewer branches
+to the right renderer based on this.
+
+---
+
+## Plex multi-server auto-discovery
+
+After Plex OAuth completes (one PIN sign-in via plex.tv), the wizard
+calls `/api/v2/resources` and lists every server the account can
+access. Tick **multiple** servers in the discovered list to add them
+all in one go — each gets its own `media_servers[]` entry with the
+same shared OAuth token but a distinct `server_identity` (Plex's
+`clientIdentifier`) so the webhook router can disambiguate them.
+
+The single-pick path still works for users who want to customise one
+server before adding (set the config folder, adjust libraries). Tick
+exactly one server to populate the wizard fields; tick multiple to
+batch-add with shared defaults (you can edit each one from the
+Servers page afterwards).
+
+This reverses the older "single Plex only" limitation tracked in
+issue #215.
 
 ---
 
@@ -246,6 +389,10 @@ that library cleanly with no retry storm.
 | POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Start Quick Connect ceremony |
 | POST | `/api/servers/auth/jellyfin/quick-connect/poll` | Poll for approval |
 | POST | `/api/servers/auth/jellyfin/quick-connect/exchange` | Exchange approved secret for token |
+| POST | `/api/servers/<id>/jellyfin/fix-trickplay` | One-click flip of `EnableTrickplayImageExtraction` on a Jellyfin server's libraries |
+| GET | `/api/bif/servers/<id>/search?q=...` | Multi-server BIF Viewer search; returns `preview_kind` per result |
+| GET | `/api/bif/trickplay/info?server_id=...&path=...` | Parse a Jellyfin trickplay manifest + sheet metadata |
+| GET | `/api/bif/trickplay/frame?server_id=...&sheets_dir=...&index=N&tile_width=10&tile_height=10` | Slice and serve a single thumbnail from a tile sheet |
 | POST | `/api/webhooks/incoming` | Universal webhook with vendor auto-detection |
 | POST | `/api/webhooks/server/<id>` | Per-server fallback webhook URL |
 

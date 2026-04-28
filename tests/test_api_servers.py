@@ -430,6 +430,52 @@ class TestCreateServer:
         )
         assert response.status_code == 400
 
+    def test_plex_multi_add_persists_server_identity_from_discovery(self, client, auth_headers):
+        """Plex multi-server auto-discovery: each server posts its
+        ``server_identity`` (plex.tv ``clientIdentifier``) directly,
+        without a separate connection-test probe. Verifies the
+        identity round-trips into media_servers so the webhook router
+        can disambiguate later."""
+        plex_token = "shared-oauth-token"
+        for ms in [
+            {
+                "name": "Plex Home",
+                "url": "http://192.168.1.5:32400",
+                "machine_id": "machine-A",
+            },
+            {
+                "name": "Plex Office",
+                "url": "https://office.example.com",
+                "machine_id": "machine-B",
+            },
+        ]:
+            response = client.post(
+                "/api/servers",
+                headers=auth_headers,
+                json={
+                    "type": "plex",
+                    "name": ms["name"],
+                    "url": ms["url"],
+                    "auth": {"method": "token", "token": plex_token},
+                    "server_identity": ms["machine_id"],
+                    "output": {
+                        "adapter": "plex_bundle",
+                        "plex_config_folder": "/config/plex",
+                        "frame_interval": 10,
+                    },
+                },
+            )
+            assert response.status_code == 201, response.get_data(as_text=True)
+
+        # Both persisted with distinct identities.
+        servers = [s for s in get_settings_manager().get("media_servers") if s["type"] == "plex"]
+        identities = {s["server_identity"] for s in servers}
+        assert "machine-A" in identities
+        assert "machine-B" in identities
+        # Both share the same auth token (single OAuth → multiple servers).
+        tokens = {s["auth"]["token"] for s in servers}
+        assert tokens == {plex_token}
+
     def test_409_when_id_collides(self, client, auth_headers):
         _seed_media_servers(
             [

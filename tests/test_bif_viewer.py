@@ -390,3 +390,141 @@ class TestBifSearchEndpoint:
         resp = client.get("/api/bif/search?q=test+movie", headers=_api_headers())
         assert resp.status_code == 400
         assert "Plex not configured" in resp.get_json().get("error", "")
+
+
+class TestMultiServerBifSearch:
+    """``/api/bif/servers/<server_id>/search`` — server-aware enumeration."""
+
+    def test_unknown_server_returns_404(self, client):
+        resp = client.get("/api/bif/servers/does-not-exist/search?q=test", headers=_api_headers())
+        assert resp.status_code == 404
+
+    def test_short_query_rejected(self, client):
+        resp = client.get("/api/bif/servers/anything/search?q=a", headers=_api_headers())
+        assert resp.status_code == 400
+
+
+class TestMultiServerTrickplayInfo:
+    """``/api/bif/trickplay/info`` — Jellyfin manifest parser."""
+
+    def test_unknown_server_returns_404(self, client):
+        resp = client.get(
+            "/api/bif/trickplay/info?server_id=missing&path=/foo.json",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 404
+
+    def test_invalid_path_returns_400(self, client, tmp_path):
+        # Seed a Jellyfin server pointing at tmp_path; manifest path
+        # doesn't exist yet.
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-test",
+                    "type": "jellyfin",
+                    "name": "Test JF",
+                    "enabled": True,
+                    "url": "http://x:8096",
+                    "auth": {},
+                    "libraries": [],
+                    "path_mappings": [{"remote_prefix": "/jf", "local_prefix": str(tmp_path)}],
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 5},
+                }
+            ],
+        )
+        resp = client.get(
+            "/api/bif/trickplay/info?server_id=jf-test&path=/etc/passwd",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 400
+
+
+class TestMultiServerTrickplayFrame:
+    """``/api/bif/trickplay/frame`` — tile-sheet slicing."""
+
+    def test_unknown_server_returns_404(self, client):
+        resp = client.get(
+            "/api/bif/trickplay/frame?server_id=missing&sheets_dir=/tmp/x&index=0",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 404
+
+    def test_returns_jpeg_slice_from_real_sheet(self, client, tmp_path):
+        """End-to-end slice: build a known tile sheet, slice, verify pixel values."""
+        from PIL import Image
+
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        # Build a 2x2 grid of 4 distinct-coloured 50x50 tiles → 100x100 sheet.
+        sheets_dir = tmp_path / "trickplay" / "Movie-320"
+        sheets_dir.mkdir(parents=True)
+        sheet = Image.new("RGB", (100, 100), (0, 0, 0))
+        colours = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+        for idx, c in enumerate(colours):
+            row = idx // 2
+            col = idx % 2
+            tile = Image.new("RGB", (50, 50), c)
+            sheet.paste(tile, (col * 50, row * 50))
+        sheet.save(sheets_dir / "0.jpg", "JPEG", quality=95)
+
+        get_settings_manager().set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-tiles",
+                    "type": "jellyfin",
+                    "name": "JF Tiles",
+                    "enabled": True,
+                    "url": "http://x:8096",
+                    "auth": {},
+                    "libraries": [],
+                    "path_mappings": [{"remote_prefix": "/jf", "local_prefix": str(tmp_path)}],
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 5},
+                }
+            ],
+        )
+
+        resp = client.get(
+            f"/api/bif/trickplay/frame?server_id=jf-tiles&sheets_dir={sheets_dir}&index=2&tile_width=2&tile_height=2",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        assert resp.mimetype == "image/jpeg"
+        assert resp.data[:3] == b"\xff\xd8\xff"  # JPEG SOI
+
+        # Decode + check the dominant colour matches tile #2 (blue).
+        from io import BytesIO
+
+        decoded = Image.open(BytesIO(resp.data)).convert("RGB")
+        # Sample the centre pixel — JPEG quantisation may shift colours
+        # slightly; assert blue dominates (B > R + G).
+        r, g, b = decoded.getpixel((25, 25))
+        assert b > r and b > g, f"Expected blue tile, got RGB=({r},{g},{b})"
+
+    def test_path_traversal_rejected(self, client, tmp_path):
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-trav",
+                    "type": "jellyfin",
+                    "name": "JF",
+                    "enabled": True,
+                    "url": "http://x:8096",
+                    "auth": {},
+                    "libraries": [],
+                    "path_mappings": [{"remote_prefix": "/jf", "local_prefix": str(tmp_path)}],
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 5},
+                }
+            ],
+        )
+        resp = client.get(
+            "/api/bif/trickplay/frame?server_id=jf-trav&sheets_dir=/etc/&index=0",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 403

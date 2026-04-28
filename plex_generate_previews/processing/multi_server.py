@@ -341,20 +341,43 @@ def process_canonical_path(
     Returns:
         :class:`MultiServerResult` aggregating per-publisher outcomes.
     """
+    # Single line that ties every downstream log entry back to this dispatch.
+    # On a server with N webhooks/min, this is the breadcrumb that lets ops
+    # answer "what happened to this file?" without grep-searching for
+    # disconnected log lines.
+    logger.info(
+        "Dispatch: path={} regenerate={} retry_attempt={}",
+        canonical_path,
+        regenerate,
+        retry_attempt,
+    )
+
     publishers = _resolve_publishers(
         canonical_path,
         registry,
         item_id_by_server=item_id_by_server,
     )
     if not publishers:
-        logger.info("No configured server owns {}; skipping", canonical_path)
+        logger.info(
+            "No owners: no configured server's enabled libraries cover {} — "
+            "skipping (this is permanent until you add/enable a library)",
+            canonical_path,
+        )
         return MultiServerResult(
             canonical_path=canonical_path,
             status=MultiServerStatus.NO_OWNERS,
             message="No enabled library covers this path on any configured server",
         )
 
+    logger.info(
+        "Owners resolved: {} publisher(s) for {} → [{}]",
+        len(publishers),
+        canonical_path,
+        ", ".join(f"{srv.name}/{adp.name}" for srv, adp, _ in publishers),
+    )
+
     if not os.path.isfile(canonical_path):
+        logger.warning("Source file missing on disk: {}", canonical_path)
         return MultiServerResult(
             canonical_path=canonical_path,
             status=MultiServerStatus.FAILED,
@@ -487,6 +510,13 @@ def process_canonical_path(
 
     try:
         if not cache_hit:
+            logger.info(
+                "FFmpeg start: path={} gpu={} device={} tmp={}",
+                canonical_path,
+                gpu or "CPU",
+                gpu_device_path or "-",
+                tmp_path,
+            )
             try:
                 gen_result = generate_images(
                     canonical_path,
@@ -500,9 +530,13 @@ def process_canonical_path(
                 )
             except CodecNotSupportedError:
                 # Re-raised so callers can fall back to CPU; not a publisher failure.
+                logger.warning(
+                    "FFmpeg codec not supported for {} (caller will retry on CPU)",
+                    canonical_path,
+                )
                 raise
             except Exception as exc:
-                logger.exception("Frame generation failed for {}", canonical_path)
+                logger.exception("Frame generation failed for {}: {}", canonical_path, exc)
                 return MultiServerResult(
                     canonical_path=canonical_path,
                     status=MultiServerStatus.FAILED,
@@ -522,6 +556,10 @@ def process_canonical_path(
             gen_result = None
 
         if frame_count == 0:
+            logger.warning(
+                "FFmpeg produced 0 frames for {} — possible: corrupt source, unsupported codec, or zero-length stream",
+                canonical_path,
+            )
             return MultiServerResult(
                 canonical_path=canonical_path,
                 status=MultiServerStatus.NO_FRAMES,
@@ -555,15 +593,28 @@ def process_canonical_path(
         results: list[PublisherResult] = []
         for server, adapter, item_id_hint in publishers:
             item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-            results.append(
-                _publish_one(
-                    server,
-                    adapter,
-                    bundle,
-                    item_id,
-                    skip_if_exists=not regenerate,
-                )
+            outcome = _publish_one(
+                server,
+                adapter,
+                bundle,
+                item_id,
+                skip_if_exists=not regenerate,
             )
+            # One INFO line per publisher so an op debugging "which
+            # server got the BIF and which didn't?" can scan the log
+            # by canonical_path.
+            log_fn = logger.info if outcome.status is PublisherStatus.PUBLISHED else logger.warning
+            if outcome.status in (PublisherStatus.SKIPPED_OUTPUT_EXISTS, PublisherStatus.SKIPPED_NOT_INDEXED):
+                log_fn = logger.info  # skipped is normal, not an error
+            log_fn(
+                "Publisher result: server={} adapter={} status={} item_id={} message={!r}",
+                server.name,
+                adapter.name,
+                outcome.status.value,
+                item_id or "-",
+                outcome.message,
+            )
+            results.append(outcome)
 
         any_published = any(r.status is PublisherStatus.PUBLISHED for r in results)
         all_failed = all(r.status is PublisherStatus.FAILED for r in results)
@@ -578,6 +629,23 @@ def process_canonical_path(
             # not yet indexed). Reserve PUBLISHED for "≥1 wrote" so
             # callers don't conflate the two.
             status = MultiServerStatus.SKIPPED
+
+        published_count = sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)
+        skipped_count = sum(
+            1
+            for r in results
+            if r.status in (PublisherStatus.SKIPPED_OUTPUT_EXISTS, PublisherStatus.SKIPPED_NOT_INDEXED)
+        )
+        failed_count = sum(1 for r in results if r.status is PublisherStatus.FAILED)
+        logger.info(
+            "Dispatch complete: path={} status={} published={} skipped={} failed={} frames={}",
+            canonical_path,
+            status.value,
+            published_count,
+            skipped_count,
+            failed_count,
+            frame_count,
+        )
 
         # Schedule a retry when at least one publisher is waiting for
         # the source server to finish indexing. Skipped via

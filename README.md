@@ -63,9 +63,14 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
+| **Smart Dedup Journal** | A `.meta` sidecar records source `(mtime, size)` so late-arriving webhooks short-circuit FFmpeg entirely; Sonarr quality upgrades correctly trigger regen |
+| **Slow-Backoff Retries** | Plex not yet scanned? The dispatcher schedules 30 s → 2 m → 5 m → 15 m → 60 m retries automatically — no manual re-run needed |
 | **Universal Webhooks** | One URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
 | **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Plex multi-server discovery** | One Plex.tv OAuth sign-in lists every server your account can access — tick multiple to add them all at once |
 | **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves the user's browser |
+| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's `EnableTrickplayImageExtraction` flag (the most common gotcha) so the previews you publish actually appear in Jellyfin's web UI |
+| **Multi-Server BIF Viewer** | Inspect published previews per-server in the browser — works for Plex bundle BIFs, Emby sidecar BIFs, and Jellyfin trickplay tile-grid sheets |
 | **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ---

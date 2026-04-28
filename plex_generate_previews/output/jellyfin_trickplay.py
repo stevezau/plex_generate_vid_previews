@@ -101,9 +101,19 @@ class JellyfinTrickplayAdapter(OutputAdapter):
         # We deliberately do NOT touch the server here — the item id is
         # already known from the source webhook or library scan.
         del server, item_id  # unused; the dispatcher passes item_id again at publish time
-        media_path = Path(bundle.canonical_path)
+        return [self.manifest_path(bundle.canonical_path, width=self._width)]
+
+    @staticmethod
+    def manifest_path(canonical_path: str, *, width: int) -> Path:
+        """Compute the manifest JSON path for a media file at the given width.
+
+        Public helper mirroring :meth:`EmbyBifAdapter.sidecar_path` so
+        callers (BIF Viewer, output-status diagnostics) can compute the
+        path without instantiating an adapter.
+        """
+        media_path = Path(canonical_path)
         basename = media_path.stem
-        return [media_path.parent / "trickplay" / f"{basename}-{self._width}.json"]
+        return media_path.parent / "trickplay" / f"{basename}-{int(width)}.json"
 
     def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
         """Pack ``bundle.frame_dir`` JPG frames into Jellyfin tile sheets + manifest.

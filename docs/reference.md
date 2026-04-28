@@ -603,6 +603,10 @@ For full design and per-vendor details see [Multi-Media-Server](multi-server.md)
 | POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Begin Quick Connect ceremony |
 | POST | `/api/servers/auth/jellyfin/quick-connect/poll` | Poll for approval |
 | POST | `/api/servers/auth/jellyfin/quick-connect/exchange` | Exchange approved secret for token |
+| POST | `/api/servers/<id>/jellyfin/fix-trickplay` | Auto-flip `EnableTrickplayImageExtraction` on a Jellyfin server's libraries (one-click fix for the most common Jellyfin gotcha — see [docs/multi-server#jellyfin-trickplay-extraction-flag](multi-server.md#jellyfin-trickplay-extraction-flag-the-most-common-gotcha)) |
+| GET | `/api/bif/servers/<id>/search?q=<query>` | Multi-server BIF Viewer search; returns `preview_kind` (`bif` or `trickplay`) per result so the viewer renders the right format |
+| GET | `/api/bif/trickplay/info?server_id=...&path=...` | Parse a Jellyfin trickplay manifest + report sheet metadata |
+| GET | `/api/bif/trickplay/frame?server_id=...&sheets_dir=...&index=N&tile_width=10&tile_height=10` | Slice and serve a single thumbnail JPEG from a trickplay tile sheet |
 
 ### Webhook Endpoints
 
