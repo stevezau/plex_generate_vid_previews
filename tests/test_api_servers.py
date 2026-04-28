@@ -585,6 +585,123 @@ class TestUpdateServer:
         )
         assert response.status_code == 404
 
+    def test_exclude_paths_round_trip(self, client, auth_headers, tmp_path):
+        """PUT exclude_paths persists, GET surfaces them, second PUT preserves
+        when omitted from the payload."""
+        local_dir = tmp_path / "media"
+        local_dir.mkdir()
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                    "exclude_paths": [],
+                }
+            ]
+        )
+
+        # First PUT — set two rules, one path-prefix and one regex.
+        rules = [
+            {"value": str(local_dir), "type": "path"},
+            {"value": r".*\.iso$", "type": "regex"},
+        ]
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"exclude_paths": rules},
+        )
+        assert response.status_code == 200
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["exclude_paths"] == rules
+
+        # GET returns the same rules.
+        response = client.get("/api/servers/s1", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.get_json()["exclude_paths"] == rules
+
+        # Second PUT without exclude_paths must preserve them, not wipe.
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"name": "Renamed Emby"},
+        )
+        assert response.status_code == 200
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["exclude_paths"] == rules
+
+    def test_400_when_exclude_paths_regex_invalid(self, client, auth_headers):
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                }
+            ]
+        )
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"exclude_paths": [{"value": "[unclosed", "type": "regex"}]},
+        )
+        assert response.status_code == 400
+        body = response.get_json()
+        assert "regex" in body["error"].lower()
+
+    def test_400_when_path_mapping_local_prefix_missing(self, client, auth_headers, tmp_path):
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                }
+            ]
+        )
+        nonexistent = tmp_path / "nope-not-here"
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={
+                "path_mappings": [{"plex_prefix": "/data", "local_prefix": str(nonexistent), "webhook_prefixes": []}]
+            },
+        )
+        assert response.status_code == 400
+        assert "does not exist" in response.get_json()["error"]
+
+    def test_400_when_plex_config_folder_missing(self, client, auth_headers, tmp_path):
+        _seed_media_servers(
+            [
+                {
+                    "id": "p1",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"method": "token", "token": "t"},
+                    "output": {"adapter": "plex_bundle", "plex_config_folder": "/plex"},
+                }
+            ]
+        )
+        bogus = tmp_path / "nope-not-here-either"
+        response = client.put(
+            "/api/servers/p1",
+            headers=auth_headers,
+            json={"output": {"adapter": "plex_bundle", "plex_config_folder": str(bogus)}},
+        )
+        assert response.status_code == 400
+        assert "does not exist" in response.get_json()["error"]
+
 
 class TestDeleteServer:
     def test_removes_server(self, client, auth_headers):

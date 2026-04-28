@@ -533,8 +533,20 @@ def load_config() -> Config:
         )
         validation_errors.append("FFmpeg found but cannot execute properly")
 
-    # Validate configuration using helper functions
-    _validate_plex_config(plex_url, plex_token, plex_config_folder, missing_params, validation_errors)
+    # Plex validation only applies when the user actually has a Plex server.
+    # An Emby/Jellyfin-only install has no Plex entry in media_servers and would
+    # otherwise be blocked at startup by missing PLEX_URL/PLEX_TOKEN/PLEX_CONFIG_FOLDER.
+    raw_media_servers = ui_settings.get("media_servers") or []
+    has_plex_server = any(
+        isinstance(e, dict) and (e.get("type") or "").lower() == "plex" and e.get("enabled", True)
+        for e in raw_media_servers
+    )
+    has_legacy_plex = bool(plex_url or plex_token)
+    if has_plex_server or has_legacy_plex or not raw_media_servers:
+        # Validate Plex when a Plex server exists, when the legacy globals are set,
+        # or when there's no media_servers config at all (fresh install — Setup
+        # Wizard is Plex-first so this is the safe default).
+        _validate_plex_config(plex_url, plex_token, plex_config_folder, missing_params, validation_errors)
     _validate_processing_config(
         plex_bif_frame_interval,
         thumbnail_quality,

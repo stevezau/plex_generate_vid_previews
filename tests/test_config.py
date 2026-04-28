@@ -958,6 +958,74 @@ class TestLoadConfig:
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.path.isdir")
+    @patch("os.access")
+    @patch("os.statvfs", create=True)
+    @patch("plex_generate_previews.logging_config.setup_logging")
+    def test_load_config_succeeds_when_only_emby_configured(
+        self,
+        mock_logging,
+        mock_statvfs,
+        mock_access,
+        mock_isdir,
+        mock_exists,
+        mock_run,
+        mock_which,
+    ):
+        """An install with only an Emby/Jellyfin server (no Plex) must boot.
+
+        Before the fix, _validate_plex_config unconditionally demanded
+        PLEX_URL / PLEX_TOKEN / PLEX_CONFIG_FOLDER and an Emby-only user could
+        not start the app. The new logic skips Plex validation when there is
+        no Plex entry in media_servers and no legacy plex_* globals.
+        """
+        from plex_generate_previews.config import clear_config_cache
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
+        mock_exists.return_value = True
+        mock_isdir.return_value = True
+        mock_access.return_value = True
+        statvfs_result = MagicMock()
+        statvfs_result.f_frsize = 4096
+        statvfs_result.f_bavail = 1024 * 1024 * 250
+        mock_statvfs.return_value = statvfs_result
+
+        sm = get_settings_manager()
+        sm.apply_changes(
+            {
+                "plex_url": "",
+                "plex_token": "",
+                "plex_config_folder": "",
+                "media_servers": [
+                    {
+                        "id": "emby-1",
+                        "type": "emby",
+                        "name": "My Emby",
+                        "url": "http://emby:8096",
+                        "enabled": True,
+                        "auth": {"method": "api_key", "api_key": "secret"},
+                        "verify_ssl": True,
+                        "timeout": 30,
+                    }
+                ],
+                "cpu_threads": 1,
+            }
+        )
+        clear_config_cache()
+
+        with patch.dict("os.environ", {}, clear=True):
+            config = load_config()
+        assert config is not None
+        assert config.cpu_threads == 1
+        # Plex fields should remain empty (no Plex configured) — but no error.
+        assert config.plex_url == ""
+        assert config.plex_token == ""
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.isdir")
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)

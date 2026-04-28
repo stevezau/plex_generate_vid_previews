@@ -9,6 +9,8 @@ alongside in :mod:`api_server_auth`.
 
 from __future__ import annotations
 
+import os
+import re
 import uuid
 from typing import Any
 
@@ -134,6 +136,81 @@ def _merge_auth(existing: dict, incoming: dict | None) -> dict:
     return merged
 
 
+def _validate_path_mappings(rows: list) -> str:
+    """Save-time validation for per-server path_mappings.
+
+    Catches three foot-guns at save rather than at job-runtime:
+      * non-dict rows (UI bug),
+      * missing plex_prefix or local_prefix when the row is otherwise populated,
+      * local_prefix that doesn't exist on disk (silent path mapping → no previews).
+    """
+    if not isinstance(rows, list):
+        return "path_mappings must be a list"
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return f"path_mappings[{idx}] must be an object"
+        plex_prefix = str(row.get("plex_prefix") or "").strip()
+        local_prefix = str(row.get("local_prefix") or "").strip()
+        if not plex_prefix and not local_prefix:
+            continue  # blank row — UI tolerates these, just skip
+        if not plex_prefix or not local_prefix:
+            return f"path_mappings[{idx}] needs both 'plex_prefix' and 'local_prefix'"
+        if not local_prefix.startswith("/"):
+            return f"path_mappings[{idx}] local_prefix must be an absolute path (got {local_prefix!r})"
+        if not os.path.isdir(local_prefix):
+            return (
+                f"path_mappings[{idx}] local_prefix {local_prefix!r} does not exist on this container "
+                f"(file would resolve to a missing directory). Either create/mount the path or correct the value."
+            )
+    return ""
+
+
+def _validate_exclude_paths(rows: list) -> str:
+    """Save-time validation for per-server exclude_paths.
+
+    Compiles ``regex`` rows immediately so users discover bad patterns at save time
+    rather than at job-runtime, and rejects empty rows / unknown match types.
+    """
+    if not isinstance(rows, list):
+        return "exclude_paths must be a list"
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return f"exclude_paths[{idx}] must be an object"
+        value = str(row.get("value") or "").strip()
+        if not value:
+            continue  # blank row — skip
+        match_type = str(row.get("type") or "path").strip().lower()
+        if match_type not in ("path", "regex"):
+            return f"exclude_paths[{idx}] type must be 'path' or 'regex' (got {match_type!r})"
+        if match_type == "regex":
+            try:
+                re.compile(value)
+            except re.error as exc:
+                return f"exclude_paths[{idx}] regex {value!r} is not valid: {exc}"
+    return ""
+
+
+def _validate_plex_output(output: dict) -> str:
+    """Save-time validation for Plex servers' ``output`` dict.
+
+    The plex_config_folder must exist on disk for the BIF publisher to write to
+    it; catch typos / missing mounts here instead of failing every job.
+    """
+    if not isinstance(output, dict):
+        return "output must be an object"
+    folder = str(output.get("plex_config_folder") or "").strip()
+    if not folder:
+        return ""  # caller may save without populating output yet
+    if not folder.startswith("/"):
+        return f"output.plex_config_folder must be an absolute path (got {folder!r})"
+    if not os.path.isdir(folder):
+        return (
+            f"output.plex_config_folder {folder!r} does not exist on this container. "
+            f"Verify the path is correct and that the volume is mounted."
+        )
+    return ""
+
+
 def _validate_server_payload(
     data: dict[str, Any],
     *,
@@ -180,6 +257,17 @@ def _validate_server_payload(
     path_mappings = data.get("path_mappings") if "path_mappings" in data else base.get("path_mappings", [])
     exclude_paths = data.get("exclude_paths") if "exclude_paths" in data else base.get("exclude_paths", [])
     output = data.get("output") if "output" in data else base.get("output", {})
+
+    err = _validate_path_mappings(path_mappings or [])
+    if err:
+        return None, err
+    err = _validate_exclude_paths(exclude_paths or [])
+    if err:
+        return None, err
+    if type_value == "plex":
+        err = _validate_plex_output(output or {})
+        if err:
+            return None, err
 
     enabled = bool(data.get("enabled", base.get("enabled", True)))
     verify_ssl = bool(data.get("verify_ssl", base.get("verify_ssl", True)))
