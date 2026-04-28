@@ -337,11 +337,17 @@
                 <p>Use this endpoint to trigger preview generation from any tool that can send an HTTP POST — Tdarr, shell scripts, Bash hooks, anything. Send a file path and the app queues it through the same pipeline as Sonarr/Radarr.</p>
 
                 <label class="form-label">Custom Webhook URL</label>
-                <div class="input-group mb-3">
+                <div class="input-group mb-2">
                     <input type="text" class="form-control webhook-url" id="customUrl" readonly>
                     <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('customUrl')">
                         <i class="bi bi-clipboard"></i>
                     </button>
+                </div>
+                <div class="form-text mb-3">
+                    To pin this URL to one configured server, use the
+                    <a href="#section-webhooks-sonarr-radarr">Publish to which server?</a>
+                    picker in the <em>arr apps</em> section above — it appends
+                    <code>?server_id=&lt;id&gt;</code> to every URL on this tab.
                 </div>
 
                 <h6 class="small text-muted">Payload — single file</h6>

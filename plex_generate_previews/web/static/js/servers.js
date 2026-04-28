@@ -652,9 +652,12 @@
         $('#editServerEnabled').checked = server.enabled !== false;
         $('#editServerToken').value = '';
 
-        // Plex-only: show the config folder field + wire its inline validator.
+        // Plex-only: show the config folder field + wire its inline validator,
+        // and reveal the "Webhook & Scanner" tab (Phase H4).
         const isPlex = (server.type || '').toLowerCase() === 'plex';
         $('#editPlexConfigGroup').classList.toggle('d-none', !isPlex);
+        const automationTabLi = document.getElementById('editTabAutomationLi');
+        if (automationTabLi) automationTabLi.classList.toggle('d-none', !isPlex);
         if (isPlex) {
             const out = server.output || {};
             const cfgInput = $('#editPlexConfigFolder');
