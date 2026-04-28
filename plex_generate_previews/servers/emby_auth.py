@@ -27,6 +27,14 @@ from loguru import logger
 _AUTH_CLIENT = "PlexGeneratePreviews"
 _AUTH_DEVICE = "PlexGeneratePreviews"
 _AUTH_VERSION = "1.0.0"
+
+# Module-level constant so the Jellyfin auth helper can reuse it.
+__all__ = [
+    "EmbyAuthResult",
+    "_AUTH_DEVICE_ID",
+    "_emby_authorization_header",
+    "authenticate_emby_with_password",
+]
 # A namespaced UUID gives every install the same DeviceId so re-auth
 # lands on the same Emby session row instead of cluttering the device
 # list. Tests can override via ``device_id_override``.
