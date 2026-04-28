@@ -1,0 +1,155 @@
+"""Emby sidecar BIF output adapter.
+
+Emby's "Save preview video thumbnails into media folders" feature drops
+``{basename}-{width}-{interval}.bif`` next to the source video; the
+client picks them up automatically on library scan. Reproducing that
+naming exactly means our generated BIFs slot into Emby installations as
+if Emby had produced them itself ([forum discussion](
+https://emby.media/community/topic/112001-what-is-a-bif-file-and-why-do-all-have-320-10-at-end-of-filename/)).
+
+Unlike :class:`PlexBundleAdapter`, this adapter doesn't need any
+server-side metadata — the output path is derived purely from the
+canonical media path plus the configured width and interval.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from loguru import logger
+
+from ..servers.base import MediaServer
+from .base import BifBundle, OutputAdapter
+
+
+class EmbyBifAdapter(OutputAdapter):
+    """Publish Emby-style sidecar BIF files alongside the media file.
+
+    Args:
+        width: BIF thumbnail width in pixels (Emby's default is 320).
+            Encoded into the filename so multiple resolutions can coexist.
+        frame_interval: Seconds between frames. Encoded into the filename
+            (Emby uses this on its own generation runs too).
+    """
+
+    def __init__(self, *, width: int = 320, frame_interval: int = 10) -> None:
+        self._width = int(width)
+        self._frame_interval = int(frame_interval)
+
+    @property
+    def name(self) -> str:
+        return "emby_sidecar"
+
+    def needs_server_metadata(self) -> bool:
+        # Sidecar path is derived purely from the canonical media path;
+        # no API calls needed before publishing.
+        return False
+
+    def compute_output_paths(
+        self,
+        bundle: BifBundle,
+        server: MediaServer,
+        item_id: str | None,
+    ) -> list[Path]:
+        """Return ``[<media_dir>/<basename>-<width>-<interval>.bif]``."""
+        media_path = Path(bundle.canonical_path)
+        basename = media_path.stem  # without extension
+        sidecar = media_path.parent / f"{basename}-{self._width}-{self._frame_interval}.bif"
+        return [sidecar]
+
+    def publish(self, bundle: BifBundle, output_paths: list[Path]) -> None:
+        """Pack ``bundle.frame_dir`` into a BIF at the sidecar path.
+
+        Reuses the existing ``generate_bif`` helper so the BIF byte layout
+        stays in lockstep with the Plex publisher. The media folder must
+        already exist (it does — we only got here because the source file
+        is present); we only create missing parent directories defensively
+        for unusual mount setups.
+        """
+        if not output_paths:
+            raise ValueError("EmbyBifAdapter.publish requires at least one output path")
+
+        sidecar = output_paths[0]
+        try:
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            logger.error(
+                "Permission denied creating Emby sidecar parent {}: {}",
+                sidecar.parent,
+                exc,
+            )
+            raise
+
+        from ..processing.orchestrator import generate_bif
+        from .plex_bundle import _BifIntervalConfig
+
+        generate_bif(
+            str(sidecar),
+            str(bundle.frame_dir),
+            _BifIntervalConfig(self._frame_interval),
+        )
+
+        # Sanity: filename must follow Emby's <basename>-<w>-<i>.bif pattern.
+        # If a future caller misuses compute_output_paths and passes a
+        # custom path, Emby won't pick it up — log a warning so it's
+        # diagnosable in the field.
+        if not sidecar.name.endswith(f"-{self._width}-{self._frame_interval}.bif"):
+            logger.warning(
+                "Emby sidecar BIF written to non-standard name {} (Emby expects <basename>-<width>-<interval>.bif)",
+                sidecar.name,
+            )
+
+        logger.debug("Emby sidecar BIF written to {}", sidecar)
+
+    @staticmethod
+    def sidecar_path(canonical_path: str, *, width: int, frame_interval: int) -> Path:
+        """Public helper used by tests + future read-side code (BIF viewer).
+
+        Returns the Emby sidecar path that *would* be written for the given
+        media path / width / interval, without instantiating an adapter.
+        """
+        media_path = Path(canonical_path)
+        basename = media_path.stem
+        return media_path.parent / f"{basename}-{int(width)}-{int(frame_interval)}.bif"
+
+
+def _split_emby_filename(name: str) -> tuple[str, int, int] | None:
+    """Inverse of the Emby filename pattern.
+
+    Given ``Foo (2024)-320-10.bif`` returns ``("Foo (2024)", 320, 10)``;
+    returns ``None`` if the name doesn't match the pattern. Used by the
+    BIF viewer to enumerate Emby-flavoured sidecars.
+    """
+    if not name.endswith(".bif"):
+        return None
+    stem = name[: -len(".bif")]
+    parts = stem.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    base, width_str, interval_str = parts
+    try:
+        return base, int(width_str), int(interval_str)
+    except ValueError:
+        return None
+
+
+def _emby_sidecar_paths_in_dir(directory: str) -> list[tuple[str, str, int, int]]:
+    """List Emby sidecar BIFs in ``directory`` as ``(path, base, width, interval)``.
+
+    Used by the BIF viewer to surface every preview already on disk for a
+    given media folder. Stable order (sorted by filename) so test
+    assertions are deterministic.
+    """
+    results: list[tuple[str, str, int, int]] = []
+    try:
+        entries = sorted(os.listdir(directory))
+    except OSError:
+        return results
+    for entry in entries:
+        parsed = _split_emby_filename(entry)
+        if parsed is None:
+            continue
+        base, width, interval = parsed
+        results.append((os.path.join(directory, entry), base, width, interval))
+    return results
