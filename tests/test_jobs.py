@@ -516,3 +516,37 @@ class TestPublishersAttribution:
         job = jm.create_job(library_name="X")
         jm.append_publishers(job.id, [])
         assert jm.get_job(job.id).publishers == []
+
+
+class TestJobUnknownFieldTolerance:
+    """Phase H Fix-5: jobs.json with future / removed fields must still load.
+
+    Without the kwarg-filtering safeguard, adding/removing any field on the
+    Job dataclass would silently drop every persisted job at startup (the
+    surrounding ``except (TypeError, ...)`` swallows the failure)."""
+
+    def test_load_skips_unknown_kwarg_fields(self, config_dir):
+        """A persisted job with an extra field (e.g. one we removed since)
+        must still load — the unknown field is silently dropped."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        jobs_file = os.path.join(config_dir, "jobs.json")
+        with open(jobs_file, "w") as f:
+            _json.dump(
+                {
+                    "jobs": [
+                        {
+                            "id": "j1",
+                            "library_name": "Movies",
+                            "future_field_we_dont_know_about": 42,
+                            "another_unknown": "ignore me",
+                        }
+                    ]
+                },
+                f,
+            )
+        jm = JobManager(config_dir=config_dir)
+        loaded = jm.get_job("j1")
+        assert loaded is not None
+        assert loaded.library_name == "Movies"

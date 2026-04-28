@@ -658,6 +658,20 @@
         $('#editPlexConfigGroup').classList.toggle('d-none', !isPlex);
         const automationTabLi = document.getElementById('editTabAutomationLi');
         if (automationTabLi) automationTabLi.classList.toggle('d-none', !isPlex);
+        // Always force the General tab active on open. Without this, opening a
+        // Plex server, clicking "Webhook & Scanner", closing, then opening a
+        // non-Plex server leaves the now-hidden Plex pane visible because
+        // Bootstrap doesn't auto-reset on modal hide. (Fix-2 from H code review.)
+        try {
+            document.querySelectorAll('#editServerModal .nav-link').forEach((el) => el.classList.remove('active'));
+            document.querySelectorAll('#editServerModal .tab-pane').forEach((el) => el.classList.remove('show', 'active'));
+            const generalTab = document.querySelector('#editServerModal [data-bs-target="#edit-tab-general"]');
+            const generalPane = document.getElementById('edit-tab-general');
+            if (generalTab) generalTab.classList.add('active');
+            if (generalPane) generalPane.classList.add('show', 'active');
+        } catch (_e) {
+            // Best-effort — Bootstrap not available shouldn't break Edit.
+        }
         if (isPlex) {
             const out = server.output || {};
             const cfgInput = $('#editPlexConfigFolder');

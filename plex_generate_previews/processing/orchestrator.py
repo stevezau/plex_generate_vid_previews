@@ -1605,19 +1605,21 @@ def _fan_out_secondary_publishers(
             cancel_check=cancel_check,
             server_id_filter=sid_filter,
         )
-        # Phase H5: attribute publisher rows to the currently running job so
-        # the Jobs UI can show per-server outcomes for full-library scans
-        # (the legacy walker doesn't carry job_id, so look up via JobManager).
-        try:
-            from ..jobs.orchestrator import _publisher_rows_from_result
-            from ..web.jobs import get_job_manager
+        # Phase H5 + Fix-1: attribute publisher rows to the *exact* job that
+        # owns this thread, not "the running job" (which silently dropped
+        # attribution when 2+ jobs ran in parallel via the dispatcher).
+        # Each worker thread enters ``failure_scope(job_id)`` before calling
+        # process_item; we read that ContextVar here so attribution is
+        # correct under any worker-pool concurrency.
+        attr_job_id = _failure_job_id_var.get()
+        if attr_job_id:
+            try:
+                from ..jobs.orchestrator import _publisher_rows_from_result
+                from ..web.jobs import get_job_manager
 
-            jm = get_job_manager()
-            running = jm.get_running_jobs() or []
-            if len(running) == 1:
-                jm.append_publishers(running[0].id, _publisher_rows_from_result(result, canonical_path))
-        except Exception as exc:
-            logger.debug("Could not attribute fan-out publishers to a job: {}", exc)
+                get_job_manager().append_publishers(attr_job_id, _publisher_rows_from_result(result, canonical_path))
+            except Exception as exc:
+                logger.debug("Could not attribute fan-out publishers to job {}: {}", attr_job_id, exc)
         published = [p for p in result.publishers if p.status.value == "published"]
         if published:
             logger.info(

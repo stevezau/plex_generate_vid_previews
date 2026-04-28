@@ -591,7 +591,6 @@ async function loadLibraries() {
         libraries = data.libraries || [];
         librariesLoadError = null;
         await updateLibraryList();
-        updateLibrarySelects();
         updateMediaServersStatus();
     } catch (error) {
         console.error('Failed to load libraries:', error);
@@ -1290,38 +1289,6 @@ async function updateLibraryList() {
         `<div class="form-text mt-1">Use <strong>Start New Job</strong> above to scan a specific server / libraries.</div>`;
 }
 
-function updateLibrarySelects(filterServerId) {
-    // Suffix each library with its server identity when more than one server
-    // is present in the cached `libraries` array. Stops the same-name foot-gun
-    // ("Movies" on Plex AND on Emby — which one's this?). When `filterServerId`
-    // is supplied, only render libraries belonging to that server.
-    const distinctServerIds = new Set();
-    for (const l of libraries || []) {
-        if (l && l.server_id) distinctServerIds.add(l.server_id);
-    }
-    const showServerSuffix = distinctServerIds.size > 1;
-
-    const selects = ['jobLibrary', 'scheduleLibrary'];
-
-    for (const selectId of selects) {
-        const select = document.getElementById(selectId);
-        if (!select) continue;
-
-        // Keep first option (All Libraries)
-        select.innerHTML = '<option value="">All Libraries</option>';
-
-        for (const lib of libraries) {
-            if (filterServerId && lib.server_id && lib.server_id !== filterServerId) continue;
-            const option = document.createElement('option');
-            option.value = lib.id;
-            const typeLabel = libraryTypeLabel(lib);
-            const serverSuffix = showServerSuffix && lib.server_name ? ` — ${lib.server_name}` : '';
-            option.textContent = `${lib.name} (${typeLabel})${serverSuffix}`;
-            select.appendChild(option);
-        }
-    }
-}
-
 // Refresh the Schedules library checkbox group when the user picks a different
 // server in the modal. Hits /api/libraries?server_id=<id> when a specific
 // server is chosen so non-Plex servers (Emby/Jellyfin) are also covered.
@@ -1335,7 +1302,6 @@ async function onScheduleServerChange() {
             : '/api/libraries';
         const data = await apiGet(url);
         libraries = data.libraries || [];
-        updateLibrarySelects(serverId || null);
         _renderScheduleLibraryList(libraries, serverId || null);
     } catch (e) {
         console.warn('Failed to refresh libraries for server change:', e);
@@ -3098,30 +3064,26 @@ async function startNewJob() {
     const allLibrariesCheckbox = document.getElementById('jobLibraryAll');
     const forceRegenerate = document.getElementById('jobRegenerateAll').checked;
 
-    let selectedLibraryNames = [];
+    let selectedLibraryIds = [];
     let libraryName = 'All Libraries';
 
     if (!allLibrariesCheckbox.checked) {
         // Get selected library checkboxes
         const selectedCheckboxes = document.querySelectorAll('.job-library-checkbox:checked');
-        const selectedIds = Array.from(selectedCheckboxes).map(cb => cb.value);
+        var selectedIdsLocal = Array.from(selectedCheckboxes).map(cb => cb.value);
 
-        if (selectedIds.length === 0) {
+        if (selectedIdsLocal.length === 0) {
             showToast('Error', 'Please select at least one library', 'warning');
             return;
         }
 
-        // Convert IDs to library names (lowercase for config matching)
-        selectedLibraryNames = selectedIds.map(id => {
-            const lib = libraries.find(l => l.id === id);
-            return lib ? lib.name.toLowerCase() : null;
-        }).filter(n => n !== null);
-
-        if (selectedIds.length === 1) {
-            const lib = libraries.find(l => l.id === selectedIds[0]);
+        selectedLibraryIds = selectedIdsLocal;
+        // Build a display name from the looked-up library names.
+        if (selectedIdsLocal.length === 1) {
+            const lib = libraries.find(l => l.id === selectedIdsLocal[0]);
             libraryName = lib ? lib.name : 'Selected Library';
         } else {
-            libraryName = `${selectedIds.length} Libraries`;
+            libraryName = `${selectedIdsLocal.length} Libraries`;
         }
     }
 
@@ -3137,8 +3099,11 @@ async function startNewJob() {
     const serverScope = document.getElementById('jobServerScope');
     const serverId = serverScope ? serverScope.value : '';
 
+    // Phase H6 Fix-4: send library_ids as the canonical wire shape
+    // (api_jobs.create_job already accepts both array shapes; new code prefers
+    // IDs over name lookups, which avoids the comma-join hack).
     const jobPayload = {
-        library_names: selectedLibraryNames.length > 0 ? selectedLibraryNames : null,
+        library_ids: selectedLibraryIds,
         library_name: libraryName,
         priority: priority,
         config: jobConfig,
@@ -3475,7 +3440,6 @@ function _getSelectedScheduleType() {
 
 function _resetScheduleForm() {
     document.getElementById('scheduleName').value = '';
-    document.getElementById('scheduleLibrary').value = '';
     const srvSel = document.getElementById('scheduleServer');
     if (srvSel) srvSel.value = '';
     document.getElementById('scheduleCron').value = '';

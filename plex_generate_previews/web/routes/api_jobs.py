@@ -237,21 +237,33 @@ def get_job(job_id):
 @api.route("/jobs", methods=["POST"])
 @api_token_required
 def create_job():
-    """Create a new job."""
+    """Create a new job.
+
+    Accepts either of (in priority order):
+    * ``library_ids: list[str]`` — canonical multi-library shape (Phase H6).
+    * ``library_names: list[str]`` — back-compat from older clients.
+    * ``library_id: str`` — back-compat single-library shape.
+    """
     data = request.get_json() or {}
 
-    library_names = data.get("library_names") or []
-    library_ids = data.get("library_ids") or []
-    if not library_names and data.get("library_id"):
-        library_ids = [data.get("library_id")]
+    library_ids = list(data.get("library_ids") or [])
+    library_names = list(data.get("library_names") or [])
+    if not library_ids and not library_names:
+        single = data.get("library_id")
+        if single:
+            library_ids = [str(single)]
 
     priority = data.get("priority", PRIORITY_NORMAL)
-
     server_id, server_name, server_type = _resolve_server_context(data.get("server_id"))
+
+    # Job.library_id is a display field — keep it for the single-library case
+    # so the existing UI shows the ID, otherwise leave it None and let
+    # library_name carry the human label (e.g. "3 Libraries").
+    display_library_id = library_ids[0] if len(library_ids) == 1 else None
 
     job_manager = get_job_manager()
     job = job_manager.create_job(
-        library_id=",".join(library_names) if library_names else (",".join(library_ids) if library_ids else None),
+        library_id=display_library_id,
         library_name=data.get("library_name", ""),
         config=data.get("config", {}),
         priority=priority,
@@ -260,11 +272,11 @@ def create_job():
         server_type=server_type,
     )
 
-    config_overrides = data.get("config", {})
-    if library_names:
-        config_overrides["selected_libraries"] = library_names
-    elif library_ids:
+    config_overrides = dict(data.get("config", {}))
+    if library_ids:
         config_overrides["selected_library_ids"] = library_ids
+    elif library_names:
+        config_overrides["selected_libraries"] = library_names
     else:
         config_overrides["selected_libraries"] = []
     if server_id:

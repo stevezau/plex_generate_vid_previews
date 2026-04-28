@@ -195,13 +195,21 @@ class ScheduleManager:
                 # delete ``library_id`` — kept as a derived back-compat
                 # field for one release in case any external script still
                 # reads it.
+                migrated = 0
                 for sched in self._schedules.values():
                     if not isinstance(sched, dict):
                         continue
                     if "library_ids" not in sched or not isinstance(sched.get("library_ids"), list):
                         legacy = sched.get("library_id")
                         sched["library_ids"] = [str(legacy)] if legacy else []
+                        migrated += 1
                 logger.info("Loaded {} schedule configurations", len(self._schedules))
+                if migrated:
+                    logger.info(
+                        "Migrated {} legacy schedule(s) from single library_id to library_ids list",
+                        migrated,
+                    )
+                    self._save_schedules()
             except (OSError, json.JSONDecodeError) as e:
                 logger.warning(
                     "Could not read saved schedules from {} ({}: {}). "
@@ -437,7 +445,7 @@ class ScheduleManager:
                 id=schedule_id,
                 args=[
                     schedule_id,
-                    schedule.get("library_ids") or ([schedule["library_id"]] if schedule.get("library_id") else []),
+                    schedule.get("library_ids", []),
                     schedule["library_name"],
                     schedule["config"],
                     schedule.get("priority"),

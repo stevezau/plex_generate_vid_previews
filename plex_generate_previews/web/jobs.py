@@ -10,7 +10,7 @@ import threading
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -225,9 +225,15 @@ class JobManager:
                 with open(self.jobs_file) as f:
                     data = json.load(f)
                     needs_save = False
+                    # Allowed Job constructor kwargs — filter unknowns so a
+                    # future field rename / removal in the dataclass doesn't
+                    # mass-delete history. The "malformed" except clause below
+                    # would otherwise silently drop every job in jobs.json.
+                    _job_field_names = {f.name for f in fields(Job)}
                     for job_data in data.get("jobs", []):
                         try:
-                            job = Job(**job_data)
+                            filtered_data = {k: v for k, v in (job_data or {}).items() if k in _job_field_names}
+                            job = Job(**filtered_data)
                             # Mark any "running" jobs as failed on startup
                             # (they were interrupted by restart/crash)
                             if job.status == JobStatus.RUNNING:

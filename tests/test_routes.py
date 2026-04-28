@@ -320,6 +320,20 @@ class TestTokenEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_setup_skip_marks_complete(self, client):
+        """Phase H8: /api/setup/skip lets Emby/Jellyfin users bypass the
+        Plex-first wizard and land on the dashboard."""
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Ensure setup isn't already complete (the fixture marks it complete
+        # but we want to assert the endpoint *re-asserts* it).
+        sm.set("setup_complete", False)
+        resp = client.post("/api/setup/skip", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        assert sm.is_setup_complete() is True
+
     def test_set_custom_token_rejects_when_env_controlled(self, client):
         # The fixture already has WEB_AUTH_TOKEN set, so any /api/token/set
         # call should 409 with the env-var message.
@@ -362,6 +376,38 @@ class TestJobsAPI:
         data = resp.get_json()
         assert data["status"] == "pending"
         assert "id" in data
+
+    def test_create_job_library_ids_propagate_to_overrides(self, client):
+        """Phase H6 Fix-4: library_ids array → selected_library_ids in overrides
+        (replaces the legacy comma-joined library_id hack)."""
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={
+                    "library_ids": ["1", "5", "9"],
+                    "library_name": "3 Libraries",
+                    "config": {},
+                },
+            )
+        assert resp.status_code == 201
+        # Job stored library_id=None for multi-library jobs (display field).
+        assert resp.get_json()["library_id"] is None
+        # Dispatcher gets the full ID list via selected_library_ids.
+        overrides = mock_start.call_args[0][1]
+        assert overrides["selected_library_ids"] == ["1", "5", "9"]
+
+    def test_create_job_single_library_id_keeps_back_compat(self, client):
+        """Single library_ids element keeps Job.library_id populated for the
+        existing Jobs UI rendering."""
+        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_ids": ["42"], "library_name": "Movies"},
+            )
+        assert resp.status_code == 201
+        assert resp.get_json()["library_id"] == "42"
 
     def test_create_job_ignores_credential_overrides(self, client):
         """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
