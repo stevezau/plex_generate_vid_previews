@@ -830,11 +830,13 @@ def test_schedule_webhook_job_dedupes_within_ttl(mock_timer_cls, mock_settings_m
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
 
-    # Prime the dedup cache with a recent dispatch for this exact (source, path).
+    # Prime the dedup cache with a recent dispatch for this exact
+    # (source, server_id, path) — server_id is "" when the webhook isn't
+    # scoped to one configured server.
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     now_ts = datetime.now(timezone.utc).timestamp()
     with wh._pending_lock:
-        wh._recent_dispatches[("sonarr", normalized_path)] = now_ts
+        wh._recent_dispatches[("sonarr", "", normalized_path)] = now_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
@@ -862,14 +864,14 @@ def test_schedule_webhook_job_allows_dispatch_after_ttl(mock_timer_cls, mock_set
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     stale_ts = datetime.now(timezone.utc).timestamp() - wh._RECENT_DISPATCH_TTL_SECONDS - 5
     with wh._pending_lock:
-        wh._recent_dispatches[("sonarr", normalized_path)] = stale_ts
+        wh._recent_dispatches[("sonarr", "", normalized_path)] = stale_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
     assert result is True
     mock_timer_cls.assert_called_once()
     # Stale entry should have been pruned from the cache
-    assert ("sonarr", normalized_path) not in wh._recent_dispatches
+    assert ("sonarr", "", normalized_path) not in wh._recent_dispatches
 
 
 @patch("plex_generate_previews.web.webhooks.get_settings_manager")
@@ -886,7 +888,7 @@ def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     now_ts = datetime.now(timezone.utc).timestamp()
     with wh._pending_lock:
-        wh._recent_dispatches[("plex", normalized_path)] = now_ts
+        wh._recent_dispatches[("plex", "", normalized_path)] = now_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
@@ -920,9 +922,54 @@ def test_execute_webhook_job_records_dispatch_before_start(
 
     normalized_e1 = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     normalized_e2 = os.path.normpath("/tv/Show/S01E02.mkv").replace("\\", "/")
-    assert ("sonarr", normalized_e1) in wh._recent_dispatches
-    assert ("sonarr", normalized_e2) in wh._recent_dispatches
+    assert ("sonarr", "", normalized_e1) in wh._recent_dispatches
+    assert ("sonarr", "", normalized_e2) in wh._recent_dispatches
     mock_start_job.assert_called_once()
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_per_server_dedup_is_independent(mock_timer_cls, mock_settings_mgr, app):
+    """A dispatch scoped to one server must not block the same path on another server."""
+    from datetime import datetime, timezone
+
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
+
+    normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with wh._pending_lock:
+        # Plex server "p1" already dispatched this path recently...
+        wh._recent_dispatches[("sonarr", "p1", normalized_path)] = now_ts
+
+    # ...the same path coming in for Emby server "e1" should NOT be deduped.
+    result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="e1")
+
+    assert result is True  # not deduped
+    mock_timer_cls.assert_called_once()
+
+
+@patch("plex_generate_previews.web.webhooks.get_settings_manager")
+@patch("plex_generate_previews.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_per_server_keeps_separate_batches(mock_timer_cls, mock_settings_mgr, app):
+    """Two server-scoped webhooks for the same source land in separate batches."""
+    from plex_generate_previews.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
+
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="p1")
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="e1")
+
+    p1_key = wh._debounce_key("sonarr", "p1")
+    e1_key = wh._debounce_key("sonarr", "e1")
+    assert p1_key in wh._pending_batches
+    assert e1_key in wh._pending_batches
+    assert p1_key != e1_key
+    assert wh._pending_batches[p1_key]["server_id"] == "p1"
+    assert wh._pending_batches[e1_key]["server_id"] == "e1"
 
 
 @patch("plex_generate_previews.web.webhooks.get_settings_manager")

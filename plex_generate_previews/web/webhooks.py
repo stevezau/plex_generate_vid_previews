@@ -229,9 +229,34 @@ def _summarize_payload(data: dict, max_depth: int = 2) -> dict | str:
     return summary
 
 
-def _debounce_key(source: str) -> str:
-    """Build a stable debounce key for source (radarr / sonarr / custom)."""
+def _debounce_key(source: str, server_id: str | None = None) -> str:
+    """Build a stable debounce key — separate batches per (source, server_id)
+    so a Radarr → Plex import never gets bundled with a Radarr → Emby import.
+    """
+    if server_id:
+        return f"{source}::{server_id}"
     return source
+
+
+def _resolve_webhook_server_context(server_id: str | None) -> tuple[str | None, str | None, str | None]:
+    """Look up a configured server by id and return ``(id, name, type)``.
+
+    Used by webhook handlers when the inbound URL carries ``?server_id=<id>``.
+    Returns (None, None, None) when the id is missing or unknown — the job is
+    then treated as "all owning servers" (legacy behaviour).
+    """
+    if not server_id:
+        return None, None, None
+    try:
+        raw = get_settings_manager().get("media_servers") or []
+    except Exception:
+        return None, None, None
+    if not isinstance(raw, list):
+        return None, None, None
+    entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == server_id), None)
+    if entry is None:
+        return None, None, None
+    return (entry.get("id"), entry.get("name") or entry.get("id"), (entry.get("type") or "").lower() or None)
 
 
 def _as_dict(value: object) -> dict:
@@ -379,8 +404,8 @@ def _format_plex_title_from_item(item) -> str | None:
     return _format_plex_title_from_metadata(synthetic)
 
 
-def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
-    """Schedule a debounced single-file webhook job and batch paths per source."""
+def _schedule_webhook_job(source: str, title: str, file_path: str, server_id: str | None = None) -> bool:
+    """Schedule a debounced single-file webhook job and batch paths per (source, server_id)."""
     safe_source = str(source or "unknown")
     safe_title = str(title or "Unknown")
     normalized_input_path = str(file_path or "").strip()
@@ -398,9 +423,9 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
 
     settings = get_settings_manager()
     delay = int(settings.get("webhook_delay", 60))
-    debounce_key = _debounce_key(safe_source)
+    debounce_key = _debounce_key(safe_source, server_id)
     normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
-    dedup_key = (safe_source, normalized_path)
+    dedup_key = (safe_source, server_id or "", normalized_path)
 
     with _pending_lock:
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -431,6 +456,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str) -> bool:
                     "source": source,
                     "file_paths": set(),
                     "titles": [],
+                    "server_id": server_id,
                 }
                 _pending_batches[debounce_key] = batch
             batch["file_paths"].add(normalized_path)
@@ -500,6 +526,9 @@ def _execute_webhook_job(debounce_key: str) -> None:
         else:
             library_display = f"{source.title()}: {len(webhook_paths)} files"
 
+        batch_server_id = batch.get("server_id")
+        b_sid, b_sname, b_stype = _resolve_webhook_server_context(batch_server_id)
+
         job_manager = get_job_manager()
         job = job_manager.create_job(
             library_name=library_display,
@@ -508,6 +537,9 @@ def _execute_webhook_job(debounce_key: str) -> None:
                 "path_count": len(webhook_paths),
                 "webhook_basenames": basenames[:20],
             },
+            server_id=b_sid,
+            server_name=b_sname,
+            server_type=b_stype,
         )
         settings = get_settings_manager()
         # Prefer the per-server library list from media_servers[0] (Plex)
@@ -528,18 +560,18 @@ def _execute_webhook_job(debounce_key: str) -> None:
         with _pending_lock:
             dispatch_ts = datetime.now(timezone.utc).timestamp()
             for p in webhook_paths:
-                _recent_dispatches[(source, p)] = dispatch_ts
+                _recent_dispatches[(source, batch_server_id or "", p)] = dispatch_ts
 
-        _start_job_async(
-            job.id,
-            {
-                "selected_libraries": selected_libraries,
-                "sort_by": "newest",
-                "webhook_paths": webhook_paths,
-                "webhook_retry_count": retry_count,
-                "webhook_retry_delay": retry_delay,
-            },
-        )
+        overrides = {
+            "selected_libraries": selected_libraries,
+            "sort_by": "newest",
+            "webhook_paths": webhook_paths,
+            "webhook_retry_count": retry_count,
+            "webhook_retry_delay": retry_delay,
+        }
+        if b_sid:
+            overrides["server_id"] = b_sid
+        _start_job_async(job.id, overrides)
         _add_history_entry(
             source,
             "Download",
@@ -605,7 +637,9 @@ def radarr_webhook():
     movie_title = str(movie.get("title", "Unknown")).strip() or "Unknown"
     movie_file_path = _extract_radarr_file_path(data)
 
-    was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path)
+    server_id = (request.args.get("server_id") or "").strip() or None
+    kwargs = {"server_id": server_id} if server_id else {}
+    was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path, **kwargs)
     if not was_queued:
         logger.debug(
             "Webhook: Radarr payload had no extractable file path. Structure: {}\nFull payload: {}",
@@ -681,7 +715,9 @@ def _handle_sonarr_compatible_webhook(source: str):
     display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
     episode_file_path = _extract_sonarr_file_path(data)
 
-    was_queued = _schedule_webhook_job(source, display_title, episode_file_path)
+    server_id = (request.args.get("server_id") or "").strip() or None
+    kwargs = {"server_id": server_id} if server_id else {}
+    was_queued = _schedule_webhook_job(source, display_title, episode_file_path, **kwargs)
     if not was_queued:
         logger.debug(
             "Webhook: {} payload had no extractable file path. Structure: {}\nFull payload: {}",
@@ -1031,8 +1067,10 @@ def custom_webhook():
 
     title = str(data.get("title", "")).strip() or os.path.basename(paths[0])
 
+    server_id = (request.args.get("server_id") or "").strip() or None
+    kwargs = {"server_id": server_id} if server_id else {}
     for path in paths:
-        _schedule_webhook_job("custom", title, path)
+        _schedule_webhook_job("custom", title, path, **kwargs)
 
     _add_history_entry("custom", "Custom", title, "queued")
 

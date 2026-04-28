@@ -208,6 +208,20 @@
                     and you're done.
                 </p>
 
+                <div class="mb-3">
+                    <label for="webhookServerScope" class="form-label small mb-1">
+                        <strong>Publish to which server?</strong>
+                    </label>
+                    <select class="form-select form-select-sm" id="webhookServerScope">
+                        <option value="">All servers (publish to whoever owns the file)</option>
+                    </select>
+                    <div class="form-text">
+                        Pick a server to scope these webhook URLs to it (adds <code>?server_id=&lt;id&gt;</code>).
+                        Use this when the same library exists on more than one server (e.g. both Plex and Emby
+                        have <em>Movies</em>) and you want this webhook to publish previews to one specific server only.
+                    </div>
+                </div>
+
                 <ul class="nav nav-tabs mb-3" role="tablist">
                     <li class="nav-item" role="presentation">
                         <button class="nav-link active" id="tab-sonarr-tab" data-bs-toggle="tab" data-bs-target="#tab-sonarr" type="button" role="tab">
@@ -523,12 +537,55 @@ function _formatMinutesShort(mins) {
     return hoursPart === 0 ? days + 'd' : days + 'd ' + hoursPart + 'h';
 }
 
+// Per-server webhook scoping: when set, the user is publishing to one
+// configured server only. We append ?server_id=<id> to the visible URLs
+// so the inbound webhook handler routes the resulting job to that server.
+window._webhookServerId = '';
+
+function _refreshWebhookUrls() {
+    var qs = window._webhookServerId
+        ? '?server_id=' + encodeURIComponent(window._webhookServerId)
+        : '';
+    var origin = window.location.origin;
+    var inputs = {
+        radarrUrl:   '/api/webhooks/radarr',
+        sonarrUrl:   '/api/webhooks/sonarr',
+        sportarrUrl: '/api/webhooks/sportarr',
+        customUrl:   '/api/webhooks/custom',
+    };
+    Object.keys(inputs).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.value = origin + inputs[id] + qs;
+    });
+}
+
+async function _populateWebhookServerPicker() {
+    var sel = document.getElementById('webhookServerScope');
+    if (!sel) return;
+    try {
+        var resp = await fetch('/api/servers');
+        var data = await resp.json();
+        var servers = (data.servers || []).filter(function(s) { return s.enabled !== false; });
+        sel.innerHTML = '<option value="">All servers (publish to whoever owns the file)</option>';
+        servers.forEach(function(s) {
+            var opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.name + ' (' + ((s.type || '') + '').toUpperCase() + ')';
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', function() {
+            window._webhookServerId = sel.value;
+            _refreshWebhookUrls();
+        });
+    } catch (e) {
+        // Picker is optional — don't block trigger UI on failure.
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Set webhook URLs from current origin
-    document.getElementById('radarrUrl').value = window.location.origin + '/api/webhooks/radarr';
-    document.getElementById('sonarrUrl').value = window.location.origin + '/api/webhooks/sonarr';
-    document.getElementById('sportarrUrl').value = window.location.origin + '/api/webhooks/sportarr';
-    document.getElementById('customUrl').value = window.location.origin + '/api/webhooks/custom';
+    _refreshWebhookUrls();
+    _populateWebhookServerPicker();
 
     var savedHistoryPerPage = localStorage.getItem('historyPerPage');
     if (savedHistoryPerPage) {
