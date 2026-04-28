@@ -213,6 +213,17 @@ class ServerConfig:
     This is the JSON-serialisable shape stored under ``media_servers`` in
     ``settings.json``. Concrete server clients are constructed from this by
     the server registry; the dataclass itself contains no live HTTP state.
+
+    Attributes:
+        id: Locally generated UUID — stable identifier for this entry,
+            used in URLs and per-server fan-out routing.
+        server_identity: Server-reported unique identifier captured at
+            test-connection time (Plex ``machineIdentifier``,
+            Emby/Jellyfin ``ServerId``). Populated when the server probe
+            succeeds; the universal webhook router compares it against
+            the identifier embedded in inbound vendor payloads to route
+            to the right configured server when more than one of the
+            same vendor is configured.
     """
 
     id: str
@@ -226,3 +237,4 @@ class ServerConfig:
     libraries: list[Library] = field(default_factory=list)
     path_mappings: list[dict[str, Any]] = field(default_factory=list)
     output: dict[str, Any] = field(default_factory=dict)
+    server_identity: str | None = None

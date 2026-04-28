@@ -56,6 +56,66 @@ def _save_media_servers(servers: list[dict]) -> None:
     get_settings_manager().set("media_servers", servers)
 
 
+def _probe_for_identity(entry: dict) -> str | None:
+    """Probe the candidate config and return its self-reported identity.
+
+    Used during create/update so the webhook router can later match
+    inbound vendor payloads (Plex ``Server.uuid`` / Emby ``Server.Id`` /
+    Jellyfin ``ServerId``) to the persisted entry. Returns ``None`` when
+    the probe fails (offline, bad creds) — saving an unreachable server
+    is deliberately allowed; the webhook router falls back to the
+    "single candidate of this vendor" heuristic when identity is
+    missing.
+    """
+    try:
+        cfg = server_config_from_dict(entry)
+    except UnsupportedServerTypeError:
+        return None
+
+    try:
+        live = _instantiate_for_probe(cfg)
+    except Exception as exc:
+        logger.debug("Could not instantiate server for identity probe: {}", exc)
+        return None
+    if live is None:
+        return None
+
+    try:
+        result = live.test_connection()
+    except Exception as exc:
+        logger.debug("Identity probe raised: {}", exc)
+        return None
+
+    return result.server_id if result.ok else None
+
+
+def _instantiate_for_probe(cfg) -> Any:
+    """Build a transient :class:`MediaServer` for connection probing.
+
+    Centralised here so create/update/test-connection share the same
+    Plex shim and import paths.
+    """
+    if cfg.type is ServerType.PLEX:
+        from ...servers.plex import PlexServer as _PlexServer
+
+        plex_shim = _PlexProbeConfig(
+            plex_url=cfg.url,
+            plex_token=str((cfg.auth or {}).get("token") or ""),
+            plex_verify_ssl=cfg.verify_ssl,
+            plex_timeout=cfg.timeout,
+        )
+        return _PlexServer(plex_shim, server_id=cfg.id, name=cfg.name)
+    if cfg.type is ServerType.EMBY:
+        from ...servers.emby import EmbyServer as _EmbyServer
+
+        return _EmbyServer(cfg)
+    if cfg.type is ServerType.JELLYFIN:
+        from ...servers.jellyfin import JellyfinServer as _JellyfinServer
+
+        return _JellyfinServer(cfg)
+    return None
+
+
 def _merge_auth(existing: dict, incoming: dict | None) -> dict:
     """Apply incoming auth fields without clobbering retained secrets.
 
@@ -124,6 +184,7 @@ def _validate_server_payload(
     verify_ssl = bool(data.get("verify_ssl", base.get("verify_ssl", True)))
     timeout = int(data.get("timeout") or base.get("timeout") or 30)
 
+    server_identity = data.get("server_identity", base.get("server_identity"))
     entry = {
         "id": str(data.get("id") or base.get("id") or ""),
         "type": type_value,
@@ -136,6 +197,7 @@ def _validate_server_payload(
         "libraries": list(libraries or []),
         "path_mappings": list(path_mappings or []),
         "output": dict(output or {}),
+        "server_identity": str(server_identity) if server_identity else None,
     }
 
     # Sanity-check the result: server_config_from_dict applies its own
@@ -289,15 +351,9 @@ def refresh_server_libraries(server_id: str):
         return jsonify({"error": f"server {server_id!r} not found"}), 404
 
     try:
-        cfg = server_config_from_dict(target_entry)
+        server_config_from_dict(target_entry)
     except UnsupportedServerTypeError as exc:
         return jsonify({"error": str(exc)}), 400
-
-    if cfg.type not in (ServerType.PLEX, ServerType.EMBY, ServerType.JELLYFIN):
-        return (
-            jsonify({"error": f"Refresh for {cfg.type.value} servers is not implemented"}),
-            501,
-        )
 
     # Plex's live client still needs a legacy Config until the wrapper is
     # updated to take a ServerConfig. load_config() reads the same settings
@@ -347,6 +403,17 @@ def refresh_server_libraries(server_id: str):
     updated_servers = list(raw_servers)
     updated_entry = dict(target_entry)
     updated_entry["libraries"] = serialised_libraries
+    # Refresh server_identity opportunistically — list_libraries having
+    # succeeded means the connection works; capturing the identity here
+    # closes the gap for users who added their server while it was
+    # offline (or pre-server_identity).
+    if not updated_entry.get("server_identity"):
+        try:
+            probe = server.test_connection()
+            if probe.ok and probe.server_id:
+                updated_entry["server_identity"] = probe.server_id
+        except Exception as exc:
+            logger.debug("Refresh libraries: identity probe raised: {}", exc)
     updated_servers[target_index] = updated_entry
     settings.set("media_servers", updated_servers)
 
@@ -394,6 +461,14 @@ def create_server():
     if any(isinstance(s, dict) and s.get("id") == entry["id"] for s in servers):
         return jsonify({"error": f"server id {entry['id']!r} already exists"}), 409
 
+    # Best-effort: probe the new server so the webhook router can match
+    # inbound vendor payloads by identity. Skipped silently when the
+    # client supplied an explicit identity or the probe fails.
+    if not entry.get("server_identity"):
+        identity = _probe_for_identity(entry)
+        if identity:
+            entry["server_identity"] = identity
+
     servers.append(entry)
     _save_media_servers(servers)
     logger.info("Added media server {!r} (id={})", entry["name"], entry["id"])
@@ -424,6 +499,15 @@ def update_server(server_id: str):
             if updated is None:
                 return jsonify({"error": error}), 400
             updated["id"] = server_id  # never let id be changed via update
+            # Re-probe identity when URL or auth changed; otherwise keep
+            # the existing identity so we don't lose it if the probe is
+            # transiently flaky.
+            url_changed = updated.get("url") != entry.get("url")
+            auth_changed = updated.get("auth") != entry.get("auth")
+            if url_changed or auth_changed:
+                fresh_identity = _probe_for_identity(updated)
+                if fresh_identity:
+                    updated["server_identity"] = fresh_identity
             servers[i] = updated
             _save_media_servers(servers)
             logger.info("Updated media server {!r} (id={})", updated["name"], server_id)
@@ -478,28 +562,8 @@ def test_server_connection():
         entry["id"] = "test-connection"
 
     cfg = server_config_from_dict(entry)
-    if cfg.type is ServerType.PLEX:
-        # Plex's wrapper still needs a Config-shaped object during the
-        # transition. The connection probe only reads URL/token/SSL/timeout
-        # so a tiny shim is enough.
-        plex_shim = _PlexProbeConfig(
-            plex_url=cfg.url,
-            plex_token=str((cfg.auth or {}).get("token") or ""),
-            plex_verify_ssl=cfg.verify_ssl,
-            plex_timeout=cfg.timeout,
-        )
-        from ...servers.plex import PlexServer as _PlexServer
-
-        live = _PlexServer(plex_shim, server_id=cfg.id, name=cfg.name)
-    elif cfg.type is ServerType.EMBY:
-        from ...servers.emby import EmbyServer as _EmbyServer
-
-        live = _EmbyServer(cfg)
-    elif cfg.type is ServerType.JELLYFIN:
-        from ...servers.jellyfin import JellyfinServer as _JellyfinServer
-
-        live = _JellyfinServer(cfg)
-    else:
+    live = _instantiate_for_probe(cfg)
+    if live is None:
         return jsonify({"ok": False, "message": f"unsupported type {cfg.type.value!r}"}), 400
 
     try:

@@ -305,6 +305,115 @@ class TestPerServerFallback:
         assert response.status_code == 404
 
 
+class TestServerIdentityRouting:
+    """Verify multi-server-of-same-vendor routing uses the captured
+    ``server_identity`` rather than the locally-generated UUID.
+
+    Two Jellyfin servers configured; only the one whose
+    ``server_identity`` matches the inbound payload's ``ServerId``
+    should receive the dispatch.
+    """
+
+    def test_inbound_jellyfin_routes_to_matching_identity(self, client, auth_headers, monkeypatch):
+        _seed_servers(
+            [
+                {
+                    "id": "uuid-jelly-A",
+                    "type": "jellyfin",
+                    "name": "Jellyfin A",
+                    "enabled": True,
+                    "url": "http://a:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "server_identity": "jf-server-id-A",
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                },
+                {
+                    "id": "uuid-jelly-B",
+                    "type": "jellyfin",
+                    "name": "Jellyfin B",
+                    "enabled": True,
+                    "url": "http://b:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "server_identity": "jf-server-id-B",
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                },
+            ]
+        )
+
+        from plex_generate_previews.servers.jellyfin import JellyfinServer
+
+        monkeypatch.setattr(
+            JellyfinServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/data/tv/Show/S01E01.mkv",
+        )
+
+        with patch(
+            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "jf-42",
+                        "ItemType": "Episode",
+                        "ServerId": "jf-server-id-B",
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        proc.assert_called_once()
+        # Only the matching server's id should appear in the hint dict.
+        hints = proc.call_args.kwargs["item_id_by_server"]
+        assert hints == {"uuid-jelly-B": "jf-42"}
+
+    def test_inbound_with_unknown_identity_when_multiple_configured(self, client, auth_headers):
+        _seed_servers(
+            [
+                {
+                    "id": "uuid-jelly-A",
+                    "type": "jellyfin",
+                    "name": "Jellyfin A",
+                    "enabled": True,
+                    "url": "http://a:8096",
+                    "auth": {},
+                    "server_identity": "jf-server-id-A",
+                },
+                {
+                    "id": "uuid-jelly-B",
+                    "type": "jellyfin",
+                    "name": "Jellyfin B",
+                    "enabled": True,
+                    "url": "http://b:8096",
+                    "auth": {},
+                    "server_identity": "jf-server-id-B",
+                },
+            ]
+        )
+
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps(
+                {
+                    "NotificationType": "ItemAdded",
+                    "ItemId": "jf-42",
+                    "ItemType": "Episode",
+                    "ServerId": "jf-server-id-UNKNOWN",
+                }
+            ),
+        )
+
+        # No identity matches; ambiguous fallback (>1 candidate of this
+        # type) → router can't safely pick one. The handler returns 202
+        # for "could not match a configured server" rather than 200.
+        assert response.status_code == 202
+
+
 class TestAuth:
     def test_missing_token_rejected(self, client):
         response = client.post(

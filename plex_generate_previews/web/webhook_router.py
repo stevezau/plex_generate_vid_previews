@@ -173,15 +173,17 @@ def _match_registry_server(
 
     if server_id_hint:
         for live, cfg in candidates:
-            connection_id = server_id_hint
-            # Configs may not have a captured server identity yet (we
-            # store ``url`` and credentials but not always the server's
-            # self-reported id). Fall back to a name-or-id substring
-            # match as a courtesy when the id is unknown.
-            if connection_id == cfg.id:
+            # Match against the server's *self-reported* identity
+            # captured at probe time (Plex machineIdentifier, Emby/
+            # Jellyfin ServerId). The locally-generated ``cfg.id`` UUID
+            # never appears in vendor payloads.
+            if cfg.server_identity and cfg.server_identity == server_id_hint:
                 return live, cfg
 
-    # Single candidate: unambiguous — use it.
+    # Single candidate: unambiguous — use it. Covers two cases:
+    # (a) the payload omits the identity hint, (b) the configured
+    # entry's ``server_identity`` hasn't been populated yet (e.g. user
+    # added the server while it was offline and never re-probed).
     if len(candidates) == 1:
         return candidates[0]
 

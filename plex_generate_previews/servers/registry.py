@@ -68,6 +68,9 @@ def server_config_from_dict(data: dict[str, Any]) -> ServerConfig:
     except ValueError as exc:
         raise UnsupportedServerTypeError(f"Unknown media server type {type_str!r} in settings") from exc
 
+    identity_raw = data.get("server_identity")
+    server_identity = str(identity_raw) if identity_raw else None
+
     return ServerConfig(
         id=str(data.get("id") or ""),
         type=server_type,
@@ -80,6 +83,7 @@ def server_config_from_dict(data: dict[str, Any]) -> ServerConfig:
         libraries=libs,
         path_mappings=list(data.get("path_mappings") or []),
         output=dict(data.get("output") or {}),
+        server_identity=server_identity,
     )
 
 
