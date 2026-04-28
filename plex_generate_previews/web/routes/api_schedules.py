@@ -84,6 +84,7 @@ def create_schedule():
             cron_expression=data.get("cron_expression"),
             interval_minutes=data.get("interval_minutes"),
             library_id=data.get("library_id"),
+            library_ids=data.get("library_ids"),
             library_name=data.get("library_name", ""),
             config=data.get("config", {}),
             enabled=data.get("enabled", True),
@@ -119,6 +120,38 @@ def update_schedule(schedule_id):
     """Update a schedule."""
     data = request.get_json() or {}
 
+    # Phase H7: same non-Plex pinned-server gate as POST. Recently Added
+    # scanner + full-library scans currently only support Plex.
+    cfg = data.get("config") or {}
+    job_type = str(cfg.get("job_type") or "full_library")
+    target_server_id = data.get("server_id")
+    if target_server_id:
+        from ..settings_manager import get_settings_manager
+
+        raw_servers = get_settings_manager().get("media_servers") or []
+        target = next(
+            (s for s in raw_servers if isinstance(s, dict) and s.get("id") == target_server_id),
+            None,
+        )
+        if target and (target.get("type") or "").lower() != "plex":
+            if job_type == "recently_added":
+                return jsonify(
+                    {
+                        "error": (
+                            "The Recently Added Scanner currently supports Plex only. "
+                            "For Emby/Jellyfin, use the Sonarr/Radarr or Custom webhook on the Triggers tab."
+                        )
+                    }
+                ), 400
+            return jsonify(
+                {
+                    "error": (
+                        "Full-library scan schedules currently support Plex only. For Emby/Jellyfin, "
+                        "use the Sonarr/Radarr or Custom webhook on the Triggers tab."
+                    )
+                }
+            ), 400
+
     schedule_manager = get_schedule_manager()
     schedule = schedule_manager.update_schedule(
         schedule_id=schedule_id,
@@ -126,6 +159,7 @@ def update_schedule(schedule_id):
         cron_expression=data.get("cron_expression"),
         interval_minutes=data.get("interval_minutes"),
         library_id=data.get("library_id"),
+        library_ids=data.get("library_ids"),
         library_name=data.get("library_name"),
         config=data.get("config"),
         enabled=data.get("enabled"),

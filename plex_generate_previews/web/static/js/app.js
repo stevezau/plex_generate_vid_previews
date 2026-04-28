@@ -1322,7 +1322,7 @@ function updateLibrarySelects(filterServerId) {
     }
 }
 
-// Refresh the Schedules library dropdown when the user picks a different
+// Refresh the Schedules library checkbox group when the user picks a different
 // server in the modal. Hits /api/libraries?server_id=<id> when a specific
 // server is chosen so non-Plex servers (Emby/Jellyfin) are also covered.
 async function onScheduleServerChange() {
@@ -1336,10 +1336,72 @@ async function onScheduleServerChange() {
         const data = await apiGet(url);
         libraries = data.libraries || [];
         updateLibrarySelects(serverId || null);
+        _renderScheduleLibraryList(libraries, serverId || null);
     } catch (e) {
         console.warn('Failed to refresh libraries for server change:', e);
         showToast('Schedules', 'Could not load libraries for the selected server', 'warning');
     }
+}
+
+// Phase H7: render the Schedules modal library checkbox group. Same group-by-
+// server pattern as the New Job modal (H6). When pinned to one server, render
+// flat. Each checkbox is disabled while "All Libraries" is checked.
+function _renderScheduleLibraryList(libs, filterServerId) {
+    const listEl = document.getElementById('scheduleLibraryList');
+    if (!listEl) return;
+    if (!libs || libs.length === 0) {
+        listEl.innerHTML = '<div class="text-muted small">No libraries available for this selection.</div>';
+        return;
+    }
+    const allDisabled = document.getElementById('scheduleLibraryAll').checked;
+    const renderRow = (lib, indent) => `
+        <div class="form-check ${indent ? 'ms-2' : ''}">
+            <input class="form-check-input schedule-library-checkbox" type="checkbox"
+                   value="${lib.id}" id="schedLib_${lib.id}" ${allDisabled ? 'disabled' : ''}>
+            <label class="form-check-label" for="schedLib_${lib.id}">
+                ${escapeHtml(lib.name)} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
+            </label>
+        </div>
+    `;
+    if (filterServerId) {
+        listEl.innerHTML = libs.map(l => renderRow(l, false)).join('');
+        return;
+    }
+    const groups = new Map();
+    for (const lib of libs) {
+        const key = lib.server_id || '__legacy__';
+        if (!groups.has(key)) {
+            groups.set(key, { server_name: lib.server_name || '', server_type: lib.server_type || '', libs: [] });
+        }
+        groups.get(key).libs.push(lib);
+    }
+    const sections = [];
+    for (const [_, grp] of groups) {
+        const stype = (grp.server_type || '').toLowerCase();
+        const logo = _vendorLogo(stype, 14) || '';
+        const head = `<div class="text-muted small mt-2 mb-1">${logo}<strong>${escapeHtml(grp.server_name || stype.toUpperCase() || 'Server')}</strong></div>`;
+        sections.push(head + grp.libs.map(l => renderRow(l, true)).join(''));
+    }
+    listEl.innerHTML = sections.join('');
+}
+
+function onScheduleLibraryAllChange(checkbox) {
+    document.querySelectorAll('.schedule-library-checkbox').forEach(cb => {
+        cb.disabled = checkbox.checked;
+        if (checkbox.checked) cb.checked = false;
+    });
+}
+
+function setScheduleLibrariesChecked(checked) {
+    const allCb = document.getElementById('scheduleLibraryAll');
+    if (allCb && allCb.checked) {
+        allCb.checked = false;
+        onScheduleLibraryAllChange(allCb);
+    }
+    document.querySelectorAll('.schedule-library-checkbox').forEach(cb => {
+        cb.disabled = false;
+        cb.checked = checked;
+    });
 }
 
 // Populate the Schedules modal's "Media Server" dropdown from /api/servers.
@@ -3450,6 +3512,8 @@ function showNewScheduleModal() {
         '<i class="bi bi-check me-1"></i>Create Schedule';
 
     _populateScheduleServerPicker();
+    // Render the multi-select library checkboxes from the current global cache.
+    _renderScheduleLibraryList(libraries, '');
     const modal = new bootstrap.Modal(document.getElementById('newScheduleModal'));
     modal.show();
 }
@@ -3465,16 +3529,39 @@ function showEditScheduleModal(scheduleId) {
 
     document.getElementById('scheduleEditId').value = schedule.id;
     document.getElementById('scheduleName').value = schedule.name || '';
-    document.getElementById('scheduleLibrary').value = schedule.library_id || '';
     document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
     document.getElementById('schedulePriority').value = String(schedule.priority || 2);
 
-    // Populate server picker, then refresh libraries scoped to it.
+    // Phase H7: pre-select the multi-select library checkboxes from
+    // schedule.library_ids (with single-element fallback for legacy entries).
+    const wantIds = Array.isArray(schedule.library_ids) && schedule.library_ids.length
+        ? schedule.library_ids.map(String)
+        : (schedule.library_id ? [String(schedule.library_id)] : []);
+
+    function _applyLibraryPreselect() {
+        const allCb = document.getElementById('scheduleLibraryAll');
+        if (!wantIds.length) {
+            // "All Libraries" semantics — leave master checkbox checked.
+            if (allCb) allCb.checked = true;
+            onScheduleLibraryAllChange(allCb);
+            return;
+        }
+        if (allCb) allCb.checked = false;
+        onScheduleLibraryAllChange(allCb);
+        document.querySelectorAll('.schedule-library-checkbox').forEach(cb => {
+            cb.disabled = false;
+            cb.checked = wantIds.includes(String(cb.value));
+        });
+    }
+
+    // Populate server picker, then refresh libraries scoped to it, then
+    // pre-select the saved library_ids.
     _populateScheduleServerPicker(schedule.server_id || '').then(() => {
         if (schedule.server_id) {
-            onScheduleServerChange().then(() => {
-                document.getElementById('scheduleLibrary').value = schedule.library_id || '';
-            });
+            onScheduleServerChange().then(_applyLibraryPreselect);
+        } else {
+            _renderScheduleLibraryList(libraries, '');
+            _applyLibraryPreselect();
         }
     });
 
@@ -3557,8 +3644,26 @@ async function saveSchedule() {
     }
 
     const scheduleType = _getSelectedScheduleType();
-    const libraryId = document.getElementById('scheduleLibrary').value;
-    const library = libraries.find(l => l.id === libraryId);
+    // Phase H7: collect selected library_ids from the checkbox group.
+    // Empty list → "All Libraries" master is checked → backend treats as None.
+    const allLibsCb = document.getElementById('scheduleLibraryAll');
+    let selectedLibraryIds = [];
+    if (allLibsCb && !allLibsCb.checked) {
+        selectedLibraryIds = Array.from(document.querySelectorAll('.schedule-library-checkbox:checked'))
+            .map(cb => cb.value);
+        if (selectedLibraryIds.length === 0) {
+            showToast('Error', 'Select at least one library or check "All Libraries"', 'warning');
+            return;
+        }
+    }
+    // Display name: a single library uses its name; multi shows count.
+    let libraryDisplay = 'All Libraries';
+    if (selectedLibraryIds.length === 1) {
+        const lib = libraries.find(l => String(l.id) === String(selectedLibraryIds[0]));
+        libraryDisplay = lib ? lib.name : 'Selected Library';
+    } else if (selectedLibraryIds.length > 1) {
+        libraryDisplay = `${selectedLibraryIds.length} libraries`;
+    }
     const scanMode = document.querySelector('input[name="scanMode"]:checked').value;
 
     // Build the config blob — recently-added schedules carry their
@@ -3581,8 +3686,9 @@ async function saveSchedule() {
 
     const payload = {
         name: name,
-        library_id: libraryId || null,
-        library_name: library ? library.name : 'All Libraries',
+        library_id: selectedLibraryIds.length === 1 ? selectedLibraryIds[0] : null,
+        library_ids: selectedLibraryIds,
+        library_name: libraryDisplay,
         server_id: serverId || null,
         enabled: document.getElementById('scheduleEnabled').checked,
         priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2,

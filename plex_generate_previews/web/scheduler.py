@@ -22,11 +22,13 @@ from loguru import logger
 # Must be at module level to be picklable
 def execute_scheduled_job(
     schedule_id: str,
-    library_id: str | None = None,
+    library_ids_or_id=None,
     library_name: str = "",
     config: dict | None = None,
     priority: int | None = None,
     server_id: str | None = None,
+    *,
+    library_id: str | None = None,
 ) -> None:
     """Execute a scheduled job — module-level function for APScheduler pickling.
 
@@ -36,16 +38,19 @@ def execute_scheduled_job(
     Dispatches on ``config["job_type"]``:
 
     * ``"recently_added"`` — runs the Recently Added scanner against the
-      schedule's library (or all libraries when ``library_id`` is None).
+      schedule's libraries (or all libraries when none specified).
       Uses ``config["lookback_hours"]`` (default 1). Plex-only.
     * anything else (including missing) — legacy **full library** scan via
       ``manager.run_job_callback``, which creates a job processing every
-      item in the targeted library.
+      item in the targeted libraries.
 
     Args:
         schedule_id: The ID of the schedule triggering this job
-        library_id: Library section ID (``None`` = all libraries)
-        library_name: Human-readable library name
+        library_ids_or_id: Library section IDs to process. Accepts either a
+            list of strings (Phase H7 canonical shape) or a single string
+            (back-compat with persisted schedules from earlier versions).
+            Pass ``None`` or ``[]`` to process all libraries.
+        library_name: Human-readable library name(s) for display
         config: Job configuration dict — may include ``job_type`` and
             ``lookback_hours``
         priority: Dispatch priority (1=high, 2=normal, 3=low)
@@ -55,6 +60,18 @@ def execute_scheduled_job(
             server.
 
     """
+    # Normalise to list[str]; tolerate legacy callers that still pass
+    # ``library_id=`` (single string) instead of the new positional list.
+    if library_ids_or_id is None and library_id is not None:
+        library_ids_or_id = library_id
+    if isinstance(library_ids_or_id, str):
+        library_ids = [library_ids_or_id] if library_ids_or_id else []
+    elif isinstance(library_ids_or_id, list):
+        library_ids = [str(x) for x in library_ids_or_id if str(x).strip()]
+    else:
+        library_ids = []
+    primary_library_id = library_ids[0] if len(library_ids) == 1 else None
+
     cfg = dict(config or {})
     if server_id and "server_id" not in cfg:
         cfg["server_id"] = server_id
@@ -76,8 +93,7 @@ def execute_scheduled_job(
         try:
             from .recent_added_scanner import scan_recently_added
 
-            library_ids = [str(library_id)] if library_id else None
-            scan_recently_added(lookback, library_ids=library_ids)
+            scan_recently_added(lookback, library_ids=library_ids or None)
             manager._update_last_run(schedule_id)
         except Exception as e:
             logger.error(
@@ -93,8 +109,15 @@ def execute_scheduled_job(
 
     if manager.run_job_callback:
         try:
+            # For multi-library schedules, hand off the full list via
+            # config.selected_library_ids so the orchestrator processes each
+            # library in one job. The legacy single-library shortcut goes via
+            # library_id when there's exactly one (keeps existing behaviour).
+            if len(library_ids) > 1:
+                cfg = dict(cfg)
+                cfg["selected_library_ids"] = library_ids
             kwargs = {
-                "library_id": library_id,
+                "library_id": primary_library_id,
                 "library_name": library_name,
                 "config": cfg,
             }
@@ -166,6 +189,18 @@ class ScheduleManager:
                 with open(self.schedules_file) as f:
                     data = json.load(f)
                     self._schedules = data.get("schedules", {})
+                # Phase H7 migration: legacy schedules stored a single
+                # ``library_id``. Promote to ``library_ids`` (list) so the
+                # rest of the codebase can treat them uniformly. We do NOT
+                # delete ``library_id`` — kept as a derived back-compat
+                # field for one release in case any external script still
+                # reads it.
+                for sched in self._schedules.values():
+                    if not isinstance(sched, dict):
+                        continue
+                    if "library_ids" not in sched or not isinstance(sched.get("library_ids"), list):
+                        legacy = sched.get("library_id")
+                        sched["library_ids"] = [str(legacy)] if legacy else []
                 logger.info("Loaded {} schedule configurations", len(self._schedules))
             except (OSError, json.JSONDecodeError) as e:
                 logger.warning(
@@ -248,6 +283,7 @@ class ScheduleManager:
         enabled: bool = True,
         priority: int | None = None,
         server_id: str | None = None,
+        library_ids: list[str] | None = None,
     ) -> dict:
         """Create a new schedule.
 
@@ -283,13 +319,21 @@ class ScheduleManager:
         else:
             raise ValueError("Either cron_expression or interval_minutes must be provided")
 
+        # Multi-select libraries (Phase H7). Canonical store is library_ids
+        # (a list); library_id is kept as a derived back-compat field for any
+        # legacy reader that hasn't migrated yet.
+        ids_canonical = list(library_ids) if library_ids else ([library_id] if library_id else [])
+        ids_canonical = [str(x) for x in ids_canonical if str(x).strip()]
+        single_id = ids_canonical[0] if len(ids_canonical) == 1 else None
+
         # Store metadata
         schedule_meta = {
             "id": schedule_id,
             "name": name,
             "trigger_type": trigger_type,
             "trigger_value": trigger_value,
-            "library_id": library_id,
+            "library_id": single_id,
+            "library_ids": ids_canonical,
             "library_name": library_name,
             "server_id": server_id,
             "config": config or {},
@@ -310,7 +354,7 @@ class ScheduleManager:
                 execute_scheduled_job,
                 trigger=trigger,
                 id=schedule_id,
-                args=[schedule_id, library_id, library_name, config, priority, server_id],
+                args=[schedule_id, ids_canonical, library_name, config, priority, server_id],
                 replace_existing=True,
             )
             schedule_meta["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
@@ -333,6 +377,7 @@ class ScheduleManager:
         enabled: bool = None,
         priority: int = None,
         server_id: str | None = None,
+        library_ids: list[str] | None = None,
     ) -> dict | None:
         """Update an existing schedule."""
         if schedule_id not in self._schedules:
@@ -343,8 +388,16 @@ class ScheduleManager:
         # Update fields
         if name is not None:
             schedule["name"] = name
-        if library_id is not None:
+        if library_ids is not None:
+            # Canonical multi-select store. Also mirror to library_id for
+            # any downstream that hasn't migrated.
+            ids = [str(x) for x in (library_ids or []) if str(x).strip()]
+            schedule["library_ids"] = ids
+            schedule["library_id"] = ids[0] if len(ids) == 1 else None
+        elif library_id is not None:
+            # Single-library back-compat path.
             schedule["library_id"] = library_id
+            schedule["library_ids"] = [str(library_id)] if library_id else []
         if library_name is not None:
             schedule["library_name"] = library_name
         if config is not None:
@@ -384,7 +437,7 @@ class ScheduleManager:
                 id=schedule_id,
                 args=[
                     schedule_id,
-                    schedule["library_id"],
+                    schedule.get("library_ids") or ([schedule["library_id"]] if schedule.get("library_id") else []),
                     schedule["library_name"],
                     schedule["config"],
                     schedule.get("priority"),
@@ -457,9 +510,10 @@ class ScheduleManager:
             return False
 
         logger.info("Running schedule '{}' now", schedule["name"])
+        ids = schedule.get("library_ids") or ([schedule["library_id"]] if schedule.get("library_id") else [])
         execute_scheduled_job(
             schedule_id,
-            schedule.get("library_id"),
+            ids,
             schedule.get("library_name", ""),
             schedule.get("config"),
             schedule.get("priority"),
