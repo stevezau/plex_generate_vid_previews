@@ -40,19 +40,31 @@
                     </div>
                     <div class="decision-row">
                         <div class="decision-scenario">
-                            You add media manually to <strong>Emby</strong> or <strong>Jellyfin</strong>
-                            <div class="text-muted small">No native server-side webhook — install the vendor's official "Webhooks" plugin and point it at the Custom URL below, or use a Tdarr/script hook.</div>
+                            You add media manually to <strong>Emby</strong>
+                            <div class="text-muted small">Emby has built-in server-side webhooks (Premiere). Dashboard &rarr; Webhooks &rarr; Add Webhook, point it at <code>https://&lt;your-host&gt;/api/webhooks/incoming?token=&lt;webhook secret&gt;</code> and tick the <strong>Library &rarr; New Media Added</strong> event.</div>
                         </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation">
-                            <a href="#section-webhooks-custom"><i class="bi bi-arrow-right-circle me-1"></i>Use the Custom webhook</a>
+                            Emby Dashboard &rarr; Webhooks
+                            <span class="text-muted small d-block">Posts to the same <code>/incoming</code> URL — vendor auto-detected.</span>
+                        </div>
+                    </div>
+                    <div class="decision-row">
+                        <div class="decision-scenario">
+                            You add media manually to <strong>Jellyfin</strong>
+                            <div class="text-muted small">Install the official <strong>Webhook</strong> plugin (Dashboard &rarr; Plugins &rarr; Catalog). Add a <em>Generic</em> destination &rarr; URL <code>https://&lt;your-host&gt;/api/webhooks/incoming?token=&lt;webhook secret&gt;</code>, subscribe to the <strong>Item Added</strong> notification.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation">
+                            Jellyfin Webhook plugin &rarr; Generic destination
+                            <span class="text-muted small d-block">Same <code>/incoming</code> URL as Plex / Emby.</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="upgrade-caveat">
                     <strong><i class="bi bi-exclamation-triangle me-1"></i>Note about file upgrades:</strong>
-                    The Plex auto-trigger options (Plex Direct webhook and Recently Added Scanner — both now on the Servers page) only fire on <em>brand-new</em> library items. When Sonarr or Radarr <em>upgrades</em> an existing file in place, Plex keeps the same library item and neither option notices. Use the Sonarr/Radarr webhook for that case — it has an "On Upgrade" event that handles in-place replacements.
+                    The server-side webhook options (Plex Direct + Recently Added Scanner; Emby Webhooks; Jellyfin's Webhook plugin) only fire on <em>brand-new</em> library items. When Sonarr or Radarr <em>upgrades</em> an existing file in place, the media server keeps the same library item and the new file isn't seen as "added", so the server-side webhooks don't fire. Use the Sonarr/Radarr <strong>"On Upgrade"</strong> webhook event for those replacements &mdash; it works regardless of which media server you use.
                 </div>
             </div>
         </div>

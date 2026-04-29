@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 9
+_CURRENT_SCHEMA_VERSION = 10
 
 
 class SchemaDowngradeError(RuntimeError):
@@ -246,6 +246,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 9:
         all_notes += _migrate_to_v9(sm)
+
+    if current < 10:
+        all_notes += _migrate_to_v10(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -771,6 +774,77 @@ def _migrate_to_v9(sm) -> list:
         if ep_removed_total:
             parts.append(f"{ep_removed_total} duplicate exclude_path row(s)")
         notes.append(f"v9: removed {' + '.join(parts)} introduced by the v7+v8 double-copy bug")
+
+    return notes
+
+
+def _migrate_to_v10(sm) -> list:
+    """Migrate Plex Direct webhook URL ``/plex`` → ``/incoming`` and clean up
+    per-server ``output.webhook_secret`` keys.
+
+    The Plex Direct registration helper now defaults to the unified
+    ``/api/webhooks/incoming`` endpoint (vendor auto-detected by the
+    router). Earlier installs saved ``output.webhook_public_url`` ending
+    in ``/api/webhooks/plex``. The legacy endpoint still works (it stays
+    mounted), but the canonical URL going forward is ``/incoming`` and
+    new registrations should land there. Rewrite stored URLs in place so
+    the Servers UI shows the canonical path; the user clicks Re-register
+    once to push it to plex.tv (the registration helper itself removes
+    the legacy entry from the account on the same call).
+
+    Also drop any ``output.webhook_secret`` keys — the per-server secret
+    feature was removed; every Plex server in a multi-Plex install now
+    shares the global ``webhook_secret``. Leaving the keys in place is
+    harmless (auth ignores them) but cleaner to remove.
+
+    Idempotent.
+    """
+    notes: list[str] = []
+    media_servers = list(sm.get("media_servers") or [])
+    if not media_servers:
+        return notes
+
+    LEGACY_SUFFIX = "/api/webhooks/plex"
+    NEW_SUFFIX = "/api/webhooks/incoming"
+
+    changed = False
+    cleaned_servers: list[dict[str, Any]] = []
+    urls_rewritten: list[str] = []
+    secrets_removed = 0
+
+    for entry in media_servers:
+        if not isinstance(entry, dict):
+            cleaned_servers.append(entry)
+            continue
+        target = dict(entry)
+        output = dict(target.get("output") or {})
+
+        url = (output.get("webhook_public_url") or "").strip()
+        if url.endswith(LEGACY_SUFFIX):
+            output["webhook_public_url"] = url[: -len(LEGACY_SUFFIX)] + NEW_SUFFIX
+            urls_rewritten.append(target.get("name") or target.get("id") or "<unnamed>")
+            changed = True
+
+        if "webhook_secret" in output:
+            output.pop("webhook_secret", None)
+            secrets_removed += 1
+            changed = True
+
+        target["output"] = output
+        cleaned_servers.append(target)
+
+    if changed:
+        sm.apply_changes(updates={"media_servers": cleaned_servers})
+        parts = []
+        if urls_rewritten:
+            parts.append(
+                f"rewrote {len(urls_rewritten)} Plex Direct webhook URL(s) "
+                f"({', '.join(urls_rewritten)}) from /plex → /incoming — "
+                "click Re-register on each Plex card so plex.tv stores the new URL"
+            )
+        if secrets_removed:
+            parts.append(f"removed {secrets_removed} per-server webhook_secret key(s) (feature retired)")
+        notes.append("v10: " + "; ".join(parts))
 
     return notes
 

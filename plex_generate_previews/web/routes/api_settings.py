@@ -427,15 +427,7 @@ def save_settings():
                     public_url = ((entry.get("output") or {}).get("webhook_public_url") or "").strip()
                     if not token or not public_url:
                         continue
-                    # K6: prefer this server's per-server webhook_secret;
-                    # only rotate when no per-server secret is set (in which
-                    # case the global rotation does affect this server's URL).
-                    per_server_secret = ((entry.get("output") or {}).get("webhook_secret") or "").strip()
-                    if per_server_secret:
-                        # This server has its own secret; the global rotation
-                        # doesn't change the URL Plex stored for it.
-                        continue
-                    new_auth = _plex_webhook_auth_token(entry)
+                    new_auth = _plex_webhook_auth_token()
                     if not new_auth:
                         continue
                     try:
@@ -780,38 +772,6 @@ def _persist_server_webhook_url(server_entry: dict | None, public_url: str) -> N
     settings.update({"media_servers": media_servers})
 
 
-def _persist_server_webhook_secret(server_entry: dict | None, secret: str | None) -> None:
-    """Write a per-server webhook secret onto ``output.webhook_secret``.
-
-    K6: when ``secret`` is non-empty, store it; when empty/None, clear the
-    per-server override (subsequent webhooks fall back to the global secret).
-    """
-    from ..settings_manager import get_settings_manager
-
-    if not server_entry:
-        return
-    settings = get_settings_manager()
-    media_servers = list(settings.get("media_servers") or [])
-    for i, s in enumerate(media_servers):
-        if isinstance(s, dict) and s.get("id") == server_entry.get("id"):
-            entry = dict(s)
-            output = dict(entry.get("output") or {})
-            cleaned = (secret or "").strip()
-            if cleaned:
-                output["webhook_secret"] = cleaned
-            else:
-                output.pop("webhook_secret", None)
-            entry["output"] = output
-            media_servers[i] = entry
-            # Mutate the in-memory entry too so the auth_token lookup later
-            # in this request sees the new secret.
-            server_entry.setdefault("output", {})["webhook_secret"] = cleaned if cleaned else ""
-            if not cleaned:
-                (server_entry.get("output") or {}).pop("webhook_secret", None)
-            break
-    settings.update({"media_servers": media_servers})
-
-
 @api.route("/settings/plex_webhook/status")
 @setup_or_auth_required
 def plex_webhook_status():
@@ -860,12 +820,6 @@ def plex_webhook_status():
                 has_pass = None
             registered = False
 
-    # K6: report whether this server has its own webhook secret (don't echo
-    # the secret itself — UI shows a "set, hidden" placeholder when true).
-    has_per_server_secret = False
-    if server_entry:
-        has_per_server_secret = bool(((server_entry.get("output") or {}).get("webhook_secret") or "").strip())
-
     return jsonify(
         {
             "server_id": server_entry.get("id") if server_entry else None,
@@ -874,7 +828,6 @@ def plex_webhook_status():
             "public_url": public_url,
             "default_url": _default_plex_webhook_url(),
             "has_plex_pass": has_pass,
-            "has_per_server_secret": has_per_server_secret,
             "error": error,
             "error_reason": error_reason,
             "warning": _loopback_in_docker_warning(public_url),
@@ -882,28 +835,24 @@ def plex_webhook_status():
     )
 
 
-def _plex_webhook_auth_token(server_entry: dict | None = None) -> str:
+def _plex_webhook_auth_token() -> str:
     """Return the secret to embed in the registered Plex webhook URL.
 
     Plex's webhook UI offers no way to set headers or HTTP Basic
     credentials, so the only way for Plex Media Server to authenticate
     against this app's webhook endpoint is via a ``?token=`` query
-    parameter (the canonical inbound URL is ``/api/webhooks/incoming``;
+    parameter. The canonical inbound URL is ``/api/webhooks/incoming``;
     the legacy ``/api/webhooks/plex`` endpoint is kept around for
-    installs that registered before the unified router landed).
+    installs that registered before the unified router landed.
 
-    Phase K6: prefer the per-server ``output.webhook_secret`` if set so
-    each Plex server can have its own URL token. Falls back to the global
-    ``webhook_secret``, then the API auth token — keeping backward-compat
-    for installs that haven't set a per-server secret yet.
+    Returns the global ``webhook_secret`` (or the API auth token as a
+    fallback). Per-server secrets were removed — every Plex server
+    in a multi-Plex install shares the same URL token, rotated by
+    changing the global secret.
     """
     from ..auth import get_auth_token
     from ..settings_manager import get_settings_manager
 
-    if server_entry:
-        per_server = ((server_entry.get("output") or {}).get("webhook_secret") or "").strip()
-        if per_server:
-            return per_server
     settings = get_settings_manager()
     secret = (settings.get("webhook_secret") or "").strip()
     if secret:
@@ -942,13 +891,7 @@ def plex_webhook_register():
             400,
         )
 
-    # K6: optional per-server webhook secret. When provided and non-empty,
-    # persist it onto the server entry BEFORE deriving the auth token so the
-    # registration uses it. Empty string clears the per-server override.
-    if "webhook_secret" in data:
-        _persist_server_webhook_secret(server_entry, data.get("webhook_secret"))
-
-    auth_token = _plex_webhook_auth_token(server_entry)
+    auth_token = _plex_webhook_auth_token()
     if not auth_token:
         return (
             jsonify(
@@ -1062,7 +1005,7 @@ def plex_webhook_test_reachability():
     raw_url = (data.get("public_url") or "").strip()
     public_url = raw_url or _server_webhook_url(server_entry)
 
-    auth_token = _plex_webhook_auth_token(server_entry)
+    auth_token = _plex_webhook_auth_token()
     if not auth_token:
         return (
             jsonify(

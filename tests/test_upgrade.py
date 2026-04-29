@@ -1193,6 +1193,103 @@ class TestMigrateToV9:
         assert len(servers[0]["path_mappings"]) == 1
 
 
+class TestMigrateToV10:
+    """v10 migrates legacy /api/webhooks/plex URLs to /api/webhooks/incoming
+    and removes per-server output.webhook_secret keys (feature retired).
+    """
+
+    def test_no_op_when_no_servers(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v10
+
+        notes = _migrate_to_v10(settings_manager)
+        assert notes == []
+
+    def test_rewrites_legacy_plex_url_to_incoming(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v10
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "output": {"webhook_public_url": "https://my-host/api/webhooks/plex"},
+                    }
+                ]
+            }
+        )
+
+        notes = _migrate_to_v10(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["webhook_public_url"] == "https://my-host/api/webhooks/incoming"
+        assert any("/incoming" in n for n in notes)
+
+    def test_removes_per_server_webhook_secret(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v10
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex-a",
+                        "type": "plex",
+                        "output": {"webhook_secret": "leftover-from-K6"},
+                    }
+                ]
+            }
+        )
+
+        notes = _migrate_to_v10(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert "webhook_secret" not in (servers[0].get("output") or {})
+        assert any("webhook_secret" in n for n in notes)
+
+    def test_url_already_incoming_is_left_alone(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v10
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex-a",
+                        "type": "plex",
+                        "output": {"webhook_public_url": "https://my-host/api/webhooks/incoming"},
+                    }
+                ]
+            }
+        )
+
+        notes = _migrate_to_v10(settings_manager)
+        assert notes == []
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["webhook_public_url"] == "https://my-host/api/webhooks/incoming"
+
+    def test_idempotent(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v10
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex-a",
+                        "type": "plex",
+                        "output": {
+                            "webhook_public_url": "https://my-host/api/webhooks/plex",
+                            "webhook_secret": "x",
+                        },
+                    }
+                ]
+            }
+        )
+        _migrate_to_v10(settings_manager)
+        notes = _migrate_to_v10(settings_manager)
+        assert notes == []
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["webhook_public_url"] == "https://my-host/api/webhooks/incoming"
+        assert "webhook_secret" not in (servers[0].get("output") or {})
+
+
 class TestLegacyPlexToMediaServer:
     """Tests for the public helper used by the v7 migration."""
 

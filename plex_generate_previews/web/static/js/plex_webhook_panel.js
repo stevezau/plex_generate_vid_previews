@@ -63,13 +63,6 @@ function applyPlexWebhookStatus(data) {
     const input = document.getElementById('plexWebhookPublicUrl');
     if (input && !input.value) input.value = data.public_url || data.default_url || '';
 
-    // K6: indicate whether a per-server secret is set without echoing it.
-    const secretInput = document.getElementById('plexWebhookPerServerSecret');
-    if (secretInput) {
-        secretInput.placeholder = data.has_per_server_secret ? '(set, hidden — type to overwrite)' : '(global webhook secret)';
-        secretInput.value = '';
-    }
-
     const badge = document.getElementById('plexWebhookStatusBadge');
     const registerBtn = document.getElementById('plexWebhookRegisterBtn');
     const unregisterBtn = document.getElementById('plexWebhookUnregisterBtn');
@@ -148,14 +141,6 @@ async function registerPlexWebhook() {
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Registering…';
     try {
         const body = _serverIdBody({ public_url: url });
-        // K6: include the per-server secret only when the user typed one,
-        // so leaving the field blank doesn't accidentally clear a previously
-        // set secret. Backend's _persist_server_webhook_secret only runs when
-        // the key is present in the body.
-        const secretInput = document.getElementById('plexWebhookPerServerSecret');
-        if (secretInput && secretInput.value) {
-            body.webhook_secret = secretInput.value;
-        }
         await apiPost('/api/settings/plex_webhook/register', body);
         showToast('Success', 'Plex webhook registered.', 'success');
     } catch (e) {
