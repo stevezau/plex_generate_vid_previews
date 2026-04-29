@@ -430,12 +430,17 @@ class TestCreateServer:
         )
         assert response.status_code == 400
 
-    def test_plex_multi_add_persists_server_identity_from_discovery(self, client, auth_headers):
+    def test_plex_multi_add_persists_server_identity_from_discovery(self, client, auth_headers, tmp_path):
         """Plex multi-server auto-discovery: each server posts its
         ``server_identity`` (plex.tv ``clientIdentifier``) directly,
         without a separate connection-test probe. Verifies the
         identity round-trips into media_servers so the webhook router
         can disambiguate later."""
+        # plex_config_folder validation requires the directory to exist on
+        # disk — the dev box has /config/plex but CI doesn't, so use a
+        # tmp_path-backed dir that resolves the same way in both envs.
+        plex_config = tmp_path / "plex_config"
+        plex_config.mkdir()
         plex_token = "shared-oauth-token"
         for ms in [
             {
@@ -460,7 +465,7 @@ class TestCreateServer:
                     "server_identity": ms["machine_id"],
                     "output": {
                         "adapter": "plex_bundle",
-                        "plex_config_folder": "/config/plex",
+                        "plex_config_folder": str(plex_config),
                         "frame_interval": 10,
                     },
                 },

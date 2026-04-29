@@ -58,7 +58,7 @@ def _reset_singletons():
 
 
 @pytest.fixture()
-def app(tmp_path):
+def app(tmp_path, monkeypatch):
     """Create a Flask test app with a temporary config directory."""
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
@@ -67,6 +67,16 @@ def app(tmp_path):
     auth_file = os.path.join(config_dir, "auth.json")
     with open(auth_file, "w") as f:
         json.dump({"token": "test-token-12345678"}, f)
+
+    # auth.AUTH_FILE is computed once at module-import time from
+    # CONFIG_DIR. By the time this fixture runs the module is already
+    # imported, so the env var alone doesn't redirect writes — we have
+    # to patch the constant + get_config_dir helper directly. Without
+    # this, save_auth_config tries to write to /config/auth.json and
+    # CI fails with PermissionError.
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.CONFIG_DIR", config_dir)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: config_dir)
 
     # Mark setup as complete so before_request doesn't redirect to /setup
     settings_file = os.path.join(config_dir, "settings.json")
