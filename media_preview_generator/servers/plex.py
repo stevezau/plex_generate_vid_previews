@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -22,6 +23,7 @@ from .base import (
     Library,
     MediaItem,
     MediaServer,
+    ServerConfig,
     ServerType,
     WebhookEvent,
 )
@@ -30,12 +32,45 @@ if TYPE_CHECKING:
     from ..config import Config
 
 
+def _synthesize_legacy_config(cfg: ServerConfig) -> SimpleNamespace:
+    """Build a legacy Config-shaped namespace from a per-server ServerConfig.
+
+    The ``plex_client`` helpers all key off ``config.plex_*`` attributes
+    (``plex_url`` / ``plex_token`` / ``plex_verify_ssl`` / ``plex_timeout``
+    / ``path_mappings`` / ``exclude_paths`` / ``plex_libraries`` /
+    ``plex_library_ids`` / ``plex_config_folder`` /
+    ``plex_bif_frame_interval`` / ``server_display_name``). Rather than
+    refactor every caller, the wrapper synthesizes a SimpleNamespace with
+    those fields from a ServerConfig — single point of translation.
+    """
+    enabled_lib_ids = [str(lib.id) for lib in (cfg.libraries or []) if getattr(lib, "enabled", True)]
+    return SimpleNamespace(
+        plex_url=cfg.url or "",
+        plex_token=str((cfg.auth or {}).get("token") or ""),
+        plex_verify_ssl=bool(cfg.verify_ssl),
+        plex_timeout=int(cfg.timeout) if cfg.timeout else 10,
+        server_display_name=cfg.name,
+        path_mappings=list(cfg.path_mappings or []),
+        exclude_paths=list(cfg.exclude_paths or []),
+        plex_library_ids=enabled_lib_ids,
+        plex_libraries=[],  # legacy name-based selector — superseded by ids
+        plex_config_folder=(cfg.output or {}).get("plex_config_folder", "/plex"),
+        plex_bif_frame_interval=int((cfg.output or {}).get("frame_interval") or 10),
+    )
+
+
 class PlexServer(MediaServer):
     """Wrap a single Plex Media Server in the :class:`MediaServer` interface.
 
-    Construction takes the legacy :class:`Config` directly so existing helpers
-    (which all key off ``config.plex_*`` fields) keep working unchanged. A
-    later refactor switches this to take a per-server ``ServerConfig``.
+    Accepts either:
+
+    * A :class:`ServerConfig` (new canonical shape, used by the multi-server
+      registry) — internally synthesized into a legacy Config-shaped
+      namespace so existing ``plex_client`` helpers keep working unchanged.
+    * A duck-typed legacy ``Config`` (or test mock with ``plex_*`` attrs) —
+      used as-is. Kept for the connection-probe shim in
+      ``api_servers._instantiate_for_probe`` and for tests that build a
+      single-Plex setup from the legacy global config.
 
     The underlying ``plexapi`` connection is created lazily on first use; the
     class is therefore cheap to instantiate from configuration without paying
@@ -44,13 +79,26 @@ class PlexServer(MediaServer):
 
     def __init__(
         self,
-        config: Config,
+        config: ServerConfig | Config | Any,
         *,
-        server_id: str = "plex",
-        name: str = "Plex",
+        server_id: str | None = None,
+        name: str | None = None,
     ) -> None:
-        super().__init__(server_id=server_id, name=name)
-        self._config = config
+        if isinstance(config, ServerConfig):
+            self._server_config: ServerConfig | None = config
+            self._config = _synthesize_legacy_config(config)
+            super().__init__(
+                server_id=server_id or config.id,
+                name=name or config.name,
+            )
+        else:
+            # Duck-typed legacy Config (or test mock).
+            self._server_config = None
+            self._config = config
+            super().__init__(
+                server_id=server_id or "plex",
+                name=name or "Plex",
+            )
         self._plex = None  # type: ignore[assignment]
 
     @property
@@ -364,7 +412,7 @@ class PlexServer(MediaServer):
                 unresolved_paths=[remote_path],
                 path_mappings=path_mappings,
                 verify_ssl=bool(getattr(self._config, "plex_verify_ssl", True)),
-                server_display_name=getattr(self._config, "server_display_name", None) or self._spec.name,
+                server_display_name=getattr(self._config, "server_display_name", None) or self.name,
             )
         except Exception as exc:
             logger.debug("Plex partial scan trigger failed for {}: {}", remote_path, exc)

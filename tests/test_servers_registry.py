@@ -163,6 +163,49 @@ class TestServerRegistryFromSettings:
         assert registry.servers() == []
         assert registry.find_owning_servers("/anything") == []
 
+    def test_loads_plex_server_without_legacy_config(self):
+        """Regression for the 'PlexServer requires a legacy Config' bug.
+
+        The Preview Inspector instantiates the registry with no legacy_config
+        — we must NOT throw UnsupportedServerTypeError. PlexServer accepts
+        ServerConfig directly now and synthesizes the legacy shape internally.
+        """
+        registry = ServerRegistry.from_settings(
+            [
+                {
+                    "id": "plex-default",
+                    "type": "plex",
+                    "name": "Home Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"method": "token", "token": "t-xyz"},
+                    "verify_ssl": True,
+                    "timeout": 15,
+                    "output": {"plex_config_folder": "/plex", "frame_interval": 5},
+                    "libraries": [
+                        {"id": "1", "name": "Movies", "remote_paths": ["/m"], "enabled": True},
+                        {"id": "2", "name": "TV", "remote_paths": ["/tv"], "enabled": False},
+                    ],
+                }
+            ],
+            # No legacy_config — used to raise UnsupportedServerTypeError.
+        )
+        servers = registry.servers()
+        assert len(servers) == 1
+        plex = servers[0]
+        assert isinstance(plex, PlexServer)
+        assert plex.id == "plex-default"
+        assert plex.name == "Home Plex"
+        # Synthesized legacy shape exposes the per-server fields.
+        assert plex._config.plex_url == "http://plex:32400"
+        assert plex._config.plex_token == "t-xyz"
+        assert plex._config.plex_verify_ssl is True
+        assert plex._config.plex_timeout == 15
+        assert plex._config.plex_config_folder == "/plex"
+        assert plex._config.plex_bif_frame_interval == 5
+        # Only enabled libraries flow through to the legacy id list.
+        assert plex._config.plex_library_ids == ["1"]
+
 
 class TestServerRegistryFromLegacyConfig:
     def test_synthesises_single_plex_server(self, mock_config):

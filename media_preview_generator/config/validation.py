@@ -181,26 +181,22 @@ def _validate_plex_config(
                                 folder for folder in standard_folders if folder in found_localhost_folders
                             ]
 
-                            # Accept if we have either hex directories OR standard folders
-                            has_hex_structure = len(hex_folders) >= 10  # Most of 0-f
-                            has_standard_structure = len(found_standard) >= 3  # At least 3 standard folders
+                            # A single hex shard or one standard subfolder is enough
+                            # to call this a real Plex Media/localhost dir. Fresh
+                            # installs with one scanned library legitimately have
+                            # only a handful of shards; the rest populate as
+                            # previews are generated. The previous "need 10+"
+                            # threshold spammed ERROR on every healthy fresh setup.
+                            has_hex_structure = len(hex_folders) >= 1
+                            has_standard_structure = len(found_standard) >= 1
 
                             if not has_hex_structure and not has_standard_structure:
-                                debug_info = []
-                                debug_info.append(
-                                    "PLEX_CONFIG_FOLDER/Media/localhost exists but does not appear to be a valid Plex database"
-                                )
-                                debug_info.append(
-                                    "Expected: Either hex directories (0-f) OR standard Plex folders (Metadata, Cache, etc.)"
-                                )
-                                debug_info.append(f"Found: {sorted(found_localhost_folders)}")
-                                if hex_folders:
-                                    debug_info.append(f"Hex directories found: {len(hex_folders)}/16 (need 10+)")
-                                if found_standard:
-                                    debug_info.append(f"Standard folders found: {len(found_standard)}/5 (need 3+)")
-                                debug_info.append(
-                                    "This suggests the path may not point to the correct Plex Media Server database location"
-                                )
+                                debug_info = [
+                                    "PLEX_CONFIG_FOLDER/Media/localhost exists but is empty.",
+                                    "Expected at least one hex directory (0-f) or standard Plex folder (Metadata, Cache, etc.).",
+                                    f"Found: {sorted(found_localhost_folders)}",
+                                    "Check that this path points to your Plex Media Server data directory.",
+                                ]
                                 validation_errors.append("\n".join(debug_info))
                         except PermissionError:
                             validation_errors.append(f"Permission denied reading localhost folder: {localhost_path}")

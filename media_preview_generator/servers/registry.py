@@ -219,11 +219,11 @@ class ServerRegistry:
         if config.type is ServerType.PLEX:
             from .plex import PlexServer
 
-            if legacy_config is None:
-                raise UnsupportedServerTypeError(
-                    "PlexServer requires a legacy Config until the wrapper is migrated to ServerConfig"
-                )
-            return PlexServer(legacy_config, server_id=config.id, name=config.name)
+            # PlexServer now accepts ServerConfig directly (it synthesizes a
+            # legacy Config-shape internally for plex_client). The
+            # legacy_config parameter on this method is retained only for
+            # backwards compatibility with from_legacy_config callers.
+            return PlexServer(config)
 
         if config.type is ServerType.EMBY:
             from .emby import EmbyServer

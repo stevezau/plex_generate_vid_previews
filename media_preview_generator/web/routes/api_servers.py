@@ -100,13 +100,8 @@ def _instantiate_for_probe(cfg) -> Any:
     if cfg.type is ServerType.PLEX:
         from ...servers.plex import PlexServer as _PlexServer
 
-        plex_shim = _PlexProbeConfig(
-            plex_url=cfg.url,
-            plex_token=str((cfg.auth or {}).get("token") or ""),
-            plex_verify_ssl=cfg.verify_ssl,
-            plex_timeout=cfg.timeout,
-        )
-        return _PlexServer(plex_shim, server_id=cfg.id, name=cfg.name)
+        # PlexServer accepts ServerConfig directly — no shim needed.
+        return _PlexServer(cfg)
     if cfg.type is ServerType.EMBY:
         from ...servers.emby import EmbyServer as _EmbyServer
 
@@ -927,23 +922,3 @@ def get_output_status(server_id: str):
             "missing_paths": missing,
         }
     )
-
-
-class _PlexProbeConfig:
-    """Minimal config shim used only by the test-connection probe.
-
-    The :class:`PlexServer` wrapper currently requires a legacy
-    :class:`Config` to read its URL / token / SSL / timeout. Building
-    one for a single throwaway probe is wasteful — this tiny adapter
-    surfaces only the four fields ``test_connection`` reads.
-    """
-
-    def __init__(self, *, plex_url: str, plex_token: str, plex_verify_ssl: bool, plex_timeout: int) -> None:
-        self.plex_url = plex_url
-        self.plex_token = plex_token
-        self.plex_verify_ssl = plex_verify_ssl
-        self.plex_timeout = plex_timeout
-        # Optional fields that the wider Plex code path reads; safe defaults
-        # so any incidental attribute access during the probe doesn't AttributeError.
-        self.path_mappings: list[dict] = []
-        self.exclude_paths: list[dict] = []
