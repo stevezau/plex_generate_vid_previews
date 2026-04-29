@@ -234,6 +234,24 @@
             });
         });
 
+        // Setup wizard step 1 redirects here with ?add=plex|emby|jellyfin
+        // when the user picks a non-Plex vendor (or Plex over the explicit
+        // route). Auto-open the Add Server modal pre-selected to that
+        // vendor so the user lands on the connection form straight away.
+        const _addParam = new URLSearchParams(window.location.search).get('add');
+        if (_addParam && ['plex', 'emby', 'jellyfin'].includes(_addParam)) {
+            const _modalEl = document.getElementById('addServerModal');
+            const _modal = bootstrap.Modal.getOrCreateInstance(_modalEl);
+            _modal.show();
+            // resetWizard fires on show.bs.modal; click the matching vendor
+            // button on the next tick so the wizard advances to step-connect.
+            setTimeout(() => {
+                document.querySelector('.server-type-btn[data-type="' + _addParam + '"]')?.click();
+            }, 50);
+            // Drop the param so a refresh doesn't re-open the modal.
+            window.history.replaceState({}, '', window.location.pathname);
+        }
+
         $('#step-connect-back').addEventListener('click', () => showStep('step-type'));
 
         $$('input[name="authMethod"]').forEach((radio) => {

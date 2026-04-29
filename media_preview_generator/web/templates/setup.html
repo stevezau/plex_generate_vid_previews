@@ -41,80 +41,107 @@
         </div>
     </div>
 
-    <!-- Step 1: Connect your media server -->
+    <!-- Step 1: Choose your media server (vendor picker → vendor-specific flow) -->
     <div class="setup-step active" data-step="1">
         <div class="card">
-            <div class="card-body text-center">
-                <h4 class="card-title mb-4">Connect your media server</h4>
-                <p class="text-muted mb-4">
-                    This wizard's quick-start path uses Plex (sign in with your Plex account
-                    below; we auto-discover your servers and libraries). For
-                    <strong>Emby</strong> or <strong>Jellyfin</strong>, click <strong>Skip setup</strong>
-                    and add the server manually from the Servers page — same multi-vendor
-                    pipeline, same dashboard.
+            <div class="card-body">
+                <h4 class="card-title text-center mb-2">Choose your media server</h4>
+                <p class="text-muted text-center mb-4">
+                    Pick the server you want to start with. You can add more (any combination,
+                    any vendor) from the Servers page later — the dispatcher fans each new
+                    file out to every server that owns it.
                 </p>
 
-                <div class="alert alert-info small text-start py-2 mb-4">
-                    <i class="bi bi-info-circle me-1"></i>
-                    You can add any number of Plex / Emby / Jellyfin servers after the wizard
-                    closes; the dispatcher fans each new file out to every server that owns it.
+                <!-- Vendor picker (visible by default) -->
+                <div id="vendorPicker" class="row g-2 mb-2">
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-outline-primary w-100 py-3 wizard-vendor-btn" data-vendor="plex">
+                            <img src="{{ url_for('static', filename='images/vendors/plex.svg') }}" width="36" height="36" class="d-block mx-auto mb-1" alt="Plex">
+                            Plex
+                            <div class="small text-muted">auto-discovery via plex.tv</div>
+                        </button>
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-outline-success w-100 py-3 wizard-vendor-btn" data-vendor="emby">
+                            <img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" width="36" height="36" class="d-block mx-auto mb-1" alt="Emby">
+                            Emby
+                            <div class="small text-muted">URL + API key or password</div>
+                        </button>
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-outline-info w-100 py-3 wizard-vendor-btn" data-vendor="jellyfin">
+                            <img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" width="36" height="36" class="d-block mx-auto mb-1" alt="Jellyfin">
+                            Jellyfin
+                            <div class="small text-muted">Quick Connect or URL+key</div>
+                        </button>
+                    </div>
                 </div>
 
-                <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">
-                    <i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex
-                </button>
-
-                <div id="authStatus" class="auth-status d-none">
-                    <i class="bi bi-check-circle-fill text-success me-2"></i>
-                    <span>Signed in successfully!</span>
-                </div>
-
-                <div id="authError" class="alert alert-danger mt-3 d-none"></div>
-
-                <hr class="my-4">
-
-                <details id="manualConnectDetails" class="text-start">
-                    <summary class="text-muted" style="cursor: pointer;">
-                        <i class="bi bi-sliders me-1"></i>Can&rsquo;t reach <code>plex.tv</code>? Enter server details manually
-                    </summary>
-                    <p class="text-muted small mt-2 mb-3">
-                        Use this if your network blocks <code>plex.tv</code>, or if you&rsquo;d rather
-                        paste a URL and token directly. You&rsquo;ll still see your libraries on the next step.
-                    </p>
-                    <div class="mb-2">
-                        <label for="manualPlexUrl" class="form-label small mb-1">Plex Server URL</label>
-                        <input type="text" class="form-control form-control-sm" id="manualPlexUrl"
-                               placeholder="http://192.168.1.100:32400">
-                    </div>
-                    <div class="mb-2">
-                        <label for="manualPlexToken" class="form-label small mb-1">Plex Token</label>
-                        <input type="password" class="form-control form-control-sm" id="manualPlexToken"
-                               placeholder="X-Plex-Token value">
-                        <div class="form-text">
-                            Find it in your Plex web app URL after loading any item
-                            (see <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener">this Plex support article</a>).
-                        </div>
-                    </div>
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" id="manualPlexVerifySsl" checked>
-                        <label class="form-check-label small" for="manualPlexVerifySsl">
-                            Verify Plex HTTPS certificate
-                        </label>
-                    </div>
-                    <button type="button" class="btn btn-outline-primary btn-sm" id="manualPlexTestBtn">
-                        <i class="bi bi-plug me-1"></i>Verify connection
+                <!-- Plex sign-in panel — revealed when the Plex card is clicked. The
+                     id+structure of every nested element is unchanged from the original
+                     step 1 so the existing setup.js handlers (plexSignInBtn etc.) keep
+                     working without modification. -->
+                <div id="plexSignInPanel" class="d-none text-center mt-3">
+                    <button type="button" class="btn btn-link text-muted small mb-3" id="vendorPickerBackBtn">
+                        <i class="bi bi-arrow-left me-1"></i>Pick a different server
                     </button>
-                    <div id="manualPlexResult" class="small mt-2"></div>
-                </details>
+
+                    <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">
+                        <i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex
+                    </button>
+
+                    <div id="authStatus" class="auth-status d-none">
+                        <i class="bi bi-check-circle-fill text-success me-2"></i>
+                        <span>Signed in successfully!</span>
+                    </div>
+
+                    <div id="authError" class="alert alert-danger mt-3 d-none"></div>
+
+                    <hr class="my-4">
+
+                    <details id="manualConnectDetails" class="text-start">
+                        <summary class="text-muted" style="cursor: pointer;">
+                            <i class="bi bi-sliders me-1"></i>Can&rsquo;t reach <code>plex.tv</code>? Enter server details manually
+                        </summary>
+                        <p class="text-muted small mt-2 mb-3">
+                            Use this if your network blocks <code>plex.tv</code>, or if you&rsquo;d rather
+                            paste a URL and token directly. You&rsquo;ll still see your libraries on the next step.
+                        </p>
+                        <div class="mb-2">
+                            <label for="manualPlexUrl" class="form-label small mb-1">Plex Server URL</label>
+                            <input type="text" class="form-control form-control-sm" id="manualPlexUrl"
+                                   placeholder="http://192.168.1.100:32400">
+                        </div>
+                        <div class="mb-2">
+                            <label for="manualPlexToken" class="form-label small mb-1">Plex Token</label>
+                            <input type="password" class="form-control form-control-sm" id="manualPlexToken"
+                                   placeholder="X-Plex-Token value">
+                            <div class="form-text">
+                                Find it in your Plex web app URL after loading any item
+                                (see <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener">this Plex support article</a>).
+                            </div>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="manualPlexVerifySsl" checked>
+                            <label class="form-check-label small" for="manualPlexVerifySsl">
+                                Verify Plex HTTPS certificate
+                            </label>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="manualPlexTestBtn">
+                            <i class="bi bi-plug me-1"></i>Verify connection
+                        </button>
+                        <div id="manualPlexResult" class="small mt-2"></div>
+                    </details>
+                </div>
             </div>
         </div>
 
         <div class="d-flex justify-content-between align-items-center mt-4">
             <button type="button" class="btn btn-link text-muted small p-0" id="skipSetupBtn"
                     title="Mark setup complete and add servers later from the Servers page">
-                <i class="bi bi-skip-end me-1"></i>Skip setup — I&rsquo;ll add my server later
+                <i class="bi bi-skip-end me-1"></i>Skip — I&rsquo;ll add servers later
             </button>
-            <button type="button" class="btn btn-primary" id="step1Next" disabled>
+            <button type="button" class="btn btn-primary d-none" id="step1Next" disabled>
                 Next <i class="bi bi-arrow-right ms-1"></i>
             </button>
         </div>
@@ -543,6 +570,40 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     document.getElementById('step1Next').addEventListener('click', () => goToStep(2));
+
+    // Vendor picker on Step 1: Plex reveals the existing OAuth UI in-place;
+    // Emby / Jellyfin POST /api/setup/skip and jump to /servers?add=<vendor>
+    // where the Add Server modal auto-opens pre-selected to that vendor.
+    document.querySelectorAll('.wizard-vendor-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const vendor = btn.dataset.vendor;
+            if (vendor === 'plex') {
+                document.getElementById('vendorPicker').classList.add('d-none');
+                document.getElementById('plexSignInPanel').classList.remove('d-none');
+                document.getElementById('step1Next').classList.remove('d-none');
+                return;
+            }
+            try {
+                await fetch('/api/setup/skip', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
+                    },
+                });
+            } catch (_e) {
+                // /servers loads fine even if skip failed (the page itself
+                // handles the no-setup case); don't block navigation.
+            }
+            window.location.href = '/servers?add=' + encodeURIComponent(vendor);
+        });
+    });
+
+    document.getElementById('vendorPickerBackBtn')?.addEventListener('click', () => {
+        document.getElementById('plexSignInPanel').classList.add('d-none');
+        document.getElementById('vendorPicker').classList.remove('d-none');
+        document.getElementById('step1Next').classList.add('d-none');
+    });
 
     // Manual URL + token fallback for environments where plex.tv is
     // unreachable or OAuth discovery isn't working.  The button verifies

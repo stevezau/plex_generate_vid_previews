@@ -144,6 +144,15 @@ class TestPageRoutes:
         resp = authed_client.get("/settings")
         assert resp.status_code == 200
 
+    def test_servers_page_accepts_add_query_param(self, authed_client):
+        """Setup wizard step 1's vendor picker redirects to
+        /servers?add=<vendor> when the user picks Emby/Jellyfin. The page
+        itself must render normally — the actual modal-open is JS-side
+        (we only verify the route doesn't choke on the param)."""
+        for vendor in ("plex", "emby", "jellyfin", "invalid", ""):
+            resp = authed_client.get(f"/servers?add={vendor}")
+            assert resp.status_code == 200, f"vendor={vendor!r} returned {resp.status_code}"
+
 
 # ---------------------------------------------------------------------------
 # Login / Logout
