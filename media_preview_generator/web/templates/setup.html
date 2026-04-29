@@ -233,15 +233,21 @@
                 <h4 class="card-title mb-4">Path Configuration</h4>
 
                 <div class="mb-3">
-                    <label for="plexConfigFolder" class="form-label">
+                    {# id is wizardPlexConfigFolder (not plexConfigFolder) to avoid
+                       colliding with the same-named input inside the included
+                       _server_connection_form partial — that one is hidden in
+                       #auth-fields-token-plex on /setup but still in the DOM, so
+                       getElementById('plexConfigFolder') would return the wrong
+                       element and the validator would silently no-op. #}
+                    <label for="wizardPlexConfigFolder" class="form-label">
                         Plex Media Server data folder
                         <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip"
                            title="Path inside this container to Plex&#39;s data folder (where previews are written)"></i>
                     </label>
                     <div class="input-group">
-                        <input type="text" class="form-control" id="plexConfigFolder"
+                        <input type="text" class="form-control" id="wizardPlexConfigFolder"
                                value="/plex" placeholder="/plex">
-                        <button type="button" class="btn btn-outline-secondary" id="plexConfigFolderBrowseBtn" title="Browse folders">
+                        <button type="button" class="btn btn-outline-secondary" id="wizardPlexConfigFolderBrowseBtn" title="Browse folders">
                             <i class="bi bi-folder2-open"></i>
                         </button>
                         <div class="invalid-feedback small"></div>
@@ -597,17 +603,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('ejConnectPanel').classList.add('d-none');
         document.getElementById('vendorPicker').classList.remove('d-none');
         document.getElementById('step1Next').classList.add('d-none');
-        // resetServerWizard clears every form field by id, including the
-        // wizard's step-3 #plexConfigFolder (the connection form and the
-        // wizard share that id since the modal isn't included on /setup).
-        // Save + restore the step-3 default so the user doesn't see a
-        // blank field if they later switch to the Plex flow.
-        const cfgEl = document.getElementById('plexConfigFolder');
-        const savedCfg = cfgEl ? cfgEl.value : '';
         if (window.MPGShared && window.MPGShared.resetServerWizard) {
             window.MPGShared.resetServerWizard();
         }
-        if (cfgEl) cfgEl.value = savedCfg;
     }
 
     document.querySelectorAll('.wizard-vendor-btn').forEach((btn) => {
@@ -1045,15 +1043,15 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // Plex config folder: same debounced validation + Browse button as the
-    // /servers Edit modal. The validator (servers.js) detects #plexConfigFolder
-    // by id and runs the deeper structural Plex check via
+    // /servers Edit modal. The validator (servers.js) recognises the wizard
+    // ID and runs the deeper structural Plex check via
     // /api/settings/validate-plex-config-folder.
-    const plexCfgInput = document.getElementById('plexConfigFolder');
+    const plexCfgInput = document.getElementById('wizardPlexConfigFolder');
     if (plexCfgInput && window.MPGShared) {
         plexCfgInput.addEventListener('input', window.MPGShared.debouncedValidatePath(plexCfgInput));
         if (plexCfgInput.value) window.MPGShared.validateLocalPathInput(plexCfgInput);
     }
-    const plexCfgBrowseBtn = document.getElementById('plexConfigFolderBrowseBtn');
+    const plexCfgBrowseBtn = document.getElementById('wizardPlexConfigFolderBrowseBtn');
     if (plexCfgBrowseBtn) {
         plexCfgBrowseBtn.addEventListener('click', () => {
             const start = (plexCfgInput.value || '').trim() || '/';
@@ -1077,7 +1075,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         try {
             const payload = {
-                plex_config_folder: document.getElementById('plexConfigFolder').value,
+                plex_config_folder: document.getElementById('wizardPlexConfigFolder').value,
                 path_mappings: setupCollectPathMappingRows()
             };
             const response = await fetch('/api/setup/validate-paths', {
@@ -1138,7 +1136,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.getElementById('step3Next').addEventListener('click', async () => {
         await settingsManager.save({
-            plex_config_folder: document.getElementById('plexConfigFolder').value,
+            plex_config_folder: document.getElementById('wizardPlexConfigFolder').value,
             path_mappings: setupCollectPathMappingRows(),
             exclude_paths: setupCollectExcludePathRows()
         });

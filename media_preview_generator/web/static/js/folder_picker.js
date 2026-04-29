@@ -25,6 +25,17 @@
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
                         <div class="modal-body">
+                            <div class="input-group input-group-sm mb-2">
+                                <button type="button" class="btn btn-outline-secondary" id="folderPickerUpBtn" title="Go to parent folder">
+                                    <i class="bi bi-arrow-up"></i>
+                                </button>
+                                <input type="text" class="form-control" id="folderPickerPathInput"
+                                       placeholder="/path/to/folder" aria-label="Folder path"
+                                       autocomplete="off" spellcheck="false">
+                                <button type="button" class="btn btn-outline-secondary" id="folderPickerGoBtn" title="Go to typed path (Enter)">
+                                    <i class="bi bi-arrow-right-circle"></i>
+                                </button>
+                            </div>
                             <nav id="folderPickerBreadcrumb" aria-label="folder breadcrumb" class="mb-2"></nav>
                             <div class="form-check form-check-inline mb-2 small">
                                 <input class="form-check-input" type="checkbox" id="folderPickerShowHidden">
@@ -60,6 +71,31 @@
             }
             const modal = bootstrap.Modal.getInstance(document.getElementById(MODAL_ID));
             if (modal) modal.hide();
+        });
+
+        // Path input — Enter key navigates to the typed path, mirroring the
+        // Go button. Typing alone doesn't navigate (intrusive); the user has
+        // to commit with Enter or the Go button.
+        const pathInput = document.getElementById('folderPickerPathInput');
+        pathInput.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                const target = (pathInput.value || '').trim() || '/';
+                _loadPath(target);
+            }
+        });
+        document.getElementById('folderPickerGoBtn').addEventListener('click', () => {
+            const target = (pathInput.value || '').trim() || '/';
+            _loadPath(target);
+        });
+
+        // Up button — go to parent of the current path. _loadPath updates
+        // _currentPath after a successful API response, so reading it here
+        // always reflects what the user is actually browsing.
+        document.getElementById('folderPickerUpBtn').addEventListener('click', () => {
+            if (_currentPath === '/' || !_currentPath) return;
+            const parent = _currentPath.replace(/\/+[^/]+\/?$/, '') || '/';
+            _loadPath(parent);
         });
     }
 
@@ -103,6 +139,15 @@
         });
     }
 
+    function _syncChrome() {
+        const pathInput = document.getElementById('folderPickerPathInput');
+        if (pathInput) pathInput.value = _currentPath;
+        const upBtn = document.getElementById('folderPickerUpBtn');
+        if (upBtn) upBtn.disabled = _currentPath === '/' || !_currentPath;
+        const sel = document.getElementById('folderPickerSelectedPath');
+        if (sel) sel.textContent = _currentPath;
+    }
+
     async function _loadPath(path) {
         const errEl = document.getElementById('folderPickerError');
         const list = document.getElementById('folderPickerList');
@@ -116,13 +161,18 @@
             _currentPath = data.path || path || '/';
             _renderBreadcrumb(_currentPath);
             _renderEntries(data.entries || []);
-            document.getElementById('folderPickerSelectedPath').textContent = _currentPath;
+            _syncChrome();
             if (data.error) {
                 errEl.textContent = data.error;
                 errEl.classList.remove('d-none');
             }
         } catch (e) {
+            // API errored (404 not-found / 403 denied / etc). Show the
+            // message but keep the typed path in the input so the user
+            // can edit it instead of losing their work.
             list.innerHTML = '';
+            const pathInput = document.getElementById('folderPickerPathInput');
+            if (pathInput) pathInput.value = path;
             errEl.textContent = (e && e.message) || 'Failed to list folder';
             errEl.classList.remove('d-none');
         }

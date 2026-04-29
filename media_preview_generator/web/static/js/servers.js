@@ -860,10 +860,16 @@
         // The Plex config folder field gets the deeper structural check so
         // the success message can confidently say "this is a real Plex config
         // folder". Other path-mapping inputs only need existence + readable.
-        // Two IDs because the same widget is reused by /servers (editPlex...)
-        // and /setup (plexConfigFolder).
+        // Three IDs cover the same widget on different surfaces:
+        //   * editPlexConfigFolder       — /servers Edit Server modal
+        //   * plexConfigFolder           — _server_connection_form partial
+        //   * wizardPlexConfigFolder     — /setup wizard step 3 (renamed to
+        //                                   avoid colliding with the partial's
+        //                                   hidden input on the same page)
         const useStructuralCheck =
-            input.id === 'editPlexConfigFolder' || input.id === 'plexConfigFolder';
+            input.id === 'editPlexConfigFolder' ||
+            input.id === 'plexConfigFolder' ||
+            input.id === 'wizardPlexConfigFolder';
         const endpoint = useStructuralCheck
             ? '/api/settings/validate-plex-config-folder'
             : '/api/settings/validate-local-path';
