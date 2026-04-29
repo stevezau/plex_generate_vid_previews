@@ -315,9 +315,9 @@
                         </p>
                         <p class="small text-muted mb-2">
                             <strong>Path the webhook sends</strong> &mdash; if Sonarr / Radarr / Tdarr / Plex Direct posts a different prefix than what this server stores
-                            on disk (e.g. a MergerFS or union mount like <code>/data</code> on top of <code>/data_16tb*</code>), list those source
-                            prefixes here, semicolon- or comma-separated. The resolver will expand each one against this row's local prefix when matching incoming
-                            webhook paths. Leave blank when the webhook source already sends the same paths the server uses.
+                            on disk (e.g. a MergerFS or union mount like <code>/data</code> on top of <code>/data_16tb*</code>), put that source prefix here.
+                            One per row &mdash; if the same disk shows up under multiple webhook sources, add another row with the same local path.
+                            Leave blank when the webhook source already sends the same paths the server uses.
                         </p>
                         <table class="table table-sm" id="editPathMappingsTable">
                             <thead><tr><th>Path on Media Server</th><th>Local path on this app</th><th>Path the webhook sends</th><th></th></tr></thead>

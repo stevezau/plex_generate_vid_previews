@@ -755,7 +755,7 @@
                     <div class="valid-feedback small">Path exists</div>
                 </div>
             </td>
-            <td><input type="text" class="form-control form-control-sm pm-webhook" value="${escapeHtml(webhookAliases)}" placeholder="/data; /mnt/union" title="Optional. Semicolon- or comma-separated webhook source prefixes that resolve to this disk."></td>
+            <td><input type="text" class="form-control form-control-sm pm-webhook" value="${escapeHtml(webhookAliases)}" placeholder="/data" title="Optional. Webhook source prefix that resolves to this disk. Add another row for additional sources."></td>
             <td><button type="button" class="btn btn-sm btn-outline-danger pm-remove"><i class="bi bi-x-lg"></i></button></td>
         `;
         tr.querySelector('.pm-remove').addEventListener('click', () => tr.remove());
