@@ -3,13 +3,6 @@
 {% block title %}Dashboard - Media Preview Generator{% endblock %}
 
 {% block content %}
-<!-- Token Warning Banner (hidden by default) -->
-<div id="tokenWarningBanner" class="alert alert-warning d-none mb-4">
-    <i class="bi bi-exclamation-triangle me-2"></i>
-    <strong>A media server's credentials may be invalid or expired.</strong>
-    <a href="/servers" class="alert-link ms-2">Check the Servers page</a>
-</div>
-
 <!-- Setup Required Banner (hidden by default) -->
 <div id="setupRequiredBanner" class="alert alert-info d-none mb-4">
     <i class="bi bi-gear me-2"></i>
@@ -606,10 +599,6 @@
 
             if (!data.configured && !data.setup_complete) {
                 document.getElementById('setupRequiredBanner').classList.remove('d-none');
-            }
-
-            if (!data.plex_authenticated) {
-                document.getElementById('tokenWarningBanner').classList.remove('d-none');
             }
         } catch (error) {
             console.warn('Failed to check setup status:', error);

@@ -209,17 +209,25 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        loadServers();
+        // The Add Server modal is a shared partial included from both
+        // /servers and /setup. The /servers-only setup (server list,
+        // webhook URL, edit modal) only runs when those elements exist
+        // — on /setup we just need the modal wiring below.
+        const isServersPage = !!document.getElementById('serverList');
 
-        // Webhook URL display.
-        const u = new URL('/api/webhooks/incoming', window.location.origin);
-        $('#webhookUrl').value = u.toString();
-        $('#copyWebhookUrl').addEventListener('click', () => {
-            navigator.clipboard.writeText(u.toString());
-            const orig = $('#copyWebhookUrl').innerHTML;
-            $('#copyWebhookUrl').innerHTML = '<i class="bi bi-check2"></i> Copied';
-            setTimeout(() => { $('#copyWebhookUrl').innerHTML = orig; }, 1500);
-        });
+        if (isServersPage) {
+            loadServers();
+
+            // Webhook URL display.
+            const u = new URL('/api/webhooks/incoming', window.location.origin);
+            $('#webhookUrl').value = u.toString();
+            $('#copyWebhookUrl').addEventListener('click', () => {
+                navigator.clipboard.writeText(u.toString());
+                const orig = $('#copyWebhookUrl').innerHTML;
+                $('#copyWebhookUrl').innerHTML = '<i class="bi bi-check2"></i> Copied';
+                setTimeout(() => { $('#copyWebhookUrl').innerHTML = orig; }, 1500);
+            });
+        }
 
         // Wizard wiring.
         document.getElementById('addServerModal').addEventListener('show.bs.modal', resetWizard);
@@ -423,17 +431,25 @@
 
         const failed = results.filter((r) => !r.ok);
         if (failed.length === 0) {
-            // All saved — close modal + reload list.
+            // All saved — close modal + reload list (and notify any
+            // listening page so the setup wizard can advance).
             const modalEl = document.getElementById('addServerModal');
             if (modalEl && window.bootstrap) {
                 const inst = window.bootstrap.Modal.getInstance(modalEl);
                 if (inst) inst.hide();
             }
-            loadServers();
+            document.dispatchEvent(new CustomEvent('mediaServerAdded', {
+                detail: { count: results.length, type: 'plex' },
+            }));
+            if (typeof loadServers === 'function' && document.getElementById('serverList')) {
+                loadServers();
+            }
         } else {
             alert(`Saved ${results.length - failed.length}/${results.length}; failures:\n` +
                   failed.map((f) => `${f.name}: ${f.message || 'unknown error'}`).join('\n'));
-            loadServers();
+            if (typeof loadServers === 'function' && document.getElementById('serverList')) {
+                loadServers();
+            }
         }
     }
 
@@ -632,7 +648,15 @@
         if (r.ok) {
             const modal = bootstrap.Modal.getInstance(document.getElementById('addServerModal'));
             modal.hide();
-            loadServers();
+            // Notify any listening page (the setup wizard subscribes to this
+            // so it can advance from step 1 → GPU/security after an
+            // Emby/Jellyfin add). Always fires; /servers ignores it.
+            document.dispatchEvent(new CustomEvent('mediaServerAdded', {
+                detail: { server: r.data, type: payload.type },
+            }));
+            if (typeof loadServers === 'function' && document.getElementById('serverList')) {
+                loadServers();
+            }
         } else {
             alert(`Failed to save: ${(r.data && r.data.error) || r.status}`);
         }

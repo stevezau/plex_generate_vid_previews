@@ -1,0 +1,172 @@
+{# Reusable Add Server modal partial.
+   Included from /servers (the dashboard view) and /setup (wizard step 1
+   when the user picks Emby or Jellyfin). The modal's JS lives in
+   static/js/servers.js — that file's DOMContentLoaded handler guards
+   loadServers() so it no-ops on /setup where there's no server list. #}
+<div class="modal fade" id="addServerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="serverModalTitle">Add Server</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Step 1: pick a type -->
+                <div id="step-type" class="server-step">
+                    <h6 class="text-muted mb-3">1. Choose server type</h6>
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-primary w-100 py-3 server-type-btn" data-type="plex">
+                                <img src="{{ url_for('static', filename='images/vendors/plex.svg') }}" alt="Plex" width="36" height="36" class="d-block mx-auto mb-1">
+                                Plex
+                            </button>
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-success w-100 py-3 server-type-btn" data-type="emby">
+                                <img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" alt="Emby" width="36" height="36" class="d-block mx-auto mb-1">
+                                Emby
+                            </button>
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-info w-100 py-3 server-type-btn" data-type="jellyfin">
+                                <img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" alt="Jellyfin" width="36" height="36" class="d-block mx-auto mb-1">
+                                Jellyfin
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: connection -->
+                <div id="step-connect" class="server-step d-none">
+                    <h6 class="text-muted mb-3">2. Connect to <span id="step-connect-vendor"></span></h6>
+                    <div class="mb-3">
+                        <label class="form-label">Server URL</label>
+                        <input type="text" id="serverUrl" class="form-control" placeholder="http://hostname:port" autocomplete="off">
+                        <div class="form-text">Examples: <code>http://emby.local:8096</code>, <code>http://192.168.1.10:32400</code></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Display name</label>
+                        <input type="text" id="serverName" class="form-control" placeholder="e.g. Home Plex">
+                    </div>
+
+                    <!-- Auth method picker (Emby / Jellyfin only) -->
+                    <div id="auth-method-section" class="mb-3 d-none">
+                        <label class="form-label">Authentication</label>
+                        <div class="btn-group w-100" role="group">
+                            <input type="radio" class="btn-check" name="authMethod" id="auth-quick" value="quick_connect" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="auth-quick">Quick Connect</label>
+                            <input type="radio" class="btn-check" name="authMethod" id="auth-pw" value="password" autocomplete="off" checked>
+                            <label class="btn btn-outline-primary" for="auth-pw">Username + Password</label>
+                            <input type="radio" class="btn-check" name="authMethod" id="auth-key" value="api_key" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="auth-key">API Key</label>
+                        </div>
+                    </div>
+
+                    <div id="auth-fields-password" class="d-none">
+                        <div class="mb-2">
+                            <label class="form-label">Username</label>
+                            <input type="text" id="authUsername" class="form-control" autocomplete="username">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Password</label>
+                            <input type="password" id="authPassword" class="form-control" autocomplete="current-password">
+                            <div class="form-text">The password is forwarded once to the server and never persisted by this tool.</div>
+                        </div>
+                    </div>
+                    <div id="auth-fields-api-key" class="d-none">
+                        <div class="mb-2">
+                            <label class="form-label">API key</label>
+                            <input type="password" id="authApiKey" class="form-control" autocomplete="off">
+                            <div class="form-text">Generate one in your server admin UI under API Keys.</div>
+                        </div>
+                    </div>
+                    <div id="auth-fields-quick-connect" class="d-none">
+                        <p class="text-muted small mb-1">
+                            Click <strong>Start Quick Connect</strong> to get a code; enter it in your Jellyfin
+                            profile menu and we'll finish the auth automatically.
+                            <em>Quick Connect must be enabled by your Jellyfin admin under Server → Quick Connect.</em>
+                        </p>
+                        <button type="button" class="btn btn-primary mb-2" id="quickConnectStart">
+                            <i class="bi bi-magic me-1"></i>Start Quick Connect
+                        </button>
+                        <div id="quickConnectCode" class="alert alert-info d-none"></div>
+                        <div class="alert alert-warning small mb-0 mt-2">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <strong>Heads up:</strong> after adding Jellyfin you may need to enable
+                            <em>"Trickplay image extraction"</em> on each library — without it Jellyfin
+                            won't display the previews we publish. The Servers page has a one-click
+                            <strong>Fix trickplay</strong> button that does this automatically.
+                        </div>
+                    </div>
+
+                    <div id="auth-fields-token-plex" class="d-none">
+                        <div class="mb-3">
+                            <button type="button" class="btn btn-warning w-100" id="plexOAuthStart">
+                                <i class="bi bi-shield-check me-1"></i>Sign in with Plex (auto-discover servers)
+                            </button>
+                            <small class="text-muted d-block mt-1">
+                                Recommended. Lists every Plex server your account can access so you can pick one (or add several from one sign-in).
+                            </small>
+                        </div>
+
+                        <div id="plexDiscoveredList" class="d-none mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label mb-0">Discovered Plex servers</label>
+                                <small class="text-muted">Tick one or more to add</small>
+                            </div>
+                            <div id="plexDiscoveredServers" class="list-group"></div>
+                            <div class="d-flex justify-content-between align-items-center mt-2">
+                                <small class="form-text"><span id="plexSelectedCount">0</span> selected</small>
+                                <button type="button" class="btn btn-success btn-sm d-none" id="plexAddSelected">
+                                    <i class="bi bi-check2-circle me-1"></i>Add selected servers
+                                </button>
+                            </div>
+                            <div class="form-text mt-1">
+                                Tick a single server to fill the wizard fields below (lets you customise the
+                                config folder per server). Tick multiple servers to add them all at once with
+                                shared defaults — you can still edit each one from the Servers page afterwards.
+                            </div>
+                        </div>
+
+                        <details class="mb-2">
+                            <summary class="text-muted small">Or enter the token manually</summary>
+                            <div class="mt-2">
+                                <label class="form-label">Plex token</label>
+                                <input type="password" id="plexToken" class="form-control" autocomplete="off">
+                                <div class="form-text">Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>.</div>
+                            </div>
+                        </details>
+
+                        <div class="mb-2">
+                            <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
+                            <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
+                            <div class="form-text">
+                                This tool writes BIF files into <code>{this folder}/Media/localhost/.../*.bundle/Contents/Indexes/</code>.
+                                Must be readable + writable by this container.
+                                Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <button type="button" class="btn btn-link" id="step-connect-back">← Back</button>
+                        <button type="button" class="btn btn-primary" id="step-connect-test">
+                            Test connection →
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 3: test result -->
+                <div id="step-result" class="server-step d-none">
+                    <div id="connectResult" class="alert"></div>
+                    <div class="d-flex justify-content-between">
+                        <button type="button" class="btn btn-link" id="step-result-back">← Edit</button>
+                        <button type="button" class="btn btn-success" id="step-result-save">
+                            <i class="bi bi-save me-1"></i>Save server
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

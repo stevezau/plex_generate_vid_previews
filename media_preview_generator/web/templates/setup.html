@@ -433,10 +433,18 @@
         </div>
     </div>
 </div>
+
+{# Add Server modal — opened inline by the wizard's Emby/Jellyfin
+   vendor-picker buttons (instead of redirecting to /servers). The
+   shared partial is also used on /servers; servers.js (loaded below)
+   guards its /servers-only init code so it no-ops here. #}
+{% include "_add_server_modal.html" %}
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/plex_webhook_panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/servers.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize managers
@@ -571,11 +579,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.getElementById('step1Next').addEventListener('click', () => goToStep(2));
 
-    // Vendor picker on Step 1: Plex reveals the existing OAuth UI in-place;
-    // Emby / Jellyfin POST /api/setup/skip and jump to /servers?add=<vendor>
-    // where the Add Server modal auto-opens pre-selected to that vendor.
+    // Vendor picker on Step 1:
+    //   * Plex → reveal the existing OAuth panel in-place; the rest of
+    //     the wizard (steps 2–5) runs unchanged.
+    //   * Emby / Jellyfin → open the shared Add Server modal (included
+    //     in setup.html as a partial) pre-selected to that vendor. The
+    //     modal handles URL/auth/library selection + posts to
+    //     /api/servers; on success it dispatches `mediaServerAdded`,
+    //     which our handler below catches to skip wizard steps 2 + 3
+    //     (Plex-specific) and jump straight to step 4 (GPU).
     document.querySelectorAll('.wizard-vendor-btn').forEach((btn) => {
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => {
             const vendor = btn.dataset.vendor;
             if (vendor === 'plex') {
                 document.getElementById('vendorPicker').classList.add('d-none');
@@ -583,19 +597,23 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('step1Next').classList.remove('d-none');
                 return;
             }
-            try {
-                await fetch('/api/setup/skip', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
-                    },
-                });
-            } catch (_e) {
-                // /servers loads fine even if skip failed (the page itself
-                // handles the no-setup case); don't block navigation.
+            const modalEl = document.getElementById('addServerModal');
+            if (!modalEl || !window.bootstrap) {
+                // Shouldn't happen — partial + bootstrap both load on /setup.
+                console.error('Add Server modal not available; falling back to /servers redirect.');
+                window.location.href = '/servers?add=' + encodeURIComponent(vendor);
+                return;
             }
-            window.location.href = '/servers?add=' + encodeURIComponent(vendor);
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
+            // Wait for resetWizard (fires on show.bs.modal) to clear state,
+            // then click the matching vendor button so the modal advances
+            // straight to its connection form.
+            setTimeout(() => {
+                document.querySelector(
+                    '.server-type-btn[data-type="' + vendor + '"]'
+                )?.click();
+            }, 50);
         });
     });
 
@@ -603,6 +621,25 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('plexSignInPanel').classList.add('d-none');
         document.getElementById('vendorPicker').classList.remove('d-none');
         document.getElementById('step1Next').classList.add('d-none');
+    });
+
+    // After the Add Server modal saves an Emby / Jellyfin server, jump
+    // the wizard from step 1 directly to step 4 (GPU). Steps 2 and 3 are
+    // Plex-specific (Plex library multi-select + Plex config folder)
+    // and were already handled inside the modal for the non-Plex case.
+    // isAuthenticated is set so that step-internal "needs auth" gates
+    // (used by the Plex flow) don't block the non-Plex finish.
+    document.addEventListener('mediaServerAdded', (event) => {
+        const t = (event.detail && event.detail.type) || '';
+        if (t === 'plex') {
+            // Multi-Plex add fires this too; reload so the Plex flow
+            // picks up the freshly added server(s) on its next step.
+            // (We don't need to short-circuit to step 4 here — the
+            // Plex wizard path is the existing happy path.)
+            return;
+        }
+        isAuthenticated = true;
+        goToStep(4);
     });
 
     // Manual URL + token fallback for environments where plex.tv is
