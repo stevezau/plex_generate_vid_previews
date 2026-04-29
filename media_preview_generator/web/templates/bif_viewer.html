@@ -14,9 +14,7 @@
     <div class="col-lg-8">
         <div class="card border-0 bg-body-tertiary">
             <div class="card-body py-3 small text-muted">
-                Browse the preview thumbnails this app generated for any Plex item.
-                Useful if previews look wrong in Plex or you want to check which frames were captured.
-                Search by title below, or paste a preview file path from the processing logs.
+                Search by title, or paste a preview file path from the processing logs.
             </div>
         </div>
     </div>
@@ -59,13 +57,13 @@
                         <div id="serverPickerHint" class="form-text mt-2 d-none"></div>
                     </div>
                     <div class="tab-pane fade" id="tabPath">
-                        <p class="text-muted small mb-2">Paste a preview file path from the processing logs (Plex bundle path, Emby BIF sidecar, or Jellyfin trickplay manifest):</p>
                         <div class="input-group">
                             <input type="text" id="pathInput" class="form-control" placeholder="/plex/Media/localhost/.../index-sd.bif">
                             <button class="btn btn-primary" id="loadPathBtn" type="button">
                                 <i class="bi bi-folder2-open me-1"></i>Load
                             </button>
                         </div>
+                        <div class="form-text mt-1">Plex bundle path, Emby BIF sidecar, or Jellyfin trickplay manifest.</div>
                     </div>
                 </div>
             </div>

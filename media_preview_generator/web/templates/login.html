@@ -33,7 +33,7 @@
             <div class="logo-container">
                 <i class="bi bi-film"></i>
                 <h1>Media Preview Generator</h1>
-                <p class="text-muted">Enter your authentication token to continue</p>
+                <p class="text-muted">Sign in</p>
             </div>
 
             {% if rate_limited %}
@@ -42,16 +42,13 @@
                     <i class="bi bi-hourglass-split me-2"></i>Too many attempts.
                 </div>
                 <div class="small mt-1">
-                    Wait about a minute and try again. This limit protects your server from automated guesses.
+                    Wait a minute, then try again.
                 </div>
             </div>
             {% elif error %}
             <div class="alert alert-danger text-start" role="alert">
                 <div class="fw-semibold">
                     <i class="bi bi-exclamation-triangle me-2"></i>That token didn&rsquo;t work.
-                </div>
-                <div class="small mt-1">
-                    Double-check for typos, or use one of the options below to find the right token.
                 </div>
             </div>
             {% endif %}

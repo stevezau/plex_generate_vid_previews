@@ -19,9 +19,7 @@
         <div class="flex-grow-1">
             <h5 class="mb-1">No media servers configured yet</h5>
             <p class="mb-2 text-muted">
-                Add a Plex, Emby, or Jellyfin server so this app knows where to generate
-                preview thumbnails. Each server has its own libraries, path mappings, and
-                exclude rules.
+                Add a Plex, Emby, or Jellyfin server to start generating previews.
             </p>
             <a class="btn btn-primary btn-sm" href="/servers">
                 <i class="bi bi-plus-lg me-1"></i>Add a media server
@@ -68,8 +66,6 @@
                         </span>
                     </div>
                 </div>
-                <div class="small text-muted">Changes save automatically and apply to the running job.</div>
-
                 <hr>
 
                 <!-- Version Info -->
@@ -323,7 +319,7 @@
                         <select class="form-select" id="jobServerScope" onchange="onJobServerChange()">
                             <option value="">All servers (show every library)</option>
                         </select>
-                        <div class="form-text">Pin this job to one configured server. Disambiguates "Movies" on Plex vs Emby.</div>
+                        <div class="form-text">Limit this job to one server (e.g. when "Movies" exists on multiple).</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Libraries</label>
@@ -351,14 +347,12 @@
                             <label class="form-check-label" for="jobMissingOnly">
                                 <i class="bi bi-funnel me-1"></i>Process only items missing previews
                             </label>
-                            <div class="form-text ms-4">Only generates previews for items that don't have them yet (default).</div>
                         </div>
                         <div class="form-check">
                             <input class="form-check-input" type="radio" name="jobProcessingMode" id="jobRegenerateAll" value="regenerate">
                             <label class="form-check-label" for="jobRegenerateAll">
                                 <i class="bi bi-arrow-repeat me-1"></i>Regenerate all previews
                             </label>
-                            <div class="form-text ms-4">Regenerates previews even for items that already have them.</div>
                         </div>
                     </div>
                     <div class="mb-3">
@@ -368,7 +362,6 @@
                             <option value="2" selected>Normal</option>
                             <option value="3">Low</option>
                         </select>
-                        <div class="form-text">Higher priority jobs are processed before lower priority ones</div>
                     </div>
                     <div class="mb-3">
                         <label for="jobSortBy" class="form-label">Processing Order</label>
@@ -413,7 +406,7 @@
                         <select class="form-select" id="manualServerScope">
                             <option value="">All servers (publish to whoever owns the file)</option>
                         </select>
-                        <div class="form-text">Pin this job to one configured server. Useful when the same file exists on multiple servers and you only want previews regenerated for one.</div>
+                        <div class="form-text">Limit to one server (when the file exists on more than one).</div>
                     </div>
                     <div class="mb-3">
                         <label for="manualPriority" class="form-label">Priority</label>

@@ -40,20 +40,18 @@
         <div class="mb-2">
             <label class="form-label">Password</label>
             <input type="password" id="authPassword" class="form-control" autocomplete="current-password">
-            <div class="form-text">The password is forwarded once to the server and never persisted by this tool.</div>
+            <div class="form-text">Sent once to the server; not stored here.</div>
         </div>
     </div>
     <div id="auth-fields-api-key" class="d-none">
         <div class="mb-2">
             <label class="form-label">API key</label>
             <input type="password" id="authApiKey" class="form-control" autocomplete="off">
-            <div class="form-text">Generate one in your server admin UI under API Keys.</div>
         </div>
     </div>
     <div id="auth-fields-quick-connect" class="d-none">
         <p class="text-muted small mb-1">
-            Click <strong>Start Quick Connect</strong> to get a code; enter it in your Jellyfin
-            profile menu and we'll finish the auth automatically.
+            Click <strong>Start Quick Connect</strong> to get a code, then enter it in your Jellyfin profile menu.
             <em>Quick Connect must be enabled by your Jellyfin admin under Server → Quick Connect.</em>
         </p>
         <button type="button" class="btn btn-primary mb-2" id="quickConnectStart">
@@ -62,10 +60,7 @@
         <div id="quickConnectCode" class="alert alert-info d-none"></div>
         <div class="alert alert-warning small mb-0 mt-2">
             <i class="bi bi-exclamation-triangle me-1"></i>
-            <strong>Heads up:</strong> after adding Jellyfin you may need to enable
-            <em>"Trickplay image extraction"</em> on each library — without it Jellyfin
-            won't display the previews we publish. The Servers page has a one-click
-            <strong>Fix trickplay</strong> button that does this automatically.
+            Jellyfin needs <em>Trickplay image extraction</em> enabled per library to show previews. The Servers page has a one-click <strong>Fix trickplay</strong> button.
         </div>
     </div>
 
@@ -111,8 +106,7 @@
             <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
             <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
             <div class="form-text">
-                This tool writes BIF files into <code>{this folder}/Media/localhost/.../*.bundle/Contents/Indexes/</code>.
-                Must be readable + writable by this container.
+                BIF files land in <code>{this folder}/Media/localhost/.../*.bundle/Contents/Indexes/</code>.
                 Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.
             </div>
         </div>

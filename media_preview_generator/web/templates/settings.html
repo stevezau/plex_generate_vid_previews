@@ -55,7 +55,6 @@
 
                 <!-- GPU Configuration -->
                 <h6 class="mb-3" id="gpu-configuration"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
-                <p class="form-text mt-0 mb-3">GPU workers use both GPU and CPU. For standard content, the GPU does most of the work. For HDR and Dolby Vision content, CPU usage will be higher due to additional tone mapping processing.</p>
                 <div id="gpuConfigContainer">
                     <div class="text-muted mb-3" id="gpuDetecting">
                         <div class="spinner-border spinner-border-sm me-2" role="status">
@@ -77,7 +76,7 @@
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control has-stepper" id="cpuThreads"
                                min="0" max="32" value="1">
-                        <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
+                        <div class="form-text">Parallel preview jobs to run on the CPU.</div>
                     </div>
                 </div>
                 <div class="alert alert-secondary py-2 mb-4">
@@ -182,13 +181,11 @@
                             <option value="ERROR">ERROR</option>
                             <option value="CRITICAL">CRITICAL</option>
                         </select>
-                        <div class="form-text">Controls verbosity for container console output (<code>docker logs</code>) and per-job logs shown in the UI</div>
                     </div>
                 </div>
                 <button class="btn btn-sm btn-outline-primary mb-3" onclick="applyLogLevel()">
                     <i class="bi bi-arrow-repeat me-1"></i>Apply Log Level Now
                 </button>
-                <div class="form-text mb-3">Applies immediately without restarting.</div>
 
                 <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-text me-1"></i>System Log File</h6>
                 <p class="form-text mt-0 mb-2">

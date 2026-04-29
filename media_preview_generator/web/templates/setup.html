@@ -10,7 +10,7 @@
 <div class="setup-container">
     <div class="setup-header">
         <h1><i class="bi bi-film me-2"></i>Media Preview Generator</h1>
-        <p class="text-muted">Let's get you set up in a few easy steps</p>
+        <p class="text-muted">Setup wizard</p>
     </div>
 
     <!-- Progress Indicator -->
@@ -47,9 +47,7 @@
             <div class="card-body">
                 <h4 class="card-title text-center mb-2">Choose your media server</h4>
                 <p class="text-muted text-center mb-4">
-                    Pick the server you want to start with. You can add more (any combination,
-                    any vendor) from the Servers page later — the dispatcher fans each new
-                    file out to every server that owns it.
+                    Pick your first server. You can add more from the Servers page later.
                 </p>
 
                 <!-- Vendor picker (visible by default) -->
@@ -204,7 +202,7 @@
         <div class="card" id="librariesCard" style="display: none;">
             <div class="card-body">
                 <h4 class="card-title mb-3">Libraries to Process</h4>
-                <p class="text-muted mb-3">Only process media from these libraries (manual, scheduled, and webhook runs). If none are selected, all libraries are processed:</p>
+                <p class="text-muted mb-3">Tick the libraries you want previews for. Tick none to include all.</p>
 
                 <div id="libraryLoading" class="text-center py-3 d-none">
                     <div class="spinner-border text-primary" role="status">
@@ -258,11 +256,9 @@
 
                 <hr class="my-4">
                 <h5 class="mb-2">Media path mapping (optional)</h5>
-                <p class="text-muted small mb-2">
-                    Only if Plex and this app use <strong>different folder paths</strong> for the same media. If they’re the same, leave the list empty.
-                </p>
                 <div class="alert alert-info py-2 mb-3 small" role="alert">
-                    <strong>Example:</strong> Plex shows <code>/data</code>, this app has files at <code>/mnt/data</code> → add one row: Path in Plex = <code>/data</code>, Path in this app = <code>/mnt/data</code>. If Sonarr, Radarr, Tdarr, or another app sends a different path, add it in the third column.
+                    Only needed if Plex and this app see the same media at different paths.
+                    <strong>Example:</strong> Plex sees <code>/data</code>, app sees <code>/mnt/data</code> → one row: <code>/data</code> → <code>/mnt/data</code>. The <em>Webhook path</em> column is only for when Sonarr/Radarr/Tdarr send yet a third path.
                 </div>
 
                 <div id="setupPathMappingsContainer">
@@ -283,7 +279,6 @@
                         <i class="bi bi-plus-lg me-1"></i>Add another mapping
                     </button>
                 </div>
-                <div class="form-text">Each row links one Plex path to the path this app uses. Add the “Webhook path” only when Sonarr, Radarr, Tdarr, etc. use a different path than Plex.</div>
 
                 <hr class="my-4">
                 <h6 class="mb-2">Exclude paths (optional)</h6>
@@ -336,7 +331,7 @@
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control has-stepper" id="cpuThreads"
                                min="0" max="32" value="1">
-                        <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
+                        <div class="form-text">Parallel preview jobs on the CPU.</div>
                     </div>
                 </div>
                 <div class="alert alert-secondary py-2 mb-4">
@@ -360,7 +355,6 @@
                                    value="2" min="1" max="60">
                             <span class="input-group-text">seconds</span>
                         </div>
-                        <div class="form-text">Time between thumbnail captures</div>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailQuality" class="form-label">

@@ -9,9 +9,6 @@
             <h1 class="mb-0">
                 <i class="bi bi-hdd-stack me-2"></i>Media Servers
             </h1>
-            <p class="text-muted mb-0">
-                Plex, Emby, and Jellyfin servers this tool publishes preview thumbnails to.
-            </p>
         </div>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
             <i class="bi bi-plus-lg me-1"></i>Add Server
@@ -31,9 +28,7 @@
                 <i class="bi bi-info-circle me-2"></i>Webhook URL
             </h5>
             <p class="card-text mb-2">
-                A single URL handles every vendor (Plex / Emby / Jellyfin / Sonarr / Radarr).
-                Vendor is auto-detected by payload shape; the source server is matched
-                by the identifier embedded in every vendor's payload.
+                One URL for all vendors — copy it into your media server (or *arr) webhook settings.
             </p>
             <div class="input-group">
                 <input id="webhookUrl" type="text" class="form-control font-monospace" readonly>
@@ -207,15 +202,15 @@
                                 <span class="badge badge-status bg-secondary" id="plexWebhookStatusBadge">Checking…</span>
                             </div>
                             <div class="card-body">
-                                <p class="mb-3">Plex pings this app the moment it adds a new library item, so previews start generating right away. This is the fastest option — but it only works if you have Plex Pass.</p>
+                                <p class="mb-3">Instant: Plex pings this app the moment it adds a library item.</p>
 
                                 <h6 class="mb-2">Prerequisites</h6>
                                 <ul class="mb-3">
                                     <li><strong>Plex Pass</strong> active on your server-owner account.</li>
                                     <li>
-                                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → General (toggle <em>Enable mobile push notifications</em>).
+                                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → General.
                                         <div class="text-muted small mt-1">
-                                            This is a Plex quirk: the <code>library.new</code> webhook is delivered through the same code path as mobile push notifications, so with push notifications off, library events never fire. You don't have to actually use mobile push on a phone — they just need to be turned on.
+                                            Plex quirk: the <code>library.new</code> webhook only fires when push notifications are on. The toggle just needs to be enabled — you don't actually need to send pushes anywhere.
                                         </div>
                                     </li>
                                 </ul>
@@ -270,10 +265,7 @@
                             </div>
                             <div class="card-body">
                                 <p class="mb-3">
-                                    Polls <strong>Plex</strong> on a schedule and queues anything new. Use this if you don't have Plex Pass — or
-                                    as a safety net alongside the Plex Direct webhook above. <strong>The scanner is a regular schedule
-                                    you can customize</strong> — create multiple scanners with different intervals, lookback
-                                    windows, or libraries on the Schedules page.
+                                    Polls Plex on a schedule. Use this without Plex Pass, or alongside the Direct webhook as a safety net. Customise intervals, lookback windows, and libraries on the <a href="/schedules">Schedules</a> page.
                                 </p>
 
                                 <div id="recentlyAddedNoScanners" class="alert alert-secondary small d-none">
