@@ -158,6 +158,15 @@ def set_auth_token(new_token: str) -> dict:
     if len(new_token) < 8:
         return {"success": False, "error": "Token must be at least 8 characters long."}
 
+    # Reject re-using the current token. Setup wizard step 5 forces the
+    # user to pick a new token (away from the auto-generated one printed
+    # in Docker logs); this is the server-side guarantee of that.
+    if new_token == get_auth_token():
+        return {
+            "success": False,
+            "error": "New token must be different from the current one.",
+        }
+
     # Save the new token
     config = load_auth_config()
     config["token"] = new_token

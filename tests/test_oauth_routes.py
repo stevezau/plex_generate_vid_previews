@@ -287,6 +287,18 @@ class TestAuthTokenFunctions:
         assert result["success"] is False
         assert "environment variable" in result["error"]
 
+    def test_set_auth_token_rejects_same_as_current(self, mock_auth_config, monkeypatch):
+        """Setup wizard step 5 forces a NEW token away from the auto-generated
+        one printed in Docker logs. The server enforces that by refusing to
+        save a token equal to the current one."""
+        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+        from media_preview_generator.web.auth import get_auth_token, set_auth_token
+
+        current = get_auth_token()
+        result = set_auth_token(current)
+        assert result["success"] is False
+        assert "different from the current" in result["error"]
+
     def test_get_token_info_structure(self, mock_auth_config, monkeypatch):
         """Test get_token_info returns correct structure."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)

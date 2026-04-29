@@ -394,10 +394,14 @@
         <div class="card">
             <div class="card-body">
                 <h4 class="card-title mb-2"><i class="bi bi-shield-lock me-2"></i>Set your access token</h4>
+
+                <p class="text-muted mb-2">
+                    The access token is what you'll type to log in to this web UI.
+                </p>
                 <p class="text-muted mb-4">
-                    The access token is the password you use to log in to this web UI. Set a memorable one
-                    here, or skip and keep the auto-generated token from first boot (it's printed in your
-                    Docker logs). You can change it any time from <strong>Settings → Web Authentication</strong>.
+                    Pick a new one below — it has to be different from the auto-generated token
+                    you're using right now. You can change it again later from
+                    <strong>Settings &rarr; Web Authentication</strong>.
                 </p>
 
                 <!-- Environment variable notice -->
@@ -411,23 +415,19 @@
                     <div class="mb-3">
                         <label for="newToken" class="form-label">New token</label>
                         <input type="password" class="form-control" id="newToken"
-                               placeholder="At least 8 characters" minlength="8" autocomplete="new-password">
-                        <div class="form-text">Choose something you'll remember — minimum 8 characters.</div>
+                               placeholder="At least 8 characters" minlength="8" autocomplete="new-password" required>
+                        <div class="form-text">Minimum 8 characters.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="confirmToken" class="form-label">Confirm token</label>
                         <input type="password" class="form-control" id="confirmToken"
-                               placeholder="Type the same token again" autocomplete="new-password">
+                               placeholder="Type the same token again" autocomplete="new-password" required>
                     </div>
 
                     <div id="tokenError" class="alert alert-danger d-none"></div>
                     <div id="tokenSuccess" class="alert alert-success d-none">
                         <i class="bi bi-check-circle me-2"></i>Token updated successfully!
-                    </div>
-
-                    <div class="form-text">
-                        Leave both fields blank to keep the current token unchanged.
                     </div>
                 </div>
             </div>
@@ -1233,28 +1233,37 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const tokenError = document.getElementById('tokenError');
         const tokenSuccess = document.getElementById('tokenSuccess');
+        const restoreBtn = () => {
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+        };
         tokenError.classList.add('d-none');
         tokenSuccess.classList.add('d-none');
 
         try {
-            // If both fields are blank the user skipped the change — keep the
-            // current (auto-generated or env-supplied) token and just finish.
+            // env-controlled tokens can't be changed from the UI — let the
+            // user proceed without entering anything (the section is hidden).
+            const envControlled = !document.getElementById('tokenEnvNotice').classList.contains('d-none');
             const newToken = document.getElementById('newToken').value;
             const confirmToken = document.getElementById('confirmToken').value;
-            if (newToken || confirmToken) {
+
+            if (!envControlled) {
+                if (!newToken || !confirmToken) {
+                    tokenError.textContent = 'Please set a new access token to finish setup.';
+                    tokenError.classList.remove('d-none');
+                    restoreBtn();
+                    return;
+                }
                 if (newToken.length < 8) {
                     tokenError.textContent = 'Token must be at least 8 characters long.';
                     tokenError.classList.remove('d-none');
-                    this.disabled = false;
-                    this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+                    restoreBtn();
                     return;
                 }
-
                 if (newToken !== confirmToken) {
                     tokenError.textContent = 'Tokens do not match.';
                     tokenError.classList.remove('d-none');
-                    this.disabled = false;
-                    this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+                    restoreBtn();
                     return;
                 }
 
@@ -1269,10 +1278,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const tokenData = await tokenResponse.json();
                 if (!tokenData.success) {
+                    // Surfaces the server's "token must be different from
+                    // the current one" rejection so the user knows what to fix.
                     tokenError.textContent = tokenData.error || 'Failed to set token.';
                     tokenError.classList.remove('d-none');
-                    this.disabled = false;
-                    this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+                    restoreBtn();
                     return;
                 }
 
@@ -1288,8 +1298,7 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {
             tokenError.textContent = 'Failed to complete setup: ' + error.message;
             tokenError.classList.remove('d-none');
-            this.disabled = false;
-            this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+            restoreBtn();
         }
     });
 
