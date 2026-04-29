@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 8
+_CURRENT_SCHEMA_VERSION = 9
 
 
 class SchemaDowngradeError(RuntimeError):
@@ -243,6 +243,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 8:
         all_notes += _migrate_to_v8(sm)
+
+    if current < 9:
+        all_notes += _migrate_to_v9(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -679,6 +682,95 @@ def _migrate_to_v8(sm) -> list:
             )
         if legacy_pre_v6_present:
             notes.append("v8: cleaned up pre-v6 plex_videos_path_mapping/plex_local_videos_path_mapping keys")
+
+    return notes
+
+
+def _migrate_to_v9(sm) -> list:
+    """Dedupe per-server ``path_mappings`` and ``exclude_paths``.
+
+    The v7 + v8 chain shipped a double-copy bug: v7 populated the new
+    ``media_servers[0].path_mappings`` from the legacy global list, then
+    v8 appended the same global list again. Single-Plex installs that
+    upgraded through both migrations end up with every row duplicated
+    (and likewise for ``exclude_paths``).
+
+    v9 walks every server entry and dedupes both lists in place,
+    preserving the first occurrence of each row. For
+    ``path_mappings`` the dedupe key is the (plex_prefix, local_prefix,
+    sorted webhook_prefixes) triple — two rows with the same prefixes
+    but different webhook aliases are kept distinct. For
+    ``exclude_paths`` the key is the (value, type) pair.
+
+    Idempotent (re-running on a clean v9 file is a no-op) and harmless
+    when no duplicates exist (just rewrites the same list).
+    """
+    notes: list[str] = []
+    media_servers = list(sm.get("media_servers") or [])
+    if not media_servers:
+        return notes
+
+    changed = False
+    cleaned_servers: list[dict[str, Any]] = []
+    pm_removed_total = 0
+    ep_removed_total = 0
+
+    for entry in media_servers:
+        if not isinstance(entry, dict):
+            cleaned_servers.append(entry)
+            continue
+        target = dict(entry)
+
+        original_pm = list(target.get("path_mappings") or [])
+        if original_pm:
+            seen_pm: set[tuple] = set()
+            deduped_pm: list[dict[str, Any]] = []
+            for row in original_pm:
+                if not isinstance(row, dict):
+                    deduped_pm.append(row)
+                    continue
+                key = (
+                    (row.get("plex_prefix") or "").strip(),
+                    (row.get("local_prefix") or "").strip(),
+                    tuple(sorted([str(w).strip() for w in (row.get("webhook_prefixes") or [])])),
+                )
+                if key in seen_pm:
+                    continue
+                seen_pm.add(key)
+                deduped_pm.append(row)
+            if len(deduped_pm) != len(original_pm):
+                target["path_mappings"] = deduped_pm
+                pm_removed_total += len(original_pm) - len(deduped_pm)
+                changed = True
+
+        original_ep = list(target.get("exclude_paths") or [])
+        if original_ep:
+            seen_ep: set[tuple] = set()
+            deduped_ep: list[dict[str, Any]] = []
+            for row in original_ep:
+                if not isinstance(row, dict):
+                    deduped_ep.append(row)
+                    continue
+                key = ((row.get("value") or "").strip(), (row.get("type") or "path").strip())
+                if key in seen_ep:
+                    continue
+                seen_ep.add(key)
+                deduped_ep.append(row)
+            if len(deduped_ep) != len(original_ep):
+                target["exclude_paths"] = deduped_ep
+                ep_removed_total += len(original_ep) - len(deduped_ep)
+                changed = True
+
+        cleaned_servers.append(target)
+
+    if changed:
+        sm.apply_changes(updates={"media_servers": cleaned_servers})
+        parts = []
+        if pm_removed_total:
+            parts.append(f"{pm_removed_total} duplicate path_mapping row(s)")
+        if ep_removed_total:
+            parts.append(f"{ep_removed_total} duplicate exclude_path row(s)")
+        notes.append(f"v9: removed {' + '.join(parts)} introduced by the v7+v8 double-copy bug")
 
     return notes
 

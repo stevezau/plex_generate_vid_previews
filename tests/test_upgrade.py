@@ -1108,6 +1108,91 @@ class TestMigrateToV8:
         assert len(servers[0]["exclude_paths"]) == 1
 
 
+class TestMigrateToV9:
+    """v9 dedupes per-server path_mappings + exclude_paths, cleaning up
+    rows that the v7+v8 chain double-copied during the legacy → per-server
+    migration.
+    """
+
+    def test_no_op_when_no_servers(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v9
+
+        notes = _migrate_to_v9(settings_manager)
+        assert notes == []
+
+    def test_dedupes_path_mappings_left_by_v7_v8_chain(self, settings_manager):
+        """Real-world scenario: v7 copied 3 global rows into media_servers[0],
+        v8 then concatenated the same 3 rows again. v9 collapses the 6 back
+        down to 3, preserving order.
+        """
+        from plex_generate_previews.upgrade import _migrate_to_v9
+
+        rows = [
+            {"plex_prefix": "/data_16tb", "local_prefix": "/data_16tb", "webhook_prefixes": []},
+            {"plex_prefix": "/data_16tb2", "local_prefix": "/data_16tb2", "webhook_prefixes": []},
+            {"plex_prefix": "/data_16tb3", "local_prefix": "/data_16tb3", "webhook_prefixes": []},
+        ]
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [{"id": "plex-default", "type": "plex", "name": "Plex", "path_mappings": rows + rows}]
+            }
+        )
+
+        notes = _migrate_to_v9(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert len(servers[0]["path_mappings"]) == 3
+        assert servers[0]["path_mappings"] == rows
+        assert any("3 duplicate path_mapping" in n for n in notes)
+
+    def test_dedupe_treats_different_webhook_aliases_as_distinct(self, settings_manager):
+        """Two rows with the same plex/local prefixes but different
+        webhook_prefixes are NOT duplicates — each one expands a different
+        alias.
+        """
+        from plex_generate_previews.upgrade import _migrate_to_v9
+
+        rows = [
+            {"plex_prefix": "/m", "local_prefix": "/l", "webhook_prefixes": ["/data"]},
+            {"plex_prefix": "/m", "local_prefix": "/l", "webhook_prefixes": ["/mnt"]},
+        ]
+        settings_manager.apply_changes(
+            updates={"media_servers": [{"id": "plex", "type": "plex", "path_mappings": rows}]}
+        )
+
+        _migrate_to_v9(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert len(servers[0]["path_mappings"]) == 2
+
+    def test_dedupes_exclude_paths(self, settings_manager):
+        from plex_generate_previews.upgrade import _migrate_to_v9
+
+        ep = [
+            {"value": "/data/Trailers/", "type": "path"},
+            {"value": "/data/Trailers/", "type": "path"},
+            {"value": "/data/Bonus/", "type": "path"},
+        ]
+        settings_manager.apply_changes(updates={"media_servers": [{"id": "plex", "type": "plex", "exclude_paths": ep}]})
+
+        _migrate_to_v9(settings_manager)
+        servers = settings_manager.get("media_servers")
+        assert len(servers[0]["exclude_paths"]) == 2
+
+    def test_idempotent(self, settings_manager):
+        """Re-running v9 on a clean file is a no-op."""
+        from plex_generate_previews.upgrade import _migrate_to_v9
+
+        rows = [{"plex_prefix": "/m", "local_prefix": "/l", "webhook_prefixes": []}]
+        settings_manager.apply_changes(
+            updates={"media_servers": [{"id": "plex", "type": "plex", "path_mappings": rows}]}
+        )
+        _migrate_to_v9(settings_manager)
+        notes = _migrate_to_v9(settings_manager)
+        assert notes == []
+        servers = settings_manager.get("media_servers")
+        assert len(servers[0]["path_mappings"]) == 1
+
+
 class TestLegacyPlexToMediaServer:
     """Tests for the public helper used by the v7 migration."""
 

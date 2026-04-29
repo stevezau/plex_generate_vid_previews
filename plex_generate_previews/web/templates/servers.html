@@ -309,18 +309,18 @@
                     <!-- Path mappings -->
                     <div class="tab-pane fade" id="edit-tab-paths">
                         <p class="small text-muted mb-2">
-                            Translate a path the server reports (e.g. <code>/data_16tb/movies</code>) into the path this app
+                            Translate a path the media server reports (e.g. <code>/data_16tb/movies</code>) into the path this app
                             sees on disk (e.g. <code>/mnt/plex/movies</code>). Add one row per mount difference. Leave empty when the server and this
                             app share the same view.
                         </p>
                         <p class="small text-muted mb-2">
-                            <strong>Webhook alias paths</strong> &mdash; if Sonarr / Radarr / Tdarr / Plex Direct sends a different prefix than what this server stores
-                            on disk (e.g. a MergerFS or union mount like <code>/data</code> on top of <code>/data_16tb*</code>), list those alias
-                            prefixes here, semicolon- or comma-separated. The resolver will expand each alias against this row's local prefix when matching incoming
+                            <strong>Path the webhook sends</strong> &mdash; if Sonarr / Radarr / Tdarr / Plex Direct posts a different prefix than what this server stores
+                            on disk (e.g. a MergerFS or union mount like <code>/data</code> on top of <code>/data_16tb*</code>), list those source
+                            prefixes here, semicolon- or comma-separated. The resolver will expand each one against this row's local prefix when matching incoming
                             webhook paths. Leave blank when the webhook source already sends the same paths the server uses.
                         </p>
                         <table class="table table-sm" id="editPathMappingsTable">
-                            <thead><tr><th>Path on the server</th><th>Local path on this app</th><th>Webhook alias paths</th><th></th></tr></thead>
+                            <thead><tr><th>Path on Media Server</th><th>Local path on this app</th><th>Path the webhook sends</th><th></th></tr></thead>
                             <tbody></tbody>
                         </table>
                         <div class="d-flex justify-content-between mb-3">
