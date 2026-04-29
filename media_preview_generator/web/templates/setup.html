@@ -334,7 +334,7 @@
                 <div class="row mb-4">
                     <div class="col-md-6 mb-3">
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
-                        <input type="number" class="form-control" id="cpuThreads"
+                        <input type="number" class="form-control has-stepper" id="cpuThreads"
                                min="0" max="32" value="1">
                         <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
                     </div>
@@ -356,7 +356,7 @@
                                title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."></i>
                         </label>
                         <div class="input-group">
-                            <input type="number" class="form-control" id="thumbnailInterval"
+                            <input type="number" class="form-control has-stepper" id="thumbnailInterval"
                                    value="2" min="1" max="60">
                             <span class="input-group-text">seconds</span>
                         </div>
@@ -484,6 +484,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize tooltips
     const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
     tooltipTriggerList.forEach(el => new bootstrap.Tooltip(el));
+
+    // Wrap every numeric input flagged .has-stepper with −/+ buttons.
+    if (window.MPGShared && window.MPGShared.attachSteppersTo) {
+        window.MPGShared.attachSteppersTo(document);
+    }
 
     // Load saved state
     loadSavedState();

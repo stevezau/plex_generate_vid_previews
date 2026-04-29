@@ -89,7 +89,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                                data-bs-toggle="tooltip" data-bs-placement="top"
                                title="How many items this GPU processes at the same time. More workers = faster overall, but each worker uses GPU memory. Start with 1 and increase if your GPU can handle it."></i>
                         </label>
-                        <input type="number" class="form-control form-control-sm gpu-workers"
+                        <input type="number" class="form-control form-control-sm gpu-workers has-stepper"
                                data-device="${gpu.device}" min="1" max="16"
                                value="${workers}" onchange="onGpuWorkersChange(this, '${deviceId}')">
                     </div>
@@ -99,7 +99,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                                data-bs-toggle="tooltip" data-bs-placement="top"
                                title="Limits how many CPU cores FFmpeg uses per worker for tasks like decoding and filtering. Lower values free up CPU for other workers. Set to 0 to let FFmpeg decide automatically."></i>
                         </label>
-                        <input type="number" class="form-control form-control-sm gpu-ffmpeg-threads"
+                        <input type="number" class="form-control form-control-sm gpu-ffmpeg-threads has-stepper"
                                data-device="${gpu.device}" min="0" max="32"
                                value="${ffmpegThreads}" onchange="markDirty()">
                         <small class="text-muted">0 = use all CPU cores &middot; recommended: 2</small>
@@ -113,6 +113,11 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
     container.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
         new bootstrap.Tooltip(el);
     });
+    // Apply −/+ stepper buttons to the per-GPU Workers + FFmpeg Threads
+    // inputs. Safe no-op if the helper isn't loaded (older pages).
+    if (window.MPGShared && window.MPGShared.attachSteppersTo) {
+        window.MPGShared.attachSteppersTo(container);
+    }
 }
 
 function toggleGpuRow(deviceId) {

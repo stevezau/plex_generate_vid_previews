@@ -163,6 +163,14 @@ class TestPageRoutes:
         assert b"renderGpuConfigPanel" in resp.data
         assert b"collectGpuConfig" in resp.data
 
+    def test_stepper_js_served(self, client):
+        """The shared stepper widget is loaded by base.html for every page.
+        If renamed/removed, every numeric input loses its −/+ buttons."""
+        resp = client.get("/static/js/stepper.js")
+        assert resp.status_code == 200
+        assert b"attachStepper" in resp.data
+        assert b"attachSteppersTo" in resp.data
+
     def test_setup_page_loads_shared_panel_scripts(self, client):
         """The wizard relies on three external JS modules (folder picker,
         gpu config panel, servers helpers). A missing <script> tag is a
