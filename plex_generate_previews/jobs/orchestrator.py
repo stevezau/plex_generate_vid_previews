@@ -51,7 +51,12 @@ def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
 
 
 def _dispatch_webhook_paths_multi_server(
-    config, *, progress_callback=None, cancel_check=None, job_id: str | None = None
+    config,
+    *,
+    progress_callback=None,
+    cancel_check=None,
+    job_id: str | None = None,
+    paths: list[str] | None = None,
 ) -> dict:
     """Dispatch webhook_paths through the multi-server registry without Plex.
 
@@ -63,6 +68,12 @@ def _dispatch_webhook_paths_multi_server(
     When ``job_id`` is supplied, per-publisher outcomes are appended to that
     job's ``publishers`` field so the Jobs UI can show per-server status.
 
+    K4: ``paths`` may be provided to dispatch a *subset* of the job's
+    webhook_paths (e.g. the unresolved-by-Plex paths) so the fallback
+    multi-server flow only runs for those Plex couldn't claim. When None,
+    falls back to ``config.webhook_paths`` for backward compat with the
+    no-Plex code path that originally introduced this helper.
+
     Returns the aggregated ProcessingResult counts keyed by enum value.
     """
     from ..processing.multi_server import process_canonical_path
@@ -70,7 +81,10 @@ def _dispatch_webhook_paths_multi_server(
     from ..web.settings_manager import get_settings_manager
 
     counts = {r.value: 0 for r in ProcessingResult}
-    paths = list(config.webhook_paths or [])
+    if paths is None:
+        paths = list(config.webhook_paths or [])
+    else:
+        paths = list(paths)
     if not paths:
         return counts
 
@@ -391,6 +405,62 @@ def run_processing(
                 total_processed += result["completed"] + result["failed"]
                 cancellation_requested = cancellation_requested or result["cancelled"]
                 _merge_outcome(result)
+
+            # K4: route any path Plex couldn't claim through the multi-server
+            # dispatcher so Emby/Jellyfin webhooks resolve via their own APIs
+            # instead of dying at the Plex resolver. Only fires when at least
+            # one non-Plex server is configured AND the server_id pin (if any)
+            # isn't a Plex server itself — otherwise we'd just churn on paths
+            # the user explicitly scoped to Plex.
+            unresolved = list(webhook_resolution.unresolved_paths or [])
+            if unresolved:
+                try:
+                    from ..web.settings_manager import get_settings_manager
+
+                    raw = get_settings_manager().get("media_servers") or []
+                    has_non_plex = any(
+                        isinstance(e, dict)
+                        and (e.get("type") or "").lower() in ("emby", "jellyfin")
+                        and e.get("enabled", True)
+                        for e in raw
+                    )
+                except Exception:
+                    has_non_plex = False
+                pinned = getattr(config, "server_id_filter", None)
+                pinned_is_non_plex = False
+                if pinned and isinstance(pinned, str):
+                    try:
+                        pinned_entry = next(
+                            (e for e in raw if isinstance(e, dict) and e.get("id") == pinned),
+                            None,
+                        )
+                        pinned_is_non_plex = bool(
+                            pinned_entry and (pinned_entry.get("type") or "").lower() in ("emby", "jellyfin")
+                        )
+                    except Exception:
+                        pinned_is_non_plex = False
+                if has_non_plex and (not pinned or pinned_is_non_plex or pinned_entry):
+                    logger.info(
+                        "K4 fallback: {} path(s) unresolved by Plex — dispatching through multi-server registry "
+                        "for Emby/Jellyfin owners.",
+                        len(unresolved),
+                    )
+                    try:
+                        fallback_counts = _dispatch_webhook_paths_multi_server(
+                            config,
+                            progress_callback=progress_callback,
+                            cancel_check=cancel_check,
+                            job_id=job_id,
+                            paths=unresolved,
+                        )
+                        for k, v in (fallback_counts or {}).items():
+                            aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+                    except Exception as exc:
+                        logger.warning(
+                            "K4 multi-server fallback failed ({}: {}). The unresolved paths will go through the retry queue as usual.",
+                            type(exc).__name__,
+                            exc,
+                        )
         else:
             all_media_items = []
             library_item_counts = []

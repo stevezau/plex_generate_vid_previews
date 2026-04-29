@@ -110,6 +110,75 @@ class TestMultiServerGuards:
         assert result is not None
         assert "outcome" in result
 
+    def test_k4_unresolved_paths_fall_back_to_multi_server_when_emby_present(self, tmp_path):
+        """K4: when Plex is configured AND has at least one Emby/Jellyfin
+        sibling, paths Plex couldn't resolve flow into the multi-server
+        dispatcher with just the unresolved subset (not the whole batch)."""
+        from plex_generate_previews.plex_client import WebhookResolutionResult
+
+        config = _make_config(
+            tmp_path,
+            webhook_paths=["/data/a.mkv", "/data/b.mkv", "/data/c.mkv"],
+        )
+
+        # Plex resolves only "a.mkv"; b + c are unresolved → K4 fallback
+        # should dispatch only those two through the multi-server path.
+        resolution = WebhookResolutionResult(
+            items=[(MagicMock(name="MediaPart-A"), MagicMock())],
+            unresolved_paths=["/data/b.mkv", "/data/c.mkv"],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        with (
+            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+            patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+                {"id": "emby-1", "type": "emby", "enabled": True},
+            ]
+            mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
+            run_processing(config, selected_gpus=[])
+
+        # Fallback called for the unresolved subset only.
+        assert mock_dispatch.called
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs.get("paths") == ["/data/b.mkv", "/data/c.mkv"]
+
+    def test_k4_no_fallback_when_only_plex_configured(self, tmp_path):
+        """K4: don't churn — when only Plex is configured, the unresolved
+        paths go to the existing retry queue, not into the dispatcher."""
+        from plex_generate_previews.plex_client import WebhookResolutionResult
+
+        config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
+        resolution = WebhookResolutionResult(
+            items=[],
+            unresolved_paths=["/data/x.mkv"],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        with (
+            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+            patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
+            # Only Plex configured → no Emby/Jellyfin → K4 fallback should NOT fire.
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+            ]
+            run_processing(config, selected_gpus=[])
+
+        assert not mock_dispatch.called
+
 
 class TestLibraryScanFlow:
     """Tests for the normal library enumeration + dispatch path."""

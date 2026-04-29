@@ -397,8 +397,12 @@
                                         </div>
                                         <div class="form-text">Must be reachable from your <strong>Plex Media Server</strong>, not just your browser.</div>
                                     </li>
+                                    <li class="mb-3">
+                                        Optional: <strong>per-server webhook secret</strong>. When set, this server's registered URL embeds <em>this</em> token (instead of the global webhook secret). Useful in multi-Plex installs so each server can be revoked / rotated independently. Leave blank to use the global webhook secret.
+                                        <input type="password" class="form-control form-control-sm mt-2" id="plexWebhookPerServerSecret" placeholder="(global webhook secret)" autocomplete="off">
+                                    </li>
                                     <li>
-                                        Click <strong>Register with Plex</strong> below. Your webhook secret (or API token) is automatically embedded in the registered URL so Plex can authenticate. <strong>If you change the webhook secret later</strong>, saving settings on the Automation page automatically re-registers so Plex picks up the new value.
+                                        Click <strong>Register with Plex</strong> below. Your webhook secret (per-server if set, otherwise global) is embedded in the registered URL so Plex can authenticate. <strong>If you change the secret later</strong>, click Register again to push the new value.
                                     </li>
                                 </ol>
 

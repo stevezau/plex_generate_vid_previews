@@ -149,7 +149,28 @@ def _authenticate_webhook(f):
         settings = get_settings_manager()
         webhook_secret = settings.get("webhook_secret", "")
 
+        # K6: when the inbound URL pins a specific server (Plex Direct
+        # webhooks register with `?server_id=<id>` so we know which Plex
+        # they came from), prefer that server's per-server secret for
+        # validation. Falls back to the global webhook_secret + API token
+        # so installs that haven't set a per-server secret keep working.
+        per_server_secret = ""
+        per_server_id = (request.args.get("server_id") or "").strip()
+        if per_server_id:
+            try:
+                for entry in settings.get("media_servers") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("id") != per_server_id:
+                        continue
+                    per_server_secret = ((entry.get("output") or {}).get("webhook_secret") or "").strip()
+                    break
+            except Exception:
+                per_server_secret = ""
+
         for _method, token in candidates:
+            if per_server_secret and secrets.compare_digest(token, per_server_secret):
+                return f(*args, **kwargs)
             if webhook_secret and secrets.compare_digest(token, webhook_secret):
                 return f(*args, **kwargs)
             if validate_token(token):

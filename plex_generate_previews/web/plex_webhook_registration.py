@@ -88,23 +88,35 @@ def _base_url(url: str) -> str:
     return base.rstrip("/")
 
 
-def _build_authenticated_url(url: str, auth_token: str | None) -> str:
-    """Append ``?token=<auth_token>`` to ``url`` so Plex can authenticate.
+def _build_authenticated_url(url: str, auth_token: str | None, *, server_id: str | None = None) -> str:
+    """Append ``?token=<auth_token>`` (and optionally ``server_id``) so Plex can authenticate.
 
     Plex's webhook UI does not allow custom headers, so the only way to
     authenticate POSTs from Plex Media Server is to embed the token in
-    the URL.  When ``auth_token`` is empty the URL is returned unchanged
+    the URL. When ``auth_token`` is empty the URL is returned unchanged
     (the endpoint will then 401, which is what we want).
+
+    K6: ``server_id`` (when supplied) is added as a separate query
+    parameter so the inbound endpoint can look up that server's per-server
+    webhook secret. Multiple Plex servers in the same install can each
+    have their own URL token this way.
     """
     base = _normalize_url(url)
     if not base or not auth_token:
         return base
     parsed = urlparse(base)
     existing_query = parsed.query
-    new_query = urlencode({"token": auth_token})
+    pairs = {"token": auth_token}
+    if server_id:
+        pairs["server_id"] = server_id
+    new_query = urlencode(pairs)
     if existing_query:
-        # Preserve any pre-existing query, but overwrite an existing token.
-        existing_pairs = [kv for kv in existing_query.split("&") if kv and not kv.startswith("token=")]
+        # Preserve any pre-existing query, but overwrite an existing token / server_id.
+        existing_pairs = [
+            kv
+            for kv in existing_query.split("&")
+            if kv and not kv.startswith("token=") and not kv.startswith("server_id=")
+        ]
         existing_pairs.append(new_query)
         combined = "&".join(existing_pairs)
     else:
@@ -189,7 +201,7 @@ def is_registered(token: str, url: str) -> bool:
         return False
 
 
-def register(token: str, url: str, auth_token: str | None = None) -> list[str]:
+def register(token: str, url: str, auth_token: str | None = None, *, server_id: str | None = None) -> list[str]:
     """Register ``url`` as a Plex webhook (idempotent).
 
     Args:
@@ -201,6 +213,10 @@ def register(token: str, url: str, auth_token: str | None = None) -> list[str]:
             webhook UI does not support custom headers, so this is the
             only way for Plex to authenticate against the receiving
             endpoint.
+        server_id: K6 — when set, embedded as a ``server_id=`` query
+            parameter so the inbound endpoint knows which configured Plex
+            sent the event and can validate against that server's
+            per-server webhook secret.
 
     Returns:
         The list of registered webhook URLs after the call.
@@ -212,7 +228,7 @@ def register(token: str, url: str, auth_token: str | None = None) -> list[str]:
     if not target_base:
         raise PlexWebhookError("Webhook URL is empty", reason="missing_url")
 
-    target_with_auth = _build_authenticated_url(target_base, auth_token)
+    target_with_auth = _build_authenticated_url(target_base, auth_token, server_id=server_id)
 
     account = _account(token)
 

@@ -3929,10 +3929,11 @@ class TestPerServerPlexWebhook:
 
         seen = {}
 
-        def fake_register(token, url, auth_token=None):
+        def fake_register(token, url, auth_token=None, *, server_id=None):
             seen["token"] = token
             seen["url"] = url
             seen["auth_token"] = auth_token
+            seen["server_id"] = server_id
             return [url]
 
         monkeypatch.setattr(pwh, "register", fake_register)
@@ -3979,6 +3980,77 @@ class TestPerServerPlexWebhook:
         )
         assert resp.status_code == 400
         assert "Plex-only" in resp.get_json()["error"]
+
+    def test_register_persists_per_server_webhook_secret(self, client, monkeypatch):
+        """K6: per-server webhook secret survives the register call + ends up
+        embedded in the URL plex.tv stores. Different servers can have
+        different tokens this way.
+        """
+        self._seed_two_plex_servers()
+        from plex_generate_previews.web import plex_webhook_registration as pwh
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        captured = {}
+
+        def fake_register(token, url, auth_token=None, *, server_id=None):
+            captured["token"] = token
+            captured["url"] = url
+            captured["auth_token"] = auth_token
+            captured["server_id"] = server_id
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={
+                "server_id": "plex-a",
+                "webhook_secret": "per-server-secret-a",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        # The URL token Plex sees came from plex-a's per-server secret, not
+        # the global one (which we never set in this test).
+        assert captured["auth_token"] == "per-server-secret-a"
+        # And the server_id was passed so the inbound URL embeds it.
+        assert captured["server_id"] == "plex-a"
+
+        # Persistence: future status calls should report has_per_server_secret.
+        servers = get_settings_manager().get("media_servers")
+        plex_a = next(s for s in servers if s["id"] == "plex-a")
+        assert plex_a["output"]["webhook_secret"] == "per-server-secret-a"
+        # plex-b unaffected.
+        plex_b = next(s for s in servers if s["id"] == "plex-b")
+        assert "webhook_secret" not in (plex_b.get("output") or {})
+
+    def test_status_reports_per_server_secret_presence(self, client, monkeypatch):
+        """K6: status returns has_per_server_secret bool (without leaking the value)."""
+        self._seed_two_plex_servers()
+        from plex_generate_previews.web import plex_webhook_registration as pwh
+        from plex_generate_previews.web.settings_manager import get_settings_manager
+
+        # Drop a per-server secret onto plex-a only.
+        sm = get_settings_manager()
+        servers = sm.get("media_servers")
+        for s in servers:
+            if s["id"] == "plex-a":
+                s.setdefault("output", {})["webhook_secret"] = "secret-a"
+        sm.set("media_servers", servers)
+
+        monkeypatch.setattr(pwh, "is_registered", lambda *a, **k: True)
+
+        resp = client.get("/api/settings/plex_webhook/status?server_id=plex-a", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["has_per_server_secret"] is True
+        # Crucially the secret value itself is NOT echoed.
+        assert "secret-a" not in resp.get_data(as_text=True)
+
+        resp = client.get("/api/settings/plex_webhook/status?server_id=plex-b", headers=_api_headers())
+        body = resp.get_json()
+        assert body["has_per_server_secret"] is False
 
 
 class TestBackupRestore:
