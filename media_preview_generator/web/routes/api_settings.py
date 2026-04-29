@@ -586,14 +586,39 @@ def validate_plex_config_folder():
 
     resolved = _safe_resolve_within(raw_path, PLEX_DATA_ROOT)
     if resolved is None:
+        # Path is outside PLEX_DATA_ROOT (defaults to /plex). The previous
+        # message ("Path is outside the allowed Plex data root") was
+        # confusing — users on /setup don't know what the "allowed root"
+        # is or how to fix it. Disambiguate based on whether the typed
+        # path actually exists on disk so we can suggest the right Docker
+        # bind, and tell them they need to mount the folder at /plex.
+        canonical_root = os.path.realpath(PLEX_DATA_ROOT)
+        try:
+            probe_resolved = os.path.realpath(os.path.normpath(raw_path))
+            exists_outside_root = os.path.isdir(probe_resolved)
+        except OSError:
+            exists_outside_root = False
+        if exists_outside_root:
+            msg = (
+                f"Folder found at {raw_path}, but this app can only write to "
+                f"{canonical_root} from inside the container. Mount your Plex "
+                f"config folder there with: -v {raw_path}:{canonical_root}, "
+                f"then enter {canonical_root} here."
+            )
+        else:
+            msg = (
+                f"Path must be inside {canonical_root} (the container's Plex data "
+                f"mount). Mount your host Plex config folder there with "
+                f"-v /your/host/path:{canonical_root}, then enter {canonical_root} here."
+            )
         return jsonify(
             {
-                "exists": False,
+                "exists": exists_outside_root,
                 "valid_plex_structure": False,
                 "shard_count": 0,
                 "writable": False,
                 "detail": "",
-                "error": "Path is outside the allowed Plex data root",
+                "error": msg,
             }
         )
     if not os.path.exists(resolved):

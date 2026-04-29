@@ -3973,6 +3973,58 @@ class TestValidatePlexConfigFolder:
         assert body["valid_plex_structure"] is False
         assert "Media" in body["error"]
 
+    def test_outside_root_existing_folder_suggests_docker_bind(self, client, tmp_path, monkeypatch):
+        """When the typed path is a real folder but outside PLEX_DATA_ROOT,
+        the error should explain the Docker mount instead of the previous
+        confusing 'Path is outside the allowed Plex data root' line."""
+        # PLEX_DATA_ROOT is somewhere ELSE; the typed path is a real
+        # directory but cannot satisfy the root constraint.
+        plex_root = tmp_path / "plex"
+        plex_root.mkdir()
+        outside = tmp_path / "config" / "plex"
+        outside.mkdir(parents=True)
+
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(plex_root))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": str(outside)},
+        )
+        body = resp.get_json()
+        # Folder *does* exist on disk (just not in the allowed root).
+        assert body["exists"] is True
+        assert body["valid_plex_structure"] is False
+        # The error must surface the actual root path AND a Docker -v
+        # example so the user knows how to fix it.
+        assert str(plex_root) in body["error"]
+        assert "-v" in body["error"]
+        assert "outside the allowed" not in body["error"]  # old confusing wording
+
+    def test_outside_root_nonexistent_folder_suggests_mount(self, client, tmp_path, monkeypatch):
+        """Same constraint, different starting point: the typed path
+        doesn't even exist on disk. Message should still tell the user
+        the path must be inside PLEX_DATA_ROOT and how to mount it."""
+        plex_root = tmp_path / "plex"
+        plex_root.mkdir()
+
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(plex_root))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": "/definitely/not/a/real/path"},
+        )
+        body = resp.get_json()
+        assert body["exists"] is False
+        assert body["valid_plex_structure"] is False
+        assert str(plex_root) in body["error"]
+        assert "-v" in body["error"]
+
 
 # ---------------------------------------------------------------------------
 # Phase I5 — Per-server Plex webhook endpoints
