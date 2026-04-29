@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- CLI mode (`--cli`, `plex-generate-previews` CLI entry point, `cli.py`)
+- CLI mode (`--cli`, `media-preview-generator` CLI entry point, `cli.py`)
 - `__main__.py` module (standalone execution)
 - `pytest` from pre-push hooks
 - Dedicated CPU-fallback worker pool — GPU workers now retry on CPU in-place

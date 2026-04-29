@@ -39,7 +39,7 @@ def get_current_version() -> str:
     try:
         import importlib.metadata
 
-        return importlib.metadata.version("plex-generate-previews")
+        return importlib.metadata.version("media-preview-generator")
     except Exception:
         logger.debug("importlib.metadata version lookup failed", exc_info=True)
 
@@ -89,7 +89,7 @@ def get_latest_github_release() -> str | None:
         url = "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases/latest"
 
         # Set timeout and user agent
-        headers = {"User-Agent": "plex-generate-previews-version-check"}
+        headers = {"User-Agent": "media-preview-generator-version-check"}
 
         response = requests.get(url, headers=headers, timeout=3)
         response.raise_for_status()
@@ -204,7 +204,7 @@ def get_branch_head_sha(branch: str) -> str | None:
     """
     try:
         url = f"https://api.github.com/repos/stevezau/plex_generate_vid_previews/branches/{branch}"
-        headers = {"User-Agent": "plex-generate-previews-version-check"}
+        headers = {"User-Agent": "media-preview-generator-version-check"}
         response = requests.get(url, headers=headers, timeout=3)
         response.raise_for_status()
         data = response.json()

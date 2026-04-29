@@ -28,7 +28,7 @@ def _get_version() -> str:
     try:
         import importlib.metadata
 
-        ver = importlib.metadata.version("plex-generate-previews")
+        ver = importlib.metadata.version("media-preview-generator")
         if not ver.startswith("0.0.0"):
             return ver
     except Exception:

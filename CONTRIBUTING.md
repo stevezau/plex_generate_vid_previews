@@ -240,7 +240,7 @@ Required repository secrets (**Settings → Secrets and variables → Actions**)
 
 ```bash
 LOG_LEVEL=DEBUG python -m media_preview_generator.web.app  # Debug logging
-docker exec -it plex-generate-previews /bin/bash   # Inspect container
+docker exec -it media-preview-generator /bin/bash   # Inspect container
 ```
 
 Check detected GPUs in the web UI (**Settings** or **Setup**).

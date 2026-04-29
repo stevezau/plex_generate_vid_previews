@@ -3,12 +3,12 @@ requires = ["setuptools>=64", "wheel", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "plex-generate-previews"
+name = "media-preview-generator"
 dynamic = ["version"]
 authors = [
     {name = "Steve Adams", email = "stevezau@gmail.com"},
 ]
-description = "Generate video preview thumbnails for Plex Media Server"
+description = "GPU-accelerated video preview thumbnail generation for Plex, Emby, and Jellyfin media servers"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Multimedia :: Video",
     "Topic :: System :: Archiving",
 ]
-keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
+keywords = ["plex", "emby", "jellyfin", "media-server", "video", "thumbnails", "previews", "trickplay", "bif", "ffmpeg", "gpu", "acceleration"]
 dependencies = [
     "requests==2.33.0",
     # urllib3 >=2.6.3 covers CVE-2025-50181/50182 (redirect-handling),
@@ -68,7 +68,7 @@ test = [
     "flask-cors>=6.0.0,<7",
 ]
 dev = [
-    "plex-generate-previews[test]",
+    "media-preview-generator[test]",
     "ruff>=0.6.0",
     "pre-commit>=3.6.0",
     "locust>=2.20.0",

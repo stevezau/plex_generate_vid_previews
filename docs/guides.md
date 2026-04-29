@@ -548,7 +548,7 @@ Schema downgrades are **not automated**. If you need to revert from a release th
 
 1. **Stop the container.**
    ```bash
-   docker stop plex-generate-previews
+   docker stop media-preview-generator
    ```
 2. **Restore the relevant `.bak` files** from your config volume. Each JSON file the app owns leaves a single rolling `.bak` next to it on every save:
    ```bash

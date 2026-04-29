@@ -32,7 +32,7 @@ GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web 
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -75,7 +75,7 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 services:
   plex-previews:
     image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -113,7 +113,7 @@ Set GPU Workers to 0 and CPU Workers as needed in the web UI Settings.
 services:
   plex-previews:
     image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -182,11 +182,11 @@ Application-level env vars (PLEX_URL, PLEX_TOKEN, CPU_THREADS, etc.) act as one-
 
 ## Unraid
 
-Search for "plex-generate-previews" in Community Applications, or run manually:
+Search for "media-preview-generator" in Community Applications, or run manually:
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -194,7 +194,7 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```

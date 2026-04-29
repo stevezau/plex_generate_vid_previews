@@ -46,7 +46,7 @@ Get Plex preview thumbnails generating in minutes.
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -107,7 +107,7 @@ This tool generates **video preview thumbnails only** — the small frames Plex 
 Use this section whenever documentation asks for your authentication token.
 
 ```bash
-docker logs plex-generate-previews | grep "Token:"
+docker logs media-preview-generator | grep "Token:"
 ```
 
 You can also set a fixed token for predictable logins:
@@ -275,7 +275,7 @@ Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Op
 
 Two install paths: the Community Applications template (easiest) or a manual `docker run` command (more control).
 
-**Easiest:** search for `plex-generate-previews` in **Community Applications** and install the template.
+**Easiest:** search for `media-preview-generator` in **Community Applications** and install the template.
 
 **Quick start (either path):**
 
@@ -291,7 +291,7 @@ Two install paths: the Community Applications template (easiest) or a manual `do
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   -l net.unraid.docker.webui="http://[IP]:[PORT:8080]/" \
@@ -301,7 +301,7 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
@@ -321,7 +321,7 @@ If you use a custom Docker network with fixed IPs (common on Unraid):
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   --network=br0 \
   --ip=192.168.1.50 \
@@ -331,7 +331,7 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
@@ -345,7 +345,7 @@ Requires: Nvidia-Driver plugin from Community Applications.
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   --runtime=nvidia \
   -p 8080:8080 \
@@ -356,7 +356,7 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
@@ -448,7 +448,7 @@ Where is your Plex server?
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   --network=br1 \
   --ip=192.168.1.51 \
@@ -459,7 +459,7 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
   stevezzau/plex_generate_vid_previews:latest
 ```
@@ -474,16 +474,16 @@ docker run -d \
 ### View Logs
 
 ```bash
-docker logs plex-generate-previews          # All logs
-docker logs -f plex-generate-previews       # Follow logs
+docker logs media-preview-generator          # All logs
+docker logs -f media-preview-generator       # Follow logs
 ```
 
 ### Update
 
 ```bash
 docker pull stevezzau/plex_generate_vid_previews:latest
-docker stop plex-generate-previews
-docker rm plex-generate-previews
+docker stop media-preview-generator
+docker rm media-preview-generator
 # Re-run your docker run command
 ```
 

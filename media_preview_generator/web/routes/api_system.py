@@ -1269,7 +1269,7 @@ def _fetch_github_releases(limit: int = 10) -> list:
     try:
         resp = req.get(
             _GITHUB_RELEASES_URL,
-            headers={"User-Agent": "plex-generate-previews"},
+            headers={"User-Agent": "media-preview-generator"},
             params={"per_page": limit},
             timeout=5,
         )

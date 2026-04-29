@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wrapper script to run plex-generate-previews web server.
+# Wrapper script to run media-preview-generator web server.
 # Executed by s6-overlay after user/group setup.
 set -euo pipefail
 

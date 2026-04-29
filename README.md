@@ -91,7 +91,7 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
