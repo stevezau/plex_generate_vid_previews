@@ -146,28 +146,21 @@ class TestSetupWizardStep5:
         step5 = page.locator('.progress-step[data-step="5"]')
         expect(step5).to_contain_text("Security")
 
-    def test_step5_shows_token_display(self, page: Page, app_url: str, auth_token: str):
-        """Verify Step 5 shows the current token input."""
+    def test_step5_has_new_token_inputs(self, page: Page, app_url: str, auth_token: str):
+        """Verify Step 5 offers the set-new-token form (new + confirm)."""
         # Setup page is accessible without login and avoids auth/session state
         # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
         page.wait_for_timeout(1000)
 
-        # Go directly to step 5 by clicking through (or check element exists)
-        current_token_input = page.locator("#currentToken")
-        # Element should exist in the DOM (even if not visible yet)
-        assert current_token_input.count() == 1
-
-    def test_step5_has_custom_token_checkbox(self, page: Page, app_url: str, auth_token: str):
-        """Verify Step 5 has the custom token checkbox."""
-        # Setup page is accessible without login and avoids auth/session state
-        # leakage from prior E2E tests.
-        page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
-
-        # Custom token checkbox should exist
-        custom_checkbox = page.locator("#useCustomToken")
-        assert custom_checkbox.count() == 1
+        # Step 5 mirrors /settings → Web Authentication: no current-token
+        # display, just two password fields the user fills (or skips blank).
+        assert page.locator("#newToken").count() == 1
+        assert page.locator("#confirmToken").count() == 1
+        # The old "Current Access Token" display + "use custom" checkbox are
+        # gone — the form is the primary action now.
+        assert page.locator("#currentToken").count() == 0
+        assert page.locator("#useCustomToken").count() == 0
 
     def test_step5_has_finish_button(self, page: Page, app_url: str, auth_token: str):
         """Verify Step 5 has the Complete Setup button."""

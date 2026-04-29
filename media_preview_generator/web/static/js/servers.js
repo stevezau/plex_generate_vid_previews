@@ -836,7 +836,10 @@
         // The Plex config folder field gets the deeper structural check so
         // the success message can confidently say "this is a real Plex config
         // folder". Other path-mapping inputs only need existence + readable.
-        const useStructuralCheck = input.id === 'editPlexConfigFolder';
+        // Two IDs because the same widget is reused by /servers (editPlex...)
+        // and /setup (plexConfigFolder).
+        const useStructuralCheck =
+            input.id === 'editPlexConfigFolder' || input.id === 'plexConfigFolder';
         const endpoint = useStructuralCheck
             ? '/api/settings/validate-plex-config-folder'
             : '/api/settings/validate-local-path';
@@ -1081,4 +1084,12 @@
             });
         }
     });
+
+    // Public surface for /setup wizard (and any other page) that needs the
+    // same path-mapping row + path-validation behaviour without duplicating
+    // the IIFE-private helpers.
+    window.MPGShared = window.MPGShared || {};
+    window.MPGShared.validateLocalPathInput = _validateLocalPathInput;
+    window.MPGShared.debouncedValidatePath = _debouncedValidatePath;
+    window.MPGShared.addPathMappingRow = addPathMappingRow;
 })();

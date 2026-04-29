@@ -153,6 +153,29 @@ class TestPageRoutes:
             resp = authed_client.get(f"/servers?add={vendor}")
             assert resp.status_code == 200, f"vendor={vendor!r} returned {resp.status_code}"
 
+    def test_gpu_config_panel_js_served(self, client):
+        """The shared per-GPU panel JS is loaded by both /setup and /settings.
+        If the file is missing or renamed, the wizard's step 4 silently
+        breaks (renderGpuConfigPanel undefined). Catch that with a
+        smoke check that the static asset is reachable."""
+        resp = client.get("/static/js/gpu_config_panel.js")
+        assert resp.status_code == 200
+        assert b"renderGpuConfigPanel" in resp.data
+        assert b"collectGpuConfig" in resp.data
+
+    def test_setup_page_loads_shared_panel_scripts(self, client):
+        """The wizard relies on three external JS modules (folder picker,
+        gpu config panel, servers helpers). A missing <script> tag is a
+        silent regression — verify all three are referenced from /setup.
+        Uses the unauthed `client` fixture because authed_client marks
+        setup_complete and /setup then redirects."""
+        resp = client.get("/setup")
+        assert resp.status_code == 200
+        body = resp.data
+        assert b"folder_picker.js" in body
+        assert b"gpu_config_panel.js" in body
+        assert b"servers.js" in body
+
 
 # ---------------------------------------------------------------------------
 # Login / Logout

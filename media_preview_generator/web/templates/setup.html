@@ -226,8 +226,15 @@
                         <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip"
                            title="Path inside this container to Plex&#39;s data folder (where previews are written)"></i>
                     </label>
-                    <input type="text" class="form-control" id="plexConfigFolder"
-                           value="/plex" placeholder="/plex">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="plexConfigFolder"
+                               value="/plex" placeholder="/plex">
+                        <button type="button" class="btn btn-outline-secondary" id="plexConfigFolderBrowseBtn" title="Browse folders">
+                            <i class="bi bi-folder2-open"></i>
+                        </button>
+                        <div class="invalid-feedback small"></div>
+                        <div class="valid-feedback small">Looks like a valid Plex config folder</div>
+                    </div>
                     <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
                 </div>
 
@@ -298,28 +305,39 @@
             <div class="card-body">
                 <h4 class="card-title mb-4">Processing Options</h4>
 
-                <div class="row mb-4">
-                    <div class="col-md-4 mb-3">
-                        <label for="gpuThreads" class="form-label">GPU Workers</label>
-                        <input type="number" class="form-control" id="gpuThreads"
-                               value="1" min="0" max="16">
-                        <div class="form-text">Parallel GPU jobs (0 to disable)</div>
+                <h6 class="mb-3"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
+                <p class="form-text mt-0 mb-3">GPU workers use both GPU and CPU. For standard content, the GPU does most of the work. For HDR and Dolby Vision content, CPU usage will be higher due to additional tone mapping processing.</p>
+                <div id="gpuConfigContainer">
+                    <div class="text-muted mb-3" id="gpuDetecting">
+                        <div class="spinner-border spinner-border-sm me-2" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        Detecting GPUs...
                     </div>
-                    <div class="col-md-4 mb-3">
+                    <div id="gpuConfigList"></div>
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-4"
+                        id="gpuRescanBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs
+                </button>
+
+                <h6 class="mb-3"><i class="bi bi-cpu me-2"></i>CPU Workers</h6>
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
                         <label for="cpuThreads" class="form-label">CPU Workers</label>
                         <input type="number" class="form-control" id="cpuThreads"
-                               value="1" min="0" max="32">
-                        <div class="form-text">Parallel CPU jobs from main queue</div>
+                               min="0" max="32" value="1">
+                        <div class="form-text">How many preview jobs to run on the CPU at the same time.</div>
                     </div>
                 </div>
                 <div class="alert alert-secondary py-2 mb-4">
                     <small>
                         If a GPU worker can&rsquo;t process a file (unsupported codec, hardware error),
                         the same worker retries it on CPU in-place.
-                        No separate fallback pool needed.
                     </small>
                 </div>
 
+                <h6 class="mb-3"><i class="bi bi-image me-2"></i>Thumbnail Settings</h6>
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">Thumbnail Interval</label>
@@ -339,11 +357,6 @@
                         </div>
                     </div>
                 </div>
-
-                <div id="gpuInfo" class="alert alert-info mt-3">
-                    <i class="bi bi-gpu-card me-2"></i>
-                    <span id="gpuInfoText">Detecting GPUs...</span>
-                </div>
             </div>
         </div>
 
@@ -361,10 +374,11 @@
     <div class="setup-step" data-step="5">
         <div class="card">
             <div class="card-body">
-                <h4 class="card-title mb-4"><i class="bi bi-shield-lock me-2"></i>Access Token</h4>
+                <h4 class="card-title mb-2"><i class="bi bi-shield-lock me-2"></i>Set your access token</h4>
                 <p class="text-muted mb-4">
-                    Your access token is like a password for the web interface. You can keep the
-                    auto-generated token or set your own.
+                    The access token is the password you use to log in to this web UI. Set a memorable one
+                    here, or skip and keep the auto-generated token from first boot (it's printed in your
+                    Docker logs). You can change it any time from <strong>Settings → Web Authentication</strong>.
                 </p>
 
                 <!-- Environment variable notice -->
@@ -374,50 +388,27 @@
                     <br>The <code>WEB_AUTH_TOKEN</code> environment variable is set, so the token cannot be changed here.
                 </div>
 
-                <!-- Current token display -->
-                <div id="tokenDisplay" class="mb-4">
-                    <label class="form-label">Current Access Token</label>
-                    <div class="input-group">
-                        <input type="text" class="form-control font-monospace" id="currentToken" readonly>
-                        <button class="btn btn-outline-secondary" type="button" id="copyTokenBtn" title="Copy to clipboard">
-                            <i class="bi bi-clipboard"></i>
-                        </button>
-                        <button class="btn btn-outline-secondary" type="button" id="toggleTokenBtn" title="Show/Hide">
-                            <i class="bi bi-eye"></i>
-                        </button>
-                    </div>
-                    <div class="form-text">Save this token - you'll need it to log in.</div>
-                </div>
-
-                <hr class="my-4">
-
-                <!-- Custom token option -->
                 <div id="customTokenSection">
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" id="useCustomToken">
-                        <label class="form-check-label" for="useCustomToken">
-                            Set a custom access token
-                        </label>
+                    <div class="mb-3">
+                        <label for="newToken" class="form-label">New token</label>
+                        <input type="password" class="form-control" id="newToken"
+                               placeholder="At least 8 characters" minlength="8" autocomplete="new-password">
+                        <div class="form-text">Choose something you'll remember — minimum 8 characters.</div>
                     </div>
 
-                    <div id="customTokenInputs" class="d-none">
-                        <div class="mb-3">
-                            <label for="newToken" class="form-label">New Token</label>
-                            <input type="password" class="form-control" id="newToken"
-                                   placeholder="Enter your custom token" minlength="8">
-                            <div class="form-text">Minimum 8 characters</div>
-                        </div>
+                    <div class="mb-3">
+                        <label for="confirmToken" class="form-label">Confirm token</label>
+                        <input type="password" class="form-control" id="confirmToken"
+                               placeholder="Type the same token again" autocomplete="new-password">
+                    </div>
 
-                        <div class="mb-3">
-                            <label for="confirmToken" class="form-label">Confirm Token</label>
-                            <input type="password" class="form-control" id="confirmToken"
-                                   placeholder="Confirm your custom token">
-                        </div>
+                    <div id="tokenError" class="alert alert-danger d-none"></div>
+                    <div id="tokenSuccess" class="alert alert-success d-none">
+                        <i class="bi bi-check-circle me-2"></i>Token updated successfully!
+                    </div>
 
-                        <div id="tokenError" class="alert alert-danger d-none"></div>
-                        <div id="tokenSuccess" class="alert alert-success d-none">
-                            <i class="bi bi-check-circle me-2"></i>Token updated successfully!
-                        </div>
+                    <div class="form-text">
+                        Leave both fields blank to keep the current token unchanged.
                     </div>
                 </div>
             </div>
@@ -444,7 +435,15 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script src="{{ url_for('static', filename='js/plex_webhook_panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/folder_picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/gpu_config_panel.js') }}"></script>
 <script src="{{ url_for('static', filename='js/servers.js') }}"></script>
+<script>
+// Per-GPU panel calls markDirty() on every input change to trigger
+// /settings autosave. The wizard advances on Next, not autosave, so
+// stub this out — it's intentionally a no-op here.
+function markDirty() {}
+</script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize managers
@@ -907,21 +906,33 @@ document.addEventListener('DOMContentLoaded', function() {
         return rows;
     }
 
+    // Path mapping rows mirror the /servers Edit modal (same Browse button +
+    // same /api/settings/validate-local-path debounced validation). The
+    // shared validator + debouncer come from servers.js via window.MPGShared.
+    function _esc(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    }
+
     function setupCreatePathMappingRow(row) {
         const div = document.createElement('div');
         div.className = 'path-mapping-row d-flex align-items-start gap-2 mb-2';
         const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
         div.innerHTML = `
             <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${(row.plex_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
+                <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${_esc(row.plex_prefix)}">
             </div>
             <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${(row.local_prefix || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
-                <div class="invalid-feedback"></div>
-                <div class="valid-feedback">Path exists</div>
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${_esc(row.local_prefix)}">
+                    <button type="button" class="btn btn-outline-secondary path-mapping-browse" title="Browse folders">
+                        <i class="bi bi-folder2-open"></i>
+                    </button>
+                    <div class="invalid-feedback small"></div>
+                    <div class="valid-feedback small">Path exists</div>
+                </div>
             </div>
             <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${(webhookVal || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">
+                <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${_esc(webhookVal)}">
             </div>
             <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove flex-shrink-0" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
         `;
@@ -931,52 +942,18 @@ document.addEventListener('DOMContentLoaded', function() {
             if (rows.length > 1) div.remove();
         });
         const localInput = div.querySelector('.path-mapping-local');
-        localInput.addEventListener('input', setupDebounceValidate(localInput));
-        if (row.local_prefix) setupValidateLocalPath(localInput);
-        return div;
-    }
-
-    let _setupValidateTimers = new WeakMap();
-    function setupDebounceValidate(input) {
-        return function() {
-            clearTimeout(_setupValidateTimers.get(input));
-            _setupValidateTimers.set(input, setTimeout(() => setupValidateLocalPath(input), 400));
-        };
-    }
-
-    async function setupValidateLocalPath(input) {
-        const path = (input.value || '').trim();
-        const feedback = input.nextElementSibling;
-        if (!path) {
-            input.classList.remove('is-invalid', 'is-valid');
-            return;
-        }
-        try {
-            const resp = await fetch('/api/settings/validate-local-path', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : ''
-                },
-                body: JSON.stringify({path})
+        const validate = window.MPGShared && window.MPGShared.validateLocalPathInput;
+        const debounced = window.MPGShared && window.MPGShared.debouncedValidatePath;
+        if (debounced) localInput.addEventListener('input', debounced(localInput));
+        if (validate && row.local_prefix) validate(localInput);
+        div.querySelector('.path-mapping-browse').addEventListener('click', () => {
+            const start = (localInput.value || '').trim() || '/';
+            window.openFolderPicker(start, (picked) => {
+                localInput.value = picked;
+                if (validate) validate(localInput);
             });
-            const data = await resp.json();
-            if (input.value.trim() !== path) return;
-            if (data.error) {
-                input.classList.remove('is-valid');
-                input.classList.add('is-invalid');
-                feedback.textContent = data.error;
-            } else if (!data.exists) {
-                input.classList.remove('is-valid');
-                input.classList.add('is-invalid');
-                feedback.textContent = 'Directory not found';
-            } else {
-                input.classList.remove('is-invalid');
-                input.classList.add('is-valid');
-            }
-        } catch {
-            input.classList.remove('is-valid', 'is-invalid');
-        }
+        });
+        return div;
     }
 
     function setupRenderPathMappingRows(rows) {
@@ -1049,6 +1026,26 @@ document.addEventListener('DOMContentLoaded', function() {
         const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
         if (container) container.appendChild(setupCreateExcludePathRow({ value: '', type: 'path' }));
     });
+
+    // Plex config folder: same debounced validation + Browse button as the
+    // /servers Edit modal. The validator (servers.js) detects #plexConfigFolder
+    // by id and runs the deeper structural Plex check via
+    // /api/settings/validate-plex-config-folder.
+    const plexCfgInput = document.getElementById('plexConfigFolder');
+    if (plexCfgInput && window.MPGShared) {
+        plexCfgInput.addEventListener('input', window.MPGShared.debouncedValidatePath(plexCfgInput));
+        if (plexCfgInput.value) window.MPGShared.validateLocalPathInput(plexCfgInput);
+    }
+    const plexCfgBrowseBtn = document.getElementById('plexConfigFolderBrowseBtn');
+    if (plexCfgBrowseBtn) {
+        plexCfgBrowseBtn.addEventListener('click', () => {
+            const start = (plexCfgInput.value || '').trim() || '/';
+            window.openFolderPicker(start, (picked) => {
+                plexCfgInput.value = picked;
+                if (window.MPGShared) window.MPGShared.validateLocalPathInput(plexCfgInput);
+            });
+        });
+    }
 
     // Validate Paths button
     document.getElementById('validatePathsBtn').addEventListener('click', validatePaths);
@@ -1135,25 +1132,60 @@ document.addEventListener('DOMContentLoaded', function() {
     // Step 4: Processing Options
     // =========================================================================
 
+    // Step 4 reuses the same per-GPU panel as /settings (one card per detected
+    // GPU with enable toggle / Workers / FFmpeg Threads). renderGpuConfigPanel +
+    // collectGpuConfig come from static/js/gpu_config_panel.js.
     async function loadGpuInfo() {
+        // Pre-populate cpu_threads + saved gpu_config from settings so the
+        // wizard reflects whatever the user (or env-seeding) already set.
+        try {
+            const settings = await settingsManager.get();
+            window._gpuConfig = settings.gpu_config || [];
+            if (typeof settings.cpu_threads === 'number') {
+                document.getElementById('cpuThreads').value = settings.cpu_threads;
+            }
+        } catch (_e) {
+            window._gpuConfig = [];
+        }
         try {
             const response = await fetch('/api/system/status');
             const data = await response.json();
-
-            const gpuText = document.getElementById('gpuInfoText');
+            document.getElementById('gpuDetecting').classList.add('d-none');
             if (data.gpus && data.gpus.length > 0) {
-                const gpuNames = data.gpus.map(g => g.name).join(', ');
-                gpuText.textContent = `Detected: ${gpuNames}`;
-                document.getElementById('gpuInfo').classList.remove('alert-info');
-                document.getElementById('gpuInfo').classList.add('alert-success');
+                renderGpuConfigPanel(data.gpus, window._gpuConfig);
             } else {
-                gpuText.textContent = 'No GPU detected. CPU processing will be used.';
-                document.getElementById('gpuThreads').value = '0';
+                document.getElementById('gpuConfigList').innerHTML =
+                    '<div class="alert alert-warning mb-0">' +
+                    '<i class="bi bi-exclamation-triangle me-2"></i>' +
+                    'No GPU detected. CPU processing will be used.</div>';
             }
         } catch (error) {
-            document.getElementById('gpuInfoText').textContent = 'Failed to detect GPUs.';
+            document.getElementById('gpuDetecting').classList.add('d-none');
+            document.getElementById('gpuConfigList').innerHTML =
+                '<div class="alert alert-danger mb-0">' +
+                '<i class="bi bi-x-circle me-2"></i>Failed to detect GPUs.</div>';
         }
     }
+
+    document.getElementById('gpuRescanBtn').addEventListener('click', async function() {
+        const btn = this;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning...';
+        try {
+            const response = await fetch('/api/system/rescan-gpus', { method: 'POST' });
+            const data = await response.json();
+            if (data.gpus && data.gpus.length > 0) {
+                renderGpuConfigPanel(data.gpus, collectGpuConfig());
+            } else {
+                document.getElementById('gpuConfigList').innerHTML =
+                    '<div class="alert alert-warning mb-0">No GPUs detected.</div>';
+            }
+        } catch (error) {
+            alert('GPU rescan failed: ' + error.message);
+        }
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs';
+    });
 
     // Quality slider value display
     document.getElementById('thumbnailQuality').addEventListener('input', function() {
@@ -1167,9 +1199,10 @@ document.addEventListener('DOMContentLoaded', function() {
         this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
 
         try {
-            // Save processing options
+            // Per-GPU config matches the /settings shape so settings_manager
+            // doesn't need the legacy gpu_threads distribution shim.
             await settingsManager.save({
-                gpu_threads: parseInt(document.getElementById('gpuThreads').value),
+                gpu_config: collectGpuConfig(),
                 cpu_threads: parseInt(document.getElementById('cpuThreads').value),
                 thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
                 thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value)
@@ -1187,24 +1220,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // =========================================================================
     // Step 5: Security / Access Token
+    //
+    // Mirrors /settings \u2192 Web Authentication: never show the current token,
+    // just offer "set a new one". User can leave the fields blank to skip.
+    // The /api/setup/token-info endpoint is only used here to detect the
+    // env-controlled lock; the actual token value is intentionally not read.
     // =========================================================================
-
-    let tokenVisible = false;
-    let tokenValue = '';
 
     async function loadTokenInfo() {
         try {
             const response = await fetch('/api/setup/token-info');
             const data = await response.json();
-
-            tokenValue = data.token;
-
-            // Update token display (masked by default)
-            const tokenInput = document.getElementById('currentToken');
-            tokenInput.value = '\u2022'.repeat(Math.min(tokenValue.length, 32));
-            tokenInput.dataset.token = tokenValue;
-
-            // Handle env-controlled token
             if (data.env_controlled) {
                 document.getElementById('tokenEnvNotice').classList.remove('d-none');
                 document.getElementById('customTokenSection').classList.add('d-none');
@@ -1212,48 +1238,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('tokenEnvNotice').classList.add('d-none');
                 document.getElementById('customTokenSection').classList.remove('d-none');
             }
-
         } catch (error) {
             console.error('Failed to load token info:', error);
         }
     }
-
-    // Toggle token visibility
-    document.getElementById('toggleTokenBtn').addEventListener('click', function() {
-        const tokenInput = document.getElementById('currentToken');
-        tokenVisible = !tokenVisible;
-
-        if (tokenVisible) {
-            tokenInput.value = tokenValue;
-            this.innerHTML = '<i class="bi bi-eye-slash"></i>';
-        } else {
-            tokenInput.value = '\u2022'.repeat(Math.min(tokenValue.length, 32));
-            this.innerHTML = '<i class="bi bi-eye"></i>';
-        }
-    });
-
-    // Copy token to clipboard
-    document.getElementById('copyTokenBtn').addEventListener('click', async function() {
-        const copied = await copyToClipboard(
-            tokenValue,
-            'Token copied to clipboard',
-            'Failed to copy token'
-        );
-        if (copied) {
-            this.innerHTML = '<i class="bi bi-check"></i>';
-            setTimeout(() => {
-                this.innerHTML = '<i class="bi bi-clipboard"></i>';
-            }, 2000);
-        }
-    });
-
-    // Toggle custom token inputs
-    document.getElementById('useCustomToken').addEventListener('change', function() {
-        document.getElementById('customTokenInputs').classList.toggle('d-none', !this.checked);
-        // Clear any previous errors
-        document.getElementById('tokenError').classList.add('d-none');
-        document.getElementById('tokenSuccess').classList.add('d-none');
-    });
 
     document.getElementById('step5Back').addEventListener('click', () => goToStep(4));
 
@@ -1299,12 +1287,11 @@ document.addEventListener('DOMContentLoaded', function() {
         tokenSuccess.classList.add('d-none');
 
         try {
-            // Handle custom token if enabled
-            const useCustom = document.getElementById('useCustomToken').checked;
-            if (useCustom) {
-                const newToken = document.getElementById('newToken').value;
-                const confirmToken = document.getElementById('confirmToken').value;
-
+            // If both fields are blank the user skipped the change — keep the
+            // current (auto-generated or env-supplied) token and just finish.
+            const newToken = document.getElementById('newToken').value;
+            const confirmToken = document.getElementById('confirmToken').value;
+            if (newToken || confirmToken) {
                 if (newToken.length < 8) {
                     tokenError.textContent = 'Token must be at least 8 characters long.';
                     tokenError.classList.remove('d-none');
@@ -1321,7 +1308,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                // Save custom token
                 const tokenResponse = await fetch('/api/setup/set-token', {
                     method: 'POST',
                     headers: {
