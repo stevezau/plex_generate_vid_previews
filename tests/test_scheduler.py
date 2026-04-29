@@ -1,11 +1,11 @@
-"""Tests for plex_generate_previews.web.scheduler."""
+"""Tests for media_preview_generator.web.scheduler."""
 
 import os
 from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.web.scheduler import (
+from media_preview_generator.web.scheduler import (
     ScheduleManager,
     get_schedule_manager,
 )
@@ -19,7 +19,7 @@ def scheduler_manager(tmp_path, monkeypatch):
 
     manager = ScheduleManager(config_dir=config_dir, run_job_callback=None)
     # Make this the global singleton so execute_scheduled_job uses it
-    monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager)
+    monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager)
     manager.start()
 
     yield manager
@@ -317,7 +317,7 @@ class TestSchedulePersistence:
         os.makedirs(config_dir, exist_ok=True)
 
         manager1 = ScheduleManager(config_dir=config_dir)
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager1)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager1)
         manager1.start()
         schedule = manager1.create_schedule(
             name="Persistent",
@@ -329,7 +329,7 @@ class TestSchedulePersistence:
         manager1.stop()
 
         manager2 = ScheduleManager(config_dir=config_dir)
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager2)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager2)
         manager2.start()
 
         retrieved = manager2.get_schedule(sid)
@@ -377,7 +377,7 @@ class TestGetScheduleManager:
 
     def test_returns_singleton(self, tmp_path, monkeypatch):
         """Test that get_schedule_manager returns the same instance."""
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", None)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", None)
 
         config_dir = str(tmp_path / "config")
         os.makedirs(config_dir, exist_ok=True)
@@ -390,7 +390,7 @@ class TestGetScheduleManager:
 
     def test_sets_callback_on_existing(self, tmp_path, monkeypatch):
         """Test that a callback can be set on an existing singleton."""
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", None)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", None)
 
         config_dir = str(tmp_path / "config")
         os.makedirs(config_dir, exist_ok=True)
@@ -413,7 +413,7 @@ class TestExecuteScheduledJobDispatch:
 
     def test_dispatches_full_library_by_default(self, scheduler_manager):
         """A schedule with no job_type in config goes through run_job_callback."""
-        from plex_generate_previews.web.scheduler import execute_scheduled_job
+        from media_preview_generator.web.scheduler import execute_scheduled_job
 
         mock_callback = MagicMock()
         scheduler_manager.set_run_job_callback(mock_callback)
@@ -439,11 +439,11 @@ class TestExecuteScheduledJobDispatch:
 
     def test_dispatches_recently_added_calls_scanner(self, scheduler_manager, monkeypatch):
         """A schedule with job_type='recently_added' calls scan_recently_added."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        from media_preview_generator.web import scheduler as sched_mod
 
         mock_scanner = MagicMock(return_value=3)
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
             mock_scanner,
         )
 
@@ -466,11 +466,11 @@ class TestExecuteScheduledJobDispatch:
 
     def test_dispatches_recently_added_with_no_library_passes_none(self, scheduler_manager, monkeypatch):
         """No library_id = scanner gets library_ids=None (scan all sections)."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        from media_preview_generator.web import scheduler as sched_mod
 
         mock_scanner = MagicMock(return_value=0)
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
             mock_scanner,
         )
 
@@ -493,11 +493,11 @@ class TestExecuteScheduledJobDispatch:
 
     def test_recently_added_dispatch_clamps_invalid_lookback(self, scheduler_manager, monkeypatch):
         """Garbage lookback_hours values are coerced to a safe default."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        from media_preview_generator.web import scheduler as sched_mod
 
         mock_scanner = MagicMock(return_value=0)
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
             mock_scanner,
         )
 
@@ -519,10 +519,10 @@ class TestExecuteScheduledJobDispatch:
 
     def test_recently_added_dispatch_updates_last_run(self, scheduler_manager, monkeypatch):
         """After dispatching a recently_added scan the schedule's last_run updates."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        from media_preview_generator.web import scheduler as sched_mod
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
+            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
             MagicMock(return_value=0),
         )
 

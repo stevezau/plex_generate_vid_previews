@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from plex_generate_previews.servers.emby_auth import (
+from media_preview_generator.servers.emby_auth import (
     EmbyAuthResult,
     _emby_authorization_header,
     authenticate_emby_with_password,
@@ -26,7 +26,7 @@ class TestAuthorizationHeader:
 
 class TestAuthenticateEmbyWithPassword:
     def test_success_returns_token_and_user_id(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {
                 "AccessToken": "tok-abc",
@@ -49,7 +49,7 @@ class TestAuthenticateEmbyWithPassword:
         assert result.server_id == "srv-xyz"
 
     def test_calls_correct_endpoint_with_correct_body(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"AccessToken": "tok", "User": {"Id": "1"}}
             post.return_value = response
@@ -69,7 +69,7 @@ class TestAuthenticateEmbyWithPassword:
             assert 'DeviceId="d1"' in kwargs["headers"]["Authorization"]
 
     def test_strips_trailing_slash_from_base_url(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"AccessToken": "tok", "User": {"Id": "1"}}
             post.return_value = response
@@ -84,7 +84,7 @@ class TestAuthenticateEmbyWithPassword:
             assert url == "http://emby:8096/Users/AuthenticateByName"
 
     def test_401_returns_specific_message(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=401, text="Bad credentials")
             post.return_value = response
 
@@ -98,7 +98,7 @@ class TestAuthenticateEmbyWithPassword:
         assert "401" in result.message
 
     def test_403_returns_specific_message(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=403, text="Forbidden")
             post.return_value = response
 
@@ -112,7 +112,7 @@ class TestAuthenticateEmbyWithPassword:
         assert "403" in result.message
 
     def test_other_4xx_5xx_returns_status_in_message(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=500, text="server fire")
             post.return_value = response
 
@@ -126,7 +126,7 @@ class TestAuthenticateEmbyWithPassword:
         assert "500" in result.message
 
     def test_missing_access_token_treated_as_failure(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"User": {"Id": "1"}}  # no AccessToken
             post.return_value = response
@@ -141,7 +141,7 @@ class TestAuthenticateEmbyWithPassword:
         assert "AccessToken" in result.message
 
     def test_invalid_json_treated_as_failure(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.side_effect = ValueError("not json")
             post.return_value = response
@@ -155,7 +155,7 @@ class TestAuthenticateEmbyWithPassword:
         assert result.ok is False
 
     def test_timeout_returns_specific_message(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             post.side_effect = requests.exceptions.Timeout()
 
             result = authenticate_emby_with_password(
@@ -168,7 +168,7 @@ class TestAuthenticateEmbyWithPassword:
         assert "timed out" in result.message.lower()
 
     def test_ssl_error_returns_specific_message(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             post.side_effect = requests.exceptions.SSLError("bad cert")
 
             result = authenticate_emby_with_password(

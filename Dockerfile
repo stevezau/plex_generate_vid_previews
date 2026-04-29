@@ -13,7 +13,7 @@ RUN apt-get update && \
 
 WORKDIR /build
 COPY pyproject.toml ./
-COPY plex_generate_previews/ ./plex_generate_previews/
+COPY media_preview_generator/ ./media_preview_generator/
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
@@ -128,7 +128,7 @@ ENV GIT_BRANCH=${GIT_BRANCH} \
 
 # Copy application source (needed for Flask templates and static files)
 COPY pyproject.toml ./
-COPY plex_generate_previews/ ./plex_generate_previews/
+COPY media_preview_generator/ ./media_preview_generator/
 
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh

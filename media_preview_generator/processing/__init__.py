@@ -18,7 +18,7 @@ Sub-modules:
   fallback).
 
 All public and private names from the sub-modules are re-exported here
-so `from plex_generate_previews.processing import X` resolves.
+so `from media_preview_generator.processing import X` resolves.
 """
 
 from .filter_chain import (  # noqa: F401

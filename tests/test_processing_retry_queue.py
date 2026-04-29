@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.processing.retry_queue import (
+from media_preview_generator.processing.retry_queue import (
     _BACKOFF,
     RetryScheduler,
     get_retry_scheduler,
@@ -50,7 +50,7 @@ class TestRetrySchedulerSchedule:
 
         # Patch _BACKOFF to use 0.05s for fast tests.
         with patch(
-            "plex_generate_previews.processing.retry_queue._BACKOFF",
+            "media_preview_generator.processing.retry_queue._BACKOFF",
             (0.05, 0.05, 0.05),
         ):
             assert sched.schedule("/canonical", cb, attempt=1) is True
@@ -75,7 +75,7 @@ class TestRetrySchedulerSchedule:
             second_callback_calls += 1
 
         with patch(
-            "plex_generate_previews.processing.retry_queue._BACKOFF",
+            "media_preview_generator.processing.retry_queue._BACKOFF",
             (0.5, 0.5, 0.5),
         ):
             sched.schedule("/canonical", first_cb, attempt=1)
@@ -94,7 +94,7 @@ class TestRetrySchedulerSchedule:
 
         attempts_attempted = list(range(1, len(_BACKOFF) + 2))
         with patch(
-            "plex_generate_previews.processing.retry_queue._BACKOFF",
+            "media_preview_generator.processing.retry_queue._BACKOFF",
             tuple([60] * len(_BACKOFF)),
         ):
             for n in attempts_attempted:
@@ -115,7 +115,7 @@ class TestRetrySchedulerCancel:
             cb_calls += 1
 
         with patch(
-            "plex_generate_previews.processing.retry_queue._BACKOFF",
+            "media_preview_generator.processing.retry_queue._BACKOFF",
             (0.5, 0.5, 0.5),
         ):
             sched.schedule("/x", cb, attempt=1)
@@ -145,7 +145,7 @@ class TestSchedulerSingleton:
             cb_calls += 1
 
         with patch(
-            "plex_generate_previews.processing.retry_queue._BACKOFF",
+            "media_preview_generator.processing.retry_queue._BACKOFF",
             (0.5,) + tuple([0.5] * (len(_BACKOFF) - 1)),
         ):
             sched.schedule("/x", cb, attempt=1)
@@ -169,7 +169,7 @@ class TestScheduleRetryForUnindexed:
             captured.append(kwargs)
             ran.set()
             # Return a result with no SKIPPED_NOT_INDEXED so chain ends.
-            from plex_generate_previews.processing.multi_server import (
+            from media_preview_generator.processing.multi_server import (
                 MultiServerResult,
                 MultiServerStatus,
             )
@@ -184,11 +184,11 @@ class TestScheduleRetryForUnindexed:
 
         with (
             patch(
-                "plex_generate_previews.processing.retry_queue._BACKOFF",
+                "media_preview_generator.processing.retry_queue._BACKOFF",
                 (0.05,) + tuple([0.5] * (len(_BACKOFF) - 1)),
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.process_canonical_path",
+                "media_preview_generator.processing.multi_server.process_canonical_path",
                 side_effect=fake_process,
             ),
         ):
@@ -212,7 +212,7 @@ class TestScheduleRetryForUnindexed:
 
     def test_chained_retry_fires_when_still_unindexed(self):
         """Retry that returns SKIPPED_NOT_INDEXED schedules a follow-up."""
-        from plex_generate_previews.processing.multi_server import (
+        from media_preview_generator.processing.multi_server import (
             MultiServerResult,
             MultiServerStatus,
             PublisherResult,
@@ -263,11 +263,11 @@ class TestScheduleRetryForUnindexed:
 
         with (
             patch(
-                "plex_generate_previews.processing.retry_queue._BACKOFF",
+                "media_preview_generator.processing.retry_queue._BACKOFF",
                 (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.process_canonical_path",
+                "media_preview_generator.processing.multi_server.process_canonical_path",
                 side_effect=fake_process,
             ),
         ):
@@ -285,7 +285,7 @@ class TestScheduleRetryForUnindexed:
 
     def test_chain_terminates_after_max_attempts(self):
         """If every retry returns SKIPPED_NOT_INDEXED, give up after _BACKOFF length."""
-        from plex_generate_previews.processing.multi_server import (
+        from media_preview_generator.processing.multi_server import (
             MultiServerResult,
             MultiServerStatus,
             PublisherResult,
@@ -316,11 +316,11 @@ class TestScheduleRetryForUnindexed:
 
         with (
             patch(
-                "plex_generate_previews.processing.retry_queue._BACKOFF",
+                "media_preview_generator.processing.retry_queue._BACKOFF",
                 tuple([0.02] * len(_BACKOFF)),
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.process_canonical_path",
+                "media_preview_generator.processing.multi_server.process_canonical_path",
                 side_effect=fake_process,
             ),
         ):
@@ -347,11 +347,11 @@ class TestScheduleRetryForUnindexed:
 
         with (
             patch(
-                "plex_generate_previews.processing.retry_queue._BACKOFF",
+                "media_preview_generator.processing.retry_queue._BACKOFF",
                 (0.02,) + tuple([0.5] * (len(_BACKOFF) - 1)),
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.process_canonical_path",
+                "media_preview_generator.processing.multi_server.process_canonical_path",
                 side_effect=boom,
             ),
         ):
@@ -379,7 +379,7 @@ class TestProcessCanonicalPathIntegration:
         with background timer threads firing entries scheduled by other
         tests in the same xdist worker.
         """
-        from plex_generate_previews.processing.multi_server import (
+        from media_preview_generator.processing.multi_server import (
             PublisherResult,
             PublisherStatus,
         )
@@ -418,34 +418,34 @@ class TestProcessCanonicalPathIntegration:
         # Stub the heavy machinery - we only care about scheduling behavior.
         with (
             patch(
-                "plex_generate_previews.processing.multi_server._resolve_publishers",
+                "media_preview_generator.processing.multi_server._resolve_publishers",
                 return_value=[(MagicMock(id="plex-1", name="plex-1"), MagicMock(name="adapter"), None)],
             ),
             patch(
-                "plex_generate_previews.processing.multi_server._publish_one",
+                "media_preview_generator.processing.multi_server._publish_one",
                 side_effect=stub_publish,
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.os.path.isfile",
+                "media_preview_generator.processing.multi_server.os.path.isfile",
                 return_value=True,
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 return_value=(True, 6, "h264", 1.0, 30.0, 320),
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.os.makedirs",
+                "media_preview_generator.processing.multi_server.os.makedirs",
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.os.listdir",
+                "media_preview_generator.processing.multi_server.os.listdir",
                 return_value=["00001.jpg"] * 6,
             ),
             patch(
-                "plex_generate_previews.processing.retry_queue.schedule_retry_for_unindexed",
+                "media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed",
                 side_effect=_spy_schedule,
             ),
         ):
-            from plex_generate_previews.processing.multi_server import (
+            from media_preview_generator.processing.multi_server import (
                 MultiServerStatus,
                 process_canonical_path,
             )
@@ -468,7 +468,7 @@ class TestProcessCanonicalPathIntegration:
 
     def test_skipped_not_indexed_no_retry_when_disabled(self):
         """schedule_retry_on_not_indexed=False suppresses scheduling."""
-        from plex_generate_previews.processing.multi_server import (
+        from media_preview_generator.processing.multi_server import (
             PublisherResult,
             PublisherStatus,
         )
@@ -497,34 +497,34 @@ class TestProcessCanonicalPathIntegration:
 
         with (
             patch(
-                "plex_generate_previews.processing.multi_server._resolve_publishers",
+                "media_preview_generator.processing.multi_server._resolve_publishers",
                 return_value=[(MagicMock(id="plex-1", name="plex-1"), MagicMock(name="adapter"), None)],
             ),
             patch(
-                "plex_generate_previews.processing.multi_server._publish_one",
+                "media_preview_generator.processing.multi_server._publish_one",
                 side_effect=stub_publish,
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.os.path.isfile",
+                "media_preview_generator.processing.multi_server.os.path.isfile",
                 return_value=True,
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 return_value=(True, 6, "h264", 1.0, 30.0, 320),
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.os.makedirs",
+                "media_preview_generator.processing.multi_server.os.makedirs",
             ),
             patch(
-                "plex_generate_previews.processing.multi_server.os.listdir",
+                "media_preview_generator.processing.multi_server.os.listdir",
                 return_value=["00001.jpg"] * 6,
             ),
             patch(
-                "plex_generate_previews.processing.retry_queue.schedule_retry_for_unindexed",
+                "media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed",
                 side_effect=_spy_schedule,
             ),
         ):
-            from plex_generate_previews.processing.multi_server import process_canonical_path
+            from media_preview_generator.processing.multi_server import process_canonical_path
 
             process_canonical_path(
                 canonical_path="/x.mkv",

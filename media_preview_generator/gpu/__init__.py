@@ -17,7 +17,7 @@ Sub-modules:
   rasteriser detection, debug buffer).
 
 All public and private names from the sub-modules are re-exported here
-so `from plex_generate_previews.gpu import X` resolves.
+so `from media_preview_generator.gpu import X` resolves.
 """
 
 from .detect import (  # noqa: F401

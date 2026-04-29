@@ -1,4 +1,4 @@
-"""Tests for the :class:`plex_generate_previews.servers.plex.PlexServer` wrapper.
+"""Tests for the :class:`media_preview_generator.servers.plex.PlexServer` wrapper.
 
 The wrapper is a thin façade over the existing ``plex_client`` helpers, so
 these tests verify the *interface translation*: that the abstract methods
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from plex_generate_previews.servers import (
+from media_preview_generator.servers import (
     ConnectionResult,
     MediaItem,
     PlexServer,
@@ -30,7 +30,7 @@ def plex_wrapper(mock_config):
 
 class TestConstruction:
     def test_implements_media_server(self, plex_wrapper):
-        from plex_generate_previews.servers import MediaServer
+        from media_preview_generator.servers import MediaServer
 
         assert isinstance(plex_wrapper, MediaServer)
 
@@ -43,14 +43,14 @@ class TestConstruction:
 
     def test_construction_does_not_connect(self, mock_config):
         # Constructing a wrapper should be cheap; no plexapi import call yet.
-        with patch("plex_generate_previews.plex_client.plex_server") as connect:
+        with patch("media_preview_generator.plex_client.plex_server") as connect:
             PlexServer(mock_config)
             connect.assert_not_called()
 
 
 class TestTestConnection:
     def test_success_carries_identity(self, plex_wrapper):
-        with patch("plex_generate_previews.servers.plex.requests.get") as get:
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
             response = MagicMock()
             response.json.return_value = {
                 "MediaContainer": {
@@ -81,7 +81,7 @@ class TestTestConnection:
         assert "required" in result.message.lower()
 
     def test_timeout_returns_failure(self, plex_wrapper):
-        with patch("plex_generate_previews.servers.plex.requests.get") as get:
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
             get.side_effect = requests.exceptions.Timeout()
 
             result = plex_wrapper.test_connection()
@@ -90,7 +90,7 @@ class TestTestConnection:
         assert "timed out" in result.message.lower()
 
     def test_unauthorized_returns_specific_message(self, plex_wrapper):
-        with patch("plex_generate_previews.servers.plex.requests.get") as get:
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
             err_response = MagicMock(status_code=401)
             err = requests.exceptions.HTTPError(response=err_response)
             response = MagicMock()
@@ -103,7 +103,7 @@ class TestTestConnection:
         assert "401" in result.message
 
     def test_ssl_error_returns_specific_message(self, plex_wrapper):
-        with patch("plex_generate_previews.servers.plex.requests.get") as get:
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
             get.side_effect = requests.exceptions.SSLError("bad cert")
 
             result = plex_wrapper.test_connection()
@@ -281,7 +281,7 @@ class TestResolveItemToRemotePath:
 
 class TestTriggerRefresh:
     def test_dispatches_to_partial_scan(self, plex_wrapper):
-        with patch("plex_generate_previews.plex_client.trigger_plex_partial_scan") as scan:
+        with patch("media_preview_generator.plex_client.trigger_plex_partial_scan") as scan:
             plex_wrapper.trigger_refresh(item_id=None, remote_path="/m/foo.mkv")
 
             scan.assert_called_once()
@@ -291,12 +291,12 @@ class TestTriggerRefresh:
             assert kwargs["plex_token"] == plex_wrapper.config.plex_token
 
     def test_no_path_no_op(self, plex_wrapper):
-        with patch("plex_generate_previews.plex_client.trigger_plex_partial_scan") as scan:
+        with patch("media_preview_generator.plex_client.trigger_plex_partial_scan") as scan:
             plex_wrapper.trigger_refresh(item_id="42", remote_path=None)
             scan.assert_not_called()
 
     def test_swallows_exceptions(self, plex_wrapper):
-        with patch("plex_generate_previews.plex_client.trigger_plex_partial_scan") as scan:
+        with patch("media_preview_generator.plex_client.trigger_plex_partial_scan") as scan:
             scan.side_effect = RuntimeError("network is down")
             # Must not raise — the dispatcher relies on this being best-effort.
             plex_wrapper.trigger_refresh(item_id=None, remote_path="/m/foo.mkv")

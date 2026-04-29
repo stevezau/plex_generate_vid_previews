@@ -23,12 +23,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -135,8 +135,8 @@ class TestForceRegenerate:
     """``regenerate=True`` ignores the journal and re-runs FFmpeg."""
 
     def test_regenerate_runs_ffmpeg_even_with_fresh_outputs(self, emby_credentials, media_root, coverage_config):
-        from plex_generate_previews.processing import frame_cache as fc_module
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         fc_module._singleton = None  # noqa: SLF001 — test override
 
@@ -533,8 +533,8 @@ class TestSettingsMigrationLegacyPlex:
         Pre-existing single-Plex users should land on a populated
         ``media_servers`` list with no manual edits.
         """
-        from plex_generate_previews.upgrade import run_migrations
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.upgrade import run_migrations
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()

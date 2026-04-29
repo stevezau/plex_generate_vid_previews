@@ -52,7 +52,7 @@ def app_url(tmp_path_factory) -> Generator[str, None, None]:
         [
             sys.executable,
             "-c",
-            f"from plex_generate_previews.web.app import run_server; run_server(host='0.0.0.0', port={app_port})",
+            f"from media_preview_generator.web.app import run_server; run_server(host='0.0.0.0', port={app_port})",
         ],
         env=env,
         stdout=subprocess.PIPE,

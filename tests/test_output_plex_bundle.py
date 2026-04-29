@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.output import BifBundle, PlexBundleAdapter
-from plex_generate_previews.servers import LibraryNotYetIndexedError, PlexServer
+from media_preview_generator.output import BifBundle, PlexBundleAdapter
+from media_preview_generator.servers import LibraryNotYetIndexedError, PlexServer
 
 
 def _make_bundle(canonical_path: str, frame_dir: Path) -> BifBundle:

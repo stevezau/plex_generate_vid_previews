@@ -52,7 +52,7 @@ You are a code reviewer for plex_generate_vid_previews, a Python tool that gener
 
 ## Key Files to Reference
 
-- `plex_generate_previews/config.py` -- Configuration patterns
-- `plex_generate_previews/media_processing.py` -- FFmpeg handling
-- `plex_generate_previews/gpu_detection.py` -- GPU patterns
+- `media_preview_generator/config.py` -- Configuration patterns
+- `media_preview_generator/media_processing.py` -- FFmpeg handling
+- `media_preview_generator/gpu_detection.py` -- GPU patterns
 - `tests/conftest.py` -- Test fixtures

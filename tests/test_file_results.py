@@ -13,13 +13,13 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.web.jobs import JobManager
+from media_preview_generator.web.jobs import JobManager
 
 
 @pytest.fixture(autouse=True)
 def _reset_job_manager():
     """Reset global job manager so tests can create their own with custom config_dir."""
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
@@ -171,7 +171,7 @@ class TestFileResultRetention:
         jm._jobs[job.id].completed_at = old_time
         jm._persist_job(jm._jobs[job.id])
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -213,7 +213,7 @@ class TestFileResultRetention:
         with open(orphan_path, "w") as f:
             f.write('{"file":"x","outcome":"generated"}\n')
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -224,7 +224,7 @@ class TestFileResultCallback:
     """set_file_result_callback and _notify_file_result wiring."""
 
     def test_callback_invoked_for_each_outcome(self):
-        from plex_generate_previews.processing import (
+        from media_preview_generator.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -247,7 +247,7 @@ class TestFileResultCallback:
         assert captured[1]["outcome"] == "failed"
 
     def test_callback_cleared(self):
-        from plex_generate_previews.processing import (
+        from media_preview_generator.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -261,7 +261,7 @@ class TestFileResultCallback:
 
     def test_callback_exception_does_not_propagate(self):
         """A failing callback must not crash the caller."""
-        from plex_generate_previews.processing import (
+        from media_preview_generator.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
@@ -282,8 +282,8 @@ class TestFileResultsAPI:
 
     @pytest.fixture()
     def app(self, tmp_path):
-        from plex_generate_previews.web.app import create_app
-        from plex_generate_previews.web.settings_manager import reset_settings_manager
+        from media_preview_generator.web.app import create_app
+        from media_preview_generator.web.settings_manager import reset_settings_manager
 
         reset_settings_manager()
         cfg = str(tmp_path / "config")
@@ -321,7 +321,7 @@ class TestFileResultsAPI:
         }
 
     def test_file_results_endpoint(self, client):
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         job = jm.create_job(library_name="API Test")
@@ -338,7 +338,7 @@ class TestFileResultsAPI:
         assert data["summary"]["failed"] == 1
 
     def test_file_results_outcome_filter(self, client):
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         job = jm.create_job(library_name="API Test")
@@ -356,7 +356,7 @@ class TestFileResultsAPI:
         assert data["summary"]["failed"] == 2
 
     def test_file_results_search_filter(self, client):
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         job = jm.create_job(library_name="API Test")

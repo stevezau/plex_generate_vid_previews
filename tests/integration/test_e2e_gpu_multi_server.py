@@ -29,12 +29,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -42,7 +42,7 @@ _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 def _has_nvidia_gpu() -> tuple[str, str] | None:
     """Return ``(gpu_type, gpu_device)`` for the first NVIDIA GPU, or None."""
     try:
-        from plex_generate_previews.gpu.detect import detect_all_gpus
+        from media_preview_generator.gpu.detect import detect_all_gpus
 
         for gpu_type, gpu_device, _info in detect_all_gpus():
             if gpu_type == "NVIDIA":
@@ -167,8 +167,8 @@ class TestGpuMultiPublisher:
             shutil.rmtree(trickplay_dir)
 
         # Reset frame cache so we don't hit cached CPU frames from earlier tests.
-        from plex_generate_previews.processing import frame_cache as fc_module
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         fc_module._singleton = None  # noqa: SLF001 — test override
 

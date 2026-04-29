@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.web import plex_webhook_registration as pwh
+from media_preview_generator.web import plex_webhook_registration as pwh
 
 
 @pytest.fixture

@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.bif_reader import (
+from media_preview_generator.bif_reader import (
     read_bif_frame,
     read_bif_metadata,
 )
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -130,15 +130,15 @@ class TestReadBifFrame:
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     reset_settings_manager()
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     yield
@@ -300,7 +300,7 @@ class TestParseSeasonEpisode:
     """Test _parse_season_episode() pattern extraction."""
 
     def test_full_season_episode(self):
-        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+        from media_preview_generator.web.routes.api_bif import _parse_season_episode
 
         base, season, ep = _parse_season_episode("Rooster Fighter S01E02")
         assert base == "Rooster Fighter"
@@ -308,7 +308,7 @@ class TestParseSeasonEpisode:
         assert ep == 2
 
     def test_season_only(self):
-        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+        from media_preview_generator.web.routes.api_bif import _parse_season_episode
 
         base, season, ep = _parse_season_episode("Breaking Bad S03")
         assert base == "Breaking Bad"
@@ -316,7 +316,7 @@ class TestParseSeasonEpisode:
         assert ep is None
 
     def test_no_pattern(self):
-        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+        from media_preview_generator.web.routes.api_bif import _parse_season_episode
 
         base, season, ep = _parse_season_episode("Inception")
         assert base == "Inception"
@@ -324,7 +324,7 @@ class TestParseSeasonEpisode:
         assert ep is None
 
     def test_case_insensitive(self):
-        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+        from media_preview_generator.web.routes.api_bif import _parse_season_episode
 
         base, season, ep = _parse_season_episode("The Wire s02e10")
         assert base == "The Wire"
@@ -332,7 +332,7 @@ class TestParseSeasonEpisode:
         assert ep == 10
 
     def test_single_digit(self):
-        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+        from media_preview_generator.web.routes.api_bif import _parse_season_episode
 
         base, season, ep = _parse_season_episode("Show S1E3")
         assert base == "Show"
@@ -340,7 +340,7 @@ class TestParseSeasonEpisode:
         assert ep == 3
 
     def test_pattern_only_returns_original_query(self):
-        from plex_generate_previews.web.routes.api_bif import _parse_season_episode
+        from media_preview_generator.web.routes.api_bif import _parse_season_episode
 
         base, season, ep = _parse_season_episode("S01E05")
         assert base == "S01E05"
@@ -352,7 +352,7 @@ class TestBuildDisplayTitle:
     """Test _build_display_title() formatting."""
 
     def test_episode(self):
-        from plex_generate_previews.web.routes.api_bif import _build_display_title
+        from media_preview_generator.web.routes.api_bif import _build_display_title
 
         item = {
             "type": "episode",
@@ -364,13 +364,13 @@ class TestBuildDisplayTitle:
         assert _build_display_title(item) == "Rooster Fighter S01E02 - The Caged Bird"
 
     def test_movie_with_year(self):
-        from plex_generate_previews.web.routes.api_bif import _build_display_title
+        from media_preview_generator.web.routes.api_bif import _build_display_title
 
         item = {"type": "movie", "title": "Inception", "year": 2010}
         assert _build_display_title(item) == "Inception (2010)"
 
     def test_movie_without_year(self):
-        from plex_generate_previews.web.routes.api_bif import _build_display_title
+        from media_preview_generator.web.routes.api_bif import _build_display_title
 
         item = {"type": "movie", "title": "Memento", "year": ""}
         assert _build_display_title(item) == "Memento"
@@ -417,7 +417,7 @@ class TestMultiServerTrickplayInfo:
     def test_invalid_path_returns_400(self, client, tmp_path):
         # Seed a Jellyfin server pointing at tmp_path; manifest path
         # doesn't exist yet.
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().set(
             "media_servers",
@@ -456,7 +456,7 @@ class TestMultiServerTrickplayFrame:
         """End-to-end slice: build a known tile sheet, slice, verify pixel values."""
         from PIL import Image
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         # Build a 2x2 grid of 4 distinct-coloured 50x50 tiles → 100x100 sheet.
         sheets_dir = tmp_path / "trickplay" / "Movie-320"
@@ -505,7 +505,7 @@ class TestMultiServerTrickplayFrame:
         assert b > r and b > g, f"Expected blue tile, got RGB=({r},{g},{b})"
 
     def test_path_traversal_rejected(self, client, tmp_path):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().set(
             "media_servers",

@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.config import normalize_path_mappings
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.config import normalize_path_mappings
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -28,17 +28,17 @@ def _reset_singletons():
     """Reset web singletons between tests to avoid cross-contamination."""
     reset_settings_manager()
     # Also reset the jobs singleton
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
     # Reset schedule singleton
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
     # Clear GPU detection and library caches
-    from plex_generate_previews.web.routes import clear_gpu_cache, clear_library_cache
+    from media_preview_generator.web.routes import clear_gpu_cache, clear_library_cache
 
     clear_gpu_cache()
     clear_library_cache()
@@ -275,7 +275,7 @@ class TestTokenEndpoints:
         # var still wins until container restart, which is the documented
         # behaviour).
         monkeypatch.setattr(
-            "plex_generate_previews.web.auth.is_token_env_controlled",
+            "media_preview_generator.web.auth.is_token_env_controlled",
             lambda: False,
         )
         resp = client.post(
@@ -287,7 +287,7 @@ class TestTokenEndpoints:
         body = resp.get_json()
         assert body["success"] is True
         assert body["token"].startswith("****")
-        from plex_generate_previews.web.auth import load_auth_config
+        from media_preview_generator.web.auth import load_auth_config
 
         assert load_auth_config()["token"] == "supersecret-12345"
 
@@ -295,7 +295,7 @@ class TestTokenEndpoints:
         # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
         # env-control so the endpoint reaches its real validation paths.
         monkeypatch.setattr(
-            "plex_generate_previews.web.auth.is_token_env_controlled",
+            "media_preview_generator.web.auth.is_token_env_controlled",
             lambda: False,
         )
         resp = client.post(
@@ -310,7 +310,7 @@ class TestTokenEndpoints:
         # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
         # env-control so the endpoint reaches its real validation paths.
         monkeypatch.setattr(
-            "plex_generate_previews.web.auth.is_token_env_controlled",
+            "media_preview_generator.web.auth.is_token_env_controlled",
             lambda: False,
         )
         resp = client.post(
@@ -323,7 +323,7 @@ class TestTokenEndpoints:
     def test_setup_skip_marks_complete(self, client):
         """Phase H8: /api/setup/skip lets Emby/Jellyfin users bypass the
         Plex-first wizard and land on the dashboard."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         # Ensure setup isn't already complete (the fixture marks it complete
@@ -370,7 +370,7 @@ class TestJobsAPI:
 
     def test_create_job(self, client):
         """Test creating a job (mocking _start_job_async to avoid real processing)."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "Movies"})
         assert resp.status_code == 201
         data = resp.get_json()
@@ -380,7 +380,7 @@ class TestJobsAPI:
     def test_create_job_library_ids_propagate_to_overrides(self, client):
         """Phase H6 Fix-4: library_ids array → selected_library_ids in overrides
         (replaces the legacy comma-joined library_id hack)."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
@@ -400,7 +400,7 @@ class TestJobsAPI:
     def test_create_job_single_library_id_keeps_back_compat(self, client):
         """Single library_ids element keeps Job.library_id populated for the
         existing Jobs UI rendering."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
@@ -411,7 +411,7 @@ class TestJobsAPI:
 
     def test_create_job_ignores_credential_overrides(self, client):
         """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
@@ -428,7 +428,7 @@ class TestJobsAPI:
         assert mock_start.call_args[0][0]  # job_id present
 
     def test_get_specific_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "TV"})
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
@@ -440,7 +440,7 @@ class TestJobsAPI:
         assert resp.status_code == 404
 
     def test_cancel_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
@@ -450,11 +450,11 @@ class TestJobsAPI:
         assert any("Cancellation requested by user" in line for line in logs)
 
     def test_complete_job_does_not_override_cancelled_status(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -467,7 +467,7 @@ class TestJobsAPI:
         assert resp.get_json()["status"] == "cancelled"
 
     def test_delete_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         # Cancel first so it can be deleted (only non-running jobs)
@@ -487,7 +487,7 @@ class TestJobsAPI:
 
     def test_clear_jobs_with_status_filter(self, client):
         """Test clearing only specific statuses."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             r1 = client.post("/api/jobs", headers=_api_headers(), json={})
             r2 = client.post("/api/jobs", headers=_api_headers(), json={})
             r3 = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -515,7 +515,7 @@ class TestJobsAPI:
 
     def test_get_jobs_pagination(self, client):
         """Pagination returns correct slices and metadata."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             for _ in range(5):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -530,7 +530,7 @@ class TestJobsAPI:
 
     def test_get_jobs_pagination_last_page(self, client):
         """Last page may have fewer items than per_page."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             for _ in range(5):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -549,7 +549,7 @@ class TestJobsAPI:
 
     def test_get_jobs_unpaginated(self, client):
         """page=0 returns all jobs without pagination."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             for _ in range(3):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -562,10 +562,10 @@ class TestJobsAPI:
 
     def test_get_jobs_sort_order(self, client):
         """Jobs are sorted: running first, pending oldest-first, terminal newest-first."""
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             r1 = client.post("/api/jobs", headers=_api_headers(), json={})
             r2 = client.post("/api/jobs", headers=_api_headers(), json={})
             r3 = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -596,7 +596,7 @@ class TestJobsAPI:
         assert isinstance(data["workers"], list)
 
     def test_get_job_logs(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
@@ -608,10 +608,10 @@ class TestJobsAPI:
 
     def test_get_job_logs_returns_retention_flag_when_log_cleared(self, client, app):
         """When job exists but log file was removed by retention, API returns log_cleared_by_retention."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -626,11 +626,11 @@ class TestJobsAPI:
 
     def test_pause_resume_job(self, client):
         """Per-job pause/resume routes delegate to global processing pause/resume."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -671,7 +671,7 @@ class TestJobsAPI:
         """When global processing is paused, new job remains pending (not started)."""
         import time
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().processing_paused = True
         try:
@@ -686,11 +686,11 @@ class TestJobsAPI:
             get_settings_manager().processing_paused = False
 
     def test_scale_workers_add_remove(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -726,11 +726,11 @@ class TestJobsAPI:
 
     def test_scale_workers_remove_busy_workers_returns_scheduled_removal(self, client):
         """Remove endpoint returns scheduled_removal when workers are busy (deferred removal)."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -757,11 +757,11 @@ class TestJobsAPI:
 
     def test_scale_workers_remove_returns_unavailable_when_fewer_workers_exist(self, client):
         """Remove endpoint returns unavailable when requesting more than existing workers."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -806,11 +806,11 @@ class TestJobsAPI:
 
     def test_workers_add_global_success(self, client):
         """POST /api/workers/add delegates to running job pool."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -831,11 +831,11 @@ class TestJobsAPI:
 
     def test_workers_remove_global_success(self, client):
         """POST /api/workers/remove delegates to running job pool."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -872,8 +872,8 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -911,8 +911,8 @@ class TestManualTriggerAPI:
         media_root = tmp_path / "media"
         media_root.mkdir()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(media_root)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(media_root)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -934,8 +934,8 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -955,8 +955,8 @@ class TestManualTriggerAPI:
         f1.touch()
         f2.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -1025,7 +1025,7 @@ class TestSettingsAPI:
         Plex entry of ``media_servers``. The flat top-level keys should
         NOT be persisted alongside (avoids dual state).
         """
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         client.post(
             "/api/settings",
@@ -1064,7 +1064,7 @@ class TestSettingsAPI:
 
     def test_save_settings_preserves_existing_token_when_redacted(self, client):
         """POSTing token='****' (the placeholder GET returns) keeps the existing token."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         # Set an initial token
         client.post(
@@ -1084,7 +1084,7 @@ class TestSettingsAPI:
 
     def test_get_settings_projects_from_media_servers(self, client):
         """GET /api/settings returns plex_url derived from media_servers[0]."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.update(
@@ -1238,7 +1238,7 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_update_log_level(self, mock_setup_logging, client):
         """Test PUT /api/settings/log-level hot-reloads logging."""
         resp = client.put(
@@ -1324,19 +1324,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post("/api/jobs", headers=_api_headers(), json={})
             assert resp.status_code == 201
@@ -1383,19 +1383,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1438,19 +1438,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1484,19 +1484,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1529,19 +1529,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1674,14 +1674,14 @@ class TestSystemAPI:
     """Test /api/system/* endpoints."""
 
     def test_get_system_status(self, client):
-        with patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]):
+        with patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]):
             resp = client.get("/api/system/status", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
         assert "gpus" in data
 
     def test_get_config(self, client):
-        with patch("plex_generate_previews.config.load_config", return_value=None):
+        with patch("media_preview_generator.config.load_config", return_value=None):
             resp = client.get("/api/system/config", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
@@ -1689,13 +1689,13 @@ class TestSystemAPI:
         assert "cpu_threads" in data
 
     def test_media_servers_status_empty_when_unconfigured(self, client):
-        from plex_generate_previews.web.routes import api_system as _api_system
+        from media_preview_generator.web.routes import api_system as _api_system
 
         with _api_system._media_server_status_lock:
             _api_system._media_server_status_cache["result"] = None
             _api_system._media_server_status_cache["fetched_at"] = 0.0
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_get_sm:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm:
             sm = MagicMock()
             sm.get.return_value = []
             mock_get_sm.return_value = sm
@@ -1707,7 +1707,7 @@ class TestSystemAPI:
         assert body["ttl"] == 30
 
     def test_media_servers_status_summarises_each_entry(self, client):
-        from plex_generate_previews.web.routes import api_system as _api_system
+        from media_preview_generator.web.routes import api_system as _api_system
 
         with _api_system._media_server_status_lock:
             _api_system._media_server_status_cache["result"] = None
@@ -1737,9 +1737,9 @@ class TestSystemAPI:
         live.test_connection.return_value = ok
 
         with (
-            patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_get_sm,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm,
             patch(
-                "plex_generate_previews.web.routes.api_servers._instantiate_for_probe",
+                "media_preview_generator.web.routes.api_servers._instantiate_for_probe",
                 return_value=live,
             ),
         ):
@@ -1759,7 +1759,7 @@ class TestSystemAPI:
         live.test_connection.assert_called_once()
 
     def test_media_servers_status_uses_30s_cache(self, client):
-        from plex_generate_previews.web.routes import api_system as _api_system
+        from media_preview_generator.web.routes import api_system as _api_system
 
         with _api_system._media_server_status_lock:
             _api_system._media_server_status_cache["result"] = [
@@ -1819,7 +1819,7 @@ class TestPathValidation:
         """New-format path_mappings: invalid local_prefix returns validation error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1846,7 +1846,7 @@ class TestPathValidation:
         """path_mappings row with null byte in local_prefix returns invalid path error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1872,7 +1872,7 @@ class TestPathValidation:
         """Legacy: only plex_videos_path_mapping set returns Local Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1893,7 +1893,7 @@ class TestPathValidation:
         """Legacy: only plex_local_videos_path_mapping set returns Plex Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2079,17 +2079,17 @@ class TestReprocessJob:
     """Test /api/jobs/<id>/reprocess endpoint."""
 
     def test_reprocess_completed_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "Movies"})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
         jm.complete_job(job_id)
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 201
         assert resp.get_json()["id"] != job_id
@@ -2099,11 +2099,11 @@ class TestReprocessJob:
         assert resp.status_code == 404
 
     def test_reprocess_running_job_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2121,11 +2121,11 @@ class TestWorkerScalingValidation:
     """Test worker scaling edge cases and validation."""
 
     def test_add_workers_zero_count_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2138,11 +2138,11 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_add_workers_invalid_type_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2155,11 +2155,11 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_add_workers_no_pool_returns_409(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2172,11 +2172,11 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 409
 
     def test_remove_workers_zero_count_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2189,11 +2189,11 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_global_add_workers_invalid_type(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2208,11 +2208,11 @@ class TestWorkerScalingValidation:
         assert resp.status_code == 400
 
     def test_global_remove_workers_zero_count(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -2240,7 +2240,7 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2256,7 +2256,7 @@ class TestValidatePathsBranches:
     def test_validate_paths_missing_media_subfolder(self, client, tmp_path, monkeypatch):
         """Plex directory missing Media subfolder."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2273,7 +2273,7 @@ class TestValidatePathsBranches:
         """Plex directory has Media but missing localhost subfolder."""
         (tmp_path / "Media").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2292,7 +2292,7 @@ class TestValidatePathsBranches:
         media_dir.mkdir(parents=True)
         (media_dir / "a").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2311,7 +2311,7 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2327,7 +2327,7 @@ class TestValidatePathsBranches:
         """Path traversal attempt is rejected."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2343,7 +2343,7 @@ class TestValidatePathsBranches:
         """Legacy local_media_path with null byte is rejected via the path_mappings branch."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2363,7 +2363,7 @@ class TestValidatePathsBranches:
     def test_validate_paths_plex_data_path_null_byte_rejected(self, client, tmp_path, monkeypatch):
         """Null byte in plex_config_folder is rejected."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2450,7 +2450,7 @@ class TestPageRoutesAdditional:
             os.environ,
             {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
         ):
-            from plex_generate_previews.web.settings_manager import (
+            from media_preview_generator.web.settings_manager import (
                 reset_settings_manager,
             )
 
@@ -2494,7 +2494,7 @@ class TestLogHistoryAPI:
     def test_log_history_empty_when_no_file(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "nonexistent" / "app.log")
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history", headers=_api_headers())
@@ -2534,7 +2534,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history", headers=_api_headers())
@@ -2574,7 +2574,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history?level=WARNING", headers=_api_headers())
@@ -2613,7 +2613,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get(
@@ -2640,7 +2640,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history?limit=5", headers=_api_headers())
@@ -2657,10 +2657,10 @@ class TestLogHistoryAPI:
 class TestLibrariesAPI:
     """Test /api/libraries endpoint."""
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
     def test_get_libraries_with_settings(self, mock_fetch, client):
         """Libraries are fetched via HTTP when plex_url/token are set in settings."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2677,7 +2677,7 @@ class TestLibrariesAPI:
         empty (multi-server world: 'no config' = no media servers configured,
         which is a clean empty list, not an error).
         """
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -2686,7 +2686,7 @@ class TestLibrariesAPI:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PLEX_URL", None)
             os.environ.pop("PLEX_TOKEN", None)
-            with patch("plex_generate_previews.config.get_cached_config", return_value=None):
+            with patch("media_preview_generator.config.get_cached_config", return_value=None):
                 resp = client.get("/api/libraries", headers=_api_headers())
         assert resp.status_code == 200
         body = resp.get_json()
@@ -2704,7 +2704,7 @@ class TestPlexTestConnection:
 
     @patch("requests.get")
     def test_plex_test_success(self, mock_get, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2728,7 +2728,7 @@ class TestPlexTestConnection:
         assert mock_get.call_args.kwargs["verify"] is False
 
     def test_plex_test_no_url_returns_400(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -2744,7 +2744,7 @@ class TestPlexTestConnection:
         import requests as req_mod
 
         mock_get.side_effect = req_mod.exceptions.ConnectionError("refused")
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2765,7 +2765,7 @@ class TestPlexTestConnection:
         import requests as req_mod
 
         mock_get.side_effect = req_mod.exceptions.Timeout("timed out")
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2785,7 +2785,7 @@ class TestPlexTestConnection:
         import requests as req_mod
 
         mock_get.side_effect = req_mod.exceptions.SSLError("bad cert")
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "https://plex:32400")
@@ -2812,7 +2812,7 @@ class TestPlexTestConnection:
         mock_response.raise_for_status.side_effect = err
         mock_get.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2839,7 +2839,7 @@ class TestPlexTestConnection:
         mock_response.raise_for_status.side_effect = err
         mock_get.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://example.com")
@@ -2861,7 +2861,7 @@ class TestPlexTestConnection:
         mock_response.json.side_effect = ValueError("not json")
         mock_get.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://example.com")
@@ -2892,12 +2892,12 @@ class TestPlexWebhookLoopbackGuard:
     instead of attempting the doomed network call.
     """
 
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
     @patch("requests.post")
     def test_loopback_in_docker_short_circuits_with_guidance(self, mock_post, mock_is_docker, client):
         mock_is_docker.return_value = True
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "plex-token")
@@ -2917,7 +2917,7 @@ class TestPlexWebhookLoopbackGuard:
         # Guard must prevent any actual outbound request.
         mock_post.assert_not_called()
 
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
     @patch("requests.post")
     def test_loopback_outside_docker_proceeds_with_network_call(self, mock_post, mock_is_docker, client):
         mock_is_docker.return_value = False
@@ -2927,7 +2927,7 @@ class TestPlexWebhookLoopbackGuard:
         mock_response.text = "ok"
         mock_post.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "plex-token")
@@ -2943,7 +2943,7 @@ class TestPlexWebhookLoopbackGuard:
         assert body["success"] is True
         mock_post.assert_called_once()
 
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
     @patch("requests.post")
     def test_non_loopback_in_docker_proceeds(self, mock_post, mock_is_docker, client):
         mock_is_docker.return_value = True
@@ -2953,7 +2953,7 @@ class TestPlexWebhookLoopbackGuard:
         mock_response.text = "ok"
         mock_post.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "plex-token")
@@ -2968,11 +2968,11 @@ class TestPlexWebhookLoopbackGuard:
         assert resp.get_json()["success"] is True
         mock_post.assert_called_once()
 
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
+    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
     def test_loopback_guard_covers_ipv4_and_ipv6(self, mock_is_docker, client):
         mock_is_docker.return_value = True
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "plex-token")
@@ -3001,9 +3001,9 @@ class TestPlexWebhookLoopbackGuard:
 class TestPlexLibrariesAPI:
     """Test /api/plex/libraries endpoint."""
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
     def test_get_plex_libraries(self, mock_fetch, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -3014,7 +3014,7 @@ class TestPlexLibrariesAPI:
         assert len(resp.get_json()["libraries"]) == 1
 
     def test_get_plex_libraries_no_creds(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -3036,7 +3036,7 @@ class TestFetchLibrariesViaHTTP:
 
     @patch("requests.get")
     def test_fetch_libraries_filters_movie_and_show(self, mock_get):
-        from plex_generate_previews.web.routes import _fetch_libraries_via_http
+        from media_preview_generator.web.routes import _fetch_libraries_via_http
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -3061,7 +3061,7 @@ class TestFetchLibrariesViaHTTP:
 
     @patch("requests.get")
     def test_fetch_libraries_can_disable_ssl_verification(self, mock_get):
-        from plex_generate_previews.web.routes import _fetch_libraries_via_http
+        from media_preview_generator.web.routes import _fetch_libraries_via_http
 
         mock_response = MagicMock()
         mock_response.json.return_value = {"MediaContainer": {"Directory": []}}
@@ -3080,25 +3080,25 @@ class TestParamToBool:
     """Test _param_to_bool uses the same truthy set as config.py."""
 
     def test_none_returns_default(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         assert _param_to_bool(None, True) is True
         assert _param_to_bool(None, False) is False
 
     def test_bool_passthrough(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         assert _param_to_bool(True, False) is True
         assert _param_to_bool(False, True) is False
 
     def test_truthy_strings(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         for val in ("true", "1", "yes", "True", "YES", " true "):
             assert _param_to_bool(val, False) is True, f"Expected True for {val!r}"
 
     def test_falsy_strings(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         for val in ("false", "0", "no", "off", "anything", ""):
             assert _param_to_bool(val, False) is False, f"Expected False for {val!r}"
@@ -3106,7 +3106,7 @@ class TestParamToBool:
     @patch("requests.get")
     def test_get_plex_libraries_passes_verify_ssl_override(self, mock_get, client):
         """verify_ssl query param flows through to requests.get."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "https://plex:32400")
@@ -3130,10 +3130,10 @@ class TestParamToBool:
 class TestLibraryCache:
     """Test Plex library caching behaviour."""
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
     def test_libraries_cached_on_second_call(self, mock_fetch, client):
         """Second call to /api/libraries returns cached data without re-fetching."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -3149,10 +3149,10 @@ class TestLibraryCache:
         # Only one fetch — second call served from cache
         assert mock_fetch.call_count == 1
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
     def test_cache_bypassed_with_explicit_url(self, mock_fetch, client):
         """Explicit url/token query params bypass the library cache."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -3168,10 +3168,10 @@ class TestLibraryCache:
         )
         assert mock_fetch.call_count == 2
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
     def test_cache_invalidated_on_plex_url_change(self, mock_fetch, client):
         """Saving a new plex_url clears the library cache."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -3200,43 +3200,43 @@ class TestClassifyLibraryType:
     """Test classify_library_type() library-type derivation."""
 
     def test_movie_section_returns_movie(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("movie", "tv.plex.agents.movie") == "movie"
 
     def test_movie_with_none_agent_returns_other_videos(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("movie", "com.plexapp.agents.none") == "other_videos"
 
     def test_show_section_returns_show(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("show", "tv.plex.agents.series") == "show"
 
     def test_show_with_sportarr_agent_returns_sports(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("show", "dev.sportarr.agents.sports") == "sports"
 
     def test_show_with_sportscanner_agent_returns_sports(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("show", "com.plexapp.agents.sportscanner") == "sports"
 
     def test_show_sports_pattern_is_case_insensitive(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("show", "SportArr.Main") == "sports"
 
     def test_show_with_none_agent_falls_through_to_show(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         # agent=None should not crash and should fall through to plain "show"
         assert classify_library_type("show", None) == "show"
 
     def test_unknown_section_type_passes_through(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_system import classify_library_type
 
         assert classify_library_type("photo", "agent.photos") == "photo"
 
@@ -3252,7 +3252,7 @@ class TestGetVersionInfo:
     @pytest.fixture(autouse=True)
     def _reset_version_cache(self):
         """Reset module-level version cache around every test."""
-        from plex_generate_previews.web.routes import api_system as api_sys
+        from media_preview_generator.web.routes import api_system as api_sys
 
         api_sys._version_cache["result"] = None
         api_sys._version_cache["fetched_at"] = 0.0
@@ -3265,11 +3265,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "unknown")
         monkeypatch.setenv("GIT_SHA", "unknown")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3283,11 +3283,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "3.4.0")
         monkeypatch.setenv("GIT_SHA", "abc1234")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3301,11 +3301,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "3.4.1")
         monkeypatch.setenv("GIT_SHA", "def5678")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3317,11 +3317,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "dev")
         monkeypatch.setenv("GIT_SHA", "abc1234")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             lambda _branch: "def5678901",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3335,11 +3335,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_SHA", "abc1234")
         # head starts with git_sha → already at HEAD
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             lambda _branch: "abc1234567890",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3351,11 +3351,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "main")
         monkeypatch.setenv("GIT_SHA", "4078c5d")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             lambda _branch: "ed07876fedcba",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3369,7 +3369,7 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "pr-123")
         monkeypatch.setenv("GIT_SHA", "abc1234")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.7.2",
         )
 
@@ -3380,11 +3380,11 @@ class TestGetVersionInfo:
             return None
 
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             _unexpected_branch_head,
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3399,19 +3399,19 @@ class TestGetVersionInfo:
         monkeypatch.delenv("GIT_BRANCH", raising=False)
         monkeypatch.delenv("GIT_SHA", raising=False)
         monkeypatch.setattr(
-            "plex_generate_previews.utils.is_docker_environment",
+            "media_preview_generator.utils.is_docker_environment",
             lambda: False,
         )
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_current_version",
+            "media_preview_generator.version_check.get_current_version",
             lambda: "3.4.0",
         )
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3431,11 +3431,11 @@ class TestGetVersionInfo:
             return "3.4.1"
 
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             counting_release,
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         first = _get_version_info()
         second = _get_version_info()
@@ -3453,7 +3453,7 @@ class TestGetPlexServersConnectionList:
     """Test /api/plex/servers resource filtering and connection normalization."""
 
     def _configure_token(self):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "test-plex-token")
@@ -3614,7 +3614,7 @@ class TestGetPlexServersConnectionList:
         assert conn["ssl"] is True
 
     def test_missing_token_returns_401(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_token")
@@ -3634,7 +3634,7 @@ class TestBifSearchPhases:
     """Test /api/bif/search phase 1 (show expansion) and phase 2 (direct hits)."""
 
     def _configure_plex(self):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -3647,8 +3647,8 @@ class TestBifSearchPhases:
         resp.raise_for_status = MagicMock()
         return resp
 
-    @patch("plex_generate_previews.web.routes.api_bif._item_to_result")
-    @patch("plex_generate_previews.web.routes.api_bif._fetch_show_episodes")
+    @patch("media_preview_generator.web.routes.api_bif._item_to_result")
+    @patch("media_preview_generator.web.routes.api_bif._fetch_show_episodes")
     @patch("requests.get")
     def test_season_filter_skips_phase_2_and_passes_filters_to_fetch(self, mock_get, mock_fetch_eps, mock_item, client):
         """Query with ``S01E02`` expands the show hub but ignores episode/movie hubs."""
@@ -3678,7 +3678,7 @@ class TestBifSearchPhases:
         assert call_kwargs["season_filter"] == 1
         assert call_kwargs["episode_filter"] == 2
 
-    @patch("plex_generate_previews.web.routes.api_bif._item_to_result")
+    @patch("media_preview_generator.web.routes.api_bif._item_to_result")
     @patch("requests.get")
     def test_plain_query_includes_movie_and_episode_hubs(self, mock_get, mock_item, client):
         self._configure_plex()
@@ -3696,7 +3696,7 @@ class TestBifSearchPhases:
         assert "/library/metadata/10" in keys
         assert "/library/metadata/11" in keys
 
-    @patch("plex_generate_previews.web.routes.api_bif._item_to_result")
+    @patch("media_preview_generator.web.routes.api_bif._item_to_result")
     @patch("requests.get")
     def test_duplicate_keys_are_deduped(self, mock_get, mock_item, client):
         self._configure_plex()
@@ -3725,7 +3725,7 @@ class TestBifSearchPhases:
         assert "2 characters" in resp.get_json()["error"]
 
     def test_missing_plex_config_returns_400(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -3831,7 +3831,7 @@ class TestValidatePlexConfigFolder:
         # PLEX_DATA_ROOT is captured into api_settings.py at import time;
         # rebinding the module-level attr there is what actually changes the
         # bound name the endpoint reads.
-        from plex_generate_previews.web.routes import api_settings
+        from media_preview_generator.web.routes import api_settings
 
         monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
 
@@ -3849,7 +3849,7 @@ class TestValidatePlexConfigFolder:
     def test_missing_media_folder_reports_clear_error(self, client, tmp_path, monkeypatch):
         not_plex = tmp_path / "random"
         not_plex.mkdir()
-        from plex_generate_previews.web.routes import api_settings
+        from media_preview_generator.web.routes import api_settings
 
         monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
 
@@ -3873,7 +3873,7 @@ class TestPerServerPlexWebhook:
     """The status / register / unregister endpoints route by server_id."""
 
     def _seed_two_plex_servers(self):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set(
@@ -3909,7 +3909,7 @@ class TestPerServerPlexWebhook:
             seen["url"] = url
             return True
 
-        from plex_generate_previews.web import plex_webhook_registration as pwh
+        from media_preview_generator.web import plex_webhook_registration as pwh
 
         monkeypatch.setattr(pwh, "is_registered", fake_is_registered)
 
@@ -3924,8 +3924,8 @@ class TestPerServerPlexWebhook:
 
     def test_register_persists_url_onto_target_server(self, client, monkeypatch):
         self._seed_two_plex_servers()
-        from plex_generate_previews.web import plex_webhook_registration as pwh
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web import plex_webhook_registration as pwh
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         seen = {}
 
@@ -3967,7 +3967,7 @@ class TestPerServerPlexWebhook:
         assert resp.get_json()["reason"] == "server_not_found"
 
     def test_register_rejects_non_plex_server(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().set(
             "media_servers",
@@ -3987,7 +3987,7 @@ class TestBackupRestore:
 
     def test_lists_backups_with_mtime_and_bak_newer_flag(self, client, monkeypatch, tmp_path):
         """GET returns one row per managed file with bak_newer=True when applicable."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         # Force the inspector to look at our temp dir, not the test config.
@@ -4009,7 +4009,7 @@ class TestBackupRestore:
 
     def test_restore_swaps_live_and_bak_atomically(self, client, monkeypatch, tmp_path):
         """POST /restore swaps live ↔ .bak so a second call rolls back the first."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         monkeypatch.setattr(sm, "config_dir", tmp_path)
@@ -4047,7 +4047,7 @@ class TestBackupRestore:
         assert resp.status_code == 400
 
     def test_restore_404_when_no_bak(self, client, monkeypatch, tmp_path):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         monkeypatch.setattr(sm, "config_dir", tmp_path)
@@ -4067,7 +4067,7 @@ class TestSettingsManagerWebhookMigration:
     def test_migration_moves_url_onto_plex_server(self, tmp_path):
         import json as _json
 
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         cfg = tmp_path / "config"
         cfg.mkdir()
@@ -4104,7 +4104,7 @@ class TestSettingsManagerWebhookMigration:
     def test_migration_drops_keys_when_no_plex_server(self, tmp_path):
         import json as _json
 
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         cfg = tmp_path / "config"
         cfg.mkdir()

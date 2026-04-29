@@ -7,13 +7,13 @@ file lands on disk. We try to publish to every owning server, but
 **Plex** can't accept the publish yet — its bundle hash comes from
 ``GET /library/metadata/{id}/tree``, which only exists *after* Plex
 has scanned the file. The Plex publisher raises
-:class:`~plex_generate_previews.servers.LibraryNotYetIndexedError`,
+:class:`~media_preview_generator.servers.LibraryNotYetIndexedError`,
 which the dispatcher converts into a ``SKIPPED_NOT_INDEXED`` result.
 
 Without this module, that's where the story ends — the Emby + Jellyfin
 publishers succeed, the Plex one is forever stuck waiting for Plex's
 own webhook to re-fire (which the user might have disabled). This
-scheduler re-runs :func:`~plex_generate_previews.processing.multi_server.process_canonical_path`
+scheduler re-runs :func:`~media_preview_generator.processing.multi_server.process_canonical_path`
 on a slow backoff so the moment Plex finishes its scan, we publish.
 
 Design choices:

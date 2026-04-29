@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.servers.jellyfin_auth import (
+from media_preview_generator.servers.jellyfin_auth import (
     JellyfinAuthResult,
     QuickConnectInitiation,
     authenticate_jellyfin_with_password,
@@ -17,7 +17,7 @@ from plex_generate_previews.servers.jellyfin_auth import (
 
 class TestPasswordAuth:
     def test_success(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {
                 "AccessToken": "tok-jf",
@@ -38,7 +38,7 @@ class TestPasswordAuth:
         assert result.user_id == "user-jf"
 
     def test_uses_authenticatebyname_endpoint(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"AccessToken": "tok", "User": {"Id": "1"}}
             post.return_value = response
@@ -52,7 +52,7 @@ class TestPasswordAuth:
             assert post.call_args.args[0] == "http://jellyfin:8096/Users/AuthenticateByName"
 
     def test_unauthorized_returns_specific_message(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             post.return_value = MagicMock(status_code=401, text="bad")
 
             result = authenticate_jellyfin_with_password(
@@ -75,7 +75,7 @@ class TestPasswordAuth:
 
 class TestInitiateQuickConnect:
     def test_success_returns_code_and_secret(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"Code": "ABC123", "Secret": "abc-secret"}
             post.return_value = response
@@ -88,7 +88,7 @@ class TestInitiateQuickConnect:
         assert message
 
     def test_401_explains_quick_connect_disabled(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             post.return_value = MagicMock(status_code=401, text="forbidden")
 
             initiation, message = initiate_quick_connect(base_url="http://jellyfin:8096")
@@ -102,7 +102,7 @@ class TestInitiateQuickConnect:
         assert "url" in message.lower()
 
     def test_response_missing_fields(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"Code": "ABC"}  # no Secret
             post.return_value = response
@@ -114,7 +114,7 @@ class TestInitiateQuickConnect:
 
 class TestPollQuickConnect:
     def test_pending_returns_false(self):
-        with patch("plex_generate_previews.servers.jellyfin_auth.requests.get") as get:
+        with patch("media_preview_generator.servers.jellyfin_auth.requests.get") as get:
             response = MagicMock(status_code=200)
             response.json.return_value = {"Authenticated": False}
             get.return_value = response
@@ -128,7 +128,7 @@ class TestPollQuickConnect:
         assert message
 
     def test_approved_returns_true(self):
-        with patch("plex_generate_previews.servers.jellyfin_auth.requests.get") as get:
+        with patch("media_preview_generator.servers.jellyfin_auth.requests.get") as get:
             response = MagicMock(status_code=200)
             response.json.return_value = {"Authenticated": True}
             get.return_value = response
@@ -141,7 +141,7 @@ class TestPollQuickConnect:
         assert authenticated is True
 
     def test_404_handled(self):
-        with patch("plex_generate_previews.servers.jellyfin_auth.requests.get") as get:
+        with patch("media_preview_generator.servers.jellyfin_auth.requests.get") as get:
             get.return_value = MagicMock(status_code=404)
 
             authenticated, message = poll_quick_connect(
@@ -155,7 +155,7 @@ class TestPollQuickConnect:
 
 class TestExchangeQuickConnect:
     def test_success(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {
                 "AccessToken": "qc-token",
@@ -173,7 +173,7 @@ class TestExchangeQuickConnect:
         assert result.access_token == "qc-token"
 
     def test_401_explains_not_yet_approved(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             post.return_value = MagicMock(status_code=401, text="not approved")
 
             result = exchange_quick_connect(
@@ -185,7 +185,7 @@ class TestExchangeQuickConnect:
         assert "approved" in result.message.lower()
 
     def test_uses_authenticatewithquickconnect_endpoint(self):
-        with patch("plex_generate_previews.servers._mediabrowser_auth.requests.post") as post:
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.return_value = {"AccessToken": "tok", "User": {"Id": "1"}}
             post.return_value = response
@@ -207,10 +207,10 @@ class TestQuickConnectBlocking:
         # Patch poll to return True immediately and exchange to return a token.
         with (
             patch(
-                "plex_generate_previews.servers.jellyfin_auth.poll_quick_connect",
+                "media_preview_generator.servers.jellyfin_auth.poll_quick_connect",
                 return_value=(True, "Approved"),
             ),
-            patch("plex_generate_previews.servers.jellyfin_auth.exchange_quick_connect") as exchange,
+            patch("media_preview_generator.servers.jellyfin_auth.exchange_quick_connect") as exchange,
         ):
             exchange.return_value = JellyfinAuthResult(ok=True, access_token="tok")
 
@@ -226,7 +226,7 @@ class TestQuickConnectBlocking:
 
     def test_times_out_when_never_approved(self):
         with patch(
-            "plex_generate_previews.servers.jellyfin_auth.poll_quick_connect",
+            "media_preview_generator.servers.jellyfin_auth.poll_quick_connect",
             return_value=(False, "Pending"),
         ):
             result = quick_connect_blocking(

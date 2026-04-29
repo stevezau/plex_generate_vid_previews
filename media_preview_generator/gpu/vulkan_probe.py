@@ -16,8 +16,8 @@ in :mod:`gpu_detection`:
 * Cached probe result + env overrides the FFmpeg subprocess needs to
   inherit when it runs libplacebo.
 
-Public helpers are re-exported from :mod:`plex_generate_previews.gpu`;
-``from plex_generate_previews.gpu import get_vulkan_device_info`` is the
+Public helpers are re-exported from :mod:`media_preview_generator.gpu`;
+``from media_preview_generator.gpu import get_vulkan_device_info`` is the
 canonical entry point.  Private helpers (underscore-prefixed names) stay
 module-private here; tests monkey-patch them on this module directly.
 """

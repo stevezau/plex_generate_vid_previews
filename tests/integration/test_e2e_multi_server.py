@@ -14,12 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 _JPEG_SOI = bytes([0xFF, 0xD8, 0xFF])
@@ -140,7 +140,7 @@ class TestMultiServerFanOut:
             emby_sidecar.unlink()
 
         # Track FFmpeg invocations to verify ONE pass feeds both publishers.
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         original_generate = ms_module.generate_images
         ffmpeg_calls = []
@@ -206,7 +206,7 @@ class TestMultiServerFanOut:
         canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
         emby_sidecar = Path(canonical).parent / "Test Movie H264 (2024)-320-5.bif"
 
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         # First dispatch: real run.
         first = process_canonical_path(

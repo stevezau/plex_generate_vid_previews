@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from plex_generate_previews.output import BifBundle, OutputAdapter
-from plex_generate_previews.servers import (
+from media_preview_generator.output import BifBundle, OutputAdapter
+from media_preview_generator.servers import (
     ConnectionResult,
     Library,
     LibraryNotYetIndexedError,

@@ -19,9 +19,9 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.gpu import VulkanProbeResult
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.notifications import (
+from media_preview_generator.gpu import VulkanProbeResult
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.notifications import (
     VULKAN_SOFTWARE_FALLBACK_ID,
     build_active_notifications,
     reset_session,
@@ -48,14 +48,14 @@ def _suppress_pending_migration_notice(client):
     the migration card itself re-set the flag inside their bodies.
     """
     try:
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().set("_pending_migration_notice", None)
     except Exception:
         pass
     yield
     try:
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().set("_pending_migration_notice", None)
     except Exception:
@@ -71,7 +71,7 @@ def _mock_healthy_timezone():
     test and breaks assertions that only account for the Vulkan source.
     """
     with patch(
-        "plex_generate_previews.web.routes.api_system._get_timezone_info",
+        "media_preview_generator.web.routes.api_system._get_timezone_info",
         return_value={"timezone": "America/New_York", "tz_env_set": True},
     ):
         yield
@@ -113,7 +113,7 @@ class TestNotificationsAPI:
     def test_list_empty_when_vulkan_healthy(self, client):
         """Healthy Vulkan probe → no active notifications."""
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(
                 device="NVIDIA RTX 4090 (discrete) (0x2684)",
                 is_software=False,
@@ -127,7 +127,7 @@ class TestNotificationsAPI:
     def test_list_contains_vulkan_warning_when_software(self, client):
         """Software Vulkan probe → vulkan_software_fallback notification."""
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(
                 device="llvmpipe (LLVM 18.1.3, 256 bits) (software) (0x0)",
                 is_software=True,
@@ -149,7 +149,7 @@ class TestNotificationsAPI:
     def test_session_dismiss_hides_notification(self, client):
         """POST /dismiss hides the notification for the session without persisting."""
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(
                 device="llvmpipe (software)",
                 is_software=True,
@@ -177,7 +177,7 @@ class TestNotificationsAPI:
             before = json.load(fh)
 
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss")
@@ -192,7 +192,7 @@ class TestNotificationsAPI:
         _, config_dir = app_with_config
 
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             resp = client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
@@ -209,7 +209,7 @@ class TestNotificationsAPI:
         """POST /dismiss-permanent twice must not duplicate the entry."""
         _, config_dir = app_with_config
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
@@ -221,7 +221,7 @@ class TestNotificationsAPI:
     def test_permanent_dismiss_filters_from_list(self, client):
         """After permanent dismiss, the notification no longer appears."""
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
@@ -231,7 +231,7 @@ class TestNotificationsAPI:
     def test_reset_dismissed_restores_notification(self, client, app_with_config):
         """POST /reset-dismissed clears persistent + session dismissals."""
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             client.post(f"/api/system/notifications/{VULKAN_SOFTWARE_FALLBACK_ID}/dismiss-permanent")
@@ -252,7 +252,7 @@ class TestBuildActiveNotifications:
 
     def test_builder_returns_empty_list_when_healthy(self):
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="NVIDIA", is_software=False),
         ):
             notifications = build_active_notifications()
@@ -260,7 +260,7 @@ class TestBuildActiveNotifications:
 
     def test_builder_includes_vulkan_warning_when_software(self):
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             notifications = build_active_notifications()
@@ -269,7 +269,7 @@ class TestBuildActiveNotifications:
 
     def test_builder_suppresses_permanently_dismissed(self):
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="llvmpipe", is_software=True),
         ):
             notifications = build_active_notifications(dismissed_permanent=[VULKAN_SOFTWARE_FALLBACK_ID])
@@ -280,7 +280,7 @@ class TestSettingsManagerDismissedNotifications:
     """Tests for the dismissed_notifications property + helpers."""
 
     def _fresh_manager(self, tmp_path, initial_settings=None):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         settings_path = tmp_path / "settings.json"
         if initial_settings is not None:
@@ -325,7 +325,7 @@ class TestSchemaMigrationNotification:
 
     def test_card_appears_after_migration_runs(self, client):
         """When _pending_migration_notice is set, the bell shows one info card."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set(
@@ -355,7 +355,7 @@ class TestSchemaMigrationNotification:
         Without this the card would re-render on every page reload (the
         flag's still in settings.json) — defeats the "one-shot" promise.
         """
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("_pending_migration_notice", {"from": 6, "to": 8})

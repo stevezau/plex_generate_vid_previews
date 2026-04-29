@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.web.jobs import (
+from media_preview_generator.web.jobs import (
     LOG_RETENTION_CLEARED_MESSAGE,
     JobManager,
     JobStatus,
@@ -23,7 +23,7 @@ from plex_generate_previews.web.jobs import (
 @pytest.fixture(autouse=True)
 def _reset_job_manager():
     """Reset global job manager so tests can create their own with custom config_dir."""
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
@@ -110,7 +110,7 @@ class TestLogRetentionEnforcement:
         jm._jobs[job.id].completed_at = old_time
         jm._persist_job(jm._jobs[job.id])
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -128,7 +128,7 @@ class TestLogRetentionEnforcement:
 
         log_path = os.path.join(config_dir, "logs", "jobs", f"{job.id}.log")
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -147,7 +147,7 @@ class TestLogRetentionEnforcement:
         old_time = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         jm._jobs[job.id].created_at = old_time
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -162,7 +162,7 @@ class TestLogRetentionEnforcement:
             f.write("orphaned\n")
 
         jm = JobManager(config_dir=config_dir)
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -585,7 +585,7 @@ class TestSqliteJobsBackend:
         jm.complete_job(job.id)
 
         # Force the singleton reset so a "fresh" manager is rebuilt.
-        import plex_generate_previews.web.jobs as jobs_mod
+        import media_preview_generator.web.jobs as jobs_mod
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = None
@@ -663,7 +663,7 @@ class TestSqliteJobsBackend:
             _json.dump({"jobs": [{"id": "stale", "library_name": "Should not appear"}]}, f)
 
         # Reset singleton + reopen.
-        import plex_generate_previews.web.jobs as jobs_mod
+        import media_preview_generator.web.jobs as jobs_mod
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = None

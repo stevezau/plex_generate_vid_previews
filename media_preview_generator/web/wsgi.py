@@ -5,10 +5,10 @@ Usage (production — via wrapper.sh):
         --bind 0.0.0.0:8080 \\
         --worker-class gthread \\
         --workers 1 \\
-        "plex_generate_previews.web.wsgi:app"
+        "media_preview_generator.web.wsgi:app"
 
 Usage (development):
-    python -m plex_generate_previews.web.app
+    python -m media_preview_generator.web.app
 """
 
 from .app import create_app

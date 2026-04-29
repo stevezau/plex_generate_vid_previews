@@ -28,17 +28,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 
 @pytest.fixture(autouse=True)
 def _reset_retry_singleton():
-    from plex_generate_previews.processing.retry_queue import reset_retry_scheduler
+    from media_preview_generator.processing.retry_queue import reset_retry_scheduler
 
     reset_retry_scheduler()
     yield
@@ -114,8 +114,8 @@ class TestSlowBackoffRetryAgainstLivePlex:
         """Simulate Plex 'not yet indexed' on first call, 'indexed' on retry."""
         canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
 
-        from plex_generate_previews.processing import frame_cache as fc_module
-        from plex_generate_previews.servers.plex import PlexServer
+        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.servers.plex import PlexServer
 
         fc_module._singleton = None  # noqa: SLF001 — start with a clean cache
 
@@ -185,7 +185,7 @@ class TestSlowBackoffRetryAgainstLivePlex:
         # Patch backoff to fire fast; patch get_bundle_metadata.
         retry_complete = threading.Event()
 
-        from plex_generate_previews.processing.retry_queue import schedule_retry_for_unindexed as orig_schedule
+        from media_preview_generator.processing.retry_queue import schedule_retry_for_unindexed as orig_schedule
 
         def watch_schedule(*args, **kwargs):
             result = orig_schedule(*args, **kwargs)
@@ -195,11 +195,11 @@ class TestSlowBackoffRetryAgainstLivePlex:
         with (
             patch.object(PlexServer, "get_bundle_metadata", fake_get_bundle_metadata),
             patch(
-                "plex_generate_previews.processing.retry_queue._BACKOFF",
+                "media_preview_generator.processing.retry_queue._BACKOFF",
                 (0.1, 0.5, 1.0, 2.0, 5.0),
             ),
             patch(
-                "plex_generate_previews.processing.retry_queue.schedule_retry_for_unindexed",
+                "media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed",
                 side_effect=watch_schedule,
             ),
         ):

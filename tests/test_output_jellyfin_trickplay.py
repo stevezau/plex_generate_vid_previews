@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image
 
-from plex_generate_previews.output import BifBundle, JellyfinTrickplayAdapter
+from media_preview_generator.output import BifBundle, JellyfinTrickplayAdapter
 
 
 def _write_synthetic_frame(path: Path, *, size: tuple[int, int] = (320, 180)) -> None:

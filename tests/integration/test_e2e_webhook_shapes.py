@@ -57,8 +57,8 @@ def real_config(tmp_path):
 @pytest.fixture
 def webhook_app(emby_credentials, media_root, tmp_path, monkeypatch, real_config):
     """Live Flask app wired to the live Emby container, ready for webhook tests."""
-    from plex_generate_previews.web.app import create_app
-    from plex_generate_previews.web.settings_manager import (
+    from media_preview_generator.web.app import create_app
+    from media_preview_generator.web.settings_manager import (
         get_settings_manager,
         reset_settings_manager,
     )
@@ -105,7 +105,7 @@ def webhook_app(emby_credentials, media_root, tmp_path, monkeypatch, real_config
     settings.complete_setup()
 
     monkeypatch.setattr(
-        "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+        "media_preview_generator.web.webhook_router._load_config_or_minimal",
         lambda: real_config,
     )
     return app
@@ -289,7 +289,7 @@ class TestConcurrentWebhookCoalescing:
             sidecar.unlink()
 
         # Spy on FFmpeg invocations.
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         original_generate = ms_module.generate_images
         ffmpeg_call_count = 0

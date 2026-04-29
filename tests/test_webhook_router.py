@@ -7,24 +7,24 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerResult,
     MultiServerStatus,
     PublisherResult,
     PublisherStatus,
 )
-from plex_generate_previews.web.settings_manager import get_settings_manager
+from media_preview_generator.web.settings_manager import get_settings_manager
 
 
 @pytest.fixture
 def mock_auth_config(tmp_path, monkeypatch):
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     return str(tmp_path)
@@ -32,7 +32,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -101,7 +101,7 @@ class TestSonarrWebhook:
         )
 
         with patch(
-            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            "media_preview_generator.web.webhook_router.process_canonical_path",
             return_value=_published_result(),
         ) as proc:
             response = client.post(
@@ -125,7 +125,7 @@ class TestSonarrWebhook:
 
     def test_radarr_payload_classified_correctly(self, client, auth_headers):
         with patch(
-            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            "media_preview_generator.web.webhook_router.process_canonical_path",
             return_value=_published_result(),
         ) as proc:
             response = client.post(
@@ -162,7 +162,7 @@ class TestJellyfinWebhook:
         )
 
         # Stub Jellyfin's path resolution.
-        from plex_generate_previews.servers.jellyfin import JellyfinServer
+        from media_preview_generator.servers.jellyfin import JellyfinServer
 
         monkeypatch.setattr(
             JellyfinServer,
@@ -171,7 +171,7 @@ class TestJellyfinWebhook:
         )
 
         with patch(
-            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            "media_preview_generator.web.webhook_router.process_canonical_path",
             return_value=_published_result(),
         ) as proc:
             response = client.post(
@@ -234,7 +234,7 @@ class TestEmbyWebhook:
             ]
         )
 
-        from plex_generate_previews.servers.emby import EmbyServer
+        from media_preview_generator.servers.emby import EmbyServer
 
         monkeypatch.setattr(
             EmbyServer,
@@ -243,7 +243,7 @@ class TestEmbyWebhook:
         )
 
         with patch(
-            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            "media_preview_generator.web.webhook_router.process_canonical_path",
             return_value=_published_result(),
         ) as proc:
             response = client.post(
@@ -269,7 +269,7 @@ class TestEmbyWebhook:
 class TestPathFirstWebhook:
     def test_simple_path_dispatch(self, client, auth_headers):
         with patch(
-            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            "media_preview_generator.web.webhook_router.process_canonical_path",
             return_value=_published_result(),
         ) as proc:
             response = client.post(
@@ -340,7 +340,7 @@ class TestServerIdentityRouting:
             ]
         )
 
-        from plex_generate_previews.servers.jellyfin import JellyfinServer
+        from media_preview_generator.servers.jellyfin import JellyfinServer
 
         monkeypatch.setattr(
             JellyfinServer,
@@ -349,7 +349,7 @@ class TestServerIdentityRouting:
         )
 
         with patch(
-            "plex_generate_previews.web.webhook_router.process_canonical_path",
+            "media_preview_generator.web.webhook_router.process_canonical_path",
             return_value=_published_result(),
         ) as proc:
             response = client.post(

@@ -83,19 +83,19 @@ GPU_ACCELERATION_MAP = {
     },
 }
 
-# DRIVER_VENDOR_MAP moved to plex_generate_previews/gpu/enumeration.py;
+# DRIVER_VENDOR_MAP moved to media_preview_generator/gpu/enumeration.py;
 # re-exported from this module's top-of-file imports for backwards compat.
 
-# VA-API driver probing moved to plex_generate_previews/gpu/vaapi_probe.py;
+# VA-API driver probing moved to media_preview_generator/gpu/vaapi_probe.py;
 # re-exported from this module's top-of-file imports.
 
 
-# FFmpeg capability probing moved to plex_generate_previews/gpu/ffmpeg_capabilities.py;
+# FFmpeg capability probing moved to media_preview_generator/gpu/ffmpeg_capabilities.py;
 # re-exported from this module's top-of-file imports.
 
 
 # Platform-specific GPU enumeration moved to
-# plex_generate_previews/gpu/enumeration.py; re-exported from this
+# media_preview_generator/gpu/enumeration.py; re-exported from this
 # module's top-of-file imports.
 
 
@@ -218,7 +218,7 @@ def _test_hwaccel_functionality(
         gpu_dir = os.path.dirname(__file__)
         possible_paths = [
             os.path.join(gpu_dir, "assets", "test_video.mp4"),
-            os.path.join(os.getcwd(), "plex_generate_previews", "gpu", "assets", "test_video.mp4"),
+            os.path.join(os.getcwd(), "media_preview_generator", "gpu", "assets", "test_video.mp4"),
         ]
 
         for path in possible_paths:

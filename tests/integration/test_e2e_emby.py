@@ -24,13 +24,13 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.processing.frame_cache import get_frame_cache
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.frame_cache import get_frame_cache
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 
 def _populate_synthetic_frames(directory: Path, count: int) -> None:
@@ -167,7 +167,7 @@ class TestEmbyEndToEndPublish:
             return ("h264", 5, "120fps", 320)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=_fake_generate_images,
         ):
             result = process_canonical_path(
@@ -217,7 +217,7 @@ class TestEmbyEndToEndPublish:
                 return ("h264", 5, "120fps", 320)
 
             with patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 side_effect=_counting_generate_images,
             ):
                 # First dispatch: cache miss → FFmpeg runs → publish.

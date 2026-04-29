@@ -17,12 +17,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import LibraryNotYetIndexedError, ServerRegistry
+from media_preview_generator.servers import LibraryNotYetIndexedError, ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -272,8 +272,8 @@ class TestLibraryNotYetIndexed:
         """Use a fake item id Plex doesn't know about → /tree returns
         empty → adapter raises LibraryNotYetIndexedError → publisher
         status is SKIPPED_NOT_INDEXED rather than FAILED."""
-        from plex_generate_previews.output import BifBundle, PlexBundleAdapter
-        from plex_generate_previews.servers.plex import PlexServer
+        from media_preview_generator.output import BifBundle, PlexBundleAdapter
+        from media_preview_generator.servers.plex import PlexServer
 
         config = MagicMock()
         config.plex_url = plex_credentials["PLEX_URL"]
@@ -315,8 +315,8 @@ class TestServerIdentityDisambiguation:
         only one has the matching ``server_identity``. The router
         should pick that one.
         """
-        from plex_generate_previews.web.app import create_app
-        from plex_generate_previews.web.settings_manager import (
+        from media_preview_generator.web.app import create_app
+        from media_preview_generator.web.settings_manager import (
             get_settings_manager,
             reset_settings_manager,
         )
@@ -375,7 +375,7 @@ class TestServerIdentityDisambiguation:
         settings.complete_setup()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+            "media_preview_generator.web.webhook_router._load_config_or_minimal",
             lambda: base_config,
         )
 

@@ -28,12 +28,12 @@ from unittest.mock import MagicMock
 import pytest
 import requests as _requests
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 _JPEG_SOI = bytes([0xFF, 0xD8, 0xFF])
@@ -195,8 +195,8 @@ class TestPlexNativeMultipartWebhook:
         plex_legacy_config,
     ):
         """A real Plex-shape multipart webhook drives the full pipeline."""
-        from plex_generate_previews.web.app import create_app
-        from plex_generate_previews.web.settings_manager import (
+        from media_preview_generator.web.app import create_app
+        from media_preview_generator.web.settings_manager import (
             get_settings_manager,
             reset_settings_manager,
         )
@@ -248,11 +248,11 @@ class TestPlexNativeMultipartWebhook:
         # Plex container, otherwise .env leakage takes us to a real
         # Plex on the dev machine.
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+            "media_preview_generator.web.webhook_router._load_config_or_minimal",
             lambda: plex_legacy_config,
         )
         monkeypatch.setattr(
-            "plex_generate_previews.config.load_config",
+            "media_preview_generator.config.load_config",
             lambda *a, **kw: plex_legacy_config,
         )
 

@@ -5,7 +5,7 @@ These tests use mocking to verify GPU detection logic without requiring actual h
 
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.gpu import (
+from media_preview_generator.gpu import (
     _check_ffmpeg_version,
     _get_ffmpeg_version,
     format_gpu_info,
@@ -34,7 +34,7 @@ class TestFFmpegVersionCI:
         version = _get_ffmpeg_version()
         assert version is None
 
-    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
+    @patch("media_preview_generator.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_check_ffmpeg_version_sufficient(self, mock_get_version):
         """Test FFmpeg version check with sufficient version."""
         mock_get_version.return_value = (7, 1, 0)
@@ -42,7 +42,7 @@ class TestFFmpegVersionCI:
         result = _check_ffmpeg_version()
         assert result is True
 
-    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
+    @patch("media_preview_generator.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_check_ffmpeg_version_insufficient(self, mock_get_version):
         """Test FFmpeg version check with insufficient version."""
         mock_get_version.return_value = (6, 9, 0)

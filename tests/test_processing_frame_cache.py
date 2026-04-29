@@ -9,16 +9,16 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.processing.frame_cache import (
+from media_preview_generator.processing.frame_cache import (
     FrameCache,
     get_frame_cache,
     reset_frame_cache,
 )
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 
 @pytest.fixture(autouse=True)
@@ -309,7 +309,7 @@ class TestDispatcherIntegration:
             return (True, 5, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ) as gen:
             # First call: cache miss → FFmpeg runs once.
@@ -370,7 +370,7 @@ class TestDispatcherIntegration:
             return (True, 3, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ) as gen:
             process_canonical_path(
@@ -420,7 +420,7 @@ class TestDispatcherIntegration:
             return (True, 3, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ):
             process_canonical_path(
@@ -431,7 +431,7 @@ class TestDispatcherIntegration:
             )
 
         # Cache directory was never populated.
-        from plex_generate_previews.processing.frame_cache import get_frame_cache as _gfc
+        from media_preview_generator.processing.frame_cache import get_frame_cache as _gfc
 
         cache = _gfc()
         assert len(cache) == 0

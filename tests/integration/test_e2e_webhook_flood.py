@@ -90,8 +90,8 @@ def flood_config(tmp_path):
 @pytest.fixture
 def flood_app(emby_credentials, flood_media_dir, tmp_path, monkeypatch, flood_config):
     """Live Flask app pointed at the per-test tmp media dir."""
-    from plex_generate_previews.web.app import create_app
-    from plex_generate_previews.web.settings_manager import (
+    from media_preview_generator.web.app import create_app
+    from media_preview_generator.web.settings_manager import (
         get_settings_manager,
         reset_settings_manager,
     )
@@ -140,7 +140,7 @@ def flood_app(emby_credentials, flood_media_dir, tmp_path, monkeypatch, flood_co
     settings.complete_setup()
 
     monkeypatch.setattr(
-        "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+        "media_preview_generator.web.webhook_router._load_config_or_minimal",
         lambda: flood_config,
     )
     return app
@@ -155,11 +155,11 @@ class TestWebhookFloodAcrossDistinctFiles:
         movies_dir, paths = flood_media_dir
 
         # Reset frame cache so previous tests can't shortcut us.
-        from plex_generate_previews.processing import frame_cache as fc_module
+        from media_preview_generator.processing import frame_cache as fc_module
 
         fc_module._singleton = None  # noqa: SLF001 — test fixture reset
 
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         original_generate = ms_module.generate_images
         ffmpeg_calls: list[str] = []

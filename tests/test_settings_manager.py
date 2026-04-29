@@ -21,7 +21,7 @@ class TestSettingsManager:
     @pytest.fixture
     def settings_manager(self, temp_config_dir):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=temp_config_dir)
 
@@ -54,7 +54,7 @@ class TestSettingsManager:
 
     def test_persistence(self, temp_config_dir):
         """Test that settings persist across instances."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         # Create manager and set value
         manager1 = SettingsManager(config_dir=temp_config_dir)
@@ -79,8 +79,8 @@ class TestPreviewSettingsAfterUpdate:
     """preview_settings_after_update matches SettingsManager.update for gpu_threads."""
 
     def test_gpu_threads_distribution_matches_update(self, tmp_path):
-        from plex_generate_previews.config import validate_processing_thread_totals
-        from plex_generate_previews.web.settings_manager import (
+        from media_preview_generator.config import validate_processing_thread_totals
+        from media_preview_generator.web.settings_manager import (
             SettingsManager,
             preview_settings_after_update,
         )
@@ -104,7 +104,7 @@ class TestSettingsManagerProperties:
     @pytest.fixture
     def settings_manager(self, tmp_path):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -175,7 +175,7 @@ class TestSettingsManagerProperties:
         """Test cpu_threads=0 is preserved (issue #142)."""
         settings_manager.cpu_threads = 0
         assert settings_manager.cpu_threads == 0
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         sm2 = SettingsManager(config_dir=str(settings_manager.config_dir))
         assert sm2.cpu_threads == 0
@@ -196,7 +196,7 @@ class TestGpuConfig:
 
     @pytest.fixture
     def settings_manager(self, tmp_path, monkeypatch):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         monkeypatch.delenv("GPU_THREADS", raising=False)
         monkeypatch.delenv("GPU_SELECTION", raising=False)
@@ -326,7 +326,7 @@ class TestSettingsManagerConfigStatus:
     @pytest.fixture
     def settings_manager(self, tmp_path, monkeypatch):
         """Create a SettingsManager with clean environment."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         # Clear environment variables
         monkeypatch.delenv("PLEX_URL", raising=False)
@@ -358,7 +358,7 @@ class TestClientIdentifier:
 
     def test_get_client_identifier_generates_id(self, tmp_path):
         """Test that get_client_identifier generates a new ID."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         manager = SettingsManager(config_dir=str(tmp_path))
 
@@ -367,7 +367,7 @@ class TestClientIdentifier:
 
     def test_client_identifier_persists(self, tmp_path):
         """Test that client identifier persists across instances."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         manager1 = SettingsManager(config_dir=str(tmp_path))
         client_id1 = manager1.get_client_identifier()
@@ -384,7 +384,7 @@ class TestSetupState:
     @pytest.fixture
     def settings_manager(self, tmp_path):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -429,7 +429,7 @@ class TestApplyChanges:
 
     @pytest.fixture
     def settings_manager(self, tmp_path):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -468,7 +468,7 @@ class TestGpuConfigEdgeCases:
 
     @pytest.fixture
     def settings_manager(self, tmp_path):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 

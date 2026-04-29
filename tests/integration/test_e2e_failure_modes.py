@@ -16,12 +16,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 
 @pytest.fixture
@@ -285,7 +285,7 @@ class TestPartialFailureIsolation:
             # the same relative structure.
             canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
 
-            from plex_generate_previews.processing import frame_cache as fc_module
+            from media_preview_generator.processing import frame_cache as fc_module
 
             fc_module._singleton = None  # noqa: SLF001 — clear cache between tests
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from plex_generate_previews.output.journal import (
+from media_preview_generator.output.journal import (
     JOURNAL_SCHEMA_VERSION,
     _meta_path_for,
     clear_meta,

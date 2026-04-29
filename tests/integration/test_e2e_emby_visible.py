@@ -32,13 +32,13 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from plex_generate_previews.bif_reader import BIF_MAGIC, read_bif_metadata
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.bif_reader import BIF_MAGIC, read_bif_metadata
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _JPEG_SOI = bytes([0xFF, 0xD8, 0xFF])
 
@@ -190,7 +190,7 @@ class TestEmbyBifNamingMatchesEmbyConvention:
     ):
         """Different (width, interval) → different filename. Multiple resolutions
         can coexist next to one source file."""
-        from plex_generate_previews.output.emby_sidecar import EmbyBifAdapter
+        from media_preview_generator.output.emby_sidecar import EmbyBifAdapter
 
         # Adapter is pure-Python; no live container needed for filename derivation.
         path = EmbyBifAdapter.sidecar_path(

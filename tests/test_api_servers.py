@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from plex_generate_previews.web.settings_manager import get_settings_manager
+from media_preview_generator.web.settings_manager import get_settings_manager
 
 
 @pytest.fixture
 def mock_auth_config(tmp_path, monkeypatch):
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     return str(tmp_path)
@@ -23,7 +23,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -37,7 +37,7 @@ def client(flask_app):
 
 @pytest.fixture
 def auth_headers():
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     return {"X-Auth-Token": get_auth_token()}
 
@@ -255,8 +255,8 @@ class TestRefreshLibraries:
 
     def test_jellyfin_refresh_succeeds(self, client, auth_headers, monkeypatch):
         # Jellyfin now ships a real client; the refresh route accepts it.
-        from plex_generate_previews.servers import Library
-        from plex_generate_previews.servers.jellyfin import JellyfinServer
+        from media_preview_generator.servers import Library
+        from media_preview_generator.servers.jellyfin import JellyfinServer
 
         _seed_media_servers(
             [
@@ -284,7 +284,7 @@ class TestRefreshLibraries:
         assert response.get_json()["count"] == 1
 
     def test_persists_libraries_and_preserves_enabled_toggle(self, client, auth_headers, monkeypatch):
-        from plex_generate_previews.servers import Library
+        from media_preview_generator.servers import Library
 
         _seed_media_servers(
             [
@@ -310,7 +310,7 @@ class TestRefreshLibraries:
         )
 
         # Avoid touching real plexapi; stub list_libraries on the live client.
-        from plex_generate_previews.servers.plex import PlexServer
+        from media_preview_generator.servers.plex import PlexServer
 
         def fake_list_libraries(self):
             return [
@@ -355,7 +355,7 @@ class TestRefreshLibraries:
             ]
         )
 
-        from plex_generate_previews.servers.plex import PlexServer
+        from media_preview_generator.servers.plex import PlexServer
 
         def boom(self):
             raise RuntimeError("network down")
@@ -738,8 +738,8 @@ class TestDeleteServer:
 
 class TestTestConnection:
     def test_emby_test_connection_succeeds(self, client, auth_headers, monkeypatch):
-        from plex_generate_previews.servers import ConnectionResult
-        from plex_generate_previews.servers.emby import EmbyServer
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.servers.emby import EmbyServer
 
         def fake_test(self):
             return ConnectionResult(
@@ -768,8 +768,8 @@ class TestTestConnection:
         assert body["server_name"] == "Test Emby"
 
     def test_jellyfin_test_connection_failure_reported(self, client, auth_headers, monkeypatch):
-        from plex_generate_previews.servers import ConnectionResult
-        from plex_generate_previews.servers.jellyfin import JellyfinServer
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.servers.jellyfin import JellyfinServer
 
         def fake_test(self):
             return ConnectionResult(ok=False, message="connection refused")
@@ -791,8 +791,8 @@ class TestTestConnection:
         assert "refused" in body["message"]
 
     def test_test_connection_does_not_persist(self, client, auth_headers, monkeypatch):
-        from plex_generate_previews.servers import ConnectionResult
-        from plex_generate_previews.servers.emby import EmbyServer
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.servers.emby import EmbyServer
 
         monkeypatch.setattr(
             EmbyServer,

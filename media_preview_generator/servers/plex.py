@@ -1,6 +1,6 @@
 """Plex implementation of the :class:`MediaServer` interface.
 
-This is a thin façade over the existing :mod:`plex_generate_previews.plex_client`
+This is a thin façade over the existing :mod:`media_preview_generator.plex_client`
 helpers so the rest of the codebase can be migrated to the abstract interface
 without rewriting Plex-specific logic. As the multi-server refactor lands, the
 inline calls in :mod:`processing.orchestrator` and :mod:`web.webhooks` are
@@ -379,7 +379,7 @@ class PlexServer(MediaServer):
 
         Returns an empty list when the lookup fails or the item has no parts —
         the adapter translates that into a
-        :class:`~plex_generate_previews.servers.LibraryNotYetIndexedError`.
+        :class:`~media_preview_generator.servers.LibraryNotYetIndexedError`.
         """
         from ..plex_client import retry_plex_call
 

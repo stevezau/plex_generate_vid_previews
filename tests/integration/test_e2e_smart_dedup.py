@@ -29,12 +29,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 
 @pytest.fixture
@@ -127,9 +127,9 @@ class TestLateWebhookFollowsSonarr:
         if emby_sidecar.exists():
             emby_sidecar.unlink()
 
-        from plex_generate_previews.output.journal import _meta_path_for, clear_meta
-        from plex_generate_previews.processing import frame_cache as fc_module
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.output.journal import _meta_path_for, clear_meta
+        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         # Reset the singleton cache so we're not reusing frames from a
         # prior test in the same session.
@@ -214,9 +214,9 @@ class TestSourceReplacedRegens:
         original_mtime = canonical_path_obj.stat().st_mtime
         original_bytes = canonical_path_obj.read_bytes()
 
-        from plex_generate_previews.output.journal import _meta_path_for, clear_meta
-        from plex_generate_previews.processing import frame_cache as fc_module
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.output.journal import _meta_path_for, clear_meta
+        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         fc_module._singleton = None  # noqa: SLF001
 
@@ -303,9 +303,9 @@ class TestRegenerateClearsJournal:
         if emby_sidecar.exists():
             emby_sidecar.unlink()
 
-        from plex_generate_previews.output.journal import _meta_path_for, clear_meta
-        from plex_generate_previews.processing import frame_cache as fc_module
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.output.journal import _meta_path_for, clear_meta
+        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         fc_module._singleton = None  # noqa: SLF001
 

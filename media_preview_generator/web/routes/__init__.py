@@ -2,7 +2,7 @@
 
 Splits route handlers into domain-specific modules while maintaining a
 single public API. All previously-importable names remain accessible
-from ``plex_generate_previews.web.routes``.
+from ``media_preview_generator.web.routes``.
 """
 
 from flask import Blueprint

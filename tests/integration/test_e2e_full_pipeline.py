@@ -34,12 +34,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 # ---------------------------------------------------------------------------
 # BIF format reader — used to validate publisher output is structurally sound.
@@ -275,7 +275,7 @@ def flask_app_for_webhook(emby_credentials, media_root, tmp_path, monkeypatch):
     config_dir.mkdir()
 
     # Reset all singletons before configuring the new app.
-    from plex_generate_previews.web.settings_manager import (
+    from media_preview_generator.web.settings_manager import (
         reset_settings_manager,
     )
 
@@ -286,8 +286,8 @@ def flask_app_for_webhook(emby_credentials, media_root, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("WEB_AUTH_TOKEN", "integration-test-token")
 
-    from plex_generate_previews.web.app import create_app
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.app import create_app
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     app = create_app(config_dir=str(config_dir))
     app.config["TESTING"] = True
@@ -358,7 +358,7 @@ class TestWebhookEndToEnd:
         # it so the dispatcher uses our test_config (with the right
         # working_tmp_folder + ffmpeg settings).
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+            "media_preview_generator.web.webhook_router._load_config_or_minimal",
             lambda: real_config,
         )
 
@@ -429,7 +429,7 @@ class TestWebhookEndToEnd:
             sidecar.unlink()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+            "media_preview_generator.web.webhook_router._load_config_or_minimal",
             lambda: real_config,
         )
 

@@ -10,10 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.jobs.orchestrator import run_processing
-from plex_generate_previews.processing import ProcessingResult
+from media_preview_generator.jobs.orchestrator import run_processing
+from media_preview_generator.processing import ProcessingResult
 
-MODULE = "plex_generate_previews.jobs.orchestrator"
+MODULE = "media_preview_generator.jobs.orchestrator"
 
 
 def _make_config(tmp_path, **overrides):
@@ -85,7 +85,7 @@ class TestMultiServerGuards:
 
     def test_pinned_to_non_plex_full_scan_returns_no_op(self, tmp_path):
         config = _make_config(tmp_path, server_id_filter="emby-1")
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
             mock_sm.return_value.get.return_value = [
                 {"id": "emby-1", "type": "emby", "name": "My Emby"},
             ]
@@ -114,7 +114,7 @@ class TestMultiServerGuards:
         """K4: when Plex is configured AND has at least one Emby/Jellyfin
         sibling, paths Plex couldn't resolve flow into the multi-server
         dispatcher with just the unresolved subset (not the whole batch)."""
-        from plex_generate_previews.plex_client import WebhookResolutionResult
+        from media_preview_generator.plex_client import WebhookResolutionResult
 
         config = _make_config(
             tmp_path,
@@ -135,7 +135,7 @@ class TestMultiServerGuards:
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
-            patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
             mock_sm.return_value.get.return_value = [
@@ -158,7 +158,7 @@ class TestMultiServerGuards:
         """
         from loguru import logger
 
-        from plex_generate_previews.plex_client import WebhookResolutionResult
+        from media_preview_generator.plex_client import WebhookResolutionResult
 
         config = _make_config(tmp_path, webhook_paths=["/data_16tb/Movies/x.mkv"])
         resolution = WebhookResolutionResult(
@@ -175,7 +175,7 @@ class TestMultiServerGuards:
                 patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
                 patch(f"{MODULE}.plex_server"),
                 patch(f"{MODULE}.WorkerPool") as MockPool,
-                patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm,
+                patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
             ):
                 MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
                 mock_sm.return_value.get.return_value = [
@@ -206,7 +206,7 @@ class TestMultiServerGuards:
     def test_k4_no_fallback_when_only_plex_configured(self, tmp_path):
         """K4: don't churn — when only Plex is configured, the unresolved
         paths go to the existing retry queue, not into the dispatcher."""
-        from plex_generate_previews.plex_client import WebhookResolutionResult
+        from media_preview_generator.plex_client import WebhookResolutionResult
 
         config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
         resolution = WebhookResolutionResult(
@@ -221,7 +221,7 @@ class TestMultiServerGuards:
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
-            patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
             # Only Plex configured → no Emby/Jellyfin → K4 fallback should NOT fire.
@@ -734,19 +734,19 @@ class TestJobDispatcherPath:
                 return_value=iter([(section, items)]),
             ),
             patch(
-                "plex_generate_previews.jobs.orchestrator.get_dispatcher",
+                "media_preview_generator.jobs.orchestrator.get_dispatcher",
                 side_effect=[mock_dispatcher, mock_dispatcher],
                 create=True,
             ) as mock_get_disp,
-            patch("plex_generate_previews.web.jobs.PRIORITY_NORMAL", 2, create=True),
+            patch("media_preview_generator.web.jobs.PRIORITY_NORMAL", 2, create=True),
         ):
             # Patch the import inside _dispatch_items
             with (
                 patch.dict(
                     "sys.modules",
                     {
-                        "plex_generate_previews.jobs.dispatcher": MagicMock(get_dispatcher=mock_get_disp),
-                        "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
+                        "media_preview_generator.jobs.dispatcher": MagicMock(get_dispatcher=mock_get_disp),
+                        "media_preview_generator.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                     },
                 ),
             ):
@@ -791,8 +791,8 @@ class TestJobDispatcherPath:
             with patch.dict(
                 "sys.modules",
                 {
-                    "plex_generate_previews.jobs.dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
-                    "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
+                    "media_preview_generator.jobs.dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
+                    "media_preview_generator.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                 },
             ):
                 result = run_processing(

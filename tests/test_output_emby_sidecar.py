@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.output import BifBundle, EmbyBifAdapter
+from media_preview_generator.output import BifBundle, EmbyBifAdapter
 
 
 def _make_bundle(canonical_path: str, frame_dir: Path) -> BifBundle:

@@ -18,12 +18,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 
 @pytest.fixture
@@ -183,8 +183,8 @@ class TestJellyfinNativeWebhook:
         self, jellyfin_credentials, media_root, tmp_path, monkeypatch, jf_config
     ):
         """jellyfin-plugin-webhook stock ItemAdded → universal router → BIF."""
-        from plex_generate_previews.web.app import create_app
-        from plex_generate_previews.web.settings_manager import (
+        from media_preview_generator.web.app import create_app
+        from media_preview_generator.web.settings_manager import (
             get_settings_manager,
             reset_settings_manager,
         )
@@ -229,7 +229,7 @@ class TestJellyfinNativeWebhook:
         )
         settings.complete_setup()
         monkeypatch.setattr(
-            "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+            "media_preview_generator.web.webhook_router._load_config_or_minimal",
             lambda: jf_config,
         )
 

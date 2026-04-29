@@ -10,7 +10,7 @@ import tempfile
 from collections import namedtuple
 from unittest.mock import patch
 
-from plex_generate_previews.utils import (
+from media_preview_generator.utils import (
     calculate_title_width,
     format_display_title,
     is_docker_environment,
@@ -130,7 +130,7 @@ class TestSanitizePath:
 
     @patch("os.name", "posix")
     @patch(
-        "plex_generate_previews.utils.os.path.normpath",
+        "media_preview_generator.utils.os.path.normpath",
         side_effect=__import__("posixpath").normpath,
     )
     def test_sanitize_path_unix(self, _mock_normpath):
@@ -260,7 +260,7 @@ class TestAtomicJsonSaveWithBackup:
 
     def test_first_write_no_bak(self, tmp_path):
         """When the target doesn't exist, no .bak is created."""
-        from plex_generate_previews.utils import atomic_json_save_with_backup
+        from media_preview_generator.utils import atomic_json_save_with_backup
 
         target = tmp_path / "config.json"
         atomic_json_save_with_backup(str(target), {"hello": "world"})
@@ -271,7 +271,7 @@ class TestAtomicJsonSaveWithBackup:
         """The .bak holds the file contents *before* this write."""
         import json as _json
 
-        from plex_generate_previews.utils import atomic_json_save_with_backup
+        from media_preview_generator.utils import atomic_json_save_with_backup
 
         target = tmp_path / "config.json"
         atomic_json_save_with_backup(str(target), {"v": 1})
@@ -286,7 +286,7 @@ class TestAtomicJsonSaveWithBackup:
         """A third write overwrites the .bak with the v2 contents (no v1 left)."""
         import json as _json
 
-        from plex_generate_previews.utils import atomic_json_save_with_backup
+        from media_preview_generator.utils import atomic_json_save_with_backup
 
         target = tmp_path / "config.json"
         atomic_json_save_with_backup(str(target), {"v": 1})
@@ -301,7 +301,7 @@ class TestAtomicJsonSaveWithBackup:
         import json as _json
         import shutil as _shutil
 
-        from plex_generate_previews import utils
+        from media_preview_generator import utils
 
         target = tmp_path / "config.json"
         target.write_text('{"v": 1}')

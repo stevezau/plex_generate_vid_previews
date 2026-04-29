@@ -58,4 +58,4 @@ run_as_user gunicorn \
     --error-logfile - \
     --log-level info \
     $RELOAD_FLAG \
-    "plex_generate_previews.web.wsgi:app"
+    "media_preview_generator.web.wsgi:app"

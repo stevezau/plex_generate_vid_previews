@@ -15,11 +15,11 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.processing.frame_cache import (
+from media_preview_generator.processing.frame_cache import (
     get_frame_cache,
     reset_frame_cache,
 )
-from plex_generate_previews.processing.orchestrator import _fan_out_secondary_publishers
+from media_preview_generator.processing.orchestrator import _fan_out_secondary_publishers
 
 
 def _populate_real_jpgs(directory: Path, count: int) -> None:
@@ -102,7 +102,7 @@ def fanout_setup(mock_config, tmp_path, monkeypatch):
         },
     )()
     monkeypatch.setattr(
-        "plex_generate_previews.web.settings_manager.get_settings_manager",
+        "media_preview_generator.web.settings_manager.get_settings_manager",
         lambda: fake_settings,
     )
 
@@ -122,17 +122,17 @@ class TestFanOut:
         # reverse-lookup so the secondary fan-out doesn't try to hit a live
         # Jellyfin server during the unit test.
         with (
-            patch("plex_generate_previews.processing.multi_server.generate_images") as gen,
+            patch("media_preview_generator.processing.multi_server.generate_images") as gen,
             patch(
-                "plex_generate_previews.servers.jellyfin.JellyfinServer.resolve_remote_path_to_item_id",
+                "media_preview_generator.servers.jellyfin.JellyfinServer.resolve_remote_path_to_item_id",
                 return_value="jf-item-42",
             ),
             patch(
-                "plex_generate_previews.servers.jellyfin.JellyfinServer.trigger_refresh",
+                "media_preview_generator.servers.jellyfin.JellyfinServer.trigger_refresh",
                 return_value=None,
             ),
             patch(
-                "plex_generate_previews.servers.emby.EmbyServer.trigger_refresh",
+                "media_preview_generator.servers.emby.EmbyServer.trigger_refresh",
                 return_value=None,
             ),
         ):
@@ -158,17 +158,17 @@ class TestFanOut:
         ctx = fanout_setup
 
         with (
-            patch("plex_generate_previews.processing.multi_server.generate_images"),
+            patch("media_preview_generator.processing.multi_server.generate_images"),
             patch(
-                "plex_generate_previews.servers.jellyfin.JellyfinServer.resolve_remote_path_to_item_id",
+                "media_preview_generator.servers.jellyfin.JellyfinServer.resolve_remote_path_to_item_id",
                 return_value="jf-item-42",
             ),
             patch(
-                "plex_generate_previews.servers.jellyfin.JellyfinServer.trigger_refresh",
+                "media_preview_generator.servers.jellyfin.JellyfinServer.trigger_refresh",
                 return_value=None,
             ),
             patch(
-                "plex_generate_previews.servers.emby.EmbyServer.trigger_refresh",
+                "media_preview_generator.servers.emby.EmbyServer.trigger_refresh",
                 return_value=None,
             ),
         ):
@@ -192,7 +192,7 @@ class TestFanOut:
 
         # No media_servers at all → fan-out is a no-op.
         monkeypatch.setattr(
-            "plex_generate_previews.web.settings_manager.get_settings_manager",
+            "media_preview_generator.web.settings_manager.get_settings_manager",
             lambda: type("S", (), {"get": lambda self, k, d=None: d})(),
         )
 
@@ -224,7 +224,7 @@ class TestFanOut:
             }
         ]
         monkeypatch.setattr(
-            "plex_generate_previews.web.settings_manager.get_settings_manager",
+            "media_preview_generator.web.settings_manager.get_settings_manager",
             lambda: type(
                 "S",
                 (),
@@ -254,7 +254,7 @@ class TestFanOut:
             raise RuntimeError("settings unavailable")
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.settings_manager.get_settings_manager",
+            "media_preview_generator.web.settings_manager.get_settings_manager",
             boom,
         )
 
@@ -279,7 +279,7 @@ class TestFanOut:
             }
         ]
         monkeypatch.setattr(
-            "plex_generate_previews.web.settings_manager.get_settings_manager",
+            "media_preview_generator.web.settings_manager.get_settings_manager",
             lambda: type(
                 "S",
                 (),
@@ -309,13 +309,13 @@ class TestFanOut:
         ctx = fanout_setup
 
         # The helper does a deferred import; patch at source.
-        from plex_generate_previews.processing.multi_server import (
+        from media_preview_generator.processing.multi_server import (
             MultiServerResult,
             MultiServerStatus,
         )
 
         with patch(
-            "plex_generate_previews.processing.multi_server.process_canonical_path",
+            "media_preview_generator.processing.multi_server.process_canonical_path",
             return_value=MultiServerResult(
                 canonical_path=ctx["media_file"],
                 status=MultiServerStatus.SKIPPED,

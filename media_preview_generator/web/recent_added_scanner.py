@@ -99,7 +99,7 @@ def _item_has_all_bifs(plex, item, plex_config_folder: str) -> bool:
     """Return ``True`` when every media part for this item already has a BIF.
 
     Queries Plex's ``/<item_key>/tree`` endpoint (same query
-    :func:`plex_generate_previews.media_processing.process_item` uses) to
+    :func:`media_preview_generator.media_processing.process_item` uses) to
     recover the bundle hash for each media part, then checks whether the
     corresponding ``index-sd.bif`` file exists on disk.
 

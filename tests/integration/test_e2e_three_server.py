@@ -19,12 +19,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -145,7 +145,7 @@ class TestThreeServerFanOut:
 
             shutil.rmtree(trickplay_dir)
 
-        from plex_generate_previews.processing import multi_server as ms_module
+        from media_preview_generator.processing import multi_server as ms_module
 
         original_generate = ms_module.generate_images
         ffmpeg_calls = []

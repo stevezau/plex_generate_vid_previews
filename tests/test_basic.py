@@ -1,5 +1,5 @@
 """
-Basic functionality tests for plex_generate_previews.
+Basic functionality tests for media_preview_generator.
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,19 +14,19 @@ class TestBasicFunctionality:
         """Test that the package can be imported."""
         import re
 
-        import plex_generate_previews
+        import media_preview_generator
 
-        assert hasattr(plex_generate_previews, "__version__")
+        assert hasattr(media_preview_generator, "__version__")
         # Version should be in PEP 440 format (e.g., "2.0.0", "2.1.2.post0", "0.0.0+unknown", "2.3.1.dev5+g1234abc")
         # Pattern matches setuptools-scm generated versions
         version_pattern = r"^\d+\.\d+\.\d+(?:\.(?:post|dev)\d+)?(?:\+[a-zA-Z0-9.-]+)?$"
-        assert re.match(version_pattern, plex_generate_previews.__version__), (
-            f"Version '{plex_generate_previews.__version__}' doesn't match PEP 440 format"
+        assert re.match(version_pattern, media_preview_generator.__version__), (
+            f"Version '{media_preview_generator.__version__}' doesn't match PEP 440 format"
         )
 
     def test_web_module_importable(self):
         """Test that the web module can be imported."""
-        from plex_generate_previews.web.app import create_app
+        from media_preview_generator.web.app import create_app
 
         assert callable(create_app)
 
@@ -35,11 +35,11 @@ class TestBasicFunctionality:
         import importlib
 
         with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("plex_generate_previews.cli")
+            importlib.import_module("media_preview_generator.cli")
 
     def test_config_validation_error_class(self):
         """Test that ConfigValidationError can be raised."""
-        from plex_generate_previews.config import ConfigValidationError
+        from media_preview_generator.config import ConfigValidationError
 
         with pytest.raises(ConfigValidationError) as exc_info:
             raise ConfigValidationError(["Missing PLEX_URL", "Missing PLEX_TOKEN"])
@@ -52,7 +52,7 @@ class TestConfigFunctions:
 
     def test_get_config_value_cli_precedence(self):
         """Test that CLI args take precedence over env vars."""
-        from plex_generate_previews.config import get_config_value
+        from media_preview_generator.config import get_config_value
 
         cli_args = MagicMock()
         cli_args.test_field = "cli_value"
@@ -63,7 +63,7 @@ class TestConfigFunctions:
 
     def test_get_config_value_env_fallback(self):
         """Test that env vars are used when CLI args are None."""
-        from plex_generate_previews.config import get_config_value
+        from media_preview_generator.config import get_config_value
 
         cli_args = MagicMock()
         cli_args.test_field = None
@@ -74,7 +74,7 @@ class TestConfigFunctions:
 
     def test_get_config_value_default_fallback(self):
         """Test that defaults are used when neither CLI nor env are set."""
-        from plex_generate_previews.config import get_config_value
+        from media_preview_generator.config import get_config_value
 
         cli_args = MagicMock()
         cli_args.test_field = None
@@ -89,7 +89,7 @@ class TestGPUDetection:
 
     def test_format_gpu_info(self):
         """Test GPU info formatting."""
-        from plex_generate_previews.gpu import format_gpu_info
+        from media_preview_generator.gpu import format_gpu_info
 
         # Test NVIDIA formatting
         nvidia_info = format_gpu_info("cuda", 0, "NVIDIA GeForce RTX 3080")
@@ -105,7 +105,7 @@ class TestGPUDetection:
 
     def test_ffmpeg_version_check(self):
         """Test FFmpeg version checking."""
-        from plex_generate_previews.gpu import (
+        from media_preview_generator.gpu import (
             _check_ffmpeg_version,
             _get_ffmpeg_version,
         )
@@ -117,7 +117,7 @@ class TestGPUDetection:
             assert version == (7, 1, 1)
 
         # Test version checking
-        with patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version") as mock_get_version:
+        with patch("media_preview_generator.gpu.ffmpeg_capabilities._get_ffmpeg_version") as mock_get_version:
             mock_get_version.return_value = (7, 1, 0)
             assert _check_ffmpeg_version() is True
 
@@ -130,6 +130,6 @@ class TestProcessingModule:
 
     def test_run_processing_importable(self):
         """Test that run_processing can be imported from job_orchestrator module."""
-        from plex_generate_previews.jobs.orchestrator import run_processing
+        from media_preview_generator.jobs.orchestrator import run_processing
 
         assert callable(run_processing)

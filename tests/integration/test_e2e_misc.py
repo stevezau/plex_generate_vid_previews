@@ -50,8 +50,8 @@ def real_config(tmp_path):
 
 @pytest.fixture
 def webhook_app(emby_credentials, media_root, tmp_path, monkeypatch, real_config):
-    from plex_generate_previews.web.app import create_app
-    from plex_generate_previews.web.settings_manager import (
+    from media_preview_generator.web.app import create_app
+    from media_preview_generator.web.settings_manager import (
         get_settings_manager,
         reset_settings_manager,
     )
@@ -98,7 +98,7 @@ def webhook_app(emby_credentials, media_root, tmp_path, monkeypatch, real_config
     settings.complete_setup()
 
     monkeypatch.setattr(
-        "plex_generate_previews.web.webhook_router._load_config_or_minimal",
+        "media_preview_generator.web.webhook_router._load_config_or_minimal",
         lambda: real_config,
     )
     return app
@@ -182,13 +182,13 @@ class TestFrameCacheTtlExpiry:
         proves "second-and-later within TTL hit cache"; this proves
         "after TTL, cache is gone and FFmpeg re-runs".
         """
-        from plex_generate_previews.processing import multi_server as ms_module
-        from plex_generate_previews.processing.frame_cache import (
+        from media_preview_generator.processing import multi_server as ms_module
+        from media_preview_generator.processing.frame_cache import (
             get_frame_cache,
             reset_frame_cache,
         )
-        from plex_generate_previews.processing.multi_server import process_canonical_path
-        from plex_generate_previews.servers import ServerRegistry
+        from media_preview_generator.processing.multi_server import process_canonical_path
+        from media_preview_generator.servers import ServerRegistry
 
         # Force a 1-second TTL by using a fresh cache singleton.
         reset_frame_cache()

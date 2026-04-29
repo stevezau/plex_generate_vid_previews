@@ -29,7 +29,7 @@ import pytest
 try:
     from apscheduler.jobstores.memory import MemoryJobStore as _MemoryJobStore
 
-    import plex_generate_previews.web.scheduler as _sched_mod
+    import media_preview_generator.web.scheduler as _sched_mod
 
     class _TestMemoryJobStore(_MemoryJobStore):
         def __init__(self, *args, **kwargs):  # noqa: D401
@@ -111,7 +111,7 @@ def mock_config():
     config.gpu_threads = 1
     config.cpu_threads = 1
     config.gpu_config = []
-    config.tmp_folder = "/tmp/plex_generate_previews"
+    config.tmp_folder = "/tmp/media_preview_generator"
     config.tmp_folder_created_by_us = False
     config.ffmpeg_path = "/usr/bin/ffmpeg"
     config.ffmpeg_threads = 2
@@ -342,7 +342,7 @@ def _neutralize_prewarm_caches(request, monkeypatch):
     if request.node.get_closest_marker("real_prewarm"):
         return
     try:
-        import plex_generate_previews.web.app as app_mod
+        import media_preview_generator.web.app as app_mod
     except ImportError:
         return
     monkeypatch.setattr(app_mod, "_prewarm_caches", lambda: None)
@@ -362,8 +362,8 @@ def _neutralize_setup_logging(request, monkeypatch):
     if request.node.get_closest_marker("real_logging"):
         return
     try:
-        import plex_generate_previews.logging_config as lc_mod
-        import plex_generate_previews.web.app as app_mod
+        import media_preview_generator.logging_config as lc_mod
+        import media_preview_generator.web.app as app_mod
     except ImportError:
         return
     noop = lambda *a, **kw: None  # noqa: E731
@@ -392,7 +392,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
     """
     if request.node.get_closest_marker("real_plex_server") is None:
         try:
-            import plex_generate_previews.plex_client as pc_mod
+            import media_preview_generator.plex_client as pc_mod
 
             mock_server = MagicMock()
             mock_server.library.sections.return_value = []
@@ -409,7 +409,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
         # read, which sends ``_ensure_gpu_cache`` back to the real ffmpeg
         # subprocess probes.
         try:
-            import plex_generate_previews.gpu.detect as gd_mod
+            import media_preview_generator.gpu.detect as gd_mod
 
             monkeypatch.setattr(gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True)
         except ImportError:
@@ -422,7 +422,7 @@ def _sync_start_job_async(request, monkeypatch):
 
     Route handlers (``POST /api/jobs``, webhook endpoints, settings resume, …)
     normally spawn a daemon ``run_job`` thread via
-    ``plex_generate_previews.web.routes.job_runner._start_job_async``. That
+    ``media_preview_generator.web.routes.job_runner._start_job_async``. That
     thread escapes the test's ``with patch(...)`` scope and keeps running
     after teardown — enumerating the real Plex library (if ``PLEX_URL`` is
     set), probing real GPUs, and flooding stderr with ``I/O operation on
@@ -446,7 +446,7 @@ def _sync_start_job_async(request, monkeypatch):
     if request.node.get_closest_marker("real_job_async"):
         return
     try:
-        import plex_generate_previews.web.routes.job_runner as jr_mod
+        import media_preview_generator.web.routes.job_runner as jr_mod
     except ImportError:
         return
 

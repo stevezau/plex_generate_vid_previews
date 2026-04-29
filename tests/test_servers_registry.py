@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from plex_generate_previews.servers import (
+from media_preview_generator.servers import (
     Library,
     PlexServer,
     ServerConfig,

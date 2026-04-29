@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import pytest
 
-from plex_generate_previews.servers.emby_auth import EmbyAuthResult
-from plex_generate_previews.servers.jellyfin_auth import (
+from media_preview_generator.servers.emby_auth import EmbyAuthResult
+from media_preview_generator.servers.jellyfin_auth import (
     JellyfinAuthResult,
     QuickConnectInitiation,
 )
-from plex_generate_previews.web.settings_manager import get_settings_manager
+from media_preview_generator.web.settings_manager import get_settings_manager
 
 
 @pytest.fixture
 def mock_auth_config(tmp_path, monkeypatch):
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     return str(tmp_path)
@@ -28,7 +28,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -42,7 +42,7 @@ def client(flask_app):
 
 @pytest.fixture
 def auth_headers():
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     return {"X-Auth-Token": get_auth_token()}
 
@@ -50,7 +50,7 @@ def auth_headers():
 class TestEmbyPasswordAuth:
     def test_success_returns_token(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.authenticate_emby_with_password",
+            "media_preview_generator.web.routes.api_server_auth.authenticate_emby_with_password",
             lambda **kw: EmbyAuthResult(
                 ok=True,
                 access_token="emby-tok",
@@ -74,7 +74,7 @@ class TestEmbyPasswordAuth:
 
     def test_invalid_creds_surfaces_message(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.authenticate_emby_with_password",
+            "media_preview_generator.web.routes.api_server_auth.authenticate_emby_with_password",
             lambda **kw: EmbyAuthResult(ok=False, message="Emby rejected the username/password (401)"),
         )
         response = client.post(
@@ -107,7 +107,7 @@ class TestEmbyPasswordAuth:
             raise RuntimeError("kaboom")
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.authenticate_emby_with_password",
+            "media_preview_generator.web.routes.api_server_auth.authenticate_emby_with_password",
             boom,
         )
         response = client.post(
@@ -121,7 +121,7 @@ class TestEmbyPasswordAuth:
 class TestJellyfinPasswordAuth:
     def test_success(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.authenticate_jellyfin_with_password",
+            "media_preview_generator.web.routes.api_server_auth.authenticate_jellyfin_with_password",
             lambda **kw: JellyfinAuthResult(
                 ok=True,
                 access_token="jf-tok",
@@ -144,7 +144,7 @@ class TestJellyfinPasswordAuth:
 class TestJellyfinQuickConnect:
     def test_initiate_returns_code_and_secret(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.initiate_quick_connect",
+            "media_preview_generator.web.routes.api_server_auth.initiate_quick_connect",
             lambda **kw: (QuickConnectInitiation(code="ABC123", secret="abc-secret"), "Initiated"),
         )
         response = client.post(
@@ -159,7 +159,7 @@ class TestJellyfinQuickConnect:
 
     def test_initiate_failure_surfaces_message(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.initiate_quick_connect",
+            "media_preview_generator.web.routes.api_server_auth.initiate_quick_connect",
             lambda **kw: (None, "Quick Connect not enabled by admin"),
         )
         response = client.post(
@@ -173,7 +173,7 @@ class TestJellyfinQuickConnect:
 
     def test_poll_pending(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.poll_quick_connect",
+            "media_preview_generator.web.routes.api_server_auth.poll_quick_connect",
             lambda **kw: (False, "Pending"),
         )
         response = client.post(
@@ -187,7 +187,7 @@ class TestJellyfinQuickConnect:
 
     def test_poll_approved(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.poll_quick_connect",
+            "media_preview_generator.web.routes.api_server_auth.poll_quick_connect",
             lambda **kw: (True, "Approved"),
         )
         response = client.post(
@@ -200,7 +200,7 @@ class TestJellyfinQuickConnect:
 
     def test_exchange_success(self, client, auth_headers, monkeypatch):
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.exchange_quick_connect",
+            "media_preview_generator.web.routes.api_server_auth.exchange_quick_connect",
             lambda **kw: JellyfinAuthResult(
                 ok=True,
                 access_token="qc-tok",
@@ -230,7 +230,7 @@ class TestJellyfinQuickConnect:
     def test_endpoints_dont_persist_anything(self, client, auth_headers, monkeypatch):
         # No matter which auth endpoint runs, settings.media_servers stays empty.
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_server_auth.authenticate_emby_with_password",
+            "media_preview_generator.web.routes.api_server_auth.authenticate_emby_with_password",
             lambda **kw: EmbyAuthResult(ok=True, access_token="t", user_id="u"),
         )
         client.post(

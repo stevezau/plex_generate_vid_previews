@@ -18,14 +18,14 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.processing.frame_cache import reset_frame_cache
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.frame_cache import reset_frame_cache
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     _adapter_for_server,
     process_canonical_path,
 )
-from plex_generate_previews.servers import (
+from media_preview_generator.servers import (
     Library,
     PlexServer,
     ServerConfig,
@@ -166,7 +166,7 @@ class TestPerServerExcludePaths:
             return (True, 5, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ):
             result = process_canonical_path(
@@ -253,7 +253,7 @@ class TestSinglePublisher:
             return (True, 5, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ) as gen:
             result = process_canonical_path(
@@ -302,7 +302,7 @@ class TestMultiPublisherFanOut:
             return (True, 12, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ) as gen:
             result = process_canonical_path(
@@ -354,7 +354,7 @@ class TestPartialFailureIsolation:
             return (True, 3, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ):
             result = process_canonical_path(
@@ -408,7 +408,7 @@ class TestNotYetIndexedRoutesToSkip:
                 return (True, 3, "h264", 1.0, 30.0, None)
 
             with patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 side_effect=fake_generate_images,
             ):
                 result = process_canonical_path(
@@ -447,7 +447,7 @@ class TestSkipIfExists:
             return (True, 3, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ):
             result = process_canonical_path(
@@ -481,7 +481,7 @@ class TestSkipIfExists:
             return (True, 3, "h264", 1.0, 30.0, None)
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ):
             result = process_canonical_path(
@@ -528,11 +528,11 @@ class TestPublisherFailureModes:
         # the real world.
         with (
             patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 side_effect=fake_generate_images,
             ),
             patch(
-                "plex_generate_previews.processing.orchestrator.generate_bif",
+                "media_preview_generator.processing.orchestrator.generate_bif",
                 side_effect=PermissionError(13, "Permission denied", "/data/movies/Test (2024)-320-10.bif"),
             ),
         ):
@@ -573,11 +573,11 @@ class TestPublisherFailureModes:
 
         with (
             patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 side_effect=fake_generate_images,
             ),
             patch(
-                "plex_generate_previews.processing.orchestrator.generate_bif",
+                "media_preview_generator.processing.orchestrator.generate_bif",
                 side_effect=OSError(28, "No space left on device", "/data/movies/Test.bif"),
             ),
         ):
@@ -612,13 +612,13 @@ class TestPublisherFailureModes:
             _populate_frames(output_folder, count=3)
             return (True, 3, "h264", 1.0, 30.0, None)
 
-        from plex_generate_previews.output.emby_sidecar import EmbyBifAdapter
+        from media_preview_generator.output.emby_sidecar import EmbyBifAdapter
 
         # Patching the instance method by class works because the
         # adapter is constructed by _adapter_for_server every dispatch.
         with (
             patch(
-                "plex_generate_previews.processing.multi_server.generate_images",
+                "media_preview_generator.processing.multi_server.generate_images",
                 side_effect=fake_generate_images,
             ),
             patch.object(
@@ -656,7 +656,7 @@ class TestNoFrames:
             return (True, 0, "h264", 0.5, 30.0, "no frames")
 
         with patch(
-            "plex_generate_previews.processing.multi_server.generate_images",
+            "media_preview_generator.processing.multi_server.generate_images",
             side_effect=fake_generate_images,
         ):
             result = process_canonical_path(

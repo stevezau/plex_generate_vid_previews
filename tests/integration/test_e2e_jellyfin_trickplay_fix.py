@@ -28,8 +28,8 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from plex_generate_previews.processing.multi_server import process_canonical_path
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.processing.multi_server import process_canonical_path
+from media_preview_generator.servers import ServerRegistry
 
 
 @pytest.fixture

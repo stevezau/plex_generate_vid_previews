@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from plex_generate_previews.web.settings_manager import get_settings_manager
+from media_preview_generator.web.settings_manager import get_settings_manager
 
 
 @pytest.fixture
 def mock_auth_config(tmp_path, monkeypatch):
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     return str(tmp_path)
@@ -23,7 +23,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -38,7 +38,7 @@ def client(flask_app):
 @pytest.fixture
 def authenticated_client(flask_app):
     """A test client with a valid session cookie."""
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     token = get_auth_token()
     sm = get_settings_manager()

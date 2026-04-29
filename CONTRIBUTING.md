@@ -64,10 +64,10 @@ gunicorn \
   --bind 0.0.0.0:8080 \
   --worker-class gthread \
   --workers 1 \
-  "plex_generate_previews.web.wsgi:app"
+  "media_preview_generator.web.wsgi:app"
 
 # Web UI with dev server (Flask reload)
-python -m plex_generate_previews.web.app
+python -m media_preview_generator.web.app
 ```
 
 ---
@@ -115,7 +115,7 @@ test: Add tests for SettingsManager
 
 ```bash
 pytest                                          # All tests
-pytest --cov=plex_generate_previews             # With coverage
+pytest --cov=media_preview_generator             # With coverage
 pytest tests/test_config.py -v                  # Specific file
 pytest -m "not gpu"                             # Skip GPU tests
 pytest tests/ --ignore=tests/e2e -x             # Quick tests only
@@ -152,7 +152,7 @@ Locust is a dev dependency — install with `pip install -e ".[dev]"`.
 ## Project Structure
 
 ```
-plex_generate_previews/
+media_preview_generator/
 ├── config/               # Config dataclass, paths, validation
 ├── gpu/                  # GPU discovery + FFmpeg capability probing
 ├── jobs/                 # Orchestrator, dispatcher, worker pool
@@ -239,7 +239,7 @@ Required repository secrets (**Settings → Secrets and variables → Actions**)
 ## Debugging
 
 ```bash
-LOG_LEVEL=DEBUG python -m plex_generate_previews.web.app  # Debug logging
+LOG_LEVEL=DEBUG python -m media_preview_generator.web.app  # Debug logging
 docker exec -it plex-generate-previews /bin/bash   # Inspect container
 ```
 
@@ -268,7 +268,7 @@ Check detected GPUs in the web UI (**Settings** or **Setup**).
 
 ## Release Process
 
-1. Update version in `plex_generate_previews/_version.py`
+1. Update version in `media_preview_generator/_version.py`
 2. Update `CHANGELOG.md`
 3. Create PR and merge to main
 4. Tag release: `git tag vX.Y.Z && git push --tags`

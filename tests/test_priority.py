@@ -10,9 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.jobs.dispatcher import JobDispatcher, JobTracker
-from plex_generate_previews.jobs.worker import WorkerPool
-from plex_generate_previews.web.jobs import (
+from media_preview_generator.jobs.dispatcher import JobDispatcher, JobTracker
+from media_preview_generator.jobs.worker import WorkerPool
+from media_preview_generator.web.jobs import (
     PRIORITY_HIGH,
     PRIORITY_LOW,
     PRIORITY_NORMAL,
@@ -25,7 +25,7 @@ from plex_generate_previews.web.jobs import (
 @pytest.fixture(autouse=True)
 def _reset_job_manager():
     """Reset global job manager so tests can create their own."""
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None

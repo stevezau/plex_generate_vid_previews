@@ -21,12 +21,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.processing.multi_server import (
+from media_preview_generator.processing.multi_server import (
     MultiServerStatus,
     PublisherStatus,
     process_canonical_path,
 )
-from plex_generate_previews.servers import ServerRegistry
+from media_preview_generator.servers import ServerRegistry
 
 _BIF_MAGIC = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -182,7 +182,7 @@ class TestNFCNFDOwnership:
         """
         import unicodedata
 
-        from plex_generate_previews.servers.ownership import server_owns_path
+        from media_preview_generator.servers.ownership import server_owns_path
 
         # NFC: single codepoint U+00E9 'é'. NFD: 'e' + U+0301.
         nfc_setting_path = "/data/Films/café"
@@ -194,7 +194,7 @@ class TestNFCNFDOwnership:
 
         # Build a minimal ServerConfig manually rather than via the
         # registry so this test stays isolated from live containers.
-        from plex_generate_previews.servers.base import Library, ServerConfig, ServerType
+        from media_preview_generator.servers.base import Library, ServerConfig, ServerType
 
         cfg = ServerConfig(
             id="nfd-test",

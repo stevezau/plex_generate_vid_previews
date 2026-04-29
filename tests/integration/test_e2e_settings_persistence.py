@@ -33,8 +33,8 @@ def fresh_config_dir(tmp_path):
 
 def _build_app(config_dir: Path):
     """Construct a Flask app + SettingsManager singleton tied to ``config_dir``."""
-    from plex_generate_previews.web.app import create_app
-    from plex_generate_previews.web.settings_manager import (
+    from media_preview_generator.web.app import create_app
+    from media_preview_generator.web.settings_manager import (
         get_settings_manager,
         reset_settings_manager,
     )

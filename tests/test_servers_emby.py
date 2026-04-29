@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from plex_generate_previews.servers import (
+from media_preview_generator.servers import (
     ConnectionResult,
     EmbyServer,
     Library,
@@ -56,7 +56,7 @@ def emby():
 
 class TestConstruction:
     def test_implements_media_server(self, emby):
-        from plex_generate_previews.servers import MediaServer
+        from media_preview_generator.servers import MediaServer
 
         assert isinstance(emby, MediaServer)
 
@@ -382,7 +382,7 @@ class TestParseWebhook:
 
 class TestRegistryWiring:
     def test_registry_can_construct_emby_server(self):
-        from plex_generate_previews.servers import ServerRegistry
+        from media_preview_generator.servers import ServerRegistry
 
         registry = ServerRegistry.from_settings(
             [

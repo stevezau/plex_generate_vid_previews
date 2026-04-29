@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.jobs.worker import Worker, WorkerPool
-from plex_generate_previews.processing import (
+from media_preview_generator.jobs.worker import Worker, WorkerPool
+from media_preview_generator.processing import (
     CancellationError,
     CodecNotSupportedError,
     ProcessingResult,
@@ -44,7 +44,7 @@ class TestWorker:
         worker.is_busy = True
         assert worker.is_available() is False
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.orchestrator.process_item")
     def test_worker_assign_task(self, mock_process):
         """Test task assignment."""
         worker = Worker(0, "CPU")
@@ -83,7 +83,7 @@ class TestWorker:
         with pytest.raises(RuntimeError):
             worker.assign_task("test_key", config, plex)
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.orchestrator.process_item")
     def test_worker_check_completion(self, mock_process):
         """Test completion detection."""
         worker = Worker(0, "CPU")
@@ -175,7 +175,7 @@ class TestWorker:
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_thread_execution(self, mock_process):
         """Test that worker executes in background thread."""
         worker = Worker(0, "CPU")
@@ -207,7 +207,7 @@ class TestWorker:
         assert call_count[0] == 1
         assert worker.completed == 1
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_last_task_outcome_delta(self, mock_process):
         """Test that last_task_outcome_delta returns correct per-task delta."""
         worker = Worker(0, "CPU")
@@ -234,7 +234,7 @@ class TestWorker:
         assert delta2["skipped_bif_exists"] == 1
         assert delta2["generated"] == 0
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_gpu_codec_error_retries_on_cpu_in_place(self, mock_process):
         """GPU worker catches CodecNotSupportedError and retries the same item on CPU itself.
 
@@ -282,7 +282,7 @@ class TestWorker:
         assert worker.fallback_active is True
         assert "Codec not supported by GPU" in (worker.fallback_reason or "")
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_gpu_cpu_fallback_records_failure_when_cpu_retry_fails(self, mock_process):
         """If the in-place CPU retry also fails, the worker counts the task as failed."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
@@ -315,7 +315,7 @@ class TestWorker:
         assert worker.failed == 1
         assert worker.fallback_active is True
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_cpu_handles_codec_error_as_failure(self, mock_process):
         """Test that CPU worker treats CodecNotSupportedError as unexpected failure."""
         worker = Worker(0, "CPU")
@@ -378,7 +378,7 @@ class TestWorkerPool:
         assert pool.workers[1].gpu_index == 1
         assert pool.workers[3].gpu_index == 1
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_pool_process_items(self, mock_process):
         """Test processing items with worker pool."""
         # Track if mock was called
@@ -462,7 +462,7 @@ class TestWorkerPool:
         assert retired == 1
         assert len([w for w in pool.workers if w.worker_type == "CPU"]) == 0
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_dynamic_remove_does_not_stall_completion(self, mock_process):
         """Dynamic worker removal should not trap processing at 100%."""
         mock_process.side_effect = lambda *args, **kwargs: (
@@ -494,7 +494,7 @@ class TestWorkerPool:
         assert elapsed < 2.0
         assert result["completed"] + result["failed"] == len(items)
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_dynamic_gpu_removal_does_not_stall_completion(self, mock_process):
         """Dynamic GPU worker removal during active processing must not stall at 100%."""
         mock_process.side_effect = lambda *args, **kwargs: (
@@ -533,7 +533,7 @@ class TestWorkerPool:
             f"failed={result['failed']}, total={len(items)}"
         )
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):
         """Pause check should delay task dispatch until resumed."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -563,7 +563,7 @@ class TestWorkerPool:
         assert result["completed"] == 2
         assert elapsed >= 0.2
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_no_dispatch_while_paused(self, mock_process):
         """No new task is assigned while pause_check returns True; first assignment after unpause."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -607,7 +607,7 @@ class TestWorkerPool:
             f"pause_duration={pause_duration}s"
         )
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_pool_stats_are_per_library(self, mock_process):
         """Returned processing stats should be scoped to one library call."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -645,7 +645,7 @@ class TestWorkerPool:
         assert second_result["completed"] == 1
         assert second_result["failed"] == 0
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.orchestrator.process_item")
     def test_worker_pool_task_completion(self, mock_process):
         """Test that all tasks complete."""
 
@@ -678,7 +678,7 @@ class TestWorkerPool:
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 4
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_pool_error_handling(self, mock_process):
         """Test that failed tasks are tracked."""
         # Simulate failures
@@ -715,7 +715,7 @@ class TestWorkerPool:
         total_failed = sum(w.failed for w in pool.workers)
         assert total_failed > 0
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.orchestrator.process_item")
     def test_worker_pool_progress_updates(self, mock_process):
         """Test that progress callbacks work correctly."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -752,7 +752,7 @@ class TestWorkerPool:
         assert total_completed == 8
         assert total_failed == 3
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_pool_cpu_fallback_on_codec_error(self, mock_process):
         """GPU worker codec errors now trigger an in-place CPU retry on the same worker."""
         call_order = []
@@ -800,7 +800,7 @@ class TestWorkerPool:
         assert pool.workers[0].failed == 0
         assert pool.workers[0].fallback_active is True
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_mixed_workload_with_gpu_cpu_fallback(self, mock_process):
         """GPU+CPU pool handles a mix of items including in-place fallbacks."""
         call_order = []
@@ -847,7 +847,7 @@ class TestWorkerPool:
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 3
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_codec_error_fails_when_cpu_retry_also_fails(self, mock_process):
         """If the in-place CPU retry itself fails, the GPU worker records a failure."""
 
@@ -1014,7 +1014,7 @@ class TestReconcileGpuWorkers:
 class TestWorkerProgressCount:
     """Test that GPU→CPU fallback does not double-count completed_tasks (H2)."""
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_progress_not_double_counted_on_gpu_cpu_fallback(self, mock_process):
         """When a GPU worker re-queues to CPU, completed_tasks increments only once."""
         completed_counts = []
@@ -1066,7 +1066,7 @@ class TestWorkerProgressCount:
             f"Expected final completed_tasks=1, got {completed_counts[-1]}. All counts: {completed_counts}"
         )
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_fallback_state_resets_on_new_task(self, mock_process):
         """fallback_active / fallback_reason are cleared when a new task is assigned."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 3080")
@@ -1117,7 +1117,7 @@ class TestWorkerProgressCount:
 class TestWorkerCancellation:
     """Test that cancellation is properly handled by workers."""
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_cancellation_does_not_fallback_to_cpu(self, mock_process):
         """Cancellation on GPU worker must not trigger an in-place CPU retry."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 3080")
@@ -1145,7 +1145,7 @@ class TestWorkerCancellation:
         # Only one call — cancellation short-circuits the CPU retry path.
         assert mock_process.call_count == 1
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_passes_cancel_check_to_process_item(self, mock_process):
         """Test that cancel_check is forwarded from assign_task to process_item."""
         mock_process.return_value = ProcessingResult.GENERATED
@@ -1180,7 +1180,7 @@ class TestBuildSelectedGpus:
     @pytest.fixture(autouse=True)
     def _stub_gpu_cache(self, monkeypatch):
         """Control the GPU cache directly and bypass live detection."""
-        from plex_generate_previews.web.routes import _helpers
+        from media_preview_generator.web.routes import _helpers
 
         _helpers._gpu_cache["result"] = []
         monkeypatch.setattr(_helpers, "_ensure_gpu_cache", lambda: None)
@@ -1188,7 +1188,7 @@ class TestBuildSelectedGpus:
         _helpers._gpu_cache["result"] = None
 
     def _set_cache(self, gpus):
-        from plex_generate_previews.web.routes import _helpers
+        from media_preview_generator.web.routes import _helpers
 
         _helpers._gpu_cache["result"] = gpus
 
@@ -1198,7 +1198,7 @@ class TestBuildSelectedGpus:
         return sm
 
     def test_enabled_gpu_returned_with_config_values(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "NVIDIA", "device": "cuda:0", "name": "RTX 3080"}])
         settings = self._make_settings([{"device": "cuda:0", "enabled": True, "workers": 3, "ffmpeg_threads": 4}])
@@ -1213,7 +1213,7 @@ class TestBuildSelectedGpus:
         assert info["ffmpeg_threads"] == 4
 
     def test_disabled_gpu_is_skipped(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "AMD", "device": "vaapi:/dev/dri/renderD128", "name": "RX 6800"}])
         settings = self._make_settings([{"device": "vaapi:/dev/dri/renderD128", "enabled": False, "workers": 2}])
@@ -1221,7 +1221,7 @@ class TestBuildSelectedGpus:
         assert _build_selected_gpus(settings) == []
 
     def test_zero_workers_is_skipped(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "NVIDIA", "device": "cuda:0", "name": "RTX"}])
         settings = self._make_settings([{"device": "cuda:0", "enabled": True, "workers": 0}])
@@ -1229,7 +1229,7 @@ class TestBuildSelectedGpus:
         assert _build_selected_gpus(settings) == []
 
     def test_failed_gpu_is_skipped(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache(
             [
@@ -1251,7 +1251,7 @@ class TestBuildSelectedGpus:
 
     def test_undetected_gpu_gets_default_config(self):
         """GPU in cache but not in gpu_config → defaults (workers=1, ffmpeg_threads=2)."""
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "INTEL", "device": "qsv", "name": "Arc"}])
         settings = self._make_settings([])
@@ -1265,7 +1265,7 @@ class TestBuildSelectedGpus:
         assert info["ffmpeg_threads"] == 2
 
     def test_empty_cache_returns_empty_list(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([])
         settings = self._make_settings([])
@@ -1273,7 +1273,7 @@ class TestBuildSelectedGpus:
         assert _build_selected_gpus(settings) == []
 
     def test_mixed_enabled_and_disabled(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache(
             [

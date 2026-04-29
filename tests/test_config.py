@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.config import (
+from media_preview_generator.config import (
     ConfigValidationError,
     derive_legacy_plex_view,
     expand_path_mapping_candidates,
@@ -33,14 +33,14 @@ from plex_generate_previews.config import (
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
     """Ensure load_config uses a fresh empty settings.json and no .env file."""
-    from plex_generate_previews.web import settings_manager
+    from media_preview_generator.web import settings_manager
 
     monkeypatch.setattr(settings_manager, "_settings_manager", None)
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr("plex_generate_previews.config.load_dotenv", lambda: None)
+    monkeypatch.setattr("media_preview_generator.config.load_dotenv", lambda: None)
 
     # Clear config cache to avoid stale values between tests
-    from plex_generate_previews.config import clear_config_cache
+    from media_preview_generator.config import clear_config_cache
 
     clear_config_cache()
 
@@ -891,7 +891,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_all_required_present(
         self,
         mock_logging,
@@ -969,7 +969,7 @@ class TestLoadConfig:
             gpu_threads=None,
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -989,7 +989,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_succeeds_when_both_cpu_and_gpu_zero(
         self,
         mock_logging,
@@ -1002,8 +1002,8 @@ class TestLoadConfig:
         mock_which,
     ):
         """Both CPU and GPU totals zero must return a valid Config (not crash/exit)."""
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -1061,7 +1061,7 @@ class TestLoadConfig:
     @patch("os.path.isdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_succeeds_when_only_emby_configured(
         self,
         mock_logging,
@@ -1079,8 +1079,8 @@ class TestLoadConfig:
         not start the app. The new logic skips Plex validation when there is
         no Plex entry in media_servers and no legacy plex_* globals.
         """
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -1130,7 +1130,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_accepts_sort_by_random(
         self,
         mock_logging,
@@ -1143,8 +1143,8 @@ class TestLoadConfig:
         mock_which,
     ):
         """sort_by='random' must load without a validation error."""
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -1186,7 +1186,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_rejects_invalid_sort_by(
         self,
         mock_logging,
@@ -1199,8 +1199,8 @@ class TestLoadConfig:
         mock_which,
     ):
         """sort_by values outside the enum must raise ConfigValidationError."""
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -1236,7 +1236,7 @@ class TestLoadConfig:
             load_config()
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_missing_plex_url(self, mock_logging, mock_which):
         """Test error when PLEX_URL is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -1265,7 +1265,7 @@ class TestLoadConfig:
                 load_config()
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_missing_plex_token(self, mock_logging, mock_which):
         """Test error when PLEX_TOKEN is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -1294,8 +1294,8 @@ class TestLoadConfig:
                 load_config()
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.config.load_dotenv")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.config.load_dotenv")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_missing_config_folder(self, mock_logging, mock_load_dotenv, mock_which):
         """Test error when config folder is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -1328,8 +1328,8 @@ class TestLoadConfig:
     @patch("shutil.which")
     @patch("subprocess.run")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.config.load_dotenv")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.config.load_dotenv")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_invalid_path(self, mock_logging, mock_load_dotenv, mock_exists, mock_run, mock_which):
         """Test error when config folder doesn't exist."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -1364,7 +1364,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_invalid_plex_structure(
         self, mock_logging, mock_exists, mock_isdir, mock_listdir, mock_run, mock_which
     ):
@@ -1405,7 +1405,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_validates_numeric_ranges(
         self,
         mock_logging,
@@ -1445,7 +1445,7 @@ class TestLoadConfig:
             gpu_threads=None,
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1461,7 +1461,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_validates_thread_counts(
         self,
         mock_logging,
@@ -1501,7 +1501,7 @@ class TestLoadConfig:
             gpu_threads=50,  # Invalid: > 32
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1517,7 +1517,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_validates_ffmpeg_threads(
         self,
         mock_logging,
@@ -1558,7 +1558,7 @@ class TestLoadConfig:
             cpu_threads=None,
             ffmpeg_threads=50,  # Invalid: > 32
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1575,7 +1575,7 @@ class TestLoadConfig:
     @patch("os.path.isdir")
     @patch("os.path.exists")
     @patch("os.makedirs")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_tmp_folder_auto_creation(
         self,
         mock_logging,
@@ -1594,7 +1594,7 @@ class TestLoadConfig:
 
         # Mock that tmp_folder doesn't exist initially, but plex_config_folder does
         def mock_exists_side_effect(path):
-            if path == "/tmp/plex_generate_previews":
+            if path == "/tmp/media_preview_generator":
                 return False  # tmp folder doesn't exist
             return True  # other paths exist
 
@@ -1640,7 +1640,7 @@ class TestLoadConfig:
             plex_url="http://localhost:32400",
             plex_token="token",
             plex_config_folder="/config/plex",
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1661,7 +1661,7 @@ class TestLoadConfig:
         # Should succeed and create the folder
         assert config is not None
         assert config.tmp_folder_created_by_us is True
-        mock_makedirs.assert_called_once_with("/tmp/plex_generate_previews", exist_ok=True)
+        mock_makedirs.assert_called_once_with("/tmp/media_preview_generator", exist_ok=True)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1670,7 +1670,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_tmp_folder_not_empty(
         self,
         mock_logging,
@@ -1690,7 +1690,7 @@ class TestLoadConfig:
             return True  # All paths exist
 
         def mock_listdir_side_effect(path):
-            if path == "/tmp/plex_generate_previews":
+            if path == "/tmp/media_preview_generator":
                 return [
                     "file1.txt",
                     "file2.txt",
@@ -1734,7 +1734,7 @@ class TestLoadConfig:
             plex_url="http://localhost:32400",
             plex_token="token",
             plex_config_folder="/config/plex",
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1754,10 +1754,10 @@ class TestLoadConfig:
 
         # Should succeed even though tmp folder is not empty
         assert config is not None
-        assert config.tmp_folder == "/tmp/plex_generate_previews"
+        assert config.tmp_folder == "/tmp/media_preview_generator"
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_ffmpeg_not_found(self, mock_logging, mock_which):
         """Test error when FFmpeg is not found."""
         mock_which.return_value = None
@@ -1792,8 +1792,8 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.utils.is_docker_environment")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.utils.is_docker_environment")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_docker_environment(
         self,
         mock_logging,
@@ -1851,7 +1851,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_comma_separated_libraries(
         self,
         mock_logging,
@@ -1922,7 +1922,7 @@ class TestLoadConfig:
             gpu_threads=None,
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -2009,7 +2009,7 @@ class TestResolveFfmpegPath:
         which_returns,
         expected,
     ):
-        from plex_generate_previews.config import (
+        from media_preview_generator.config import (
             _JELLYFIN_FFMPEG_PATH,
             _resolve_ffmpeg_path,
         )
@@ -2020,9 +2020,9 @@ class TestResolveFfmpegPath:
         def fake_access(p, mode):
             return p == _JELLYFIN_FFMPEG_PATH and jellyfin_executable
 
-        monkeypatch.setattr("plex_generate_previews.config.os.path.isfile", fake_isfile)
-        monkeypatch.setattr("plex_generate_previews.config.os.access", fake_access)
-        monkeypatch.setattr("plex_generate_previews.config.shutil.which", lambda name: which_returns)
+        monkeypatch.setattr("media_preview_generator.config.os.path.isfile", fake_isfile)
+        monkeypatch.setattr("media_preview_generator.config.os.access", fake_access)
+        monkeypatch.setattr("media_preview_generator.config.shutil.which", lambda name: which_returns)
 
         assert _resolve_ffmpeg_path() == expected
 
@@ -2030,7 +2030,7 @@ class TestResolveFfmpegPath:
 class TestDockerHelp:
     """Test docker help rendering."""
 
-    @patch("plex_generate_previews.config.logger.info")
+    @patch("media_preview_generator.config.logger.info")
     def test_show_docker_help_logs_key_sections(self, mock_info):
         """Ensure Docker help prints required guidance lines."""
         show_docker_help()

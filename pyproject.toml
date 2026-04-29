@@ -82,12 +82,12 @@ Issues = "https://github.com/stevezau/plex_generate_vid_previews/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["plex_generate_previews*"]
+include = ["media_preview_generator*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
-    "--cov=plex_generate_previews",
+    "--cov=media_preview_generator",
     "--cov-report=term-missing",
     "--cov-fail-under=70",
     "--tb=short",
@@ -117,7 +117,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["plex_generate_previews"]
+source = ["media_preview_generator"]
 omit = [
     "*/tests/*",
     "*/__pycache__/*",
@@ -131,7 +131,7 @@ show_missing = true
 skip_covered = false
 
 [tool.setuptools_scm]
-write_to = "plex_generate_previews/_version.py"
+write_to = "media_preview_generator/_version.py"
 local_scheme = "no-local-version"
 fallback_version = "0.0.0+unknown"
 
@@ -139,7 +139,7 @@ fallback_version = "0.0.0+unknown"
 line-length = 120
 target-version = "py310"
 extend-exclude = [
-    "plex_generate_previews/_version.py",
+    "media_preview_generator/_version.py",
     ".venv",
     ".venv-test",
     "htmlcov",
@@ -162,8 +162,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]  # assert False is fine in tests
-"plex_generate_previews/gpu/__init__.py" = ["F401"]  # public-API re-export
-"plex_generate_previews/processing/__init__.py" = ["F401"]  # public-API re-export
+"media_preview_generator/gpu/__init__.py" = ["F401"]  # public-API re-export
+"media_preview_generator/processing/__init__.py" = ["F401"]  # public-API re-export
 
 [tool.ruff.format]
 quote-style = "double"

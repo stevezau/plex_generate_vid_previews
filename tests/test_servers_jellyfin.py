@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from plex_generate_previews.servers import (
+from media_preview_generator.servers import (
     ConnectionResult,
     JellyfinServer,
     Library,
@@ -56,7 +56,7 @@ def jelly():
 
 class TestConstruction:
     def test_implements_media_server(self, jelly):
-        from plex_generate_previews.servers import MediaServer
+        from media_preview_generator.servers import MediaServer
 
         assert isinstance(jelly, MediaServer)
 
@@ -467,7 +467,7 @@ class TestEnableTrickplayExtraction:
 
 class TestRegistryWiring:
     def test_registry_can_construct_jellyfin_server(self):
-        from plex_generate_previews.servers import ServerRegistry
+        from media_preview_generator.servers import ServerRegistry
 
         registry = ServerRegistry.from_settings(
             [

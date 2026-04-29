@@ -77,7 +77,7 @@ def media_root() -> Path:
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Reset the frame-cache singleton between tests in this directory."""
-    from plex_generate_previews.processing.frame_cache import reset_frame_cache
+    from media_preview_generator.processing.frame_cache import reset_frame_cache
 
     reset_frame_cache()
     yield

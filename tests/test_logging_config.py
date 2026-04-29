@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import plex_generate_previews.logging_config as _logging_mod
-from plex_generate_previews.logging_config import (
+import media_preview_generator.logging_config as _logging_mod
+from media_preview_generator.logging_config import (
     _json_sink,
     _jsonl_record_patcher,
     get_app_log_path,
@@ -34,8 +34,8 @@ def _reset_logging_state():
 class TestLoggingConfig:
     """Test logging configuration."""
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_default(self, mock_logger, mock_makedirs):
         """Test setup logging with default level."""
         setup_logging()
@@ -44,8 +44,8 @@ class TestLoggingConfig:
         mock_logger.remove.assert_called()
         mock_logger.add.assert_called()
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_debug(self, mock_logger, mock_makedirs):
         """Test setup logging with DEBUG level."""
         setup_logging("DEBUG")
@@ -53,8 +53,8 @@ class TestLoggingConfig:
         mock_logger.remove.assert_called_once()
         mock_logger.add.assert_called()
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_with_console(self, mock_logger, mock_makedirs):
         """Test setup logging with console parameter."""
         mock_console = MagicMock()
@@ -64,8 +64,8 @@ class TestLoggingConfig:
         mock_logger.remove.assert_called_once()
         mock_logger.add.assert_called()
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_adds_app_log_handler(self, mock_logger, mock_makedirs):
         """Test that setup_logging adds the consolidated JSONL app.log handler."""
         setup_logging()
@@ -79,8 +79,8 @@ class TestLoggingConfig:
         assert app_log_call.kwargs.get("retention") == 5
         assert "{extra[_jsonl]}" in (app_log_call.kwargs.get("format") or "")
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_custom_rotation_retention(self, mock_logger, mock_makedirs):
         """Test setup_logging with custom rotation and retention values."""
         setup_logging(rotation="5 MB", retention=4)
@@ -91,8 +91,8 @@ class TestLoggingConfig:
         assert app_log_call.kwargs.get("rotation") == "5 MB"
         assert app_log_call.kwargs.get("retention") == 4
 
-    @patch("plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError)
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs", side_effect=PermissionError)
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_handles_permission_error(self, mock_logger, mock_makedirs):
         """Test that setup_logging handles permission errors for log directory."""
         setup_logging()
@@ -126,8 +126,8 @@ class TestLoggingConfig:
 class TestJSONLogging:
     """Test LOG_FORMAT=json structured logging output."""
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_json_format_adds_json_sink(self, mock_logger, mock_makedirs):
         """When log_format='json', _json_sink should be registered."""
         setup_logging(log_format="json")
@@ -137,8 +137,8 @@ class TestJSONLogging:
         first_add = mock_logger.add.call_args_list[0]
         assert first_add.args[0] is _json_sink
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_json_format_via_env_var(self, mock_logger, mock_makedirs):
         """LOG_FORMAT env var should be respected when log_format is None."""
         with patch.dict(os.environ, {"LOG_FORMAT": "json"}):
@@ -146,16 +146,16 @@ class TestJSONLogging:
         first_add = mock_logger.add.call_args_list[0]
         assert first_add.args[0] is _json_sink
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_pretty_format_ignores_json_sink(self, mock_logger, mock_makedirs):
         """Explicit log_format='pretty' should NOT use _json_sink."""
         setup_logging(log_format="pretty")
         first_add = mock_logger.add.call_args_list[0]
         assert first_add.args[0] is not _json_sink
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_console_ignored_when_json(self, mock_logger, mock_makedirs):
         """Providing a console alongside json format should still use JSON."""
         mock_console = MagicMock()
@@ -170,7 +170,7 @@ class TestJSONLogging:
         captured = StringIO()
         logger.remove()
 
-        with patch("plex_generate_previews.logging_config.sys.stderr", captured):
+        with patch("media_preview_generator.logging_config.sys.stderr", captured):
             with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
                 setup_logging(log_format="json")
                 logger.info("hello structured world")
@@ -203,7 +203,7 @@ class TestJSONLogging:
         captured = StringIO()
         logger.remove()
 
-        with patch("plex_generate_previews.logging_config.sys.stderr", captured):
+        with patch("media_preview_generator.logging_config.sys.stderr", captured):
             with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
                 setup_logging(log_format="json")
                 try:
@@ -236,7 +236,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_get_set_broadcaster(self):
         """get/set_log_broadcaster round-trips correctly."""
-        from plex_generate_previews.logging_config import (
+        from media_preview_generator.logging_config import (
             SocketIOLogBroadcaster,
             get_log_broadcaster,
             set_log_broadcaster,
@@ -252,7 +252,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_sink_emits_to_correct_room(self):
         """sink() should call socketio.emit with room=level_name."""
-        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+        from media_preview_generator.logging_config import SocketIOLogBroadcaster
 
         mock_sio = MagicMock()
         broadcaster = SocketIOLogBroadcaster(mock_sio)
@@ -262,7 +262,7 @@ class TestSocketIOLogBroadcaster:
             "level": MagicMock(name="WARNING"),
             "time": MagicMock(),
             "message": "test warning",
-            "name": "plex_generate_previews.worker",
+            "name": "media_preview_generator.worker",
             "function": "run",
             "line": 42,
         }
@@ -284,7 +284,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_sink_filters_out_trace_level(self):
         """sink() should silently drop TRACE-level records."""
-        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+        from media_preview_generator.logging_config import SocketIOLogBroadcaster
 
         mock_sio = MagicMock()
         broadcaster = SocketIOLogBroadcaster(mock_sio)
@@ -305,7 +305,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_sink_swallows_emit_errors(self):
         """sink() must not raise when socketio.emit fails."""
-        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+        from media_preview_generator.logging_config import SocketIOLogBroadcaster
 
         mock_sio = MagicMock()
         mock_sio.emit.side_effect = RuntimeError("boom")
@@ -325,11 +325,11 @@ class TestSocketIOLogBroadcaster:
 
         broadcaster.sink(record)  # should not raise
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_attaches_broadcaster(self, mock_logger, mock_makedirs):
         """When a broadcaster is registered, setup_logging adds it as a handler."""
-        from plex_generate_previews.logging_config import (
+        from media_preview_generator.logging_config import (
             SocketIOLogBroadcaster,
             set_log_broadcaster,
         )
@@ -359,7 +359,7 @@ class TestJsonlRecordPatcher:
             "time": MagicMock(),
             "level": MagicMock(),
             "message": "hello world",
-            "name": "plex_generate_previews.worker",
+            "name": "media_preview_generator.worker",
             "function": "run",
             "line": 42,
             "extra": {},
