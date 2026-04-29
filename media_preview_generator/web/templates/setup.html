@@ -133,6 +133,18 @@
                         <div id="manualPlexResult" class="small mt-2"></div>
                     </details>
                 </div>
+
+                {# Emby/Jellyfin connection panel — revealed inline when the user
+                   picks Emby or Jellyfin in the vendor picker (no modal popup).
+                   Reuses the exact same connection-form partial that the
+                   /servers Add Server modal uses, so server.js wires both up
+                   identically by ID. #}
+                <div id="ejConnectPanel" class="d-none mt-3">
+                    <button type="button" class="btn btn-link text-muted small mb-3" id="ejVendorBackBtn">
+                        <i class="bi bi-arrow-left me-1"></i>Pick a different server
+                    </button>
+                    {% include "_server_connection_form.html" %}
+                </div>
             </div>
         </div>
 
@@ -425,11 +437,6 @@
     </div>
 </div>
 
-{# Add Server modal — opened inline by the wizard's Emby/Jellyfin
-   vendor-picker buttons (instead of redirecting to /servers). The
-   shared partial is also used on /servers; servers.js (loaded below)
-   guards its /servers-only init code so it no-ops here. #}
-{% include "_add_server_modal.html" %}
 {% endblock %}
 
 {% block scripts %}
@@ -579,48 +586,56 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('step1Next').addEventListener('click', () => goToStep(2));
 
     // Vendor picker on Step 1:
-    //   * Plex → reveal the existing OAuth panel in-place; the rest of
-    //     the wizard (steps 2–5) runs unchanged.
-    //   * Emby / Jellyfin → open the shared Add Server modal (included
-    //     in setup.html as a partial) pre-selected to that vendor. The
-    //     modal handles URL/auth/library selection + posts to
-    //     /api/servers; on success it dispatches `mediaServerAdded`,
-    //     which our handler below catches to skip wizard steps 2 + 3
-    //     (Plex-specific) and jump straight to step 4 (GPU).
+    //   * Plex → reveal the existing OAuth panel in-place.
+    //   * Emby / Jellyfin → reveal the shared connection form INLINE in the
+    //     same step card (no modal popup). The form posts to /api/servers
+    //     and dispatches `mediaServerAdded`; the handler below catches it
+    //     and jumps to wizard step 4 (GPU). servers.js's pickVendor helper
+    //     primes the form for the chosen vendor.
+    function _showVendorPicker() {
+        document.getElementById('plexSignInPanel').classList.add('d-none');
+        document.getElementById('ejConnectPanel').classList.add('d-none');
+        document.getElementById('vendorPicker').classList.remove('d-none');
+        document.getElementById('step1Next').classList.add('d-none');
+        // resetServerWizard clears every form field by id, including the
+        // wizard's step-3 #plexConfigFolder (the connection form and the
+        // wizard share that id since the modal isn't included on /setup).
+        // Save + restore the step-3 default so the user doesn't see a
+        // blank field if they later switch to the Plex flow.
+        const cfgEl = document.getElementById('plexConfigFolder');
+        const savedCfg = cfgEl ? cfgEl.value : '';
+        if (window.MPGShared && window.MPGShared.resetServerWizard) {
+            window.MPGShared.resetServerWizard();
+        }
+        if (cfgEl) cfgEl.value = savedCfg;
+    }
+
     document.querySelectorAll('.wizard-vendor-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
             const vendor = btn.dataset.vendor;
+            document.getElementById('vendorPicker').classList.add('d-none');
             if (vendor === 'plex') {
-                document.getElementById('vendorPicker').classList.add('d-none');
                 document.getElementById('plexSignInPanel').classList.remove('d-none');
                 document.getElementById('step1Next').classList.remove('d-none');
                 return;
             }
-            const modalEl = document.getElementById('addServerModal');
-            if (!modalEl || !window.bootstrap) {
-                // Shouldn't happen — partial + bootstrap both load on /setup.
-                console.error('Add Server modal not available; falling back to /servers redirect.');
-                window.location.href = '/servers?add=' + encodeURIComponent(vendor);
-                return;
+            // E/J inline panel — reveal it then ask servers.js to set up
+            // the form state for this vendor (vendor label + auth-method
+            // visibility + step-connect view).
+            document.getElementById('ejConnectPanel').classList.remove('d-none');
+            if (window.MPGShared && window.MPGShared.pickVendor) {
+                window.MPGShared.pickVendor(vendor);
             }
-            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
-            modal.show();
-            // Wait for resetWizard (fires on show.bs.modal) to clear state,
-            // then click the matching vendor button so the modal advances
-            // straight to its connection form.
-            setTimeout(() => {
-                document.querySelector(
-                    '.server-type-btn[data-type="' + vendor + '"]'
-                )?.click();
-            }, 50);
         });
     });
 
-    document.getElementById('vendorPickerBackBtn')?.addEventListener('click', () => {
-        document.getElementById('plexSignInPanel').classList.add('d-none');
-        document.getElementById('vendorPicker').classList.remove('d-none');
-        document.getElementById('step1Next').classList.add('d-none');
-    });
+    document.getElementById('vendorPickerBackBtn')?.addEventListener('click', _showVendorPicker);
+    document.getElementById('ejVendorBackBtn')?.addEventListener('click', _showVendorPicker);
+
+    // The connection form's modal-style Back/Edit buttons default to
+    // showing #step-type, which doesn't exist in the wizard's inline
+    // panel. Re-target them to return to the vendor picker instead.
+    document.getElementById('step-connect-back')?.addEventListener('click', _showVendorPicker);
 
     // After the Add Server modal saves an Emby / Jellyfin server, jump
     // the wizard from step 1 directly to step 4 (GPU). Steps 2 and 3 are
@@ -816,24 +831,26 @@ document.addEventListener('DOMContentLoaded', function() {
             loading.classList.add('d-none');
 
             libraries.forEach(lib => {
-                const card = document.createElement('div');
-                card.className = 'library-card';
+                // The card itself is a <label for="lib-X"> so the browser
+                // toggles the checkbox natively when the user clicks anywhere
+                // inside it (including the strong/small text). The previous
+                // version used a separate <label> AND a card click handler,
+                // which double-toggled (browser flip + handler flip) and
+                // left the box unchecked — see plan iridescent-churning-bear.
+                const card = document.createElement('label');
+                card.className = 'library-card mb-0';
                 card.dataset.id = lib.id;
+                card.htmlFor = `lib-${lib.id}`;
                 card.innerHTML = `
                     <input type="checkbox" id="lib-${lib.id}">
-                    <label for="lib-${lib.id}">
-                        <strong>${lib.name}</strong>
-                        <br><small class="text-muted">${libraryTypeLabel(lib)}</small>
-                    </label>
+                    <strong>${lib.name}</strong>
+                    <br><small class="text-muted">${libraryTypeLabel(lib)}</small>
                 `;
-
-                card.addEventListener('click', function() {
-                    const checkbox = this.querySelector('input[type="checkbox"]');
-                    checkbox.checked = !checkbox.checked;
-                    this.classList.toggle('selected', checkbox.checked);
+                const checkbox = card.querySelector('input[type="checkbox"]');
+                checkbox.addEventListener('change', () => {
+                    card.classList.toggle('selected', checkbox.checked);
                     updateSelectedLibraries();
                 });
-
                 grid.appendChild(card);
             });
 

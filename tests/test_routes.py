@@ -176,6 +176,31 @@ class TestPageRoutes:
         assert b"gpu_config_panel.js" in body
         assert b"servers.js" in body
 
+    def test_setup_page_inlines_connection_form_partial(self, client):
+        """The Emby/Jellyfin connection form is rendered inline inside the
+        wizard card (not in a modal popup). Assert the expected markers
+        are present and the modal partial is *not* — that combination is
+        what makes the wizard feel like one continuous flow."""
+        resp = client.get("/setup")
+        assert resp.status_code == 200
+        body = resp.data
+        # Inline panel + connection-form fields from the shared partial
+        assert b"ejConnectPanel" in body
+        assert b'id="serverUrl"' in body
+        assert b'id="auth-method-section"' in body
+        # The Add Server modal must NOT be on /setup anymore — it was
+        # the popup the user disliked. /servers still has it.
+        assert b'id="addServerModal"' not in body
+
+    def test_servers_page_still_has_modal(self, authed_client):
+        """Sanity: the modal popup stays on /servers (it's the surface
+        for adding servers post-setup). Catches an over-zealous removal."""
+        resp = authed_client.get("/servers")
+        assert resp.status_code == 200
+        assert b'id="addServerModal"' in resp.data
+        # The connection-form partial is shared with /setup.
+        assert b'id="serverUrl"' in resp.data
+
 
 # ---------------------------------------------------------------------------
 # Login / Logout

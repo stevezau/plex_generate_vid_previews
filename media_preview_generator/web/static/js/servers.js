@@ -191,8 +191,14 @@
         Object.keys(wizard).forEach((k) => { wizard[k] = null; });
         wizard.url = '';
         wizard.name = '';
-        showStep('step-type');
-        $('#serverModalTitle').textContent = 'Add Server';
+        // step-type only exists when the modal is on the page (i.e. /servers).
+        // The setup wizard inlines just the connection form and supplies its
+        // own vendor picker, so guard the call here.
+        if (document.getElementById('step-type')) {
+            showStep('step-type');
+        }
+        const titleEl = document.getElementById('serverModalTitle');
+        if (titleEl) titleEl.textContent = 'Add Server';
         $('#serverUrl').value = '';
         $('#serverName').value = '';
         $('#authUsername').value = '';
@@ -206,6 +212,19 @@
             clearInterval(wizard.quickConnectPoll);
             wizard.quickConnectPoll = null;
         }
+    }
+
+    // Switch the connection form into "connect to <vendor>" mode and reveal
+    // step-connect. Used by both the modal's vendor buttons (/servers) and
+    // the setup wizard's vendor picker (/setup, via window.MPGShared.pickVendor).
+    function pickVendorAndAdvance(vendor) {
+        wizard.type = vendor;
+        const vendorLabel = document.getElementById('step-connect-vendor');
+        if (vendorLabel) {
+            vendorLabel.textContent = vendor[0].toUpperCase() + vendor.slice(1);
+        }
+        showStep('step-connect');
+        configureAuthForType(vendor);
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -229,38 +248,39 @@
             });
         }
 
-        // Wizard wiring.
-        document.getElementById('addServerModal').addEventListener('show.bs.modal', resetWizard);
-        document.getElementById('addServerModal').addEventListener('hidden.bs.modal', resetWizard);
+        // Modal-only wiring. /setup inlines the connection form (no modal),
+        // so guard these so a missing #addServerModal doesn't throw and
+        // break the connection-form button listeners further down.
+        const modalEl = document.getElementById('addServerModal');
+        if (modalEl) {
+            modalEl.addEventListener('show.bs.modal', resetWizard);
+            modalEl.addEventListener('hidden.bs.modal', resetWizard);
+        }
 
         $$('.server-type-btn').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                wizard.type = btn.dataset.type;
-                $('#step-connect-vendor').textContent = wizard.type[0].toUpperCase() + wizard.type.slice(1);
-                showStep('step-connect');
-                configureAuthForType(wizard.type);
-            });
+            btn.addEventListener('click', () => pickVendorAndAdvance(btn.dataset.type));
         });
 
-        // Setup wizard step 1 redirects here with ?add=plex|emby|jellyfin
-        // when the user picks a non-Plex vendor (or Plex over the explicit
-        // route). Auto-open the Add Server modal pre-selected to that
-        // vendor so the user lands on the connection form straight away.
+        // Legacy /servers?add=<vendor> entry point — pre-opens the modal at
+        // the connection step. Setup wizard no longer uses this path (it
+        // calls window.MPGShared.pickVendor directly via the inline panel),
+        // but kept for any deep links / bookmarks that survived the refactor.
         const _addParam = new URLSearchParams(window.location.search).get('add');
-        if (_addParam && ['plex', 'emby', 'jellyfin'].includes(_addParam)) {
-            const _modalEl = document.getElementById('addServerModal');
-            const _modal = bootstrap.Modal.getOrCreateInstance(_modalEl);
+        if (_addParam && ['plex', 'emby', 'jellyfin'].includes(_addParam) && modalEl) {
+            const _modal = bootstrap.Modal.getOrCreateInstance(modalEl);
             _modal.show();
-            // resetWizard fires on show.bs.modal; click the matching vendor
-            // button on the next tick so the wizard advances to step-connect.
             setTimeout(() => {
                 document.querySelector('.server-type-btn[data-type="' + _addParam + '"]')?.click();
             }, 50);
-            // Drop the param so a refresh doesn't re-open the modal.
             window.history.replaceState({}, '', window.location.pathname);
         }
 
-        $('#step-connect-back').addEventListener('click', () => showStep('step-type'));
+        // step-connect-back returns to step-type — that only exists in the
+        // modal. /setup overrides this in its own DOMContentLoaded handler
+        // to return to the wizard's vendor picker instead.
+        $('#step-connect-back').addEventListener('click', () => {
+            if (document.getElementById('step-type')) showStep('step-type');
+        });
 
         $$('input[name="authMethod"]').forEach((radio) => {
             radio.addEventListener('change', () => {
@@ -646,8 +666,12 @@
         if (!payload) { alert('No test payload — go back and run a connection test first.'); return; }
         const r = await api('POST', '/api/servers', payload);
         if (r.ok) {
-            const modal = bootstrap.Modal.getInstance(document.getElementById('addServerModal'));
-            modal.hide();
+            // Modal only exists on /servers; /setup inlines the form.
+            const modalEl = document.getElementById('addServerModal');
+            if (modalEl) {
+                const modal = bootstrap.Modal.getInstance(modalEl);
+                if (modal) modal.hide();
+            }
             // Notify any listening page (the setup wizard subscribes to this
             // so it can advance from step 1 → GPU/security after an
             // Emby/Jellyfin add). Always fires; /servers ignores it.
@@ -1092,4 +1116,9 @@
     window.MPGShared.validateLocalPathInput = _validateLocalPathInput;
     window.MPGShared.debouncedValidatePath = _debouncedValidatePath;
     window.MPGShared.addPathMappingRow = addPathMappingRow;
+    // Used by the /setup wizard's vendor picker to enter the inlined
+    // connection form at "step-connect" without going through #step-type
+    // (which only exists in the modal).
+    window.MPGShared.pickVendor = pickVendorAndAdvance;
+    window.MPGShared.resetServerWizard = resetWizard;
 })();
