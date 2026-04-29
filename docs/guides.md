@@ -261,7 +261,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### Prerequisites
 
-- Plex Generate Previews running with the web UI accessible
+- Media Preview Generator running with the web UI accessible
 - Radarr and/or Sonarr installed and managing your media (for Radarr/Sonarr webhooks)
 
 ### Configure Radarr

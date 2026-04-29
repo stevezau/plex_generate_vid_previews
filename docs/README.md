@@ -1,6 +1,6 @@
 # Documentation
 
-> Plex Generate Previews | [Main README](../README.md)
+> Media Preview Generator | [Main README](../README.md)
 
 Pick the right doc for what you're trying to do.
 

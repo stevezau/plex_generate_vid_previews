@@ -1,4 +1,4 @@
-# Plex Generate Previews
+# Media Preview Generator
 
 GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, QSV, VideoToolbox) and parallel workers. Docker-only deployment with a web UI as the sole interface (no CLI).
 

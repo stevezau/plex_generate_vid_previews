@@ -1,4 +1,4 @@
-# Docker Compose Examples for Plex Generate Previews
+# Docker Compose Examples for Media Preview Generator
 #
 # Copy this file to docker-compose.yml and modify as needed.
 # Choose ONE of the configurations below based on your setup.

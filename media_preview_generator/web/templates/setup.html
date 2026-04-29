@@ -41,19 +41,23 @@
         </div>
     </div>
 
-    <!-- Step 1: Plex Sign In -->
+    <!-- Step 1: Connect your media server -->
     <div class="setup-step active" data-step="1">
         <div class="card">
             <div class="card-body text-center">
-                <h4 class="card-title mb-4">Sign in with Plex</h4>
+                <h4 class="card-title mb-4">Connect your media server</h4>
                 <p class="text-muted mb-4">
-                    Connect your Plex account to automatically discover your servers and libraries.
+                    This wizard's quick-start path uses Plex (sign in with your Plex account
+                    below; we auto-discover your servers and libraries). For
+                    <strong>Emby</strong> or <strong>Jellyfin</strong>, click <strong>Skip setup</strong>
+                    and add the server manually from the Servers page — same multi-vendor
+                    pipeline, same dashboard.
                 </p>
 
                 <div class="alert alert-info small text-start py-2 mb-4">
                     <i class="bi bi-info-circle me-1"></i>
-                    Using Emby or Jellyfin instead? Click <strong>Skip setup</strong> below — you can
-                    add any server type from the Servers page after the wizard closes.
+                    You can add any number of Plex / Emby / Jellyfin servers after the wizard
+                    closes; the dispatcher fans each new file out to every server that owns it.
                 </div>
 
                 <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">

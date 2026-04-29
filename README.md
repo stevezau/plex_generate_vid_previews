@@ -16,10 +16,10 @@
 <div align="center">
   <img src="docs/images/icon.svg" alt="Logo" width="120" height="120">
 
-  <h1 align="center">Plex Generate Previews</h1>
+  <h1 align="center">Media Preview Generator</h1>
 
   <p align="center">
-    GPU-accelerated video preview thumbnail generation for Plex Media Server
+    GPU-accelerated video preview thumbnail generation for <strong>Plex, Emby, and Jellyfin</strong>
     <br />
     <a href="docs/README.md"><strong>Explore the docs</strong></a>
     <br />
