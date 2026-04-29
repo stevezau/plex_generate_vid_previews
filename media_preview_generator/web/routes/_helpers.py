@@ -13,8 +13,12 @@ from loguru import logger
 
 # Safe root directories for user-provided paths. All user-supplied
 # paths must resolve within these directories before any filesystem
-# operations are performed. Override via environment variables.
-PLEX_DATA_ROOT = os.path.realpath(os.environ.get("PLEX_DATA_ROOT", "/plex"))
+# operations are performed. Defaults to "/" (no restriction beyond
+# null-byte / symlink-escape sanitisation in _safe_resolve_within),
+# since this is a self-hosted single-operator app and the user is
+# also the operator. Operators who want defense-in-depth can pin the
+# allowed root via env var (e.g. PLEX_DATA_ROOT=/plex).
+PLEX_DATA_ROOT = os.path.realpath(os.environ.get("PLEX_DATA_ROOT", "/"))
 MEDIA_ROOT = os.path.realpath(os.environ.get("MEDIA_ROOT", "/"))
 
 # Rate limiter — only applied to specific endpoints (login, auth).

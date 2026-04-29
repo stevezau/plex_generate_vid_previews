@@ -295,21 +295,12 @@
                     </button>
                 </div>
 
-                <!-- Validation Results -->
-                <div id="pathValidation" class="mt-4 d-none">
-                    <hr>
-                    <h5 class="mb-3"><i class="bi bi-check-circle me-2"></i>Validation Results</h5>
-                    <div id="pathValidationResults"></div>
-                </div>
             </div>
         </div>
 
         <div class="d-flex justify-content-between mt-4">
             <button type="button" class="btn btn-outline-secondary" id="step3Back">
                 <i class="bi bi-arrow-left me-1"></i> Back
-            </button>
-            <button type="button" class="btn btn-outline-info me-2" id="validatePathsBtn">
-                <i class="bi bi-check2-circle me-1"></i> Validate Paths
             </button>
             <button type="button" class="btn btn-primary" id="step3Next">
                 Next <i class="bi bi-arrow-right ms-1"></i>
@@ -1062,77 +1053,11 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Validate Paths button
-    document.getElementById('validatePathsBtn').addEventListener('click', validatePaths);
-
-    async function validatePaths() {
-        const btn = document.getElementById('validatePathsBtn');
-        const resultsDiv = document.getElementById('pathValidation');
-        const resultsContent = document.getElementById('pathValidationResults');
-
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Validating...';
-
-        try {
-            const payload = {
-                plex_config_folder: document.getElementById('wizardPlexConfigFolder').value,
-                path_mappings: setupCollectPathMappingRows()
-            };
-            const response = await fetch('/api/setup/validate-paths', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : ''
-                },
-                body: JSON.stringify(payload)
-            });
-
-            const data = await response.json();
-            resultsDiv.classList.remove('d-none');
-
-            let html = '';
-
-            // Errors
-            if (data.errors && data.errors.length > 0) {
-                html += '<div class="alert alert-danger py-2 mb-2">';
-                html += '<strong><i class="bi bi-x-circle me-1"></i>Errors:</strong><ul class="mb-0 mt-1">';
-                data.errors.forEach(e => html += `<li>${e}</li>`);
-                html += '</ul></div>';
-            }
-
-            // Warnings
-            if (data.warnings && data.warnings.length > 0) {
-                html += '<div class="alert alert-warning py-2 mb-2">';
-                html += '<strong><i class="bi bi-exclamation-triangle me-1"></i>Warnings:</strong><ul class="mb-0 mt-1">';
-                data.warnings.forEach(w => html += `<li>${w}</li>`);
-                html += '</ul></div>';
-            }
-
-            // Info/Success
-            if (data.info && data.info.length > 0) {
-                html += '<div class="alert alert-success py-2 mb-2">';
-                html += '<strong><i class="bi bi-check-circle me-1"></i>Verified:</strong><ul class="mb-0 mt-1">';
-                data.info.forEach(i => html += `<li>${i}</li>`);
-                html += '</ul></div>';
-            }
-
-            // Overall status
-            if (data.valid) {
-                html += '<div class="text-success mt-2"><i class="bi bi-check-circle-fill me-1"></i><strong>Paths look good! You can proceed.</strong></div>';
-            } else {
-                html += '<div class="text-danger mt-2"><i class="bi bi-x-circle-fill me-1"></i><strong>Please fix the errors above before proceeding.</strong></div>';
-            }
-
-            resultsContent.innerHTML = html;
-
-        } catch (error) {
-            resultsDiv.classList.remove('d-none');
-            resultsContent.innerHTML = `<div class="alert alert-danger">Failed to validate: ${error.message}</div>`;
-        }
-
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Validate Paths';
-    }
+    // No "Validate Paths" button — every input on this step validates
+    // inline as the user types (Plex config folder + each path-mapping
+    // row hit /api/settings/validate-{plex-config-folder,local-path}
+    // with debounced feedback). The Next button advances when the user
+    // is satisfied; the same checks fire server-side on save anyway.
 
     document.getElementById('step3Next').addEventListener('click', async () => {
         await settingsManager.save({
