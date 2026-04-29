@@ -2,11 +2,13 @@
      When you update README.md significantly, update this file to match.
      Docker Hub does not render mermaid diagrams, GitHub admonitions, or relative images. -->
 
-# Plex Generate Previews
+# Media Preview Generator
 
-GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web UI only** — no CLI.
+GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfin**. **Web UI only** — no CLI.
 
-**The Problem:** Plex's built-in preview generation is painfully slow.
+> Previously named **Plex Generate Previews** at `stevezzau/plex_generate_vid_previews`. That image keeps mirroring updates until **2026-10-29**; after that, only this repo (`stevezzau/media_preview_generator`) is published. Update your `compose` to the new name when convenient — settings and volumes carry over unchanged.
+
+**The Problem:** Built-in preview generation in Plex / Emby / Jellyfin is painfully slow.
 
 **The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
 

@@ -27,6 +27,14 @@ from loguru import logger
 VULKAN_SOFTWARE_FALLBACK_ID = "vulkan_software_fallback"
 TIMEZONE_MISCONFIGURED_ID = "timezone_misconfigured"
 SCHEMA_MIGRATION_ID = "schema_migration_completed"
+DEPRECATED_IMAGE_ID = "deprecated_docker_image_name"
+
+# Image names recognised by the deprecation banner. The deprecated image
+# keeps publishing alongside the canonical name until 2026-10-29 (six months
+# after the rename); after that, only the canonical name receives updates.
+DEPRECATED_IMAGE_NAME = "stevezzau/plex_generate_vid_previews"
+CANONICAL_IMAGE_NAME = "stevezzau/media_preview_generator"
+DEPRECATED_IMAGE_SUNSET_DATE = "2026-10-29"
 
 
 _SESSION_DISMISSED: set[str] = set()
@@ -172,12 +180,52 @@ def dismiss_schema_migration_notice() -> None:
         sm.set("_pending_migration_notice", None)
 
 
+def _build_deprecated_image_notification() -> dict[str, Any] | None:
+    """Banner shown when the running image is the deprecated Docker name.
+
+    The Dockerfile bakes ``DOCKER_IMAGE_NAME`` at build time via a build
+    arg; CI sets it to ``stevezzau/plex_generate_vid_previews`` for the
+    deprecated mirror image and to ``stevezzau/media_preview_generator``
+    for the canonical image. Local dev builds default to ``"local"``.
+    Only fires for the deprecated value so users on the canonical name
+    (and dev builds) never see it.
+    """
+    import os
+
+    image_name = (os.environ.get("DOCKER_IMAGE_NAME") or "").strip()
+    if image_name != DEPRECATED_IMAGE_NAME:
+        return None
+
+    body = (
+        f"<p class='mb-1'>You're running the Docker image "
+        f"<code>{DEPRECATED_IMAGE_NAME}</code>, which has been renamed to "
+        f"<code>{CANONICAL_IMAGE_NAME}</code> to reflect that this app now "
+        f"supports Plex, Emby, and Jellyfin.</p>"
+        f"<p class='mb-1'>Both image names mirror the same builds until "
+        f"<strong>{DEPRECATED_IMAGE_SUNSET_DATE}</strong>; after that, only "
+        f"<code>{CANONICAL_IMAGE_NAME}</code> receives updates. Update your "
+        f"<code>compose</code> file&apos;s <code>image:</code> line and pull "
+        f"the new image to keep getting updates.</p>"
+        f"<p class='mb-0 small text-muted'>Existing volumes, settings, and "
+        f"configuration are unchanged — only the image name moves.</p>"
+    )
+    return {
+        "id": DEPRECATED_IMAGE_ID,
+        "severity": "warning",
+        "title": "Update your Docker image",
+        "body_html": body,
+        "dismissable": True,
+        "source": "image_deprecation",
+    }
+
+
 def _notification_sources() -> list[dict[str, Any] | None]:
     """All notification builders.  Add new sources here as they arrive."""
     return [
         _build_vulkan_software_fallback_notification(),
         _build_timezone_misconfigured_notification(),
         _build_schema_migration_notification(),
+        _build_deprecated_image_notification(),
     ]
 
 

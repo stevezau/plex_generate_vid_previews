@@ -19,7 +19,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # Build wheels for the app and all dependencies (pre-compiled, no gcc needed at install time)
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
-      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=$SETUPTOOLS_SCM_PRETEND_VERSION \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=$SETUPTOOLS_SCM_PRETEND_VERSION \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
     else \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
@@ -34,6 +34,14 @@ FROM linuxserver/ffmpeg:8.0.1-cli-ls56
 ARG GIT_BRANCH=unknown
 ARG GIT_SHA=unknown
 ARG BUILD_DATE=unknown
+
+# Published image name baked in at build time. CI passes one of:
+#   - stevezzau/plex_generate_vid_previews  (deprecated mirror; banner fires)
+#   - stevezzau/media_preview_generator     (canonical name; no banner)
+#   - local                                  (dev / unset; no banner)
+# The runtime reads $DOCKER_IMAGE_NAME and surfaces an in-app deprecation
+# notification when it matches the deprecated name.
+ARG DOCKER_IMAGE_NAME=local
 
 # Runtime dependencies.  Split into two apt passes because we add two
 # third-party repos before pulling jellyfin-ffmpeg + newer Intel drivers.
@@ -124,7 +132,8 @@ WORKDIR /app
 # Expose build metadata to the app (non-secret)
 ENV GIT_BRANCH=${GIT_BRANCH} \
     GIT_SHA=${GIT_SHA} \
-    BUILD_DATE=${BUILD_DATE}
+    BUILD_DATE=${BUILD_DATE} \
+    DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME}
 
 # Copy application source (needed for Flask templates and static files)
 COPY pyproject.toml ./

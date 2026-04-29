@@ -276,6 +276,45 @@ class TestBuildActiveNotifications:
         assert notifications == []
 
 
+class TestDeprecatedImageNotification:
+    """Banner that fires when DOCKER_IMAGE_NAME is the deprecated mirror."""
+
+    def test_silent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("DOCKER_IMAGE_NAME", raising=False)
+        with patch(
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
+            return_value=VulkanProbeResult(device="NVIDIA", is_software=False),
+        ):
+            ids = [n["id"] for n in build_active_notifications()]
+        assert "deprecated_docker_image_name" not in ids
+
+    def test_silent_when_running_canonical_image(self, monkeypatch):
+        monkeypatch.setenv("DOCKER_IMAGE_NAME", "stevezzau/media_preview_generator")
+        with patch(
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
+            return_value=VulkanProbeResult(device="NVIDIA", is_software=False),
+        ):
+            ids = [n["id"] for n in build_active_notifications()]
+        assert "deprecated_docker_image_name" not in ids
+
+    def test_fires_when_running_deprecated_image(self, monkeypatch):
+        monkeypatch.setenv("DOCKER_IMAGE_NAME", "stevezzau/plex_generate_vid_previews")
+        with patch(
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
+            return_value=VulkanProbeResult(device="NVIDIA", is_software=False),
+        ):
+            notifications = build_active_notifications()
+        deprecated = next((n for n in notifications if n["id"] == "deprecated_docker_image_name"), None)
+        assert deprecated is not None
+        assert deprecated["severity"] == "warning"
+        assert deprecated["dismissable"] is True
+        # The body names both the old and the new image so users can copy-paste.
+        assert "stevezzau/plex_generate_vid_previews" in deprecated["body_html"]
+        assert "stevezzau/media_preview_generator" in deprecated["body_html"]
+        # And carries the sunset date.
+        assert "2026-10-29" in deprecated["body_html"]
+
+
 class TestSettingsManagerDismissedNotifications:
     """Tests for the dismissed_notifications property + helpers."""
 

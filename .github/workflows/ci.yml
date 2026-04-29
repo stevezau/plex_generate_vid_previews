@@ -25,9 +25,12 @@ on:
   workflow_dispatch:
 
 env:
-  # Change this to your Docker Hub image name for forks.
-  # See CONTRIBUTING.md for full instructions.
-  DOCKER_IMAGE: stevezzau/plex_generate_vid_previews
+  # Canonical Docker Hub image name. The deprecated mirror below keeps
+  # publishing alongside this one until 2026-10-29 so users on the old
+  # name keep getting updates while they migrate.
+  # Change DOCKER_IMAGE for forks; see CONTRIBUTING.md.
+  DOCKER_IMAGE: stevezzau/media_preview_generator
+  DOCKER_IMAGE_DEPRECATED: stevezzau/plex_generate_vid_previews
 
 concurrency:
   # Cancel superseded PR runs; never cancel in-flight pushes to main/dev/tags
@@ -99,7 +102,8 @@ jobs:
       head_branch: ${{ steps.ctx.outputs.head_branch }}
       head_sha: ${{ steps.ctx.outputs.head_sha }}
       is_tag: ${{ steps.ctx.outputs.is_tag }}
-      docker_tags: ${{ steps.ctx.outputs.docker_tags }}
+      docker_tags_canonical: ${{ steps.ctx.outputs.docker_tags_canonical }}
+      docker_tags_deprecated: ${{ steps.ctx.outputs.docker_tags_deprecated }}
     steps:
       - name: Compute build context
         id: ctx
@@ -112,11 +116,13 @@ jobs:
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           if [[ "$REF_TYPE" == "tag" ]]; then
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_canonical=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_deprecated=-t ${{ env.DOCKER_IMAGE_DEPRECATED }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE_DEPRECATED }}:latest" >> "$GITHUB_OUTPUT"
           else
             # dev branch push or manual workflow_dispatch
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_canonical=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_deprecated=-t ${{ env.DOCKER_IMAGE_DEPRECATED }}:dev" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -125,10 +131,24 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          # 4 jobs total: 2 platforms × 2 image flavours. The deprecated
+          # mirror and the canonical image differ only in the published
+          # name + the DOCKER_IMAGE_NAME build-arg baked in (drives the
+          # in-app deprecation banner). Layer cache is shared across
+          # flavours via cache-scope so the second flavour's build is
+          # near-instant.
           - platform: linux/amd64
             runner: ubuntu-latest
+            image_flavour: canonical
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            image_flavour: deprecated
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+            image_flavour: canonical
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            image_flavour: deprecated
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -154,6 +174,15 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Resolve image name for this flavour
+        id: image
+        run: |
+          if [[ "${{ matrix.image_flavour }}" == "canonical" ]]; then
+            echo "name=${{ env.DOCKER_IMAGE }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ env.DOCKER_IMAGE_DEPRECATED }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -163,8 +192,9 @@ jobs:
           build-args: |
             GIT_BRANCH=${{ needs.context.outputs.head_branch }}
             GIT_SHA=${{ needs.context.outputs.head_sha }}
+            DOCKER_IMAGE_NAME=${{ steps.image.outputs.name }}
             ${{ needs.context.outputs.is_tag == 'true' && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', needs.context.outputs.head_branch) || '' }}
-          outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
 
@@ -177,7 +207,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}-${{ matrix.image_flavour }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -192,11 +222,18 @@ jobs:
           fetch-depth: 0  # Full history for setuptools-scm versioning
           ref: ${{ needs.context.outputs.head_sha }}
 
-      - name: Download digests
+      - name: Download canonical digests
         uses: actions/download-artifact@v4
         with:
-          path: /tmp/digests
-          pattern: digest-*
+          path: /tmp/digests/canonical
+          pattern: digest-*-canonical
+          merge-multiple: true
+
+      - name: Download deprecated digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests/deprecated
+          pattern: digest-*-deprecated
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -208,12 +245,19 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
+      - name: Create canonical manifest list and push
+        working-directory: /tmp/digests/canonical
         run: |
           docker buildx imagetools create \
-            ${{ needs.context.outputs.docker_tags }} \
+            ${{ needs.context.outputs.docker_tags_canonical }} \
             $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
+
+      - name: Create deprecated mirror manifest list and push
+        working-directory: /tmp/digests/deprecated
+        run: |
+          docker buildx imagetools create \
+            ${{ needs.context.outputs.docker_tags_deprecated }} \
+            $(printf '${{ env.DOCKER_IMAGE_DEPRECATED }}@sha256:%s ' *)
 
   update-dockerhub-description:
     runs-on: ubuntu-latest
@@ -224,10 +268,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Update Docker Hub description
+      - name: Update canonical Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: stevezzau/media_preview_generator
+          readme-filepath: ./DOCKERHUB_README.md
+
+      - name: Update deprecated mirror Docker Hub description
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: stevezzau/plex_generate_vid_previews
-          readme-filepath: ./DOCKERHUB_README.md
+          readme-filepath: ./DOCKERHUB_DEPRECATED_README.md

@@ -316,6 +316,35 @@ def _log_build_provenance() -> None:
         sha = os.environ.get("GIT_SHA") or sha
         built = os.environ.get("BUILD_DATE") or built
     logger.info("Build: {} @ {}, built {}", branch, sha, built)
+    _log_image_deprecation_warning()
+
+
+def _log_image_deprecation_warning() -> None:
+    """Emit a startup warning when the running image is the deprecated name.
+
+    Mirrors the in-app notification card surfaced by
+    ``notifications._build_deprecated_image_notification`` so the same
+    information shows up in ``docker logs`` for ops who tail the log
+    rather than open the dashboard. Silent when the env var is unset
+    (local dev) or set to the canonical name.
+    """
+    from .notifications import (
+        CANONICAL_IMAGE_NAME,
+        DEPRECATED_IMAGE_NAME,
+        DEPRECATED_IMAGE_SUNSET_DATE,
+    )
+
+    image_name = (os.environ.get("DOCKER_IMAGE_NAME") or "").strip()
+    if image_name != DEPRECATED_IMAGE_NAME:
+        return
+    logger.warning(
+        "Running deprecated Docker image {!r} — switch your compose to {!r} "
+        "before {} to keep getting updates. (Both image names mirror the same "
+        "builds until then; only the canonical name receives updates after.)",
+        DEPRECATED_IMAGE_NAME,
+        CANONICAL_IMAGE_NAME,
+        DEPRECATED_IMAGE_SUNSET_DATE,
+    )
 
 
 def create_app(config_dir: str = None) -> Flask:
