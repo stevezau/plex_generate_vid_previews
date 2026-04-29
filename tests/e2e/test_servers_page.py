@@ -8,100 +8,59 @@ Covers the page surface that ships with multi-server support:
   shows the right auth options (Emby / Jellyfin show the auth-method
   picker; Plex shows the OAuth + manual-token block).
 * The webhook URL block renders with a non-empty URL.
+
+Shared fixtures (``app_url`` / ``session_cookie`` / ``servers_page`` /
+``complete_setup``) live in ``tests/e2e/conftest.py``.
 """
 
-import http.cookiejar
-import urllib.parse
-import urllib.request
-from urllib.parse import urlparse
-
 import pytest
-from playwright.sync_api import BrowserContext, Page, expect
+from playwright.sync_api import Page, expect
+
+from ._mocks import (
+    capture_servers_save,
+    mock_emby_password_auth,
+    mock_plex_libraries,
+    mock_servers_list,
+    mock_servers_refresh_libraries,
+    mock_servers_test_connection,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _complete_setup(app_url: str) -> None:
-    """Mark setup as complete so the global before_request middleware
-    doesn't redirect /servers to /setup.
-
-    Session-scoped + autouse so every test in this file gets a fresh
-    app that's past the setup wizard.
-    """
-    req = urllib.request.Request(
-        f"{app_url}/api/setup/complete",
-        method="POST",
-        headers={"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"},
-        data=b"{}",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 (test-only localhost)
-        assert resp.status == 200
-
-
-@pytest.fixture(scope="session")
-def session_cookie(app_url: str) -> dict:
-    """Log in once per session and capture the Flask session cookie.
-
-    The /login form is rate-limited to 5/minute; this file has more tests
-    than that. Doing one login here and replaying its session cookie into
-    every Playwright context keeps us well under the limit no matter how
-    many tests we add.
-    """
-    cookie_jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-    data = urllib.parse.urlencode({"token": "e2e-test-token"}).encode()
-    parsed = urlparse(app_url)
-    req = urllib.request.Request(
-        f"{app_url}/login",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    opener.open(req, timeout=10)  # noqa: S310 (test-only localhost)
-
-    for cookie in cookie_jar:
-        if cookie.name == "session":
-            return {
-                "name": "session",
-                "value": cookie.value,
-                "domain": parsed.hostname or "localhost",
-                "path": "/",
-                "httpOnly": True,
-                "secure": False,
-                "sameSite": "Lax",
-            }
-    raise RuntimeError("No session cookie returned by /login — did the form submit fail?")
+def _complete_setup(complete_setup) -> None:
+    """Auto-apply the shared setup-complete fixture for this file."""
+    return complete_setup
 
 
 @pytest.fixture
-def authed_page(page: Page, context: BrowserContext, app_url: str, session_cookie: dict) -> Page:
-    """A page already authenticated and navigated to ``/servers``."""
-    context.add_cookies([session_cookie])
-    page.goto(f"{app_url}/servers")
-    page.wait_for_load_state("domcontentloaded")
-    return page
+def servers_page(authed_page: Page, app_url: str) -> Page:
+    """authed_page navigated to /servers."""
+    authed_page.goto(f"{app_url}/servers")
+    authed_page.wait_for_load_state("domcontentloaded")
+    return authed_page
 
 
 @pytest.mark.e2e
 class TestServersPageLoads:
-    def test_servers_page_accessible_after_login(self, authed_page: Page):
-        assert "/login" not in authed_page.url
+    def test_servers_page_accessible_after_login(self, servers_page: Page):
+        assert "/login" not in servers_page.url
 
-    def test_servers_page_has_heading(self, authed_page: Page):
-        expect(authed_page.locator("h1")).to_contain_text("Media Servers")
+    def test_servers_page_has_heading(self, servers_page: Page):
+        expect(servers_page.locator("h1")).to_contain_text("Media Servers")
 
-    def test_servers_page_has_server_list_container(self, authed_page: Page):
+    def test_servers_page_has_server_list_container(self, servers_page: Page):
         # The JS swaps loading spinner → empty state → cards. The container is always present.
-        assert authed_page.locator("#serverList").count() == 1
+        assert servers_page.locator("#serverList").count() == 1
 
 
 @pytest.mark.e2e
 class TestServersPageWebhookBlock:
-    def test_webhook_url_input_present(self, authed_page: Page):
-        expect(authed_page.locator("#webhookUrl")).to_be_visible()
+    def test_webhook_url_input_present(self, servers_page: Page):
+        expect(servers_page.locator("#webhookUrl")).to_be_visible()
 
-    def test_webhook_url_populated_with_incoming_path(self, authed_page: Page):
-        authed_page.wait_for_timeout(1500)
-        value = authed_page.locator("#webhookUrl").input_value()
+    def test_webhook_url_populated_with_incoming_path(self, servers_page: Page):
+        servers_page.wait_for_timeout(1500)
+        value = servers_page.locator("#webhookUrl").input_value()
         if value:
             assert "/api/webhooks/incoming" in value
 
@@ -137,46 +96,46 @@ def _force_open_wizard(page: Page) -> None:
 
 @pytest.mark.e2e
 class TestAddServerModal:
-    def test_modal_shows_three_vendor_buttons(self, authed_page: Page):
-        _force_open_wizard(authed_page)
+    def test_modal_shows_three_vendor_buttons(self, servers_page: Page):
+        _force_open_wizard(servers_page)
 
         for vendor in ("plex", "emby", "jellyfin"):
-            btn = authed_page.locator(f'.server-type-btn[data-type="{vendor}"]')
+            btn = servers_page.locator(f'.server-type-btn[data-type="{vendor}"]')
             expect(btn).to_be_visible()
 
-    def test_picking_emby_shows_auth_method_picker(self, authed_page: Page):
-        _force_open_wizard(authed_page)
-        authed_page.locator('.server-type-btn[data-type="emby"]').click()
-        authed_page.wait_for_timeout(300)
+    def test_picking_emby_shows_auth_method_picker(self, servers_page: Page):
+        _force_open_wizard(servers_page)
+        servers_page.locator('.server-type-btn[data-type="emby"]').click()
+        servers_page.wait_for_timeout(300)
 
         # Step-connect should now be visible.
-        connect_classes = authed_page.locator("#step-connect").get_attribute("class") or ""
+        connect_classes = servers_page.locator("#step-connect").get_attribute("class") or ""
         assert "d-none" not in connect_classes
         # Emby supports password + api_key auth, so the picker is shown.
-        assert "d-none" not in (authed_page.locator("#auth-method-section").get_attribute("class") or "")
+        assert "d-none" not in (servers_page.locator("#auth-method-section").get_attribute("class") or "")
 
-    def test_picking_jellyfin_shows_auth_method_picker(self, authed_page: Page):
-        _force_open_wizard(authed_page)
-        authed_page.locator('.server-type-btn[data-type="jellyfin"]').click()
-        authed_page.wait_for_timeout(300)
+    def test_picking_jellyfin_shows_auth_method_picker(self, servers_page: Page):
+        _force_open_wizard(servers_page)
+        servers_page.locator('.server-type-btn[data-type="jellyfin"]').click()
+        servers_page.wait_for_timeout(300)
 
-        connect_classes = authed_page.locator("#step-connect").get_attribute("class") or ""
+        connect_classes = servers_page.locator("#step-connect").get_attribute("class") or ""
         assert "d-none" not in connect_classes
         # Jellyfin adds Quick Connect to the auth picker.
-        assert authed_page.locator("#auth-quick").count() == 1
+        assert servers_page.locator("#auth-quick").count() == 1
 
-    def test_picking_plex_shows_oauth_section(self, authed_page: Page):
-        _force_open_wizard(authed_page)
-        authed_page.locator('.server-type-btn[data-type="plex"]').click()
-        authed_page.wait_for_timeout(300)
+    def test_picking_plex_shows_oauth_section(self, servers_page: Page):
+        _force_open_wizard(servers_page)
+        servers_page.locator('.server-type-btn[data-type="plex"]').click()
+        servers_page.wait_for_timeout(300)
 
-        connect_classes = authed_page.locator("#step-connect").get_attribute("class") or ""
+        connect_classes = servers_page.locator("#step-connect").get_attribute("class") or ""
         assert "d-none" not in connect_classes
         # Plex has its own auth path; auth-fields-token-plex should
         # have d-none stripped.
-        assert "d-none" not in (authed_page.locator("#auth-fields-token-plex").get_attribute("class") or "")
+        assert "d-none" not in (servers_page.locator("#auth-fields-token-plex").get_attribute("class") or "")
         # And the manual-token input is in the DOM.
-        assert authed_page.locator("#plexToken").count() == 1
+        assert servers_page.locator("#plexToken").count() == 1
 
 
 @pytest.mark.e2e
@@ -217,3 +176,81 @@ class TestServersAPIIntegration:
             data='{"library_ids": "not-a-list"}',
         )
         assert response.status in (400, 404), response.status
+
+
+@pytest.mark.e2e
+class TestServersAddFlows:
+    """Walk the Add Server modal through each vendor's connect+save."""
+
+    def test_plex_add_via_manual_token_creates_server(self, servers_page: Page) -> None:
+        """Walk the Plex add: vendor pick → fill manual token → test → save."""
+        # Surface any unexpected JS alert immediately rather than hanging.
+        servers_page.on("dialog", lambda d: d.dismiss())
+        # Mock the endpoints the modal hits.
+        mock_plex_libraries(servers_page)
+        mock_servers_test_connection(servers_page, ok=True, server_name="Test Plex")
+        captured = capture_servers_save(servers_page, vendor="plex")
+
+        _force_open_wizard(servers_page)
+        servers_page.locator('.server-type-btn[data-type="plex"]').click()
+        # Wait for #step-connect to actually become visible (the JS does
+        # showStep('step-connect') which strips d-none).
+        expect(servers_page.locator("#step-connect")).to_be_visible(timeout=2000)
+        servers_page.locator("#serverUrl").fill("http://plex.local:32400")
+        servers_page.locator("#serverName").fill("Test Plex")
+        # #plexToken lives inside a <details> ("Or enter the token
+        # manually") that's collapsed by default. Force it open.
+        servers_page.evaluate(
+            "document.querySelectorAll('#auth-fields-token-plex details').forEach(d => d.open = true)"
+        )
+        expect(servers_page.locator("#plexToken")).to_be_visible(timeout=2000)
+        servers_page.locator("#plexToken").fill("plex-tok")
+        servers_page.locator("#plexConfigFolder").fill("/plex")
+        servers_page.locator("#step-connect-test").click()
+        expect(servers_page.locator("#connectResult")).to_contain_text("Test Plex", timeout=3000)
+        servers_page.locator("#step-result-save").click()
+        servers_page.wait_for_timeout(500)
+        assert captured, "POST /api/servers never fired"
+        assert captured[0]["type"] == "plex"
+        assert captured[0]["url"] == "http://plex.local:32400"
+
+    def test_emby_add_via_password_creates_server(self, servers_page: Page) -> None:
+        mock_emby_password_auth(servers_page, ok=True)
+        mock_servers_test_connection(servers_page, ok=True, server_name="Emby Test")
+        captured = capture_servers_save(servers_page, vendor="emby")
+
+        _force_open_wizard(servers_page)
+        servers_page.locator('.server-type-btn[data-type="emby"]').click()
+        servers_page.wait_for_timeout(200)
+        servers_page.locator("#serverUrl").fill("http://emby.local:8096")
+        servers_page.locator("#serverName").fill("Emby Test")
+        servers_page.locator("#authUsername").fill("admin")
+        servers_page.locator("#authPassword").fill("hunter2")
+        servers_page.locator("#step-connect-test").click()
+        expect(servers_page.locator("#connectResult")).to_contain_text("Connected")
+        servers_page.locator("#step-result-save").click()
+        servers_page.wait_for_timeout(500)
+        assert captured
+        assert captured[0]["type"] == "emby"
+
+    def test_refresh_libraries_button_calls_endpoint(self, authed_page: Page, app_url: str) -> None:
+        mock_servers_list(
+            authed_page,
+            servers=[
+                {
+                    "id": "p1",
+                    "name": "Home",
+                    "type": "plex",
+                    "enabled": True,
+                    "url": "http://p",
+                    "libraries": [{"id": "1", "name": "Movies", "enabled": True}],
+                }
+            ],
+        )
+        called = mock_servers_refresh_libraries(authed_page, count=3)
+        authed_page.goto(f"{app_url}/servers")
+        authed_page.wait_for_load_state("domcontentloaded")
+        expect(authed_page.locator("#serverList")).to_contain_text("Home", timeout=3000)
+        authed_page.locator(".refresh-libraries-btn").first.click()
+        authed_page.wait_for_timeout(500)
+        assert called, "POST /api/servers/<id>/refresh-libraries never fired"
