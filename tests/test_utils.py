@@ -256,7 +256,16 @@ class TestSetupWorkingDirectory:
 
 
 class TestAtomicJsonSaveWithBackup:
-    """J1 — backup-then-write helper for hand-editable config files."""
+    """J1 — backup-then-write helper for hand-editable config files.
+
+    Backups are now timestamped: ``config.json.YYYYMMDD-HHMMSS.bak``. The
+    helper prunes oldest beyond ``CONFIG_BACKUP_KEEP`` (default 10) on
+    each save. Legacy single ``config.json.bak`` files left over from
+    earlier app versions are not migrated; they coexist and age out.
+    """
+
+    def _list_timestamped_baks(self, dirpath, stem):
+        return sorted(p for p in dirpath.iterdir() if p.name.startswith(f"{stem}.") and p.name.endswith(".bak"))
 
     def test_first_write_no_bak(self, tmp_path):
         """When the target doesn't exist, no .bak is created."""
@@ -265,10 +274,10 @@ class TestAtomicJsonSaveWithBackup:
         target = tmp_path / "config.json"
         atomic_json_save_with_backup(str(target), {"hello": "world"})
         assert target.exists()
-        assert not (tmp_path / "config.json.bak").exists()
+        assert self._list_timestamped_baks(tmp_path, "config.json") == []
 
-    def test_subsequent_write_creates_bak_with_old_contents(self, tmp_path):
-        """The .bak holds the file contents *before* this write."""
+    def test_subsequent_write_creates_timestamped_bak_with_old_contents(self, tmp_path):
+        """The new backup holds the file contents *before* the write."""
         import json as _json
 
         from media_preview_generator.utils import atomic_json_save_with_backup
@@ -278,23 +287,56 @@ class TestAtomicJsonSaveWithBackup:
         atomic_json_save_with_backup(str(target), {"v": 2})
 
         assert _json.loads(target.read_text())["v"] == 2
-        bak = tmp_path / "config.json.bak"
-        assert bak.exists()
-        assert _json.loads(bak.read_text())["v"] == 1
+        baks = self._list_timestamped_baks(tmp_path, "config.json")
+        assert len(baks) == 1
+        # Filename shape: config.json.YYYYMMDD-HHMMSS.bak
+        suffix = baks[0].name[len("config.json.") : -len(".bak")]
+        assert len(suffix) == 15 and suffix[8] == "-"
+        assert _json.loads(baks[0].read_text())["v"] == 1
 
-    def test_bak_is_a_rolling_single_copy(self, tmp_path):
-        """A third write overwrites the .bak with the v2 contents (no v1 left)."""
-        import json as _json
+    def test_keeps_history_across_many_writes(self, tmp_path):
+        """Multiple saves accumulate timestamped backups (vs. the old rolling single)."""
+        import time
 
         from media_preview_generator.utils import atomic_json_save_with_backup
 
         target = tmp_path / "config.json"
-        atomic_json_save_with_backup(str(target), {"v": 1})
-        atomic_json_save_with_backup(str(target), {"v": 2})
-        atomic_json_save_with_backup(str(target), {"v": 3})
+        for v in range(5):
+            atomic_json_save_with_backup(str(target), {"v": v})
+            # 1.1s gap so the YYYYMMDD-HHMMSS suffix is unique per save.
+            time.sleep(1.1)
+        baks = self._list_timestamped_baks(tmp_path, "config.json")
+        # 5 saves → 4 backups (the first save had no prior contents to back up).
+        assert len(baks) == 4
 
-        assert _json.loads(target.read_text())["v"] == 3
-        assert _json.loads((tmp_path / "config.json.bak").read_text())["v"] == 2
+    def test_prunes_oldest_beyond_retention(self, tmp_path, monkeypatch):
+        """CONFIG_BACKUP_KEEP caps how many history entries are kept."""
+        import time
+
+        from media_preview_generator.utils import atomic_json_save_with_backup
+
+        monkeypatch.setenv("CONFIG_BACKUP_KEEP", "3")
+        target = tmp_path / "config.json"
+        for v in range(6):
+            atomic_json_save_with_backup(str(target), {"v": v})
+            time.sleep(1.1)
+        baks = self._list_timestamped_baks(tmp_path, "config.json")
+        assert len(baks) == 3
+
+    def test_legacy_single_bak_is_not_disturbed(self, tmp_path):
+        """A legacy plain .bak from an older app version stays alongside the new
+        timestamped backups so users can still restore from it."""
+        from media_preview_generator.utils import atomic_json_save_with_backup
+
+        target = tmp_path / "config.json"
+        target.write_text('{"v": 1}')
+        legacy = tmp_path / "config.json.bak"
+        legacy.write_text('{"v": "legacy"}')
+
+        atomic_json_save_with_backup(str(target), {"v": 2})
+
+        assert legacy.exists()
+        assert legacy.read_text() == '{"v": "legacy"}'
 
     def test_backup_failure_does_not_block_primary_write(self, tmp_path, monkeypatch):
         """If shutil.copy2 raises, the primary write still happens."""

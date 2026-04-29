@@ -3977,6 +3977,18 @@ function _formatBackupTime(epoch) {
     return d.toLocaleString();
 }
 
+function _formatBackupLabel(b) {
+    if (b.legacy) return 'Previous version';
+    // timestamp is YYYYMMDD-HHMMSS (UTC). Render as local time.
+    const ts = b.timestamp || '';
+    if (ts.length === 15) {
+        const iso = `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}T${ts.slice(9, 11)}:${ts.slice(11, 13)}:${ts.slice(13, 15)}Z`;
+        const d = new Date(iso);
+        if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+    }
+    return _formatBackupTime(b.mtime);
+}
+
 async function refreshBackupsPanel() {
     const panel = document.getElementById('backupRestorePanel');
     if (!panel) return;
@@ -3988,44 +4000,59 @@ async function refreshBackupsPanel() {
             panel.innerHTML = '<div class="text-muted small">No backup-tracked config files found.</div>';
             return;
         }
-        const rows = files.map((f) => {
+        const blocks = files.map((f) => {
             const liveAge = _formatBackupTime(f.live_mtime);
-            const bakAge = _formatBackupTime(f.bak_mtime);
-            const bakBadge = f.bak_newer
-                ? '<span class="badge bg-warning text-dark ms-2">backup is newer</span>'
-                : (f.has_bak ? '' : '<span class="badge bg-secondary ms-2">no backup yet</span>');
-            const restoreBtn = f.has_bak
-                ? `<button type="button" class="btn btn-sm btn-outline-warning ms-2" data-restore-file="${escapeHtmlAttr(f.name)}">
-                       <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
-                   </button>`
-                : '';
+            const headerBadge = f.bak_newer
+                ? '<span class="badge bg-warning text-dark ms-2" title="Most recent backup is newer than the live file">backup is newer</span>'
+                : (f.has_bak ? '' : '<span class="badge bg-secondary ms-2">no backups yet</span>');
+
+            const backups = f.backups || [];
+            const backupRows = backups.length
+                ? backups.map((b) => {
+                    const label = escapeHtmlText(_formatBackupLabel(b));
+                    const tag = b.legacy ? '<span class="badge bg-secondary ms-2">legacy</span>' : '';
+                    return `
+                        <div class="d-flex justify-content-between align-items-center py-1 ps-3 border-start border-2">
+                            <div class="small text-muted">${label}${tag}</div>
+                            <button type="button" class="btn btn-sm btn-outline-warning"
+                                    data-restore-file="${escapeHtmlAttr(f.name)}"
+                                    data-restore-backup="${escapeHtmlAttr(b.filename)}">
+                                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
+                            </button>
+                        </div>
+                    `;
+                }).join('')
+                : '<div class="small text-muted ps-3">No backups yet — they appear after the next save.</div>';
+
             return `
-                <div class="d-flex justify-content-between align-items-center border-bottom py-2">
-                    <div>
-                        <div><code>${escapeHtmlText(f.name)}</code>${bakBadge}</div>
-                        <div class="small text-muted">
-                            Live saved: ${escapeHtmlText(liveAge)} · Backup: ${escapeHtmlText(bakAge)}
+                <div class="border-bottom py-2">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <div>
+                            <code>${escapeHtmlText(f.name)}</code>${headerBadge}
+                            <div class="small text-muted">Live saved: ${escapeHtmlText(liveAge)}</div>
                         </div>
                     </div>
-                    <div>${restoreBtn}</div>
+                    ${backupRows}
                 </div>
             `;
         }).join('');
-        panel.innerHTML = rows;
+        panel.innerHTML = blocks;
         panel.querySelectorAll('[data-restore-file]').forEach((btn) => {
             btn.addEventListener('click', async (ev) => {
-                const file = ev.currentTarget.dataset.restoreFile;
-                if (!confirm(`Restore ${file} from its .bak? The current file will be moved to the backup slot so you can swap back.`)) return;
-                ev.currentTarget.disabled = true;
-                ev.currentTarget.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restoring…';
+                const target = ev.currentTarget;
+                const file = target.dataset.restoreFile;
+                const backup = target.dataset.restoreBackup;
+                if (!confirm(`Restore ${file} from ${backup}? The current contents will be saved as a fresh backup first, so you can undo this restore.`)) return;
+                target.disabled = true;
+                target.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restoring…';
                 try {
-                    const r = await apiPost('/api/settings/backups/restore', { file });
-                    showToast('Backup restored', `${file} swapped with its .bak. Reload the page for caches to pick it up.`, 'success');
+                    await apiPost('/api/settings/backups/restore', { file, backup });
+                    showToast('Backup restored', `${file} restored from ${backup}. Reload the page for caches to pick it up.`, 'success');
                     refreshBackupsPanel();
                 } catch (e) {
                     showToast('Restore failed', (e && e.message) || 'Unknown error', 'danger');
-                    ev.currentTarget.disabled = false;
-                    ev.currentTarget.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Restore';
+                    target.disabled = false;
+                    target.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Restore';
                 }
             });
         });

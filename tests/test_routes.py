@@ -4153,60 +4153,101 @@ class TestPerServerPlexWebhook:
 
 
 class TestBackupRestore:
-    """J6 — /api/settings/backups + /restore inspect and atomically swap .bak files."""
+    """J6 — /api/settings/backups + /restore handle multi-history backup snapshots."""
 
-    def test_lists_backups_with_mtime_and_bak_newer_flag(self, client, monkeypatch, tmp_path):
-        """GET returns one row per managed file with bak_newer=True when applicable."""
+    def test_lists_timestamped_backups_newest_first(self, client, monkeypatch, tmp_path):
+        """GET returns each managed file's full backup list, newest first."""
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
-        # Force the inspector to look at our temp dir, not the test config.
         monkeypatch.setattr(sm, "config_dir", tmp_path)
 
-        # Live file older, .bak newer → bak_newer should be True.
         live = tmp_path / "settings.json"
-        bak = tmp_path / "settings.json.bak"
         live.write_text('{"v": "live"}')
-        bak.write_text('{"v": "newer-backup"}')
         os.utime(live, (1000, 1000))
-        os.utime(bak, (2000, 2000))
+
+        # Two timestamped backups + one legacy single .bak, all coexisting.
+        b1 = tmp_path / "settings.json.20260101-100000.bak"
+        b2 = tmp_path / "settings.json.20260201-100000.bak"
+        legacy = tmp_path / "settings.json.bak"
+        b1.write_text('{"v": "old"}')
+        b2.write_text('{"v": "newer"}')
+        legacy.write_text('{"v": "legacy"}')
+        os.utime(b1, (1500, 1500))
+        os.utime(b2, (3000, 3000))  # newest
+        os.utime(legacy, (500, 500))
 
         resp = client.get("/api/settings/backups", headers=_api_headers())
         assert resp.status_code == 200
         rows = {r["name"]: r for r in resp.get_json()["files"]}
+        backups = rows["settings.json"]["backups"]
+        # Newest first: b2, b1, legacy
+        assert [b["filename"] for b in backups] == [
+            "settings.json.20260201-100000.bak",
+            "settings.json.20260101-100000.bak",
+            "settings.json.bak",
+        ]
+        assert backups[0]["legacy"] is False
+        assert backups[2]["legacy"] is True
+        # Most recent backup (b2 mtime=3000) is newer than live (mtime=1000).
         assert rows["settings.json"]["bak_newer"] is True
         assert rows["schedules.json"]["has_bak"] is False
 
-    def test_restore_swaps_live_and_bak_atomically(self, client, monkeypatch, tmp_path):
-        """POST /restore swaps live ↔ .bak so a second call rolls back the first."""
+    def test_restore_named_backup_overwrites_live(self, client, monkeypatch, tmp_path):
+        """POST /restore copies the named backup over the live file and snapshots
+        the old live contents into a fresh timestamped backup."""
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         monkeypatch.setattr(sm, "config_dir", tmp_path)
 
         live = tmp_path / "settings.json"
-        bak = tmp_path / "settings.json.bak"
         live.write_text('{"label": "current"}')
-        bak.write_text('{"label": "previous"}')
+        target_bak = tmp_path / "settings.json.20260101-100000.bak"
+        target_bak.write_text('{"label": "from-january"}')
 
         resp = client.post(
             "/api/settings/backups/restore",
             headers=_api_headers(),
-            json={"file": "settings.json"},
+            json={"file": "settings.json", "backup": "settings.json.20260101-100000.bak"},
         )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
-        assert live.read_text() == '{"label": "previous"}'
-        assert bak.read_text() == '{"label": "current"}'
+        # Live now holds the chosen backup's contents.
+        assert live.read_text() == '{"label": "from-january"}'
+        # The named backup is preserved (point-in-time stays restorable again).
+        assert target_bak.exists()
+        # A fresh snapshot of the prior live contents was taken before overwrite.
+        snapshots = [
+            p
+            for p in tmp_path.iterdir()
+            if p.name.startswith("settings.json.") and p.name.endswith(".bak") and p.name != target_bak.name
+        ]
+        assert any(p.read_text() == '{"label": "current"}' for p in snapshots)
 
-        # Second call rolls back the first — confirms the swap is symmetric.
+    def test_restore_defaults_to_newest_when_backup_param_omitted(self, client, monkeypatch, tmp_path):
+        """Backwards-compat: restore without `backup` picks the newest snapshot."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        live = tmp_path / "settings.json"
+        live.write_text('{"v": "live"}')
+        b1 = tmp_path / "settings.json.20260101-100000.bak"
+        b2 = tmp_path / "settings.json.20260201-100000.bak"
+        b1.write_text('{"v": "older"}')
+        b2.write_text('{"v": "newer"}')
+        os.utime(b1, (1500, 1500))
+        os.utime(b2, (3000, 3000))
+
         resp = client.post(
             "/api/settings/backups/restore",
             headers=_api_headers(),
             json={"file": "settings.json"},
         )
         assert resp.status_code == 200
-        assert live.read_text() == '{"label": "current"}'
+        assert live.read_text() == '{"v": "newer"}'
 
     def test_restore_rejects_unknown_file(self, client):
         resp = client.post(
@@ -4216,12 +4257,30 @@ class TestBackupRestore:
         )
         assert resp.status_code == 400
 
-    def test_restore_404_when_no_bak(self, client, monkeypatch, tmp_path):
+    def test_restore_rejects_unknown_backup_name(self, client, monkeypatch, tmp_path):
+        """Can't be talked into copying an arbitrary file by passing its basename."""
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         monkeypatch.setattr(sm, "config_dir", tmp_path)
-        # Live file but no .bak.
+
+        (tmp_path / "settings.json").write_text("{}")
+        # Need at least one real backup so the endpoint gets past the "no backups" 404.
+        (tmp_path / "settings.json.20260101-100000.bak").write_text("{}")
+
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json", "backup": "passwd"},
+        )
+        assert resp.status_code == 404
+
+    def test_restore_404_when_no_backups(self, client, monkeypatch, tmp_path):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+        # Live file but no backups (timestamped or legacy).
         (tmp_path / "settings.json").write_text("{}")
         resp = client.post(
             "/api/settings/backups/restore",

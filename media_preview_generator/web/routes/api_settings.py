@@ -1377,30 +1377,83 @@ def validate_paths():
 _BACKUP_FILES = ("settings.json", "schedules.json", "webhook_history.json", "setup_state.json")
 
 
+def _list_backups_for(live_path: str) -> list[dict]:
+    """Return all backup snapshots for a single live file, newest first.
+
+    Recognises both the new ``filepath.{YYYYMMDD-HHMMSS}.bak`` form and the
+    legacy single ``filepath.bak`` left over from older app versions.
+    """
+    import glob
+
+    out: list[dict] = []
+    # New timestamped backups.
+    for path in glob.glob(live_path + ".*.bak"):
+        # Skip the legacy form that happens to also match (e.g. backup.bak)
+        # — it would have no timestamp segment between the dots.
+        suffix = path[len(live_path) :]  # e.g. ".20260429-211544.bak"
+        parts = suffix.split(".")
+        if len(parts) != 3 or parts[0] != "" or parts[2] != "bak":
+            continue
+        ts_raw = parts[1]
+        # Validate timestamp shape; skip if malformed.
+        if len(ts_raw) != 15 or ts_raw[8] != "-" or not (ts_raw[:8] + ts_raw[9:]).isdigit():
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        out.append(
+            {
+                "filename": os.path.basename(path),
+                "path": path,
+                "timestamp": ts_raw,
+                "mtime": mtime,
+                "legacy": False,
+            }
+        )
+    # Legacy single rolling backup.
+    legacy = live_path + ".bak"
+    if os.path.exists(legacy):
+        try:
+            out.append(
+                {
+                    "filename": os.path.basename(legacy),
+                    "path": legacy,
+                    "timestamp": None,
+                    "mtime": os.path.getmtime(legacy),
+                    "legacy": True,
+                }
+            )
+        except OSError:
+            pass
+    # Newest first by mtime so the UI shows recent snapshots at the top.
+    out.sort(key=lambda r: r["mtime"], reverse=True)
+    return out
+
+
 def _backup_inventory() -> list[dict]:
-    """Inspect the config directory and report every (live, .bak) pair we manage."""
+    """Inspect the config directory and report all backups per managed file."""
     from ..settings_manager import get_settings_manager
 
     cfg_dir = str(get_settings_manager().config_dir)
     rows = []
     for name in _BACKUP_FILES:
         live = os.path.join(cfg_dir, name)
-        bak = live + ".bak"
         live_mtime = os.path.getmtime(live) if os.path.exists(live) else None
-        bak_mtime = os.path.getmtime(bak) if os.path.exists(bak) else None
+        backups = _list_backups_for(live)
+        # If any backup is newer than the live file the user has likely been
+        # clobbered (e.g. by an old container truncating settings.json) — UI
+        # surfaces this as a "restore me" highlight.
+        newest_bak_mtime = backups[0]["mtime"] if backups else None
+        bak_newer = live_mtime is not None and newest_bak_mtime is not None and newest_bak_mtime > live_mtime
         rows.append(
             {
                 "name": name,
                 "live_path": live,
                 "live_mtime": live_mtime,
-                "bak_path": bak,
-                "bak_mtime": bak_mtime,
-                # The whole point of the panel: when the bak is *newer* than
-                # the live file (i.e. the live file was just clobbered), the
-                # restore button stops being a curiosity and starts being
-                # actively useful.
-                "bak_newer": (bak_mtime is not None and live_mtime is not None and bak_mtime > live_mtime),
-                "has_bak": bak_mtime is not None,
+                "backups": backups,
+                "has_bak": bool(backups),
+                "bak_newer": bak_newer,
             }
         )
     return rows
@@ -1416,16 +1469,23 @@ def list_backups():
 @api.route("/settings/backups/restore", methods=["POST"])
 @api_token_required
 def restore_backup():
-    """Atomically swap a live config file with its .bak.
+    """Restore a specific backup snapshot for a managed file.
 
-    Three-leg swap: live → .bak.swap, .bak → live, .bak.swap → .bak. So
-    after a successful restore the user can immediately roll *back* the
-    restore by clicking again — the swap is symmetric and lossless.
+    Body: ``{"file": "settings.json", "backup": "settings.json.20260429-211544.bak"}``.
+    The named backup is COPIED over the live file (the backup itself is
+    preserved so the user can restore the same point-in-time again).
+    Before overwriting, the current live contents are saved as a fresh
+    timestamped backup so a misclick is recoverable via a second restore.
+
+    For backwards compatibility, ``backup`` is optional — if omitted, the
+    newest available backup (timestamped or legacy) is restored.
     """
     import shutil
 
     data = request.get_json() or {}
     name = (data.get("file") or "").strip()
+    backup_filename = (data.get("backup") or "").strip()
+
     if name not in _BACKUP_FILES:
         return jsonify({"success": False, "error": f"Refusing to restore unknown file {name!r}"}), 400
 
@@ -1433,31 +1493,47 @@ def restore_backup():
 
     cfg_dir = str(get_settings_manager().config_dir)
     live = os.path.join(cfg_dir, name)
-    bak = live + ".bak"
-    if not os.path.exists(bak):
-        return jsonify({"success": False, "error": f"No backup at {bak}"}), 404
 
-    swap_tmp = live + ".bak.swap"
-    try:
-        if os.path.exists(live):
-            shutil.copy2(live, swap_tmp)
-        os.replace(bak, live)
-        if os.path.exists(swap_tmp):
-            os.replace(swap_tmp, bak)
-    except OSError as exc:
-        # Best-effort cleanup of the temp file.
+    available = _list_backups_for(live)
+    if not available:
+        return jsonify({"success": False, "error": f"No backups available for {name}"}), 404
+
+    if backup_filename:
+        # Resolve by basename; reject anything that isn't one of ours
+        # so we can't be talked into copying /etc/passwd over settings.json.
+        match = next((b for b in available if b["filename"] == backup_filename), None)
+        if match is None:
+            return jsonify({"success": False, "error": f"No backup named {backup_filename!r} for {name}"}), 404
+        bak_path = match["path"]
+    else:
+        bak_path = available[0]["path"]
+
+    # Snapshot the current live contents into a fresh timestamped backup
+    # before overwriting. Lets the user undo a restore by restoring this
+    # snapshot in turn. Best-effort — never blocks the primary restore.
+    if os.path.exists(live):
         try:
-            if os.path.exists(swap_tmp):
-                os.unlink(swap_tmp)
-        except OSError:
-            pass
+            from datetime import datetime, timezone
+
+            from ...utils import _backup_retention, _prune_old_backups
+
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            shutil.copy2(live, f"{live}.{ts}.bak")
+            _prune_old_backups(live, _backup_retention())
+        except OSError as exc:
+            logger.debug("Pre-restore snapshot of {} failed: {}", live, exc)
+
+    try:
+        shutil.copy2(bak_path, live)
+    except OSError as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
 
-    logger.info("Restored {} from {}", live, bak)
+    logger.info("Restored {} from {}", live, bak_path)
     return jsonify(
         {
             "success": True,
             "file": name,
+            "backup": os.path.basename(bak_path),
             "note": "Reload the app (or click Refresh) for in-memory caches to pick up the restored content.",
         }
     )

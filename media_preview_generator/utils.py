@@ -170,14 +170,50 @@ def atomic_json_save(filepath: str, data: Any, *, permissions: int = None) -> No
             pass
 
 
+def _backup_retention() -> int:
+    """How many timestamped backups to keep per file (default 10, env-overridable)."""
+    raw = os.environ.get("CONFIG_BACKUP_KEEP", "10")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 10
+    return max(1, min(n, 100))
+
+
+def _prune_old_backups(filepath: str, keep: int) -> None:
+    """Glob ``{filepath}.*.bak``, sort lex, delete all but the newest ``keep``.
+
+    Best-effort — failures are swallowed (a stale backup never blocks the
+    next save). Lex order matches chronological order because the timestamp
+    suffix is fixed-width ``YYYYMMDD-HHMMSS``.
+    """
+    import glob
+
+    pattern = filepath + ".*.bak"
+    backups = sorted(glob.glob(pattern))
+    excess = len(backups) - keep
+    if excess <= 0:
+        return
+    for stale in backups[:excess]:
+        try:
+            os.unlink(stale)
+        except OSError:
+            pass
+
+
 def atomic_json_save_with_backup(filepath: str, data: Any, *, permissions: int = None) -> None:
-    """Atomic JSON write that keeps a single rolling ``.bak`` copy of the prior contents.
+    """Atomic JSON write that keeps the last N timestamped backups of prior contents.
 
     Same atomicity guarantees as ``atomic_json_save``, plus: before writing,
-    if ``filepath`` already exists, copy it to ``filepath + ".bak"``
-    (overwriting any previous backup). Backup is best-effort — failures are
-    logged but never block the primary write, since the caller's data is
-    more important than the recovery copy.
+    if ``filepath`` already exists, copy it to ``filepath.{YYYYMMDD-HHMMSS}.bak``
+    and prune oldest beyond ``CONFIG_BACKUP_KEEP`` (default 10). Backup is
+    best-effort — failures are logged but never block the primary write,
+    since the caller's data is more important than the recovery copy.
+
+    The legacy single ``filepath.bak`` (from previous app versions) is left
+    in place: the inventory + restore endpoints recognise it as a
+    "previous version" entry alongside the new timestamped backups, and it
+    ages out as fresh saves accumulate.
 
     Designed for the small, hand-editable JSON files this app owns
     (settings.json, schedules.json, webhook_history.json, setup_state.json).
@@ -192,9 +228,13 @@ def atomic_json_save_with_backup(filepath: str, data: Any, *, permissions: int =
         IOError: If the primary write or replace fails. Backup failures do not raise.
     """
     if os.path.exists(filepath):
-        bak_path = filepath + ".bak"
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        bak_path = f"{filepath}.{ts}.bak"
         try:
             shutil.copy2(filepath, bak_path)
+            _prune_old_backups(filepath, _backup_retention())
         except OSError as exc:
             # Don't import loguru at module load — keep this dep-light. Log
             # via stderr so we don't pull in the logging stack just for a
