@@ -349,7 +349,12 @@
                 <h6 class="mb-3"><i class="bi bi-image me-2"></i>Thumbnail Settings</h6>
                 <div class="row">
                     <div class="col-md-6 mb-3">
-                        <label for="thumbnailInterval" class="form-label">Thumbnail Interval</label>
+                        <label for="thumbnailInterval" class="form-label">
+                            Thumbnail Interval
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."></i>
+                        </label>
                         <div class="input-group">
                             <input type="number" class="form-control" id="thumbnailInterval"
                                    value="2" min="1" max="60">
@@ -358,7 +363,12 @@
                         <div class="form-text">Time between thumbnail captures</div>
                     </div>
                     <div class="col-md-6 mb-3">
-                        <label for="thumbnailQuality" class="form-label">Thumbnail Quality</label>
+                        <label for="thumbnailQuality" class="form-label">
+                            Thumbnail Quality
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="JPEG quality of each thumbnail (1 = smallest and blurriest, 10 = sharpest and largest). Default 4 looks fine at typical scrubbing sizes. Raise if thumbs look blocky on a 4K display; lower to shrink BIF files."></i>
+                        </label>
                         <input type="range" class="form-range" id="thumbnailQuality"
                                value="4" min="1" max="10">
                         <div class="form-text">
