@@ -289,7 +289,7 @@ class TestDeprecatedImageNotification:
         assert "deprecated_docker_image_name" not in ids
 
     def test_silent_when_running_canonical_image(self, monkeypatch):
-        monkeypatch.setenv("DOCKER_IMAGE_NAME", "stevezau/media_preview_generator")
+        monkeypatch.setenv("DOCKER_IMAGE_NAME", "stevezzau/media_preview_generator")
         with patch(
             "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="NVIDIA", is_software=False),
@@ -310,7 +310,7 @@ class TestDeprecatedImageNotification:
         assert deprecated["dismissable"] is True
         # The body names both the old and the new image so users can copy-paste.
         assert "stevezzau/plex_generate_vid_previews" in deprecated["body_html"]
-        assert "stevezau/media_preview_generator" in deprecated["body_html"]
+        assert "stevezzau/media_preview_generator" in deprecated["body_html"]
         # And carries the sunset date.
         assert "2026-10-29" in deprecated["body_html"]
 

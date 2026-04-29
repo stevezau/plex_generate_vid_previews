@@ -17,7 +17,7 @@
 
 services:
   plex-previews-gpu:
-    image: stevezau/media_preview_generator:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     ports:
@@ -80,7 +80,7 @@ services:
 # =============================================================================
 
   plex-previews-cpu:
-    image: stevezau/media_preview_generator:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     ports:
@@ -106,7 +106,7 @@ services:
 # =============================================================================
 
   plex-previews-unraid:
-    image: stevezau/media_preview_generator:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     # For NVIDIA on Unraid, uncomment the next line and remove the devices block:

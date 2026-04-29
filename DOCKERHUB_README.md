@@ -6,7 +6,7 @@
 
 GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfin**. **Web UI only** — no CLI.
 
-> Previously named **Plex Generate Previews** at `stevezzau/plex_generate_vid_previews`. That image keeps mirroring updates until **2026-10-29**; after that, only this repo (`stevezau/media_preview_generator`) is published. Update your `compose` to the new name when convenient — settings and volumes carry over unchanged.
+> Previously named **Plex Generate Previews** at `stevezzau/plex_generate_vid_previews`. That image keeps mirroring updates until **2026-10-29**; after that, only this repo (`stevezzau/media_preview_generator`) is published. Update your `compose` to the new name when convenient — settings and volumes carry over unchanged.
 
 **The Problem:** Built-in preview generation in Plex / Emby / Jellyfin is painfully slow.
 
@@ -44,7 +44,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezau/media_preview_generator:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -76,7 +76,7 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 ```yaml
 services:
   plex-previews:
-    image: stevezau/media_preview_generator:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     ports:
@@ -114,7 +114,7 @@ Set GPU Workers to 0 and CPU Workers as needed in the web UI Settings.
 ```yaml
 services:
   plex-previews:
-    image: stevezau/media_preview_generator:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     ports:
@@ -158,7 +158,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezau/media_preview_generator:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ### GPU + CPU Fallback
@@ -198,7 +198,7 @@ docker run -d \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezau/media_preview_generator:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ## Performance Tuning

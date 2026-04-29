@@ -25,14 +25,11 @@ on:
   workflow_dispatch:
 
 env:
-  # Canonical Docker Hub image — published under the stevezau (single-z)
-  # account that matches the GitHub username. Auth via DOCKER_USERNAME /
-  # DOCKER_PASSWORD / DOCKERHUB_TOKEN secrets.
-  DOCKER_IMAGE: stevezau/media_preview_generator
-  # Deprecated mirror — kept publishing under the legacy stevezzau
-  # (double-z) account until 2026-10-29 so users on the old image name
-  # keep getting updates while they migrate. Auth via OLD_DOCKER_USERNAME /
-  # OLD_DOCKER_PASSWORD / OLD_DOCKERHUB_TOKEN secrets.
+  # Canonical Docker Hub image name. The deprecated mirror below keeps
+  # publishing alongside this one until 2026-10-29 so users on the old
+  # name keep getting updates while they migrate.
+  # Change DOCKER_IMAGE for forks; see CONTRIBUTING.md.
+  DOCKER_IMAGE: stevezzau/media_preview_generator
   DOCKER_IMAGE_DEPRECATED: stevezzau/plex_generate_vid_previews
 
 concurrency:
@@ -158,11 +155,7 @@ jobs:
       - name: Validate Docker secrets
         run: |
           if [ -z "${{ secrets.DOCKER_USERNAME }}" ] || [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
-            echo "::error::DOCKER_USERNAME / DOCKER_PASSWORD missing (canonical account: ${{ env.DOCKER_IMAGE }})"
-            exit 1
-          fi
-          if [ -z "${{ secrets.OLD_DOCKER_USERNAME }}" ] || [ -z "${{ secrets.OLD_DOCKER_PASSWORD }}" ]; then
-            echo "::error::OLD_DOCKER_USERNAME / OLD_DOCKER_PASSWORD missing (deprecated mirror account: ${{ env.DOCKER_IMAGE_DEPRECATED }})"
+            echo "::error::DOCKER_USERNAME and DOCKER_PASSWORD must be set in repository secrets"
             exit 1
           fi
 
@@ -175,19 +168,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub (canonical account)
-        if: matrix.image_flavour == 'canonical'
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Log in to Docker Hub (deprecated mirror account)
-        if: matrix.image_flavour == 'deprecated'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.OLD_DOCKER_USERNAME }}
-          password: ${{ secrets.OLD_DOCKER_PASSWORD }}
 
       - name: Resolve image name for this flavour
         id: image
@@ -254,7 +239,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub (canonical account)
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -266,12 +251,6 @@ jobs:
           docker buildx imagetools create \
             ${{ needs.context.outputs.docker_tags_canonical }} \
             $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
-
-      - name: Log in to Docker Hub (deprecated mirror account)
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.OLD_DOCKER_USERNAME }}
-          password: ${{ secrets.OLD_DOCKER_PASSWORD }}
 
       - name: Create deprecated mirror manifest list and push
         working-directory: /tmp/digests/deprecated
@@ -294,13 +273,13 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: stevezau/media_preview_generator
+          repository: stevezzau/media_preview_generator
           readme-filepath: ./DOCKERHUB_README.md
 
       - name: Update deprecated mirror Docker Hub description
         uses: peter-evans/dockerhub-description@v5
         with:
-          username: ${{ secrets.OLD_DOCKER_USERNAME }}
-          password: ${{ secrets.OLD_DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: stevezzau/plex_generate_vid_previews
           readme-filepath: ./DOCKERHUB_DEPRECATED_README.md

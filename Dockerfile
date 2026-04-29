@@ -37,7 +37,7 @@ ARG BUILD_DATE=unknown
 
 # Published image name baked in at build time. CI passes one of:
 #   - stevezzau/plex_generate_vid_previews  (deprecated mirror; banner fires)
-#   - stevezau/media_preview_generator     (canonical name; no banner)
+#   - stevezzau/media_preview_generator     (canonical name; no banner)
 #   - local                                  (dev / unset; no banner)
 # The runtime reads $DOCKER_IMAGE_NAME and surfaces an in-app deprecation
 # notification when it matches the deprecated name.

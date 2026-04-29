@@ -7,7 +7,7 @@
 
 This Docker Hub repository — `stevezzau/plex_generate_vid_previews` — is now a **mirror** of the canonical image:
 
-> **➡ [`stevezau/media_preview_generator`](https://hub.docker.com/r/stevezau/media_preview_generator)**
+> **➡ [`stevezzau/media_preview_generator`](https://hub.docker.com/r/stevezzau/media_preview_generator)**
 
 The project supports **Plex, Emby, and Jellyfin** today, so the old "Plex" name is misleading. We renamed the image (and the upstream repository) to match the broader scope.
 
@@ -19,7 +19,7 @@ Update your `docker-compose.yml` (or `docker run` script):
  services:
    media-preview-generator:
 -    image: stevezzau/plex_generate_vid_previews:latest
-+    image: stevezau/media_preview_generator:latest
++    image: stevezzau/media_preview_generator:latest
      # ... everything else stays the same
 ```
 
@@ -28,7 +28,7 @@ Then `docker compose pull && docker compose up -d`. Existing volumes, settings, 
 ## Timeline
 
 - **Now → 2026-10-29**: Both image names mirror the same builds. Watchtower / `:latest` users on the old name keep getting updates automatically.
-- **After 2026-10-29**: Only `stevezau/media_preview_generator` receives updates. The old name stops being published.
+- **After 2026-10-29**: Only `stevezzau/media_preview_generator` receives updates. The old name stops being published.
 
 ## Why the rename?
 
@@ -36,7 +36,7 @@ The app started life as a Plex-only tool. Phases 0–L of the multi-server refac
 
 ## Where to read more
 
-- Canonical Docker Hub: <https://hub.docker.com/r/stevezau/media_preview_generator>
+- Canonical Docker Hub: <https://hub.docker.com/r/stevezzau/media_preview_generator>
 - GitHub: <https://github.com/stevezau/media_preview_generator> (auto-redirects from the old URL)
 - Documentation: <https://github.com/stevezau/media_preview_generator/tree/main/docs>
 

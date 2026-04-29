@@ -211,7 +211,7 @@ docker run --rm -p 8080:8080 -v $(pwd)/config:/config plex-previews:dev
 
 # Multi-architecture build
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t stevezau/media_preview_generator:dev --push .
+  -t stevezzau/media_preview_generator:dev --push .
 ```
 
 ---
