@@ -193,7 +193,13 @@ def schedule_retry_for_unindexed(
         # multi_server -> retry_queue (here) -> multi_server.
         from .multi_server import MultiServerStatus, PublisherStatus, process_canonical_path
 
-        logger.info("Retry #{} firing for {}", fired_attempt, path)
+        # K2: include server context. config.server_display_name is set when
+        # the parent job pinned to a specific server (Phase K1 thread-through).
+        _retry_server_tag = getattr(config, "server_display_name", None)
+        if _retry_server_tag:
+            logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
+        else:
+            logger.info("Retry #{} firing for {}", fired_attempt, path)
         try:
             result = process_canonical_path(
                 canonical_path=path,

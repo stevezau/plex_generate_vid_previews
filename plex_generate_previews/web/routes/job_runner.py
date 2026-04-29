@@ -221,12 +221,29 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             plex_url = effective.get("plex_url")
             plex_token = effective.get("plex_token")
             plex_config_folder = effective.get("plex_config_folder")
+            server_display_name = effective.get("server_display_name")
             if plex_url:
                 config.plex_url = plex_url
             if plex_token:
                 config.plex_token = plex_token
             if plex_config_folder:
                 config.plex_config_folder = plex_config_folder
+            # K3: thread the per-server display name so log emitters in the
+            # legacy resolver/worker path prefix lines as "[<name>] ...".
+            # Critical when this job is pinned to a specific server in a
+            # multi-Plex install — without this every log line would just
+            # say "Plex" with no disambiguation.
+            if server_display_name:
+                config.server_display_name = server_display_name
+            elif pinned_server_id and not server_display_name:
+                # Caller asked for a specific server but derive_legacy_plex_view
+                # didn't find it — log a WARN so misuse is easy to spot.
+                logger.warning(
+                    "Job pinned to server_id={!r} but no matching Plex entry was found; "
+                    "falling back to the first-enabled Plex view. "
+                    "Check that the configured server still exists.",
+                    pinned_server_id,
+                )
 
             selected_libs = effective.get("selected_libraries", [])
             if selected_libs:
@@ -533,6 +550,14 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
                         scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_delay)).isoformat()
                         parent_priority = current_job.priority if current_job else 2
+                        # K1: preserve the originating server triple so retry
+                        # jobs stay scoped to whichever server fired the
+                        # webhook. Without this, the Jobs UI renders retry as
+                        # `(server=(all))` and re-resolution silently fans out
+                        # to every server even though the original was pinned.
+                        parent_server_id = current_job.server_id if current_job else None
+                        parent_server_name = current_job.server_name if current_job else None
+                        parent_server_type = current_job.server_type if current_job else None
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
                             config={
@@ -546,21 +571,26 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 "webhook_basenames": basenames[:20],
                             },
                             priority=parent_priority,
+                            server_id=parent_server_id,
+                            server_name=parent_server_name,
+                            server_type=parent_server_type,
                         )
                         selected_libs = settings.get("selected_libraries", []) or []
                         if not isinstance(selected_libs, list):
                             selected_libs = []
                         selected_libs = [str(x).strip() for x in selected_libs if str(x).strip()]
-                        _start_job_async(
-                            rj.id,
-                            {
-                                "selected_libraries": selected_libs,
-                                "sort_by": "newest",
-                                "webhook_paths": paths,
-                                "webhook_retry_count": effective_max,
-                                "webhook_retry_delay": retry_delay_sec,
-                            },
-                        )
+                        retry_async_config = {
+                            "selected_libraries": selected_libs,
+                            "sort_by": "newest",
+                            "webhook_paths": paths,
+                            "webhook_retry_count": effective_max,
+                            "webhook_retry_delay": retry_delay_sec,
+                        }
+                        # K1: thread server_id through so the retry's worker
+                        # builds Config from the right per-server view.
+                        if parent_server_id:
+                            retry_async_config["server_id"] = parent_server_id
+                        _start_job_async(rj.id, retry_async_config)
                         return rj.id
 
                     if all_scan_paths and not (result.get("cancelled") or status_value == "cancelled"):
@@ -573,6 +603,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 unresolved_paths=all_scan_paths,
                                 path_mappings=config.path_mappings,
                                 verify_ssl=config.plex_verify_ssl,
+                                server_display_name=getattr(config, "server_display_name", None),
                             )
                             if scan_results:
                                 parts = []

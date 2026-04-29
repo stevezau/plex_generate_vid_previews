@@ -364,6 +364,7 @@ class PlexServer(MediaServer):
                 unresolved_paths=[remote_path],
                 path_mappings=path_mappings,
                 verify_ssl=bool(getattr(self._config, "plex_verify_ssl", True)),
+                server_display_name=getattr(self._config, "server_display_name", None) or self._spec.name,
             )
         except Exception as exc:
             logger.debug("Plex partial scan trigger failed for {}: {}", remote_path, exc)

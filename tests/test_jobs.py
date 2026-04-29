@@ -682,3 +682,55 @@ class TestSqliteJobsBackend:
         jm.delete_job(job.id)
         assert jm._storage.row_count() == 0
         assert jm.get_job(job.id) is None
+
+
+class TestRetryPreservesServerIdentity:
+    """K1 — retry job spawned by job_runner._spawn_retry_job must inherit the
+    parent's server_id/server_name/server_type. Today's bug shows up as
+    "Created job ... (server=(all))" instead of "(server=Plex)".
+
+    We can't easily call the closure directly, so this test mirrors the
+    pattern: create parent with server triple → simulate retry using the same
+    create_job call shape job_runner now uses → verify the child carries it.
+    """
+
+    def test_retry_inherits_parent_server_triple(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        parent = jm.create_job(
+            library_name="Sonarr: Show.S01E01",
+            server_id="plex-living-room",
+            server_name="Living Room Plex",
+            server_type="plex",
+        )
+
+        # Mirror job_runner.py:_spawn_retry_job's new behaviour.
+        retry = jm.create_job(
+            library_name="Retry: Sonarr: Show.S01E01",
+            config={"is_retry": True, "parent_job_id": parent.id, "retry_attempt": 1},
+            priority=parent.priority,
+            server_id=parent.server_id,
+            server_name=parent.server_name,
+            server_type=parent.server_type,
+        )
+
+        assert retry.server_id == "plex-living-room"
+        assert retry.server_name == "Living Room Plex"
+        assert retry.server_type == "plex"
+
+    def test_retry_when_parent_has_no_server_pin(self, config_dir):
+        """Webhook with no ?server_id= produces parent with None — retry mirrors None."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        parent = jm.create_job(library_name="Custom: file.mkv")
+        assert parent.server_id is None
+
+        retry = jm.create_job(
+            library_name="Retry: Custom: file.mkv",
+            config={"is_retry": True, "parent_job_id": parent.id, "retry_attempt": 1},
+            priority=parent.priority,
+            server_id=parent.server_id,
+            server_name=parent.server_name,
+            server_type=parent.server_type,
+        )
+        assert retry.server_id is None

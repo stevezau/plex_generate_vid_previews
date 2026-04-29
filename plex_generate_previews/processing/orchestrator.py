@@ -1115,8 +1115,12 @@ def generate_images(
             if did_dv_safe_retry
             else (" (sw libplacebo retry)" if did_sw_libplacebo_retry else (" (retry no-skip)" if did_retry else ""))
         )
+        # K2: prefix with server name (when this Config view was derived per-server)
+        # so multi-server installs see which server the preview was generated for.
+        _server_prefix = f"[{config.server_display_name}] " if getattr(config, "server_display_name", None) else ""
         logger.info(
-            "Generated Video Preview for {} HW={} TIME={}seconds SPEED={} IMAGES={}{}",
+            "{}Generated Video Preview for {} HW={} TIME={}seconds SPEED={} IMAGES={}{}",
+            _server_prefix,
             video_file,
             hw,
             seconds,
@@ -1498,7 +1502,9 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     except PermissionError:
         # Re-raise PermissionError (already logged above)
         raise
-    logger.info("Generated BIF file: {} ({} thumbnails)", bif_filename, len(images))
+    # K2: server context — destination path encodes the server but the log is silent on it.
+    _bif_server_prefix = f"[{config.server_display_name}] " if getattr(config, "server_display_name", None) else ""
+    logger.info("{}Generated BIF file: {} ({} thumbnails)", _bif_server_prefix, bif_filename, len(images))
 
 
 def _fan_out_secondary_publishers(

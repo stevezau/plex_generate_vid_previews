@@ -737,6 +737,9 @@ class TestDeriveLegacyPlexView:
             "selected_libraries": ["1", "3"],  # disabled "Anime" excluded
             "path_mappings": [{"plex_prefix": "/data", "local_prefix": "/mnt"}],
             "exclude_paths": [{"value": "/data/Trailers/", "type": "path"}],
+            # K2: server display name flows through to the Config so log
+            # emitters can prefix lines with [<name>].
+            "server_display_name": "Plex",
         }
 
     def test_empty_optional_fields_omitted(self):
@@ -816,6 +819,66 @@ class TestDeriveLegacyPlexView:
         ]
         view = derive_legacy_plex_view(servers)
         assert "plex_timeout" not in view
+
+    def test_server_display_name_uses_name_then_falls_back_to_id(self):
+        """K2: server_display_name flows through. Prefers `name`, then `id`."""
+        with_name = derive_legacy_plex_view(
+            [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "name": "Living Room",
+                    "url": "http://a",
+                    "enabled": True,
+                    "auth": {"token": "x"},
+                }
+            ]
+        )
+        assert with_name["server_display_name"] == "Living Room"
+
+        no_name = derive_legacy_plex_view(
+            [{"id": "plex-only", "type": "plex", "url": "http://a", "enabled": True, "auth": {"token": "x"}}]
+        )
+        assert no_name["server_display_name"] == "plex-only"
+
+    def test_pinned_server_picks_its_own_path_mappings_in_multi_plex(self):
+        """K3: when a job is pinned to plex-b, the derived view must carry
+        plex-b's path_mappings + exclude_paths, not plex-a's. Today's bug:
+        derive_legacy_plex_view called without server_id falls back to the
+        first Plex (plex-a), so a schedule pinned to plex-b silently runs
+        against plex-a's mappings.
+        """
+        servers = [
+            {
+                "id": "plex-a",
+                "type": "plex",
+                "name": "Plex A",
+                "url": "http://a",
+                "enabled": True,
+                "auth": {"token": "tok-a"},
+                "path_mappings": [{"plex_prefix": "/a/data", "local_prefix": "/mnt/a"}],
+                "exclude_paths": [{"value": "/a/Trailers", "type": "path"}],
+            },
+            {
+                "id": "plex-b",
+                "type": "plex",
+                "name": "Plex B",
+                "url": "http://b",
+                "enabled": True,
+                "auth": {"token": "tok-b"},
+                "path_mappings": [{"plex_prefix": "/b/data", "local_prefix": "/mnt/b"}],
+                "exclude_paths": [{"value": "/b/Trailers", "type": "path"}],
+            },
+        ]
+        view_pinned_b = derive_legacy_plex_view(servers, server_id="plex-b")
+        assert view_pinned_b["plex_url"] == "http://b"
+        assert view_pinned_b["path_mappings"] == [{"plex_prefix": "/b/data", "local_prefix": "/mnt/b"}]
+        assert view_pinned_b["exclude_paths"] == [{"value": "/b/Trailers", "type": "path"}]
+        assert view_pinned_b["server_display_name"] == "Plex B"
+
+        # Without pinning, falls back to the first enabled (plex-a's mappings).
+        view_unpinned = derive_legacy_plex_view(servers)
+        assert view_unpinned["path_mappings"] == [{"plex_prefix": "/a/data", "local_prefix": "/mnt/a"}]
 
 
 class TestLoadConfig:

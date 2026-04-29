@@ -180,6 +180,15 @@ class Config:
     # owning server" behaviour.
     server_id_filter: str | None = None
 
+    # Phase K2: human-readable name of the configured server this Config view
+    # was derived from (set by ``derive_legacy_plex_view`` when called with
+    # ``server_id=``). Log emitters in plex_client.py / orchestrator.py use it
+    # to prefix lines as ``[<name>] ...`` so multi-server installs get clear
+    # attribution. None when the Config wasn't built per-server (legacy
+    # global view, setup wizard, etc.) — emitters fall back to the unprefixed
+    # wording.
+    server_display_name: str | None = None
+
     def __repr__(self) -> str:
         """Return a string representation with plex_token redacted."""
         fields = []
@@ -334,6 +343,12 @@ def derive_legacy_plex_view(media_servers: list, server_id: str | None = None) -
     ep = plex_entry.get("exclude_paths")
     if isinstance(ep, list) and ep:
         view["exclude_paths"] = ep
+    # K2: pass the human-readable display name so log emitters that consume
+    # the derived Config can prefix messages as "[<name>] ...". Falls back to
+    # the entry id when no name is set.
+    display_name = (plex_entry.get("name") or plex_entry.get("id") or "").strip()
+    if display_name:
+        view["server_display_name"] = display_name
     return view
 
 
@@ -634,6 +649,9 @@ def load_config() -> Config:
         ffmpeg_path=ffmpeg_path,
         log_level=log_level,
         plex_library_ids=plex_library_ids,
+        # K2: pass the per-server display name so log emitters can prefix
+        # lines as "[<name>] ...". Set by derive_legacy_plex_view above.
+        server_display_name=ui_settings.get("server_display_name") or None,
     )
 
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi

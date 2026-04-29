@@ -573,8 +573,14 @@ def process_canonical_path(
 
     try:
         if not cache_hit:
+            # K2: include server context. The dispatcher routes one canonical
+            # path through one shared FFmpeg invocation that may serve multiple
+            # publishers; the per-publisher follow-up logs already include
+            # server.name (line ~685). Here we identify the source config view.
+            _server_tag = getattr(config, "server_display_name", None) or "shared"
             logger.info(
-                "FFmpeg start: path={} gpu={} device={} tmp={}",
+                "FFmpeg start: server={} path={} gpu={} device={} tmp={}",
+                _server_tag,
                 canonical_path,
                 gpu or "CPU",
                 gpu_device_path or "-",

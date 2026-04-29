@@ -27,6 +27,19 @@ from .config import (
 )
 
 
+def _log_prefix(config: Config) -> str:
+    """Return the per-server log prefix for a Config view, or empty string.
+
+    K2: when ``Config.server_display_name`` is set (i.e. the Config was
+    derived from a specific media_servers entry), every Plex log line prepends
+    ``[<name>] `` so multi-server installs get clear attribution. When unset
+    (setup wizard / legacy global view), returns ``""`` and the wording stays
+    backward-compatible.
+    """
+    name = getattr(config, "server_display_name", None)
+    return f"[{name}] " if name else ""
+
+
 def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
     """Retry a Plex API call if it fails due to XML parsing errors.
 
@@ -144,14 +157,14 @@ def plex_server(config: Config):
     from plexapi.server import PlexServer
 
     try:
-        logger.info("Connecting to Plex server at {}...", config.plex_url)
+        logger.info("{}Connecting to Plex at {}...", _log_prefix(config), config.plex_url)
         plex = PlexServer(
             config.plex_url,
             config.plex_token,
             timeout=config.plex_timeout,
             session=session,
         )
-        logger.info("Successfully connected to Plex server")
+        logger.info("{}Successfully connected to Plex", _log_prefix(config))
         return plex
     except (
         requests.exceptions.ConnectionError,
@@ -524,6 +537,7 @@ def trigger_plex_partial_scan(
     unresolved_paths: list[str],
     path_mappings: list[dict] | None = None,
     verify_ssl: bool = True,
+    server_display_name: str | None = None,
 ) -> list[str]:
     """Trigger targeted Plex library scans for unresolved webhook paths.
 
@@ -550,6 +564,10 @@ def trigger_plex_partial_scan(
     if not unresolved_paths:
         return []
 
+    # K2: per-server prefix for log lines below; empty when called without
+    # a name (e.g. setup wizard).
+    log_prefix = f"[{server_display_name}] " if server_display_name else ""
+
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -573,11 +591,17 @@ def trigger_plex_partial_scan(
         )
         return []
 
-    # Build lookup: normalised location prefix -> (section_key, raw_location),
+    # Build lookup: normalised location prefix -> (section_key, raw_location, section_title)
     # sorted longest-first so more-specific mounts match before broader ones.
+    # K5: also capture the section title so we can render "section 2 (TV Shows)"
+    # in scan-trigger logs — integer alone is opaque to humans.
     section_locations: list[tuple[str, str, str]] = []
+    section_titles: dict[str, str] = {}
     for section in sections:
         section_key = str(section.get("key", ""))
+        section_title = str(section.get("title", ""))
+        if section_key and section_title:
+            section_titles[section_key] = section_title
         for loc in section.get("Location", []):
             loc_path = loc.get("path", "")
             if loc_path:
@@ -617,7 +641,14 @@ def trigger_plex_partial_scan(
                     verify=verify_ssl,
                 )
                 if scan_resp.status_code == 200:
-                    logger.info("Triggered Plex partial scan for section {}: {}", section_key, scan_folder)
+                    section_title = section_titles.get(section_key, "")
+                    section_label = f'{section_key} ("{section_title}")' if section_title else section_key
+                    logger.info(
+                        "{}Triggered partial scan for section {}: {}",
+                        log_prefix,
+                        section_label,
+                        scan_folder,
+                    )
                     triggered = True
                 else:
                     logger.warning(
@@ -643,7 +674,12 @@ def trigger_plex_partial_scan(
             logger.debug("Matching Plex sections found but partial scans did not succeed for: {}", unresolved)
 
     if scanned:
-        logger.info("Triggered Plex partial scans for {}/{} unresolved path(s)", len(scanned), len(unresolved_paths))
+        logger.info(
+            "{}Triggered partial scans for {}/{} unresolved path(s)",
+            log_prefix,
+            len(scanned),
+            len(unresolved_paths),
+        )
 
     return scanned
 
@@ -979,7 +1015,7 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
                             excluded_match_libraries_by_target.setdefault(target, set()).add(section_title)
         return excluded_matches, excluded_sections
 
-    logger.info("Querying Plex by file path...")
+    logger.info("{}Querying Plex by file path...", _log_prefix(config))
     matched_targets.update(_search_by_file_path(normalized_targets))
     unresolved_targets = normalized_targets - matched_targets
 
@@ -1058,7 +1094,7 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
                 mapping_prefixes = sorted(
                     set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
                 )
-                logger.info("        Trying path mappings: {}", ", ".join(mapping_prefixes))
+                logger.info("        {}Trying path mappings: {}", _log_prefix(config), ", ".join(mapping_prefixes))
                 matched_norm = next(
                     iter(input_targets & matched_targets),
                     None,
@@ -1083,7 +1119,7 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
                 mapping_prefixes = sorted(
                     set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
                 )
-                logger.info("        Trying path mappings: {}", ", ".join(mapping_prefixes))
+                logger.info("        {}Trying path mappings: {}", _log_prefix(config), ", ".join(mapping_prefixes))
             if skipped_candidates:
                 logger.info("        Found in excluded library: {}", skipped_candidates[0])
             result_suffix = f": {', '.join(excluded_libraries)})" if excluded_libraries else ")"
@@ -1100,11 +1136,11 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
             mapping_prefixes = sorted(
                 set("/" + p.split("/")[1] for p in mapped_candidates if p.startswith("/") and len(p.split("/")) > 1)
             )
-            logger.info("        Trying path mappings: {}", ", ".join(mapping_prefixes))
+            logger.info("        {}Trying path mappings: {}", _log_prefix(config), ", ".join(mapping_prefixes))
         bn = os.path.basename(input_path)
         plex_locs = basename_plex_locations.get(bn)
         if plex_locs:
-            logger.info("        Plex has file with same name at: {}", plex_locs[0])
+            logger.info("        {}Plex has file with same name at: {}", _log_prefix(config), plex_locs[0])
             if mapped_candidates:
                 logger.info("        Webhook mapped to: {}", mapped_candidates[0])
             logger.info("        Result: not found (file exists in Plex but full paths differ)")
@@ -1184,7 +1220,7 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
             }
         )
         if plex_roots:
-            logger.info("Plex library paths: {}", ", ".join(plex_roots))
+            logger.info("{}Library paths: {}", _log_prefix(config), ", ".join(plex_roots))
 
         mismatches = _detect_path_prefix_mismatches(unresolved_input_paths, plex_roots)
         has_uncovered_mismatch = False
@@ -1218,7 +1254,12 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
             excluded_count,
         )
     else:
-        logger.info("Resolved {} webhook path(s) into {} Plex item(s)", len(matched_targets), len(matched_items))
+        logger.info(
+            "{}Resolved {} webhook path(s) into {} item(s)",
+            _log_prefix(config),
+            len(matched_targets),
+            len(matched_items),
+        )
     # Deduplicate by file location so multi-episode files are queued once (same as library scan).
     matched_items = filter_duplicate_locations(matched_items)
     return WebhookResolutionResult(
