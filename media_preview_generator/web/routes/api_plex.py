@@ -226,6 +226,30 @@ def get_plex_libraries():
             verify_ssl=verify_ssl,
         )
         return jsonify({"libraries": libraries})
+    except requests.exceptions.SSLError as e:
+        # SSLError is a subclass of ConnectionError, so this branch
+        # MUST come first — otherwise self-signed certs (the default
+        # for direct-IP Plex URLs) get reported as a generic
+        # "could not connect" error and the user has no way to
+        # recover. Mirrors the test_plex_connection branch above.
+        logger.error(
+            "Plex libraries: SSL certificate verification failed for {} ({}: {}). "
+            "Likely a self-signed cert (normal for raw-IP Plex URLs). "
+            "User can disable 'Verify SSL' in the wizard / settings to proceed.",
+            plex_url,
+            type(e).__name__,
+            e,
+        )
+        return jsonify(
+            {
+                "error": (
+                    f"SSL certificate verification failed for {plex_url}. "
+                    "Plex serves a self-signed cert on direct-IP HTTPS URLs — "
+                    "either use http:// instead, or uncheck 'Verify SSL'."
+                ),
+                "libraries": [],
+            }
+        ), 502
     except requests.ConnectionError:
         detail = f"Could not connect to Plex at {plex_url}"
         logger.error(

@@ -3065,6 +3065,28 @@ class TestPlexLibrariesAPI:
             resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 400
 
+    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    def test_get_plex_libraries_ssl_error_returns_specific_message(self, mock_fetch, client):
+        """SSLError must surface as an SSL-specific message — it's a subclass
+        of ConnectionError, so without an explicit handler it gets reported
+        as a generic 'could not connect' error and the user has no clue
+        the cert is the problem (regression: Plex's self-signed cert on
+        direct-IP HTTPS URLs)."""
+        import requests
+
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "https://192.168.1.10:32400")
+        sm.set("plex_token", "tok")
+        mock_fetch.side_effect = requests.exceptions.SSLError("self signed certificate")
+
+        resp = client.get("/api/plex/libraries", headers=_api_headers())
+        assert resp.status_code == 502
+        body = resp.get_json()
+        assert "SSL" in body["error"]
+        assert "Verify SSL" in body["error"] or "verify" in body["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Fetch Libraries Via HTTP (unit)
