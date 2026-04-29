@@ -50,6 +50,75 @@ def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
     return rows
 
 
+def _log_webhook_owning_servers(config, paths: list[str]) -> None:
+    """Log a one-line summary of which configured servers own the webhook paths.
+
+    Best-effort: any failure resolving ownership is swallowed so a logging
+    bug never blocks the actual dispatch. Used purely as a breadcrumb so
+    the operator can read the log top-down and see, before any per-server
+    work runs, *which* servers will be touched and how many paths each
+    owns. Without this line the legacy single-Plex resolver path looks
+    indistinguishable from the multi-server fan-out path.
+    """
+    try:
+        from ..servers.ownership import find_owning_servers
+        from ..servers.registry import server_config_from_dict
+        from ..web.settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("media_servers") or []
+        configs = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("enabled") is False:
+                continue
+            try:
+                configs.append(server_config_from_dict(entry))
+            except Exception:
+                continue
+
+        if not configs:
+            logger.info(
+                "Resolving {} webhook path(s) — no media servers configured yet, skipping ownership lookup.",
+                len(paths),
+            )
+            return
+
+        name_by_id = {cfg.id: (cfg.name or cfg.id) for cfg in configs}
+        owners_by_server: dict[str, int] = {}
+        unowned = 0
+        for path in paths:
+            matches = find_owning_servers(path, configs)
+            if not matches:
+                unowned += 1
+                continue
+            for match in matches:
+                key = name_by_id.get(match.server_id, match.server_id)
+                owners_by_server[key] = owners_by_server.get(key, 0) + 1
+
+        if not owners_by_server:
+            logger.info(
+                "Resolving {} webhook path(s) — none match any configured server's enabled libraries yet "
+                "(retry queue will keep trying).",
+                len(paths),
+            )
+            return
+
+        ordered = ", ".join(f"{name} ({count} path(s))" for name, count in owners_by_server.items())
+        pinned = getattr(config, "server_id_filter", None)
+        scope_note = f" (pinned to server_id={pinned!r})" if pinned else ""
+        suffix = f"; {unowned} path(s) unowned" if unowned else ""
+        logger.info(
+            "Resolving {} webhook path(s) across owning server(s): {}{}{}",
+            len(paths),
+            ordered,
+            scope_note,
+            suffix,
+        )
+    except Exception as exc:  # never block dispatch on a logging failure
+        logger.debug("owning-servers breadcrumb skipped: {}", exc)
+
+
 def _dispatch_webhook_paths_multi_server(
     config,
     *,
@@ -380,6 +449,7 @@ def run_processing(
                     0,
                     f"Looking up {path_count} file path(s) in Plex — this can take a while...",
                 )
+            _log_webhook_owning_servers(config, config.webhook_paths)
             webhook_resolution = get_media_items_by_paths(plex, config, config.webhook_paths)
             return_data = {
                 "webhook_resolution": {

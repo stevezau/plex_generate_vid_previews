@@ -150,6 +150,59 @@ class TestMultiServerGuards:
         kwargs = mock_dispatch.call_args.kwargs
         assert kwargs.get("paths") == ["/data/b.mkv", "/data/c.mkv"]
 
+    def test_owning_servers_breadcrumb_logged_before_resolver(self, tmp_path):
+        """Before the resolver runs, an info-level breadcrumb names the
+        owning server(s) for the webhook paths so an operator reading the
+        log top-down sees the routing decision before per-server work
+        starts. Single-Plex install: the message names Plex.
+        """
+        from loguru import logger
+
+        from plex_generate_previews.plex_client import WebhookResolutionResult
+
+        config = _make_config(tmp_path, webhook_paths=["/data_16tb/Movies/x.mkv"])
+        resolution = WebhookResolutionResult(
+            items=[(MagicMock(), MagicMock())],
+            unresolved_paths=[],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO")
+        try:
+            with (
+                patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+                patch(f"{MODULE}.plex_server"),
+                patch(f"{MODULE}.WorkerPool") as MockPool,
+                patch("plex_generate_previews.web.settings_manager.get_settings_manager") as mock_sm,
+            ):
+                MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+                mock_sm.return_value.get.return_value = [
+                    {
+                        "id": "plex-a",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://x",
+                        "auth": {"method": "token", "token": "t"},
+                        "libraries": [
+                            {
+                                "id": "1",
+                                "name": "Movies",
+                                "remote_paths": ["/data_16tb/Movies"],
+                                "enabled": True,
+                            }
+                        ],
+                        "path_mappings": [],
+                    }
+                ]
+                run_processing(config, selected_gpus=[])
+        finally:
+            logger.remove(sink_id)
+
+        assert any("owning server" in line.lower() and "plex" in line.lower() for line in captured), captured
+
     def test_k4_no_fallback_when_only_plex_configured(self, tmp_path):
         """K4: don't churn — when only Plex is configured, the unresolved
         paths go to the existing retry queue, not into the dispatcher."""
