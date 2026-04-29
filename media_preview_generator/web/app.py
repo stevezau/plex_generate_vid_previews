@@ -566,6 +566,13 @@ def create_app(config_dir: str = None) -> Flask:
             "api.get_setup_token_info",
             "api.set_setup_token",
             "api.validate_paths",
+            # Skip-setup is the wizard's escape hatch — has to work for
+            # both unauthed (typical fresh install) AND authed users
+            # (e.g. multi-vendor pivot from a half-completed wizard).
+            # Without this exemption an authed user POST'ing /api/setup/skip
+            # gets 302'd back to /setup before the route runs, so setup
+            # never gets marked complete and the user appears stuck.
+            "api.skip_setup",
             # Plex OAuth + server discovery (needed during setup)
             "api.create_plex_pin",
             "api.check_plex_pin",

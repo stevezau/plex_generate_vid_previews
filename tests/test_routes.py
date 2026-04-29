@@ -353,6 +353,27 @@ class TestTokenEndpoints:
         assert resp.get_json()["success"] is True
         assert sm.is_setup_complete() is True
 
+    def test_setup_skip_works_when_already_authenticated(self, authed_client):
+        """The check_setup before_request hook used to redirect authed users
+        away from /api/setup/skip → /setup, so the POST never reached the
+        route and setup_complete never flipped. Regression: the skip endpoint
+        is now in the exempt_endpoints list so authed pivots from the
+        wizard's vendor picker (Emby/Jellyfin path) actually fire."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("setup_complete", False)
+        # Use authed_client so check_setup's "is_authenticated" branch is
+        # taken — the bug only fires for authed users.
+        resp = authed_client.post("/api/setup/skip")
+        # Must be 200 (not 302 redirect to /setup).
+        assert resp.status_code == 200, (
+            f"expected 200, got {resp.status_code} (Location={resp.headers.get('Location')!r}) — "
+            "before_request probably bounced the POST back to /setup"
+        )
+        assert resp.get_json()["success"] is True
+        assert sm.is_setup_complete() is True
+
     def test_set_custom_token_rejects_when_env_controlled(self, client):
         # The fixture already has WEB_AUTH_TOKEN set, so any /api/token/set
         # call should 409 with the env-var message.
