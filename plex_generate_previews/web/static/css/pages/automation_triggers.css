@@ -25,6 +25,8 @@
 .source-badge.sportarr { background-color: rgba(13,202,240,0.2); color: #0dcaf0; }
 .source-badge.custom { background-color: rgba(111,66,193,0.2); color: #8b5cf6; }
 .source-badge.plex { background-color: rgba(229,160,13,0.2); color: #e5a00d; }
+.source-badge.emby { background-color: rgba(82,196,26,0.2); color: #52c41a; }
+.source-badge.jellyfin { background-color: rgba(170,67,219,0.2); color: #aa43db; }
 .source-badge.recently_added { background-color: rgba(13,110,253,0.2); color: var(--bs-primary); }
 
 /* Overview decision list */

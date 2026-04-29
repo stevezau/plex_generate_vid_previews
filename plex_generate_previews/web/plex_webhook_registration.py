@@ -1,8 +1,12 @@
 """Programmatic registration of Plex Pass webhooks via plex.tv account API.
 
 Wraps :class:`plexapi.myplex.MyPlexAccount` so the app can register and
-unregister its own ``/api/webhooks/plex`` endpoint with Plex without the
-user having to copy-paste the URL into the Plex Web Settings page.
+unregister its own ``/api/webhooks/incoming`` endpoint with Plex without
+the user having to copy-paste the URL into the Plex Web Settings page.
+Old installs that registered the legacy ``/api/webhooks/plex`` URL keep
+working — the inbound endpoint stays mounted — but ``register()`` will
+quietly remove that variant the next time it runs so the account ends up
+on the canonical unified URL.
 
 The plex.tv webhook endpoint requires a Plex Pass subscription on the
 server-owner account.  All helpers raise :class:`PlexWebhookError` with a
@@ -247,7 +251,25 @@ def register(token: str, url: str, auth_token: str | None = None, *, server_id: 
     # may have a different (or missing) token query param.  This makes
     # "Re-register with Plex" idempotent and safe after rotating the
     # webhook secret.
-    stale = [u for u in current if _base_url(u) == target_base and u != target_with_auth]
+    #
+    # Also remove the legacy ``/api/webhooks/plex`` variant pointing at
+    # the same host/scheme so installs upgraded from the per-vendor URL
+    # to the unified ``/api/webhooks/incoming`` URL don't end up with
+    # both URLs registered (which would double-fire every event).
+    target_parsed = urlparse(target_base)
+    legacy_target = urlunparse(
+        (
+            target_parsed.scheme,
+            target_parsed.netloc,
+            "/api/webhooks/plex",
+            "",
+            "",
+            "",
+        )
+    ).rstrip("/")
+    stale = [
+        u for u in current if u != target_with_auth and (_base_url(u) == target_base or _base_url(u) == legacy_target)
+    ]
     for stale_url in stale:
         try:
             account.deleteWebhook(stale_url)

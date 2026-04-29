@@ -44,7 +44,7 @@ def _loopback_in_docker_warning(url: str) -> str | None:
             "container refers to the container itself — not the host. Use the "
             "Docker host's LAN IP or a DNS name reachable from both this "
             "container and your Plex Media Server "
-            "(e.g. http://192.168.1.50:9191/api/webhooks/plex)."
+            "(e.g. http://192.168.1.50:9191/api/webhooks/incoming)."
         )
     return None
 
@@ -703,7 +703,7 @@ def _default_plex_webhook_url() -> str:
     networks override this manually.
     """
     base = request.host_url.rstrip("/")
-    return f"{base}/api/webhooks/plex"
+    return f"{base}/api/webhooks/incoming"
 
 
 def _resolve_plex_server_for_webhook(server_id: str | None) -> tuple[dict | None, str | None, int | None]:
@@ -887,8 +887,10 @@ def _plex_webhook_auth_token(server_entry: dict | None = None) -> str:
 
     Plex's webhook UI offers no way to set headers or HTTP Basic
     credentials, so the only way for Plex Media Server to authenticate
-    against this app's ``/api/webhooks/plex`` endpoint is via a
-    ``?token=`` query parameter.
+    against this app's webhook endpoint is via a ``?token=`` query
+    parameter (the canonical inbound URL is ``/api/webhooks/incoming``;
+    the legacy ``/api/webhooks/plex`` endpoint is kept around for
+    installs that registered before the unified router landed).
 
     Phase K6: prefer the per-server ``output.webhook_secret`` if set so
     each Plex server can have its own URL token. Falls back to the global

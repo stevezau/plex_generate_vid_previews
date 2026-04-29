@@ -30,12 +30,22 @@
                     <div class="decision-row">
                         <div class="decision-scenario">
                             You add media manually to <strong>Plex</strong> (drag &amp; drop, Plex import, etc.)
-                            <div class="text-muted small">Plex-specific options live on the server card, not here.</div>
+                            <div class="text-muted small">Plex-only — Plex is the only server vendor that exposes a server-side webhook we can subscribe to.</div>
                         </div>
                         <div class="decision-arrow">→</div>
                         <div class="decision-recommendation">
                             <a href="/servers"><i class="bi bi-arrow-right-circle me-1"></i>Servers &rarr; Edit Plex &rarr; Webhook &amp; Scanner</a>
                             <span class="text-muted small d-block">Plex Direct webhook + Recently Added Scanner</span>
+                        </div>
+                    </div>
+                    <div class="decision-row">
+                        <div class="decision-scenario">
+                            You add media manually to <strong>Emby</strong> or <strong>Jellyfin</strong>
+                            <div class="text-muted small">No native server-side webhook — install the vendor's official "Webhooks" plugin and point it at the Custom URL below, or use a Tdarr/script hook.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation">
+                            <a href="#section-webhooks-custom"><i class="bi bi-arrow-right-circle me-1"></i>Use the Custom webhook</a>
                         </div>
                     </div>
                 </div>
@@ -585,7 +595,7 @@ function renderHistoryPage() {
         const time = new Date(evt.timestamp);
         const relative = timeAgo(time);
 
-        var sourceBadgeMap = {radarr: 'Radarr', sonarr: 'Sonarr', sportarr: 'Sportarr', custom: 'Custom', plex: 'Plex', recently_added: 'Recently Added'};
+        var sourceBadgeMap = {radarr: 'Radarr', sonarr: 'Sonarr', sportarr: 'Sportarr', custom: 'Custom', plex: 'Plex', emby: 'Emby', jellyfin: 'Jellyfin', recently_added: 'Recently Added'};
         var sourceBadgeClass = sourceBadgeMap[evt.source] ? evt.source : 'custom';
         var sourceBadgeLabel = sourceBadgeMap[evt.source] || evt.source;
         const sourceBadge = '<span class="badge source-badge ' + sourceBadgeClass + '">' + sourceBadgeLabel + '</span>';

@@ -133,9 +133,9 @@ function resetPlexWebhookUrl() {
     const origin = window.location.origin;
     const input = document.getElementById('plexWebhookPublicUrl');
     if (!input) return;
-    input.value = origin + '/api/webhooks/plex';
+    input.value = origin + '/api/webhooks/incoming';
     if (typeof showToast === 'function') {
-        showToast('Reset', 'URL reset to ' + origin + '/api/webhooks/plex', 'info');
+        showToast('Reset', 'URL reset to ' + origin + '/api/webhooks/incoming', 'info');
     }
 }
 
