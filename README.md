@@ -101,7 +101,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/media_preview_generator:latest
+  stevezau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -129,8 +129,8 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
-> The Docker Hub image is published as `stevezzau/media_preview_generator` (double-`z`):
-> [stevezzau/media_preview_generator](https://hub.docker.com/r/stevezzau/media_preview_generator).
+> The canonical Docker Hub image is [`stevezau/media_preview_generator`](https://hub.docker.com/r/stevezau/media_preview_generator) (note: **single** `z`, matches the GitHub username).
+> The legacy `stevezzau/plex_generate_vid_previews` (double-`z`) image keeps mirroring the same builds until **2026-10-29** for backward compatibility — switch to the canonical name when convenient.
 
 ---
 
@@ -224,8 +224,8 @@ Star this repo if you find it useful!
 [issues-url]: https://github.com/stevezau/media_preview_generator/issues
 [license-shield]: https://img.shields.io/github/license/stevezau/media_preview_generator.svg?style=for-the-badge
 [license-url]: https://github.com/stevezau/media_preview_generator/blob/main/LICENSE
-[docker-shield]: https://img.shields.io/docker/pulls/stevezzau/media_preview_generator?style=for-the-badge
-[docker-url]: https://hub.docker.com/r/stevezzau/media_preview_generator
+[docker-shield]: https://img.shields.io/docker/pulls/stevezau/media_preview_generator?style=for-the-badge
+[docker-url]: https://hub.docker.com/r/stevezau/media_preview_generator
 [codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/media_preview_generator?style=for-the-badge
 [codecov-url]: https://codecov.io/gh/stevezau/media_preview_generator
 

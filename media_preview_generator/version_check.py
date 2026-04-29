@@ -255,7 +255,7 @@ def check_for_updates() -> None:
                     logger.warning(
                         "⚠️  Newer dev commit on {}: {} (you have: {})", git_branch, head_short, current_short
                     )
-                    logger.warning("🐳 Update dev image: docker pull stevezzau/media_preview_generator:dev")
+                    logger.warning("🐳 Update dev image: docker pull stevezau/media_preview_generator:dev")
                     return
                 else:
                     logger.info("✅ Dev build up to date with {} branch ({})", git_branch, head_short)
@@ -315,7 +315,7 @@ def check_for_updates() -> None:
             if current_version.startswith("0.0.0"):
                 logger.warning("ℹ️  Running from development snapshot (not an official release)")
                 logger.warning("ℹ️  Latest stable release: {}", latest_version)
-                logger.warning("🐳 Install stable: docker pull stevezzau/media_preview_generator:latest")
+                logger.warning("🐳 Install stable: docker pull stevezau/media_preview_generator:latest")
                 logger.warning(
                     "🔗 Or from source: pip install git+https://github.com/stevezau/media_preview_generator.git"
                 )
@@ -325,7 +325,7 @@ def check_for_updates() -> None:
 
                 # Provide appropriate update instructions based on environment
                 if is_docker_environment():
-                    logger.warning("🐳 Update: docker pull stevezzau/media_preview_generator:latest")
+                    logger.warning("🐳 Update: docker pull stevezau/media_preview_generator:latest")
                 else:
                     logger.warning(
                         "📦 Update: pip install --upgrade git+https://github.com/stevezau/media_preview_generator.git"

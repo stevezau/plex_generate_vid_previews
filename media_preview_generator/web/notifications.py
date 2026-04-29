@@ -33,7 +33,7 @@ DEPRECATED_IMAGE_ID = "deprecated_docker_image_name"
 # keeps publishing alongside the canonical name until 2026-10-29 (six months
 # after the rename); after that, only the canonical name receives updates.
 DEPRECATED_IMAGE_NAME = "stevezzau/plex_generate_vid_previews"
-CANONICAL_IMAGE_NAME = "stevezzau/media_preview_generator"
+CANONICAL_IMAGE_NAME = "stevezau/media_preview_generator"
 DEPRECATED_IMAGE_SUNSET_DATE = "2026-10-29"
 
 
@@ -185,7 +185,7 @@ def _build_deprecated_image_notification() -> dict[str, Any] | None:
 
     The Dockerfile bakes ``DOCKER_IMAGE_NAME`` at build time via a build
     arg; CI sets it to ``stevezzau/plex_generate_vid_previews`` for the
-    deprecated mirror image and to ``stevezzau/media_preview_generator``
+    deprecated mirror image and to ``stevezau/media_preview_generator``
     for the canonical image. Local dev builds default to ``"local"``.
     Only fires for the deprecated value so users on the canonical name
     (and dev builds) never see it.
