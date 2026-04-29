@@ -23,7 +23,7 @@ body:
       label: Steps to reproduce
       description: Shortest path from a fresh container start to the bug.
       placeholder: |
-        1. docker run … stevezzau/plex_generate_vid_previews:latest
+        1. docker run … stevezzau/media_preview_generator:latest
         2. Log into the web UI
         3. Start a Full Library Scan on Movies
         4. …

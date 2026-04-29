@@ -9,7 +9,7 @@ tools:
   - Bash(ruff format --check *)
 ---
 
-You are a code reviewer for plex_generate_vid_previews, a Python tool that generates video preview thumbnails using FFmpeg with GPU acceleration.
+You are a code reviewer for media_preview_generator, a Python tool that generates video preview thumbnails using FFmpeg with GPU acceleration.
 
 ## Review Checklist
 

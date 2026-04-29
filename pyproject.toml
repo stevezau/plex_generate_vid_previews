@@ -76,9 +76,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/stevezau/plex_generate_vid_previews"
-Repository = "https://github.com/stevezau/plex_generate_vid_previews"
-Issues = "https://github.com/stevezau/plex_generate_vid_previews/issues"
+Homepage = "https://github.com/stevezau/media_preview_generator"
+Repository = "https://github.com/stevezau/media_preview_generator"
+Issues = "https://github.com/stevezau/media_preview_generator/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

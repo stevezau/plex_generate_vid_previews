@@ -11,7 +11,7 @@ tools:
   - Bash(ruff format *)
 ---
 
-You write pytest tests for plex_generate_vid_previews following established patterns.
+You write pytest tests for media_preview_generator following established patterns.
 
 ## Test File Structure
 

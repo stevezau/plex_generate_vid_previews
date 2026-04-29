@@ -641,7 +641,7 @@ def run_processing(
             "Unexpected error during the preview-generation job — aborting this job. Underlying cause: {}. "
             "This is likely a bug. The web UI and other jobs keep running. "
             "Enable Debug logging under Settings → Logging, re-run the job to capture the full traceback, "
-            "then report it at https://github.com/stevezau/plex_generate_vid_previews/issues.",
+            "then report it at https://github.com/stevezau/media_preview_generator/issues.",
             e,
         )
         raise

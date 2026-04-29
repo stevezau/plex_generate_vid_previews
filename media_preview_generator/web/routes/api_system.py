@@ -650,7 +650,7 @@ def get_vulkan_debug():
     ] or ["  (none detected)"]
 
     bundle_lines = [
-        "=== plex_generate_vid_previews Vulkan diagnostic bundle ===",
+        "=== media_preview_generator Vulkan diagnostic bundle ===",
         "",
         "Use this block when reporting a Dolby Vision Profile 5 green-overlay",
         "issue. It captures the app's view of your container's Vulkan state,",
@@ -1246,7 +1246,7 @@ def get_log_history():
     )
 
 
-_GITHUB_RELEASES_URL = "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases"
+_GITHUB_RELEASES_URL = "https://api.github.com/repos/stevezau/media_preview_generator/releases"
 _RELEASES_CACHE: dict = {"result": None, "fetched_at": 0.0}
 _RELEASES_CACHE_TTL = 3600
 

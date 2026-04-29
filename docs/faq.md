@@ -121,7 +121,7 @@ Typical per-worker RSS with hardware decode:
 | 4K HDR10 / DV P7+8 | ~250–300 MB |
 | 4K DV Profile 5 (libplacebo) | ~350–500 MB |
 
-Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix ([#218](https://github.com/stevezau/plex_generate_vid_previews/issues/218)), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
+Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix ([#218](https://github.com/stevezau/media_preview_generator/issues/218)), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
 
 **What's thumbnail quality 1-10?**
 
@@ -133,7 +133,7 @@ Lower numbers = higher quality but larger file sizes.
 
 **Generation feels disk-bound on my multi-disk setup (unraid/mergerfs/JBOD) — how do I speed it up?**
 
-On setups where one share is backed by multiple physical disks (unraid's `shfs`, mergerfs, JBOD), parallel workers processing files in alphabetical order tend to pile onto one disk at a time. Open the **New Job** modal (or edit a full-library schedule) and set **Processing Order** to **Random**. Workers will pull items from different disks in parallel, so disk read throughput — not GPU — sets the ceiling. Webhook jobs and Recently Added scans don't expose this setting because they only touch a handful of files where ordering doesn't matter. See [Issue #219](https://github.com/stevezau/plex_generate_vid_previews/issues/219) for background.
+On setups where one share is backed by multiple physical disks (unraid's `shfs`, mergerfs, JBOD), parallel workers processing files in alphabetical order tend to pile onto one disk at a time. Open the **New Job** modal (or edit a full-library schedule) and set **Processing Order** to **Random**. Workers will pull items from different disks in parallel, so disk read throughput — not GPU — sets the ceiling. Webhook jobs and Recently Added scans don't expose this setting because they only touch a handful of files where ordering doesn't matter. See [Issue #219](https://github.com/stevezau/media_preview_generator/issues/219) for background.
 
 ---
 

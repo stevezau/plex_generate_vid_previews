@@ -86,7 +86,7 @@ def get_latest_github_release() -> str | None:
     """
     try:
         # GitHub API endpoint for latest release
-        url = "https://api.github.com/repos/stevezau/plex_generate_vid_previews/releases/latest"
+        url = "https://api.github.com/repos/stevezau/media_preview_generator/releases/latest"
 
         # Set timeout and user agent
         headers = {"User-Agent": "media-preview-generator-version-check"}
@@ -203,7 +203,7 @@ def get_branch_head_sha(branch: str) -> str | None:
 
     """
     try:
-        url = f"https://api.github.com/repos/stevezau/plex_generate_vid_previews/branches/{branch}"
+        url = f"https://api.github.com/repos/stevezau/media_preview_generator/branches/{branch}"
         headers = {"User-Agent": "media-preview-generator-version-check"}
         response = requests.get(url, headers=headers, timeout=3)
         response.raise_for_status()
@@ -255,7 +255,7 @@ def check_for_updates() -> None:
                     logger.warning(
                         "⚠️  Newer dev commit on {}: {} (you have: {})", git_branch, head_short, current_short
                     )
-                    logger.warning("🐳 Update dev image: docker pull stevezzau/plex_generate_vid_previews:dev")
+                    logger.warning("🐳 Update dev image: docker pull stevezzau/media_preview_generator:dev")
                     return
                 else:
                     logger.info("✅ Dev build up to date with {} branch ({})", git_branch, head_short)
@@ -315,9 +315,9 @@ def check_for_updates() -> None:
             if current_version.startswith("0.0.0"):
                 logger.warning("ℹ️  Running from development snapshot (not an official release)")
                 logger.warning("ℹ️  Latest stable release: {}", latest_version)
-                logger.warning("🐳 Install stable: docker pull stevezzau/plex_generate_vid_previews:latest")
+                logger.warning("🐳 Install stable: docker pull stevezzau/media_preview_generator:latest")
                 logger.warning(
-                    "🔗 Or from source: pip install git+https://github.com/stevezau/plex_generate_vid_previews.git"
+                    "🔗 Or from source: pip install git+https://github.com/stevezau/media_preview_generator.git"
                 )
             else:
                 # Normal version update available
@@ -325,13 +325,13 @@ def check_for_updates() -> None:
 
                 # Provide appropriate update instructions based on environment
                 if is_docker_environment():
-                    logger.warning("🐳 Update: docker pull stevezzau/plex_generate_vid_previews:latest")
+                    logger.warning("🐳 Update: docker pull stevezzau/media_preview_generator:latest")
                 else:
                     logger.warning(
-                        "📦 Update: pip install --upgrade git+https://github.com/stevezau/plex_generate_vid_previews.git"
+                        "📦 Update: pip install --upgrade git+https://github.com/stevezau/media_preview_generator.git"
                     )
 
-            logger.warning("🔗 Release notes: https://github.com/stevezau/plex_generate_vid_previews/releases/latest")
+            logger.warning("🔗 Release notes: https://github.com/stevezau/media_preview_generator/releases/latest")
         else:
             logger.debug("Version is up to date")
 

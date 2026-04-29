@@ -109,6 +109,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/stevezau/plex_generate_vid_previews/compare/3.5.0...HEAD
-[3.5.0]: https://github.com/stevezau/plex_generate_vid_previews/compare/3.4.2...3.5.0
-[3.4.2]: https://github.com/stevezau/plex_generate_vid_previews/releases/tag/3.4.2
+[Unreleased]: https://github.com/stevezau/media_preview_generator/compare/3.5.0...HEAD
+[3.5.0]: https://github.com/stevezau/media_preview_generator/compare/3.4.2...3.5.0
+[3.4.2]: https://github.com/stevezau/media_preview_generator/releases/tag/3.4.2

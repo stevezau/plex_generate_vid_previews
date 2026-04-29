@@ -44,7 +44,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -76,7 +76,7 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     ports:
@@ -114,7 +114,7 @@ Set GPU Workers to 0 and CPU Workers as needed in the web UI Settings.
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
+    image: stevezzau/media_preview_generator:latest
     container_name: media-preview-generator
     restart: unless-stopped
     ports:
@@ -158,7 +158,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ### GPU + CPU Fallback
@@ -198,7 +198,7 @@ docker run -d \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
   -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ## Performance Tuning
@@ -215,17 +215,17 @@ Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 Full documentation is available on GitHub:
 
-- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
-- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
-- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md) — All settings, env vars, and REST API
-- [FAQ](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
+- [Getting Started](https://github.com/stevezau/media_preview_generator/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
+- [Guides & Troubleshooting](https://github.com/stevezau/media_preview_generator/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
+- [Configuration & API Reference](https://github.com/stevezau/media_preview_generator/blob/main/docs/reference.md) — All settings, env vars, and REST API
+- [FAQ](https://github.com/stevezau/media_preview_generator/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
 
 ## Support
 
-- [Report a Bug](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug)
-- [Request a Feature](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement)
-- [GitHub Repository](https://github.com/stevezau/plex_generate_vid_previews)
+- [Report a Bug](https://github.com/stevezau/media_preview_generator/issues/new?labels=bug)
+- [Request a Feature](https://github.com/stevezau/media_preview_generator/issues/new?labels=enhancement)
+- [GitHub Repository](https://github.com/stevezau/media_preview_generator)
 
 ## License
 
-MIT License. See [LICENSE](https://github.com/stevezau/plex_generate_vid_previews/blob/main/LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/stevezau/media_preview_generator/blob/main/LICENSE) for details.

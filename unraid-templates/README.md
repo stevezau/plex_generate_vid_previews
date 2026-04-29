@@ -12,7 +12,7 @@ Search for **media-preview-generator** in the Community Applications plugin.
 
 1. Go to **Docker** → **Add Container** → **Template** dropdown
 2. Click **Add Template Repository**
-3. Enter: `https://github.com/stevezau/plex_generate_vid_previews`
+3. Enter: `https://github.com/stevezau/media_preview_generator`
 4. Save, then select **media-preview-generator** from templates
 
 ## Files

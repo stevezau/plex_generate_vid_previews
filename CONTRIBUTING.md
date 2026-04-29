@@ -16,7 +16,7 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ### Reporting Bugs
 
-1. Check [existing issues](https://github.com/stevezau/plex_generate_vid_previews/issues) first
+1. Check [existing issues](https://github.com/stevezau/media_preview_generator/issues) first
 2. Create a new issue with:
    - Clear description of the problem
    - Steps to reproduce
@@ -26,7 +26,7 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ### Suggesting Features
 
-1. Check [existing issues](https://github.com/stevezau/plex_generate_vid_previews/issues) for similar requests
+1. Check [existing issues](https://github.com/stevezau/media_preview_generator/issues) for similar requests
 2. Create an issue with label `enhancement`
 3. Describe the use case and proposed solution
 
@@ -45,8 +45,8 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ```bash
 # Clone and setup
-git clone https://github.com/stevezau/plex_generate_vid_previews.git
-cd plex_generate_vid_previews
+git clone https://github.com/stevezau/media_preview_generator.git
+cd media_preview_generator
 python -m venv venv
 source venv/bin/activate  # Linux/macOS (use .\venv\Scripts\activate on Windows)
 pip install -e ".[dev,test]"
@@ -211,7 +211,7 @@ docker run --rm -p 8080:8080 -v $(pwd)/config:/config plex-previews:dev
 
 # Multi-architecture build
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t stevezzau/plex_generate_vid_previews:dev --push .
+  -t stevezzau/media_preview_generator:dev --push .
 ```
 
 ---

@@ -467,8 +467,8 @@ The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbn
 | HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178), [#212](https://github.com/stevezau/plex_generate_vid_previews/issues/212)) |
+| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/media_preview_generator/issues/178)) |
+| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/media_preview_generator/issues/172), [#178](https://github.com/stevezau/media_preview_generator/issues/178), [#212](https://github.com/stevezau/media_preview_generator/issues/212)) |
 
 ### Tone-map algorithm
 
@@ -572,7 +572,7 @@ Schema downgrades are **not automated**. If you need to revert from a release th
 
 ## Support
 
-Open a [GitHub Issue](https://github.com/stevezau/plex_generate_vid_previews/issues).
+Open a [GitHub Issue](https://github.com/stevezau/media_preview_generator/issues).
 
 ---
 
