@@ -740,8 +740,11 @@
         const tr = document.createElement('tr');
         const remoteVal = row.plex_prefix || row.remote_prefix || '';
         const localVal = row.local_prefix || '';
+        const webhookAliases = Array.isArray(row.webhook_prefixes)
+            ? row.webhook_prefixes.join('; ')
+            : (row.webhook_prefixes || '');
         tr.innerHTML = `
-            <td><input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data/movies"></td>
+            <td><input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data_16tb/movies"></td>
             <td>
                 <div class="input-group input-group-sm">
                     <input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies">
@@ -752,6 +755,7 @@
                     <div class="valid-feedback small">Path exists</div>
                 </div>
             </td>
+            <td><input type="text" class="form-control form-control-sm pm-webhook" value="${escapeHtml(webhookAliases)}" placeholder="/data; /mnt/union" title="Optional. Semicolon- or comma-separated webhook source prefixes that resolve to this disk."></td>
             <td><button type="button" class="btn btn-sm btn-outline-danger pm-remove"><i class="bi bi-x-lg"></i></button></td>
         `;
         tr.querySelector('.pm-remove').addEventListener('click', () => tr.remove());
@@ -833,8 +837,12 @@
         return $$('#editPathMappingsTable tbody tr').map((tr) => {
             const remote = tr.querySelector('.pm-remote').value.trim();
             const local = tr.querySelector('.pm-local').value.trim();
-            if (!remote && !local) return null;
-            return { plex_prefix: remote, local_prefix: local, webhook_prefixes: [] };
+            const webhookRaw = (tr.querySelector('.pm-webhook')?.value || '').trim();
+            const webhook_prefixes = webhookRaw
+                ? webhookRaw.split(/[;,]/).map((s) => s.trim()).filter(Boolean)
+                : [];
+            if (!remote && !local && !webhook_prefixes.length) return null;
+            return { plex_prefix: remote, local_prefix: local, webhook_prefixes };
         }).filter(Boolean);
     }
 
