@@ -441,6 +441,214 @@ class Worker:
                 if self._done_event is not None:
                     self._done_event.set()
 
+    def assign_canonical_task(
+        self,
+        item,
+        config: Config,
+        registry,
+        progress_callback=None,
+        title_max_width: int = 20,
+        job_id: str | None = None,
+        library_name: str = "",
+        cancel_check=None,
+    ) -> None:
+        """Assign a vendor-agnostic :class:`ProcessableItem` to this worker.
+
+        Sibling of :meth:`assign_task` for the post-Phase-C unified pipeline.
+        The thread target dispatches into ``process_canonical_path`` instead
+        of the legacy Plex-only ``process_item``.
+
+        Worker UI fields (media_title, media_file, library_name) are
+        populated from the ProcessableItem so the dashboard's per-worker
+        panel keeps showing what each worker is doing — same shape Plex
+        already gets.
+        """
+        if self.is_busy:
+            raise RuntimeError(f"{self.display_name} is already busy")
+
+        self._pre_task_completed = self.completed
+        self._pre_task_failed = self.failed
+        self._pre_task_outcome_counts = dict(self.outcome_counts)
+
+        self.is_busy = True
+        self.current_task = item.canonical_path
+        self.current_job_id = job_id
+        self.media_title = item.title or item.canonical_path
+        # Heuristic for the media_type column on the worker card — only
+        # affects display formatting (movie vs episode); harmless when
+        # we can't tell so we just say "video".
+        self.media_type = "episode" if " - S" in self.media_title else "video"
+        self.media_file = item.canonical_path
+        self.library_name = library_name
+        self.title_max_width = title_max_width
+        self.display_title = format_display_title(self.media_title, self.media_type, title_max_width)
+        if self.worker_type == "GPU":
+            gpu_display = self._format_gpu_name_for_display()
+            self.task_title = f"[{gpu_display}]: {self.display_title}"
+        else:
+            self.task_title = f"[CPU      ]: {self.display_title}"
+        self.progress_percent = 0
+        self.speed = "0.0x"
+        self.current_duration = 0.0
+        self.total_duration = 0.0
+        self.remaining_time = 0.0
+        self.ffmpeg_started = False
+        self.task_start_time = time.time()
+        self.fallback_active = False
+        self.fallback_reason = None
+        self.cancel_check = cancel_check
+
+        self.frame = 0
+        self.fps = 0
+        self.q = 0
+        self.size = 0
+        self.time_str = "00:00:00.00"
+        self.bitrate = 0
+
+        self.last_progress_percent = -1
+        self.last_speed = ""
+        self.last_update_time = 0
+        self.last_verbose_log_time = 0
+
+        self.current_thread = threading.Thread(
+            target=self._process_canonical_item,
+            args=(item, config, registry, progress_callback),
+            daemon=True,
+        )
+        self.current_thread.start()
+
+    def _process_canonical_item(
+        self,
+        item,
+        config: Config,
+        registry,
+        progress_callback=None,
+    ) -> None:
+        """Background-thread target for :meth:`assign_canonical_task`.
+
+        Dispatches into ``process_canonical_path`` (the per-vendor publisher
+        funnel) and translates its :class:`MultiServerResult` into the
+        legacy ProcessingResult counters the rest of the WorkerPool
+        accounting consumes. Mirrors :meth:`_process_item`'s error
+        handling for cancellation and CPU fallback so behavioural parity
+        is preserved across the dual-pipeline kill.
+        """
+        from ..processing.multi_server import (
+            MultiServerStatus,
+            process_canonical_path,
+        )
+
+        register_job_thread()
+
+        with failure_scope(self.current_job_id):
+            display_name = self.media_file or self.media_title or item.canonical_path
+
+            ctx_logger = logger.bind(
+                worker_id=self.worker_id,
+                worker_type=self.worker_type,
+                gpu_index=self.gpu_index,
+                media_title=self.media_title,
+                canonical_path=item.canonical_path,
+            )
+            ctx_logger.info("{} started: {}", self.display_name, display_name)
+
+            def _record_outcome(status: MultiServerStatus) -> ProcessingResult:
+                # MultiServerStatus → ProcessingResult mapping mirrors what
+                # the legacy _fan_out_secondary_publishers callers expected
+                # so per-job stat aggregations stay consistent.
+                if status is MultiServerStatus.PUBLISHED:
+                    return ProcessingResult.GENERATED
+                if status is MultiServerStatus.SKIPPED:
+                    return ProcessingResult.SKIPPED_BIF_EXISTS
+                if status is MultiServerStatus.NO_OWNERS:
+                    return ProcessingResult.NO_MEDIA_PARTS
+                return ProcessingResult.FAILED
+
+            def _run_once(gpu, gpu_device):
+                return process_canonical_path(
+                    canonical_path=item.canonical_path,
+                    registry=registry,
+                    config=config,
+                    item_id_by_server=item.item_id_by_server or None,
+                    gpu=gpu,
+                    gpu_device_path=gpu_device,
+                    progress_callback=progress_callback,
+                    cancel_check=self.cancel_check,
+                )
+
+            try:
+                ms_result = _run_once(self.gpu, self.gpu_device)
+                result = _record_outcome(ms_result.status)
+                self.outcome_counts[result.value] += 1
+                if result == ProcessingResult.FAILED:
+                    self.failed += 1
+                else:
+                    self.completed += 1
+            except CancellationError:
+                ctx_logger.info("{} cancelled while processing {}", self.display_name, display_name)
+                self.outcome_counts["failed"] += 1
+                self.failed += 1
+            except CodecNotSupportedError as e:
+                if self.worker_type == "GPU":
+                    reason = str(e) or "GPU processing failed"
+                    if self.cancel_check and self.cancel_check():
+                        ctx_logger.info("{} cancelled before CPU fallback for {}", self.display_name, display_name)
+                        self.outcome_counts["failed"] += 1
+                        self.failed += 1
+                    else:
+                        self.fallback_active = True
+                        self.fallback_reason = reason
+                        ctx_logger.warning(
+                            "{} couldn't process {} on the GPU and is retrying on CPU. Reason: {}.",
+                            self.display_name,
+                            display_name,
+                            reason,
+                        )
+                        try:
+                            ms_result = _run_once(None, None)
+                            result = _record_outcome(ms_result.status)
+                            self.outcome_counts[result.value] += 1
+                            if result == ProcessingResult.FAILED:
+                                self.failed += 1
+                            else:
+                                self.completed += 1
+                            ctx_logger.info(
+                                "{} completed CPU fallback for {} ({})",
+                                self.display_name,
+                                display_name,
+                                result.value,
+                            )
+                        except Exception as retry_exc:
+                            ctx_logger.error(
+                                "{} also couldn't process {} on CPU after the GPU attempt failed: {}",
+                                self.display_name,
+                                display_name,
+                                retry_exc,
+                            )
+                            self.outcome_counts["failed"] += 1
+                            self.failed += 1
+                else:
+                    ctx_logger.error(
+                        "CPU worker {} couldn't decode {}: {}.",
+                        self.display_name,
+                        display_name,
+                        e,
+                    )
+                    self.outcome_counts["failed"] += 1
+                    self.failed += 1
+            except Exception as e:
+                ctx_logger.error(
+                    "{} failed to generate a preview for {}: {}",
+                    self.display_name,
+                    display_name,
+                    e,
+                )
+                self.outcome_counts["failed"] += 1
+                self.failed += 1
+            finally:
+                if self._done_event is not None:
+                    self._done_event.set()
+
     def check_completion(self) -> bool:
         """Check if this worker has completed its current task.
 
@@ -861,6 +1069,17 @@ class WorkerPool:
     ) -> bool:
         """Assign a task from main queue to a worker.
 
+        Accepts either:
+          * a Plex tuple ``(item_key, title, media_type[, library_name])`` —
+            legacy Plex flow, dispatched via :meth:`Worker.assign_task` →
+            ``process_item(item_key, ..., plex, ...)``.
+          * a :class:`ProcessableItem` — Phase C unified flow, dispatched
+            via :meth:`Worker.assign_canonical_task` → ``process_canonical_path``.
+
+        The ``plex`` parameter is reused as the registry handle when the
+        queue contains ProcessableItems (callers pass ``ServerRegistry``
+        in that slot); the type check below picks the right thread target.
+
         Returns:
             True if task was assigned, False if queue was empty
 
@@ -869,9 +1088,31 @@ class WorkerPool:
             return False
 
         item = media_queue.popleft()
+        progress_callback = partial(self._update_worker_progress, worker)
+
+        # ProcessableItem: dispatch through the unified canonical-path path.
+        from ..processing.types import ProcessableItem
+
+        if isinstance(item, ProcessableItem):
+            worker.assign_canonical_task(
+                item,
+                config,
+                plex,  # caller-supplied ServerRegistry in this slot
+                progress_callback=progress_callback,
+                title_max_width=title_max_width,
+                library_name="",
+                cancel_check=cancel_check,
+            )
+            logger.info(
+                "Dispatch: assigned canonical item to {} (path={!r})",
+                worker.display_name,
+                item.canonical_path,
+            )
+            return True
+
+        # Legacy Plex tuple shape.
         item_key, media_title, media_type = item[0], item[1], item[2]
         library_name = item[3] if len(item) > 3 else ""
-        progress_callback = partial(self._update_worker_progress, worker)
 
         worker.assign_task(
             item_key,
@@ -1122,6 +1363,43 @@ class WorkerPool:
             on_task_complete=on_task_complete,
             on_poll=on_poll,
             on_finish=on_finish,
+            on_item_complete=on_item_complete,
+            cancel_check=cancel_check,
+            pause_check=pause_check,
+        )
+
+    def process_canonical_items_headless(
+        self,
+        items: list,
+        config: Config,
+        registry,
+        title_max_width: int = 20,
+        library_name: str = "",
+        progress_callback=None,
+        worker_callback=None,
+        on_item_complete=None,
+        cancel_check=None,
+        pause_check=None,
+    ) -> dict:
+        """Process a list of :class:`ProcessableItem` via the WorkerPool.
+
+        Phase C unified entry point — delegates to :meth:`process_items_headless`
+        with ``registry`` in the slot the legacy flow used for the Plex
+        client. The dispatch step (``_assign_main_queue_task``) is type-aware
+        and routes ProcessableItems to ``Worker.assign_canonical_task`` →
+        ``process_canonical_path``.
+
+        Returns the same outcome-counts dict shape ``process_items_headless``
+        returns so callers stay vendor-agnostic.
+        """
+        return self.process_items_headless(
+            items,
+            config,
+            registry,
+            title_max_width=title_max_width,
+            library_name=library_name,
+            progress_callback=progress_callback,
+            worker_callback=worker_callback,
             on_item_complete=on_item_complete,
             cancel_check=cancel_check,
             pause_check=pause_check,

@@ -268,7 +268,9 @@ def _dispatch_processable_items(
             "recently-added scan", etc.) so log lines stay grep-friendly.
 
     Returns:
-        Aggregated ProcessingResult counts keyed by enum value.
+        Aggregated PublisherStatus counts keyed by enum value
+        (``published``/``failed``/``skipped_*``) — same shape every
+        existing caller already depends on.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -324,8 +326,7 @@ def _dispatch_processable_items(
                 # Scope publishing to the originating server only on
                 # non-Plex installs — Plex scans should still fan out
                 # to every owning sibling so multi-vendor publishers
-                # benefit. (Phase C will revisit once the Plex worker
-                # pool also funnels through here.)
+                # benefit.
                 server_id_filter=(server_cfg.id if server_cfg.type is not ServerType.PLEX else None),
             )
         except Exception as exc:
