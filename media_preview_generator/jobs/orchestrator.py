@@ -385,6 +385,11 @@ def _dispatch_processable_items(
                 except Exception:
                     pass
             if result is None:
+                # _process_one swallowed an exception (FFmpeg crash, codec
+                # not supported, etc.). Count it as a failed item so the
+                # outcome counter — and the Job UI badge — surface it
+                # instead of silently reporting "Completed".
+                counts["failed"] = counts.get("failed", 0) + 1
                 continue
             for pub in result.publishers or []:
                 key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
