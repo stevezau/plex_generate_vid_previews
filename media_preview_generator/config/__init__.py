@@ -199,6 +199,24 @@ class Config:
             fields.append(f"{f}={val!r}")
         return f"Config({', '.join(fields)})"
 
+    # --------------------------------------------------------------- aliases
+    # Vendor-neutral alias for the Plex-named ``plex_bif_frame_interval``
+    # field. Phase G of the multi-server completion: the underlying value
+    # is loaded from the ``thumbnail_interval`` settings key and applies
+    # uniformly to every vendor (Plex BIF, Emby BIF, Jellyfin trickplay
+    # sidecars), so the Plex-branded field name is misleading. New code
+    # should use ``thumbnail_interval``; the legacy attribute keeps
+    # working as the dataclass field of record so existing callers and
+    # tests don't have to migrate atomically.
+    @property
+    def thumbnail_interval(self) -> int:
+        """Frame interval (seconds) used by every output adapter."""
+        return self.plex_bif_frame_interval
+
+    @thumbnail_interval.setter
+    def thumbnail_interval(self, value: int) -> None:
+        self.plex_bif_frame_interval = int(value)
+
 
 def show_docker_help():
     """Show help message pointing users to the web UI for configuration."""

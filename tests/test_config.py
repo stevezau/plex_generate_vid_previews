@@ -2038,3 +2038,53 @@ class TestDockerHelp:
         assert any("Docker Environment Detected" in line for line in logged_lines)
         assert any("One-time seed environment variables" in line for line in logged_lines)
         assert any("Infrastructure environment variables" in line for line in logged_lines)
+
+
+class TestThumbnailIntervalAlias:
+    """Phase G: ``thumbnail_interval`` is the vendor-neutral name for what
+    was historically ``plex_bif_frame_interval``. The two attributes must
+    round-trip and stay in sync."""
+
+    def _make_config(self, **overrides):
+        from media_preview_generator.config import Config
+
+        defaults = dict(
+            plex_url="http://test:32400",
+            plex_token="t",
+            plex_timeout=30,
+            plex_verify_ssl=True,
+            plex_libraries=[],
+            plex_config_folder="/plex",
+            plex_local_videos_path_mapping="",
+            plex_videos_path_mapping="",
+            path_mappings=[],
+            plex_bif_frame_interval=10,
+            thumbnail_quality=4,
+            regenerate_thumbnails=False,
+            sort_by=None,
+            gpu_threads=0,
+            cpu_threads=1,
+            ffmpeg_threads=2,
+            tmp_folder="/tmp",
+            tmp_folder_created_by_us=False,
+            ffmpeg_path="/usr/bin/ffmpeg",
+            log_level="INFO",
+        )
+        defaults.update(overrides)
+        return Config(**defaults)
+
+    def test_alias_returns_underlying_field(self):
+        cfg = self._make_config(plex_bif_frame_interval=7)
+        assert cfg.thumbnail_interval == 7
+
+    def test_alias_setter_propagates_to_underlying_field(self):
+        cfg = self._make_config(plex_bif_frame_interval=10)
+        cfg.thumbnail_interval = 5
+        assert cfg.plex_bif_frame_interval == 5
+        assert cfg.thumbnail_interval == 5
+
+    def test_alias_setter_coerces_to_int(self):
+        cfg = self._make_config(plex_bif_frame_interval=10)
+        cfg.thumbnail_interval = "12"  # type: ignore[assignment]
+        assert cfg.plex_bif_frame_interval == 12
+        assert isinstance(cfg.plex_bif_frame_interval, int)
