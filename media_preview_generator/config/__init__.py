@@ -474,7 +474,22 @@ def load_config(*, log_validation_errors: bool = True) -> Config:
         path_mappings = _legacy_settings_to_path_mappings(plex_videos_path_mapping, plex_local_videos_path_mapping)
     exclude_paths = normalize_exclude_paths(ui_settings.get("exclude_paths"))
 
-    plex_bif_frame_interval = get_value("thumbnail_interval", "PLEX_BIF_FRAME_INTERVAL", 5, int)
+    # Accept either the modern ``thumbnail_interval`` (vendor-neutral) or the
+    # legacy ``plex_bif_frame_interval`` key. settings_manager and parts of
+    # the bootstrap (run_app.py, migrations) write the legacy key; without
+    # this fallback those values are silently ignored and the env-var/default
+    # wins instead — which is exactly how a 30s clip ends up with 13 frames
+    # in a "5s-interval" BIF when a stale .env sets PLEX_BIF_FRAME_INTERVAL=2.
+    _interval_setting = ui_settings.get("thumbnail_interval")
+    if _interval_setting in (None, ""):
+        _interval_setting = ui_settings.get("plex_bif_frame_interval")
+    if _interval_setting in (None, ""):
+        plex_bif_frame_interval = get_value("__never_set__", "PLEX_BIF_FRAME_INTERVAL", 5, int)
+    else:
+        try:
+            plex_bif_frame_interval = int(_interval_setting)
+        except (TypeError, ValueError):
+            plex_bif_frame_interval = get_value("__never_set__", "PLEX_BIF_FRAME_INTERVAL", 5, int)
     thumbnail_quality = get_value("thumbnail_quality", "THUMBNAIL_QUALITY", 4, int)
     tonemap_algorithm = get_value("tonemap_algorithm", "TONEMAP_ALGORITHM", "hable", str).strip().lower()
     regenerate_thumbnails = get_value("regenerate_thumbnails", "REGENERATE_THUMBNAILS", False, bool)
