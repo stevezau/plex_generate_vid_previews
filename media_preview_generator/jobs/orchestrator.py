@@ -755,9 +755,15 @@ def run_processing(
         except Exception:
             has_non_plex_server = False
 
-        use_multi_server_scan = no_webhook_paths and (
-            non_plex_pin or no_plex_at_all or (not sid_filter and has_non_plex_server)
-        )
+        # Use multi-server scan whenever any non-Plex server is enabled
+        # (regardless of pin). The legacy Plex full-scan calls
+        # ``from_legacy_config`` which has empty per-server path_mappings,
+        # so on a multi-server install Plex items come back with their
+        # remote view paths (``/media/Movies/...``) and every worker fails
+        # with "source missing". The multi-server scan reads mappings from
+        # the per-server registry entry and works correctly even when
+        # pinned to a Plex server.
+        use_multi_server_scan = no_webhook_paths and (non_plex_pin or no_plex_at_all or has_non_plex_server)
         if use_multi_server_scan:
             library_ids = list(getattr(config, "plex_library_ids", None) or [])
             outcome_counts = _run_full_scan_multi_server(
