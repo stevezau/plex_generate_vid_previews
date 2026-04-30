@@ -684,6 +684,49 @@ class TestUpdateServer:
         assert response.status_code == 400
         assert "does not exist" in response.get_json()["error"]
 
+    def test_put_accepts_modern_remote_prefix_path_mapping(self, client, auth_headers, tmp_path):
+        """Persisted path_mappings use ``remote_prefix`` (modern multi-vendor key).
+
+        Without this support, any PUT/PATCH to a server saved with the
+        modern key would 400 even when the body is unchanged — since
+        the validator re-runs against the existing path_mappings.
+        Repro of the bug: GET → PUT round trip on a server with
+        ``remote_prefix``-shaped mappings.
+        """
+        local_dir = tmp_path / "media"
+        local_dir.mkdir()
+        _seed_media_servers(
+            [
+                {
+                    "id": "e1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                    "path_mappings": [{"remote_prefix": "/em-media", "local_prefix": str(local_dir)}],
+                }
+            ]
+        )
+
+        # Touching only a non-mapping field used to fail because the
+        # existing remote_prefix mappings would re-validate as missing.
+        response = client.put(
+            "/api/servers/e1",
+            headers=auth_headers,
+            json={"name": "Emby Renamed"},
+        )
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["name"] == "Emby Renamed"
+
+        # Sending an explicit remote_prefix payload also succeeds.
+        response = client.put(
+            "/api/servers/e1",
+            headers=auth_headers,
+            json={"path_mappings": [{"remote_prefix": "/em-media2", "local_prefix": str(local_dir)}]},
+        )
+        assert response.status_code == 200, response.get_json()
+
     def test_400_when_plex_config_folder_missing(self, client, auth_headers, tmp_path):
         _seed_media_servers(
             [

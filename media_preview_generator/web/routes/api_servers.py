@@ -136,20 +136,27 @@ def _validate_path_mappings(rows: list) -> str:
 
     Catches three foot-guns at save rather than at job-runtime:
       * non-dict rows (UI bug),
-      * missing plex_prefix or local_prefix when the row is otherwise populated,
+      * missing remote_prefix or local_prefix when the row is otherwise populated,
       * local_prefix that doesn't exist on disk (silent path mapping → no previews).
+
+    Accepts either ``remote_prefix`` (the modern multi-vendor key used
+    by Emby/Jellyfin/Plex entries) or the legacy ``plex_prefix`` —
+    ``ownership.py`` already coalesces both at read time, so the
+    validator must too. Without this fallback, any PUT/PATCH to a
+    server saved with the modern key would 400 even when the body
+    is unchanged.
     """
     if not isinstance(rows, list):
         return "path_mappings must be a list"
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             return f"path_mappings[{idx}] must be an object"
-        plex_prefix = str(row.get("plex_prefix") or "").strip()
+        remote_prefix = str(row.get("remote_prefix") or row.get("plex_prefix") or "").strip()
         local_prefix = str(row.get("local_prefix") or "").strip()
-        if not plex_prefix and not local_prefix:
+        if not remote_prefix and not local_prefix:
             continue  # blank row — UI tolerates these, just skip
-        if not plex_prefix or not local_prefix:
-            return f"path_mappings[{idx}] needs both 'plex_prefix' and 'local_prefix'"
+        if not remote_prefix or not local_prefix:
+            return f"path_mappings[{idx}] needs both 'remote_prefix' (or legacy 'plex_prefix') and 'local_prefix'"
         if not local_prefix.startswith("/"):
             return f"path_mappings[{idx}] local_prefix must be an absolute path (got {local_prefix!r})"
         if not os.path.isdir(local_prefix):
