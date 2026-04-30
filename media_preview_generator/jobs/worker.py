@@ -105,7 +105,10 @@ class Worker:
         self.task_title = ""
         self.display_title = ""
         self.media_title = ""
-        self.media_type = ""
+        # Display-only flag, "episode" or "video", derived from the title;
+        # drives how the worker card truncates long titles. NOT a real
+        # semantic media type — vendor processors derive that from the path.
+        self.title_kind = ""
         self.media_file = ""  # Actual file path being processed
         self.library_name = ""
         self.title_max_width = 20
@@ -251,14 +254,14 @@ class Worker:
         self.current_task = item.canonical_path
         self.current_job_id = job_id
         self.media_title = item.title or item.canonical_path
-        # Heuristic for the media_type column on the worker card — only
-        # affects display formatting (movie vs episode); harmless when
-        # we can't tell so we just say "video".
-        self.media_type = "episode" if " - S" in self.media_title else "video"
+        # Display-only heuristic: " - S" in the title means episode-style
+        # truncation (preserve trailing S01E01); everything else gets
+        # movie-style truncation. Has no bearing on processing logic.
+        self.title_kind = "episode" if " - S" in self.media_title else "video"
         self.media_file = item.canonical_path
         self.library_name = library_name
         self.title_max_width = title_max_width
-        self.display_title = format_display_title(self.media_title, self.media_type, title_max_width)
+        self.display_title = format_display_title(self.media_title, self.title_kind, title_max_width)
         if self.worker_type == "GPU":
             gpu_display = self._format_gpu_name_for_display()
             self.task_title = f"[{gpu_display}]: {self.display_title}"

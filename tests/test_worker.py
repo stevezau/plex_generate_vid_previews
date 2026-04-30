@@ -61,10 +61,10 @@ class TestWorker:
         assert worker.is_busy is True
         assert worker.current_task == "/data/test_key.mkv"
         assert worker.media_title == "Test Movie"
-        # Worker.media_type is now a display-only heuristic derived from
-        # the title ("episode" if " - S" in title else "video"); the
-        # legacy media_type kwarg on assign_task is gone.
-        assert worker.media_type == "video"
+        # title_kind is a display-only heuristic derived from the title
+        # ("episode" if " - S" in title else "video") — drives card
+        # truncation only, not any processing decision.
+        assert worker.title_kind == "video"
 
         # Wait for thread to complete
         if worker.current_thread:

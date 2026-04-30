@@ -475,6 +475,11 @@ document.addEventListener('DOMContentLoaded', function() {
     let isAuthenticated = false;
     let selectedServer = null;
     let selectedLibraries = [];
+    // Tracks the vendor the user picked on Step 1 ("plex" | "emby" | "jellyfin").
+    // Plex flows visit Steps 2–3 (libraries + Plex paths); Emby/Jellyfin flows
+    // skip straight to Step 4. Used by the Back button on Step 4 so non-Plex
+    // users don't land on the Plex-only paths page they never visited.
+    let chosenVendor = null;
 
     // Elements
     const steps = document.querySelectorAll('.setup-step');
@@ -619,6 +624,7 @@ document.addEventListener('DOMContentLoaded', function() {
     //     and jumps to wizard step 4 (GPU). servers.js's pickVendor helper
     //     primes the form for the chosen vendor.
     function _showVendorPicker() {
+        chosenVendor = null;
         document.getElementById('plexSignInPanel').classList.add('d-none');
         document.getElementById('ejConnectPanel').classList.add('d-none');
         document.getElementById('vendorPicker').classList.remove('d-none');
@@ -631,6 +637,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.wizard-vendor-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
             const vendor = btn.dataset.vendor;
+            chosenVendor = vendor;
             document.getElementById('vendorPicker').classList.add('d-none');
             if (vendor === 'plex') {
                 document.getElementById('plexSignInPanel').classList.remove('d-none');
@@ -1163,7 +1170,11 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('qualityValue').textContent = this.value;
     });
 
-    document.getElementById('step4Back').addEventListener('click', () => goToStep(3));
+    document.getElementById('step4Back').addEventListener('click', () => {
+        // Plex visited Steps 2–3 on the way here; E/J skipped both.
+        // Send each user back to where they actually came from.
+        goToStep(chosenVendor === 'plex' ? 3 : 1);
+    });
 
     document.getElementById('step4Next').addEventListener('click', async function() {
         this.disabled = true;
