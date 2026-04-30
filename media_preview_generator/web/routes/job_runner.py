@@ -692,15 +692,31 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                             # item outcome counter records them. Surface them
                             # so the UI badge reflects "all items failed" jobs
                             # as Failed, not green-Completed.
-                            elif outcome_failed > 0 and generated == 0:
-                                msg = (
-                                    f"{outcome_failed} of {total_outcome} item(s) failed; "
-                                    "no previews were generated. Check the per-item logs above."
-                                )
-                                job_manager.add_log(job_id, f"WARNING - {msg}")
-                                error_parts.append(msg)
+                            #
+                            # "Success" includes both legacy ``generated`` AND
+                            # multi-server ``published`` / ``skipped_output_exists``
+                            # — anything where a publisher actually wrote (or
+                            # confirmed) an output counts. Without this, jobs
+                            # that ran via the multi-server scan would always
+                            # report ``generated == 0`` and trip the all-failed
+                            # branch even when most items succeeded.
                             elif outcome_failed > 0:
-                                msg = f"{outcome_failed} of {total_outcome} item(s) failed (others succeeded)."
+                                published_total = (
+                                    generated
+                                    + outcome.get("published", 0)
+                                    + outcome.get("skipped_output_exists", 0)
+                                    + outcome.get("skipped_bif_exists", 0)
+                                )
+                                if published_total == 0:
+                                    msg = (
+                                        f"{outcome_failed} of {total_outcome} item(s) failed; "
+                                        "no previews were generated. Check the per-item logs above."
+                                    )
+                                else:
+                                    msg = (
+                                        f"{outcome_failed} of {total_outcome} item(s) failed "
+                                        f"(but {published_total} succeeded)."
+                                    )
                                 job_manager.add_log(job_id, f"WARNING - {msg}")
                                 error_parts.append(msg)
 
@@ -734,12 +750,23 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 and not spawned_retry_id
                             )
                             # Every processed item failed (FFmpeg crashed,
-                            # adapter errored, etc.) AND nothing was generated:
-                            # treat as hard failure so the UI shows a red badge
-                            # instead of green-Completed.
-                            all_items_failed = (
-                                outcome and outcome.get("generated", 0) == 0 and outcome.get("failed", 0) > 0
+                            # adapter errored, etc.) AND nothing succeeded:
+                            # treat as hard failure (red badge). Partial
+                            # failures (some items succeeded) drop through
+                            # to the warning branch (yellow badge).
+                            #
+                            # "Success" = legacy ``generated`` OR multi-server
+                            # ``published`` / ``skipped_output_exists`` /
+                            # ``skipped_bif_exists``. Without counting the
+                            # multi-server outcomes, partial-success jobs would
+                            # always trip the hard-failure branch.
+                            _ms_published = (
+                                (outcome.get("generated", 0) if outcome else 0)
+                                + (outcome.get("published", 0) if outcome else 0)
+                                + (outcome.get("skipped_output_exists", 0) if outcome else 0)
+                                + (outcome.get("skipped_bif_exists", 0) if outcome else 0)
                             )
+                            all_items_failed = outcome and outcome.get("failed", 0) > 0 and _ms_published == 0
                             nothing_resolved = total_paths > 0 and resolved_count == 0 and not spawned_retry_id
                             is_hard_failure = (
                                 bool(failures)

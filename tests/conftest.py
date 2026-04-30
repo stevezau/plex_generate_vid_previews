@@ -40,6 +40,27 @@ except ImportError:  # pragma: no cover
     pass
 
 
+@pytest.fixture(autouse=True)
+def _reset_frame_cache_between_tests():
+    """Drop the frame-cache singleton before AND after every test.
+
+    The cache is a module-level singleton with a ``base_dir`` lock —
+    tests that construct it with different ``base_dir`` values (often
+    via MagicMock-derived paths) would otherwise trip the
+    "already initialised with a different base_dir" guard. Resetting
+    keeps tests independent without each one needing to remember to
+    do this in setup.
+    """
+    try:
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
+    except Exception:
+        yield
+        return
+    reset_frame_cache()
+    yield
+    reset_frame_cache()
+
+
 @pytest.fixture
 def fixtures_dir():
     """Return path to fixtures directory."""

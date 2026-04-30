@@ -369,10 +369,22 @@ class TestScheduleRetryForUnindexed:
         # caught + logged it.
 
 
+@pytest.fixture
+def _isolated_frame_cache():
+    """Reset the frame-cache singleton around each test so consecutive
+    tests can use different ``base_dir`` values without tripping the
+    "already initialised" guard."""
+    from media_preview_generator.processing.frame_cache import reset_frame_cache
+
+    reset_frame_cache()
+    yield
+    reset_frame_cache()
+
+
 class TestProcessCanonicalPathIntegration:
     """process_canonical_path schedules a retry when SKIPPED_NOT_INDEXED happens."""
 
-    def test_skipped_not_indexed_triggers_retry_schedule(self):
+    def test_skipped_not_indexed_triggers_retry_schedule(self, _isolated_frame_cache):
         """Smoke test: dispatcher hands off to retry queue automatically.
 
         We verify by spying on ``schedule_retry_for_unindexed`` rather
@@ -467,7 +479,7 @@ class TestProcessCanonicalPathIntegration:
             len(schedule_calls[0].get("canonical_path") or "") > 0
         )
 
-    def test_skipped_not_indexed_no_retry_when_disabled(self):
+    def test_skipped_not_indexed_no_retry_when_disabled(self, _isolated_frame_cache):
         """schedule_retry_on_not_indexed=False suppresses scheduling."""
         from media_preview_generator.processing.multi_server import (
             PublisherResult,
