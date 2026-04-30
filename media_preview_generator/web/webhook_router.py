@@ -67,12 +67,14 @@ def _build_registry_from_settings() -> ServerRegistry:
     # Plex needs the legacy config; Emby/Jellyfin don't. If load_config
     # fails (no Plex configured, or running in a multi-server-only
     # deployment), continue with legacy_config=None — the registry's
-    # _build_server skips Plex entries that lack one.
+    # _build_server skips Plex entries that lack one. Pass
+    # log_validation_errors=False so a non-Plex deployment doesn't
+    # spam ❌ Configuration Error lines on every webhook.
     legacy_config = None
     try:
         from ..config import load_config
 
-        legacy_config = load_config()
+        legacy_config = load_config(log_validation_errors=False)
     except Exception as exc:
         logger.debug("Webhook router: load_config failed (Plex paths disabled): {}", exc)
 
@@ -145,7 +147,7 @@ def _load_config_or_minimal():
     try:
         from ..config import load_config
 
-        config = load_config()
+        config = load_config(log_validation_errors=False)
         if not config.working_tmp_folder:
             config.working_tmp_folder = config.tmp_folder
         return config

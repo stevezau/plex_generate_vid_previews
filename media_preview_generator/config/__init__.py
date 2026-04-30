@@ -355,7 +355,7 @@ def derive_legacy_plex_view(media_servers: list, server_id: str | None = None) -
     return view
 
 
-def load_config() -> Config:
+def load_config(*, log_validation_errors: bool = True) -> Config:
     """Load and validate configuration from settings.json and environment variables.
 
     settings.json is the primary source. Environment variables act as
@@ -366,6 +366,14 @@ def load_config() -> Config:
     that's the multi-server data path the rest of the app already uses.
     Legacy flat keys remain as a fallback so existing single-Plex
     installs keep working through the migration window.
+
+    Args:
+        log_validation_errors: When ``True`` (default), prints user-facing
+            ❌ Configuration Error lines on missing/invalid settings before
+            raising :class:`ConfigValidationError`. Best-effort callers
+            (e.g. webhook router falling back to a minimal shim) should
+            pass ``False`` so a non-Plex deployment doesn't spam ERROR
+            lines on every webhook.
 
     Returns:
         Validated configuration object.
@@ -598,25 +606,27 @@ def load_config() -> Config:
 
     # Handle missing parameters (show help)
     if missing_params:
-        logger.error("❌ Configuration Error: Missing required parameters:")
-        for i, error_msg in enumerate(missing_params, 1):
-            logger.error("   {}. {}", i, error_msg)
-        logger.info("")
+        if log_validation_errors:
+            logger.error("❌ Configuration Error: Missing required parameters:")
+            for i, error_msg in enumerate(missing_params, 1):
+                logger.error("   {}. {}", i, error_msg)
+            logger.info("")
 
-        if is_docker_environment():
-            show_docker_help()
-        else:
-            logger.info(
-                "💡 Open the web UI at http://localhost:8080 and complete the setup wizard to configure these settings."
-            )
+            if is_docker_environment():
+                show_docker_help()
+            else:
+                logger.info(
+                    "💡 Open the web UI at http://localhost:8080 and complete the setup wizard to configure these settings."
+                )
 
         raise ConfigValidationError(missing_params)
 
     # Handle validation errors (standard error messages)
     if validation_errors:
-        logger.error("❌ Configuration Error:")
-        for i, error_msg in enumerate(validation_errors, 1):
-            logger.error("   {}. {}", i, error_msg)
+        if log_validation_errors:
+            logger.error("❌ Configuration Error:")
+            for i, error_msg in enumerate(validation_errors, 1):
+                logger.error("   {}. {}", i, error_msg)
         raise ConfigValidationError(validation_errors)
 
     # Both CPU and GPU workers are 0 — not fatal; jobs will stay pending until the
