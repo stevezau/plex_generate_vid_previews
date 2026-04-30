@@ -402,6 +402,19 @@ def save_settings():
         if field in updates and not isinstance(updates[field], bool):
             return jsonify({"error": f"{field} must be a boolean"}), 400
 
+    # GET masks ``webhook_secret`` to "****". If a UI/script reads the
+    # current settings and POSTs them back wholesale (a common pattern
+    # when only one field actually changed), an unchanged "****" value
+    # would otherwise be saved as the literal new secret — silently
+    # locking the user out and turning the masked sentinel into a valid
+    # auth token. Treat the masked sentinel (and an empty string) as
+    # "no change requested" so the existing secret survives the round
+    # trip.
+    if "webhook_secret" in updates:
+        candidate = str(updates["webhook_secret"] or "").strip()
+        if not candidate or candidate == "****":
+            del updates["webhook_secret"]
+
     # Sanitize gpu_config: must be a list of dicts with a device key.
     # Normalize: workers <= 0 forces enabled=false (contradictory state).
     if "gpu_config" in updates:

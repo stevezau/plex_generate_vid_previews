@@ -1216,6 +1216,45 @@ class TestSettingsAPI:
         plex = (sm.get("media_servers") or [{}])[0]
         assert plex["auth"]["token"] == "real-token"
 
+    def test_save_settings_preserves_webhook_secret_when_redacted(self, client):
+        """POSTing webhook_secret='****' (the placeholder GET returns) must not poison the secret.
+
+        Without this guard, a UI that reads settings and re-saves them
+        wholesale would silently overwrite the actual secret with the
+        masked sentinel — turning '****' into a valid auth token.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("webhook_secret", "real-secret-xyz")
+
+        # POST '****' (what GET returns when secret is set)
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_secret": "****"},
+        )
+        assert resp.status_code == 200
+        assert sm.get("webhook_secret") == "real-secret-xyz"
+
+        # POST empty string also a no-op
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_secret": ""},
+        )
+        assert resp.status_code == 200
+        assert sm.get("webhook_secret") == "real-secret-xyz"
+
+        # POST a real new value still rotates
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_secret": "rotated-secret"},
+        )
+        assert resp.status_code == 200
+        assert sm.get("webhook_secret") == "rotated-secret"
+
     def test_get_settings_projects_from_media_servers(self, client):
         """GET /api/settings returns plex_url derived from media_servers[0]."""
         from media_preview_generator.web.settings_manager import get_settings_manager
