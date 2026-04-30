@@ -730,6 +730,47 @@ def test_server_connection():
     return jsonify(response_body)
 
 
+@api.route("/servers/<server_id>/jellyfin/trickplay-status", methods=["GET"])
+@setup_or_auth_required
+def get_jellyfin_trickplay_status(server_id: str):
+    """Per-library trickplay-extraction status for a saved Jellyfin server.
+
+    The ``/servers`` page calls this once per Jellyfin card after the
+    list renders, so the "Fix trickplay" button only appears when at
+    least one library actually needs fixing — without it, the button
+    showed up on every Jellyfin card forever even after a successful
+    fix.
+
+    Returns ``{"libraries": [{id, name, extraction_enabled, ...}]}``
+    on success or ``{"error": "..."}`` with a 4xx/5xx status. Callers
+    are expected to derive ``needs_fix = any(not l.extraction_enabled
+    for l in libraries)``.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    if cfg.type is not ServerType.JELLYFIN:
+        return jsonify({"error": f"server {server_id} is not a Jellyfin server"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "check_trickplay_extraction_status"):
+        return jsonify({"error": "could not instantiate Jellyfin client"}), 500
+
+    try:
+        statuses = live.check_trickplay_extraction_status()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 200
+
+    return jsonify({"libraries": statuses})
+
+
 @api.route("/servers/<server_id>/jellyfin/fix-trickplay", methods=["POST"])
 @setup_or_auth_required
 def fix_jellyfin_trickplay(server_id: str):

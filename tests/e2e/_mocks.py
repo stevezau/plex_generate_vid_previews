@@ -239,6 +239,34 @@ def mock_jellyfin_trickplay_fix(page: Page, ok: bool = True) -> list[bool]:
     return called
 
 
+def mock_jellyfin_trickplay_status(
+    page: Page,
+    *,
+    libraries: list[dict] | None = None,
+    needs_fix: bool = True,
+) -> None:
+    """GET /api/servers/<id>/jellyfin/trickplay-status.
+
+    The /servers JS calls this once per Jellyfin card to decide whether
+    to surface the Fix trickplay button. ``needs_fix`` is the easy
+    knob — it returns one disabled library by default.
+    """
+    if libraries is None:
+        libraries = [
+            {
+                "id": "lib1",
+                "name": "Movies",
+                "extraction_enabled": not needs_fix,
+                "scan_extraction_enabled": not needs_fix,
+            }
+        ]
+
+    page.route(
+        "**/api/servers/*/jellyfin/trickplay-status",
+        lambda route: _fulfill_json(route, {"libraries": libraries}),
+    )
+
+
 def mock_servers_refresh_libraries(page: Page, count: int = 2) -> list[bool]:
     """POST /api/servers/<id>/refresh-libraries. Returns a list capturing each call."""
     called: list[bool] = []

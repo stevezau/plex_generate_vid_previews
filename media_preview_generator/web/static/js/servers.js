@@ -129,10 +129,11 @@
                 const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/jellyfin/fix-trickplay`);
                 if (r.ok && r.data && r.data.ok) {
                     target.innerHTML = '<i class="bi bi-check2 me-1"></i>Fixed';
-                    setTimeout(() => {
-                        target.innerHTML = original;
-                        target.disabled = false;
-                    }, 2000);
+                    // Re-probe so the button hides automatically once
+                    // every library reports trickplay enabled — without
+                    // this, the button reverted to "Fix trickplay" on
+                    // the next render even though the fix had taken.
+                    setTimeout(() => probeJellyfinTrickplay(id, target), 1500);
                 } else {
                     const msg = (r.data && (r.data.error || JSON.stringify(r.data.results))) || r.status;
                     showToast('Trickplay fix failed', String(msg), 'danger');
@@ -141,6 +142,27 @@
                 }
             });
         });
+        // Per-card trickplay probe: hide the Fix trickplay button when
+        // every library already has extraction enabled, otherwise reveal
+        // it. Runs after the list has rendered so the button stays
+        // d-none by default.
+        $$('.fix-trickplay-btn').forEach((btn) => {
+            probeJellyfinTrickplay(btn.dataset.id, btn);
+        });
+    }
+
+    async function probeJellyfinTrickplay(serverId, btn) {
+        if (!btn) return;
+        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/jellyfin/trickplay-status`);
+        const libs = (r.ok && r.data && Array.isArray(r.data.libraries)) ? r.data.libraries : [];
+        const needsFix = libs.some(l => !l.extraction_enabled);
+        if (needsFix) {
+            btn.classList.remove('d-none');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-magic me-1"></i>Fix trickplay';
+        } else {
+            btn.classList.add('d-none');
+        }
     }
 
     function serverCard(server) {
@@ -181,7 +203,7 @@
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
                             </button>
                             ${server.type === 'jellyfin' ? `
-                            <button class="btn btn-sm btn-outline-warning fix-trickplay-btn"
+                            <button class="btn btn-sm btn-outline-warning fix-trickplay-btn d-none"
                                     data-id="${escapeHtml(server.id)}"
                                     title="Enable trickplay extraction so Jellyfin actually serves the preview thumbnails we publish">
                                 <i class="bi bi-magic me-1"></i>Fix trickplay
