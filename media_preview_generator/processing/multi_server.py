@@ -567,7 +567,15 @@ def process_canonical_path(
     # within the cache TTL skips FFmpeg entirely. Disabled callers
     # (regenerate=True, or callers that explicitly opt out) write into
     # an ad-hoc tmp dir that's cleaned up at the end.
-    cache = get_frame_cache(base_dir=os.path.join(config.working_tmp_folder, "frame_cache"))
+    #
+    # Anchor the cache at ``tmp_folder`` (stable across jobs), NOT at
+    # ``working_tmp_folder`` (a per-job subdir created by job_runner).
+    # The cache MUST outlive a single job — that's the whole point of
+    # cross-job/cross-server reuse. Using the per-job dir produced
+    # "FrameCache singleton already initialised with base_dir=..."
+    # errors on the second job in a process.
+    _cache_root = getattr(config, "tmp_folder", None) or getattr(config, "working_tmp_folder", "")
+    cache = get_frame_cache(base_dir=os.path.join(_cache_root, "frame_cache"))
     cache_hit: bool = False
     cleanup_path: str | None = None
     generation_lock = None
