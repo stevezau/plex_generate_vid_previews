@@ -198,6 +198,10 @@ class TestEmbyEndToEndPublish:
         """A second dispatch for the same canonical path hits the cache."""
         canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
 
+        # Cache anchors at config.tmp_folder (stable across jobs) — set both
+        # to the same per-test directory so the singleton's base_dir matches
+        # what the test inspects via get_frame_cache(base_dir=...) below.
+        mock_config.tmp_folder = str(tmp_path / "work")
         mock_config.working_tmp_folder = str(tmp_path / "work")
         mock_config.plex_bif_frame_interval = 10
         Path(mock_config.working_tmp_folder).mkdir(parents=True, exist_ok=True)
@@ -232,7 +236,7 @@ class TestEmbyEndToEndPublish:
                 # it short-circuits via skip-if-exists). The cache check
                 # happens BEFORE the publisher, so cache hit still saves
                 # FFmpeg even on regenerate.
-                cache = get_frame_cache(base_dir=str(Path(mock_config.working_tmp_folder) / "frame_cache"))
+                cache = get_frame_cache(base_dir=str(Path(mock_config.tmp_folder) / "frame_cache"))
                 assert cache.get(canonical) is not None  # populated
 
                 # Second dispatch: cache hit → no FFmpeg → re-publishes.

@@ -235,12 +235,13 @@ class TestFrameCacheTtlExpiry:
         if sidecar.exists():
             sidecar.unlink()
 
-        # The dispatcher hits get_frame_cache with the config's
-        # working_tmp_folder. Point real_config at the same base so the
-        # singleton's base_dir lookup matches.
+        # The dispatcher anchors the cache at config.tmp_folder. Set it
+        # explicitly so the singleton's base_dir lookup matches what we
+        # pre-seed below.
+        real_config.tmp_folder = str(tmp_path)
         real_config.working_tmp_folder = str(tmp_path)
         reset_frame_cache()
-        get_frame_cache(base_dir=str(Path(real_config.working_tmp_folder) / "frame_cache"))
+        get_frame_cache(base_dir=str(Path(real_config.tmp_folder) / "frame_cache"))
 
         original_generate = ms_module.generate_images
         ffmpeg_calls = []

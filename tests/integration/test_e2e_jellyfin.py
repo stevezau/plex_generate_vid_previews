@@ -242,7 +242,7 @@ class TestJellyfinNativeWebhook:
                 "Recursive": "true",
                 "IncludeItemTypes": "Movie",
                 "Fields": "Path",
-                "Limit": 5,
+                "Limit": 50,
             },
             headers={"X-Emby-Token": jellyfin_credentials["JELLYFIN_ACCESS_TOKEN"]},
             timeout=10,

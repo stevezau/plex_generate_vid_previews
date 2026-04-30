@@ -244,12 +244,21 @@ class TestJellyfinTrickplayAutoFixEndToEnd:
             assert seen_trickplay, "Jellyfin did not register the Trickplay metadata even after the auto-fix + refresh"
 
             # ----- 4. The actual UI proof: JF serves the tile sheet over HTTP -----
-            sheet = requests.get(
-                f"{jf_url}/Videos/{item_id}/Trickplay/320/0.jpg",
-                headers={"X-Emby-Token": jf_token},
-                timeout=10,
+            # Jellyfin's metadata endpoint registers Trickplay before the
+            # internal sheet route is wired up to serve it. Poll briefly.
+            sheet = None
+            for _ in range(15):
+                sheet = requests.get(
+                    f"{jf_url}/Videos/{item_id}/Trickplay/320/0.jpg",
+                    headers={"X-Emby-Token": jf_token},
+                    timeout=10,
+                )
+                if sheet.status_code == 200:
+                    break
+                time.sleep(2)
+            assert sheet is not None and sheet.status_code == 200, (
+                f"Jellyfin still 404s the tile sheet after 30s: {sheet.status_code if sheet else 'no response'}"
             )
-            assert sheet.status_code == 200, sheet.status_code
             assert sheet.content[:2] == b"\xff\xd8", "served bytes are not a JPEG"
             assert len(sheet.content) > 0
         finally:
