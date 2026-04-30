@@ -24,6 +24,13 @@ so `from media_preview_generator.processing import X` resolves.
 # Per-vendor processor surface (Phase A of the multi-server completion).
 # Concrete VendorProcessor implementations land in Phase B; until then
 # only the types + base interface + registry are exported.
+# Bottom-of-init vendor imports trigger their per-module
+# `register_processor(...)` calls. Keep these last to avoid
+# circular-import surprises when the vendor modules pull from this
+# package's other helpers.
+from . import emby as _emby_processor_module  # noqa: F401, E402
+from . import jellyfin as _jellyfin_processor_module  # noqa: F401, E402
+from . import plex as _plex_processor_module  # noqa: F401, E402
 from .base import VendorProcessor  # noqa: F401
 from .filter_chain import (  # noqa: F401
     DV5_PATH_INTEL_OPENCL,
