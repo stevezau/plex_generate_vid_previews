@@ -9,7 +9,7 @@ import os
 import time
 import urllib.parse
 import xml.etree.ElementTree
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import requests
 import urllib3
@@ -758,6 +758,11 @@ class WebhookResolutionResult:
     unresolved_paths: list[str]
     skipped_paths: list[str]
     path_hints: list[str]
+    # Pre-dedup matches with their Plex-side locations so the unified
+    # process_canonical_path dispatcher can build ProcessableItems with
+    # canonical_paths already known. Empty when the legacy 3-tuple path
+    # is sufficient.
+    items_with_locations: list[tuple[str, list[str], str, str]] = field(default_factory=list)
 
 
 def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> WebhookResolutionResult:
@@ -1261,10 +1266,24 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
             len(matched_items),
         )
     # Deduplicate by file location so multi-episode files are queued once (same as library scan).
-    matched_items = filter_duplicate_locations(matched_items)
+    # Run the dedup once and emit both shapes: the legacy 3-tuple ``items``
+    # callers still depend on, plus ``items_with_locations`` (4-tuple) so the
+    # unified ProcessableItem dispatcher can build canonical_path-aware items
+    # without making a second round-trip to Plex per webhook entry.
+    matched_with_locations: list[tuple[str, list[str], str, str]] = []
+    deduped_items: list[tuple[str, str, str]] = []
+    seen_locations: set[str] = set()
+    for key, locations, title, media_type in matched_items:
+        if any(loc in seen_locations for loc in (locations or [])):
+            continue
+        if locations:
+            seen_locations.update(locations)
+        matched_with_locations.append((key, list(locations or []), title, media_type))
+        deduped_items.append((key, title, media_type))
     return WebhookResolutionResult(
-        items=matched_items,
+        items=deduped_items,
         unresolved_paths=unresolved_input_paths,
         skipped_paths=skipped_input_paths,
         path_hints=path_hints,
+        items_with_locations=matched_with_locations,
     )

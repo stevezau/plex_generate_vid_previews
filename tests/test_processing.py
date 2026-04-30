@@ -50,6 +50,49 @@ def _make_section(title):
     return SimpleNamespace(title=title)
 
 
+def _processable(key, title, *, canonical_path=None, server_id="plex-1", library_id="lib-1"):
+    """Build a :class:`ProcessableItem` for tests.
+
+    Mirrors what ``PlexProcessor.list_canonical_paths`` would yield.
+    ``canonical_path`` defaults to a unique path derived from ``title`` so
+    dedup-by-path doesn't accidentally collapse distinct items.
+    """
+    from media_preview_generator.processing.types import ProcessableItem
+
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{title.replace(' ', '_')}_{key}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id=library_id,
+    )
+
+
+def _processables(items, *, server_id="plex-1", library_id="lib-1"):
+    """Bulk version of :func:`_processable` — converts ``[(key, title, _media)]``."""
+    return [_processable(key, title, server_id=server_id, library_id=library_id) for key, title, *_ in items]
+
+
+def _webhook_resolution_payload(items=None, unresolved=None, skipped=None, path_hints=None):
+    """Build a webhook-resolution stand-in that includes ``items_with_locations``.
+
+    ``run_processing`` reads ``items_with_locations`` (4-tuples with the Plex
+    side's locations) to build ProcessableItems for dispatch, while the
+    legacy ``items`` field stays the 3-tuple shape callers historically used.
+    """
+    items = items or []
+    items_with_locations = [
+        (key, [f"/data/{title.replace(' ', '_')}_{key}.mkv"], title, mt) for key, title, mt in items
+    ]
+    return SimpleNamespace(
+        items=list(items),
+        unresolved_paths=unresolved or [],
+        skipped_paths=skipped or [],
+        path_hints=path_hints or [],
+        items_with_locations=items_with_locations,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patches applied to every test
 # ---------------------------------------------------------------------------
@@ -256,15 +299,13 @@ class TestLibraryScanFlow:
     def test_processes_multiple_libraries(self, tmp_path):
         """Items from multiple libraries are merged and dispatched together."""
         config = _make_config(tmp_path)
-        section_a = _make_section("Movies")
-        section_b = _make_section("TV Shows")
-        items_a = [("k1", "Movie 1", "movie"), ("k2", "Movie 2", "movie")]
-        items_b = [("k3", "Show 1", "episode")]
+        items_a = _processables([("k1", "Movie 1", "movie"), ("k2", "Movie 2", "movie")])
+        items_b = _processables([("k3", "Show 1", "episode")])
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section_a, items_a), (section_b, items_b)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items_a + items_b),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -280,14 +321,13 @@ class TestLibraryScanFlow:
         assert len(dispatched_items) == 3
 
     def test_skips_empty_library(self, tmp_path):
-        """Libraries with 0 items are skipped without dispatch."""
+        """When the enumerator yields nothing, no dispatch occurs."""
         config = _make_config(tmp_path)
-        empty_section = _make_section("Empty Lib")
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(empty_section, [])]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter([]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -301,7 +341,7 @@ class TestLibraryScanFlow:
         config = _make_config(tmp_path)
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool"),
         ):
             result = run_processing(config, selected_gpus=[])
@@ -312,10 +352,8 @@ class TestLibraryScanFlow:
     def test_sort_by_random_shuffles_combined_items(self, tmp_path):
         """sort_by='random' reorders the combined cross-library list before dispatch."""
         config = _make_config(tmp_path, sort_by="random")
-        section_a = _make_section("Movies")
-        section_b = _make_section("TV Shows")
-        items_a = [(f"k{i}", f"Movie {i}", "movie") for i in range(5)]
-        items_b = [(f"kt{i}", f"Show {i}", "episode") for i in range(5)]
+        items_a = _processables([(f"k{i}", f"Movie {i}", "movie") for i in range(5)])
+        items_b = _processables([(f"kt{i}", f"Show {i}", "episode") for i in range(5)])
         original_order = items_a + items_b
 
         # Deterministic stand-in for random.Random(): shuffle reverses the list
@@ -325,8 +363,8 @@ class TestLibraryScanFlow:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section_a, items_a), (section_b, items_b)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items_a + items_b),
             ),
             patch(f"{MODULE}.random.Random", return_value=_RevShuffler()),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -340,13 +378,12 @@ class TestLibraryScanFlow:
     def test_sort_by_non_random_preserves_order(self, tmp_path):
         """Without sort_by='random', item order is preserved as yielded."""
         config = _make_config(tmp_path, sort_by="newest")
-        section = _make_section("Movies")
-        items = [("k1", "Movie A", "movie"), ("k2", "Movie B", "movie"), ("k3", "Movie C", "movie")]
+        items = _processables([("k1", "Movie A", "movie"), ("k2", "Movie B", "movie"), ("k3", "Movie C", "movie")])
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section, items)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -359,14 +396,13 @@ class TestLibraryScanFlow:
     def test_progress_callback_invoked(self, tmp_path):
         """progress_callback reports pre-dispatch stages + the dispatch tick."""
         config = _make_config(tmp_path)
-        section = _make_section("Movies")
-        items = [("k1", "M1", "movie"), ("k2", "M2", "movie")]
+        items = _processables([("k1", "M1", "movie"), ("k2", "M2", "movie")])
         progress = MagicMock()
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section, items)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -391,11 +427,11 @@ class TestWebhookFlow:
     """Tests for the webhook-targeted processing path."""
 
     def _webhook_resolution(self, items=None, unresolved=None, skipped=None, path_hints=None):
-        return SimpleNamespace(
-            items=items or [],
-            unresolved_paths=unresolved or [],
-            skipped_paths=skipped or [],
-            path_hints=path_hints or [],
+        return _webhook_resolution_payload(
+            items=items,
+            unresolved=unresolved,
+            skipped=skipped,
+            path_hints=path_hints,
         )
 
     def test_webhook_with_resolved_items(self, tmp_path):
@@ -483,7 +519,7 @@ class TestCancellation:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -498,7 +534,7 @@ class TestCancellation:
         config = _make_config(tmp_path)
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
             result = run_processing(
@@ -532,7 +568,7 @@ class TestSummaryAndWarnings:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -559,7 +595,7 @@ class TestSummaryAndWarnings:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -585,7 +621,7 @@ class TestSummaryAndWarnings:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -645,7 +681,7 @@ class TestCleanup:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -665,7 +701,7 @@ class TestCleanup:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -690,7 +726,7 @@ class TestCleanup:
         config = _make_config(tmp_path, working_tmp_folder=str(work_dir))
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool"),
         ):
             run_processing(config, selected_gpus=[])
@@ -713,7 +749,7 @@ class TestCleanup:
         config = _make_config(tmp_path)
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch(f"{MODULE}.get_dispatcher", create=True),
         ):
@@ -747,7 +783,7 @@ class TestJobDispatcherPath:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(
@@ -800,7 +836,7 @@ class TestJobDispatcherPath:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool"),
@@ -843,7 +879,7 @@ class TestSummaryBranches:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -874,7 +910,7 @@ class TestCleanupEdgeCases:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -895,7 +931,7 @@ class TestCleanupEdgeCases:
         config = _make_config(tmp_path, working_tmp_folder=str(work_dir))
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool"),
             patch(f"{MODULE}.shutil.rmtree", side_effect=OSError("perm denied")),
         ):
@@ -921,7 +957,7 @@ class TestCleanupEdgeCases:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section_a, items_a), (section_b, items_b)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,

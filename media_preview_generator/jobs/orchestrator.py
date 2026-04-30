@@ -11,8 +11,9 @@ import shutil
 
 from loguru import logger
 
-from ..plex_client import get_library_sections, get_media_items_by_paths, plex_server
+from ..plex_client import get_media_items_by_paths, plex_server
 from ..processing.orchestrator import ProcessingResult, clear_failures, log_failure_summary
+from ..servers.ownership import apply_path_mappings
 from .worker import WorkerPool
 
 
@@ -117,6 +118,36 @@ def _log_webhook_owning_servers(config, paths: list[str]) -> None:
         )
     except Exception as exc:  # never block dispatch on a logging failure
         logger.debug("owning-servers breadcrumb skipped: {}", exc)
+
+
+def _enumerate_plex_full_scan_items(
+    config,
+    registry,
+    *,
+    cancel_check=None,
+    progress_callback=None,
+):
+    """Yield :class:`ProcessableItem` for the Plex full-library scan flow.
+
+    Pulled out as a module-level function so tests can patch this single
+    boundary instead of stubbing PlexProcessor + ServerRegistry +
+    get_processor_for separately. Production code in ``run_processing``
+    invokes this exactly once per Plex full-scan dispatch.
+    """
+    from ..processing import get_processor_for
+    from ..servers.base import ServerType
+
+    plex_cfg = next((c for c in registry.configs() if c.type is ServerType.PLEX), None)
+    if plex_cfg is None:
+        return
+    plex_processor = get_processor_for(ServerType.PLEX)
+    library_ids = list(getattr(config, "plex_library_ids", None) or []) or None
+    yield from plex_processor.list_canonical_paths(
+        plex_cfg,
+        library_ids=library_ids,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
 
 
 def _dispatch_webhook_paths_multi_server(
@@ -739,6 +770,13 @@ def run_processing(
         plex = plex_server(config)
         clear_failures()
 
+        # Build a registry from the legacy Config so the dispatch path can
+        # publish via process_canonical_path's per-vendor adapters when items
+        # arrive as ProcessableItems (the post-Phase-C unified path).
+        from ..servers.registry import ServerRegistry as _ServerRegistry
+
+        registry = _ServerRegistry.from_legacy_config(config)
+
         title_max_width = 200
 
         def _create_worker_pool():
@@ -813,6 +851,7 @@ def run_processing(
                     items=items,
                     config=config,
                     plex=plex,
+                    registry=registry,
                     title_max_width=title_max_width,
                     library_name=library_name,
                     callbacks=callbacks,
@@ -827,10 +866,17 @@ def run_processing(
                     progress_callback(0, len(items), f"Starting {library_name}")
                 if worker_pool is None:
                     worker_pool = _create_worker_pool()
+                # _assign_main_queue_task is type-aware: if the queue holds
+                # ProcessableItems it dispatches via assign_canonical_task and
+                # uses the second positional arg as the registry, not as a
+                # Plex client. Pick the right handle here so both paths work.
+                from ..processing.types import ProcessableItem as _PI
+
+                handle = registry if items and isinstance(items[0], _PI) else plex
                 return worker_pool.process_items_headless(
                     items,
                     config,
-                    plex,
+                    handle,
                     title_max_width,
                     library_name=library_name,
                     progress_callback=progress_callback,
@@ -868,12 +914,55 @@ def run_processing(
                     len(config.webhook_paths or []),
                 )
             else:
-                result = _dispatch_items(webhook_resolution.items, "Webhook Targets")
-                total_successful += result["completed"]
-                total_failed += result["failed"]
-                total_processed += result["completed"] + result["failed"]
-                cancellation_requested = cancellation_requested or result["cancelled"]
-                _merge_outcome(result)
+                # Convert resolved Plex matches into ProcessableItems with
+                # canonical paths already filled in. process_canonical_path
+                # then publishes via every owning server's adapter (Plex BIF
+                # plus any Emby/Jellyfin sibling that owns the same path).
+                from ..processing.types import ProcessableItem as _PI
+                from ..servers.base import ServerType as _ST
+
+                plex_cfg_for_webhook = next(
+                    (c for c in registry.configs() if c.type is _ST.PLEX),
+                    None,
+                )
+                webhook_items: list[_PI] = []
+                for key, locations, title, _media_type in webhook_resolution.items_with_locations:
+                    if not locations:
+                        continue
+                    remote_path = str(locations[0])
+                    canonicals: list[str] = []
+                    if plex_cfg_for_webhook is not None:
+                        canonicals = apply_path_mappings(
+                            remote_path,
+                            plex_cfg_for_webhook.path_mappings or [],
+                        )
+                    if not canonicals:
+                        canonicals = [remote_path]
+                    canonical = canonicals[0]
+                    webhook_items.append(
+                        _PI(
+                            canonical_path=canonical,
+                            server_id=(plex_cfg_for_webhook.id if plex_cfg_for_webhook else ""),
+                            item_id_by_server=(
+                                {plex_cfg_for_webhook.id: key} if (plex_cfg_for_webhook and key) else {}
+                            ),
+                            title=title or canonical,
+                            library_id=None,
+                        )
+                    )
+
+                if not webhook_items:
+                    logger.info(
+                        "Webhook resolved {} item(s) but no canonical paths were derivable — skipping dispatch.",
+                        len(webhook_resolution.items),
+                    )
+                else:
+                    result = _dispatch_items(webhook_items, "Webhook Targets")
+                    total_successful += result["completed"]
+                    total_failed += result["failed"]
+                    total_processed += result["completed"] + result["failed"]
+                    cancellation_requested = cancellation_requested or result["cancelled"]
+                    _merge_outcome(result)
 
             # K4: route any path Plex couldn't claim through the multi-server
             # dispatcher so Emby/Jellyfin webhooks resolve via their own APIs
@@ -931,25 +1020,32 @@ def run_processing(
                             exc,
                         )
         else:
-            all_media_items = []
-            library_item_counts = []
-            for section, media_items in get_library_sections(
-                plex,
-                config,
-                cancel_check=cancel_check,
-                progress_callback=progress_callback,
-            ):
-                if cancel_check and cancel_check():
-                    logger.info("Cancellation requested during library enumeration — skipping remaining libraries")
-                    cancellation_requested = True
-                    break
-                count = len(media_items)
-                if count <= 0:
-                    logger.info("No media items found in library '{}', skipping", section.title)
-                    continue
-                logger.info("Queued library '{}' with {} items", section.title, count)
-                all_media_items.extend(media_items)
-                library_item_counts.append((section.title, count))
+            # Plex full-scan now flows through the unified per-vendor
+            # processor → ProcessableItem → process_canonical_path path,
+            # the same one Emby and Jellyfin already use. The legacy
+            # tuple-shape get_library_sections() pump is gone; this kills
+            # the dual-pipeline situation that lived in run_processing()
+            # while every other entry point already used the new path.
+            all_media_items: list = []
+            try:
+                for item in _enumerate_plex_full_scan_items(
+                    config,
+                    registry,
+                    cancel_check=cancel_check,
+                    progress_callback=progress_callback,
+                ):
+                    if cancel_check and cancel_check():
+                        cancellation_requested = True
+                        break
+                    all_media_items.append(item)
+            except Exception as exc:
+                logger.error(
+                    "Plex full-scan enumeration failed ({}: {}). "
+                    "Verify Plex is reachable and the access token in Settings is valid.",
+                    type(exc).__name__,
+                    exc,
+                )
+                return {"outcome": aggregate_outcome}
 
             if cancel_check and cancel_check():
                 logger.info("Cancellation requested before dispatch — skipping processing")
@@ -965,11 +1061,7 @@ def run_processing(
                     logger.info("Shuffled {} items for random processing order", len(all_media_items))
 
                 total_items = len(all_media_items)
-                logger.info(
-                    "Processing {} items across {} libraries in a shared queue", total_items, len(library_item_counts)
-                )
-                for library_name, count in library_item_counts:
-                    logger.info("Library queued: {} ({} items)", library_name, count)
+                logger.info("Processing {} items across selected Plex libraries", total_items)
 
                 result = _dispatch_items(all_media_items, "All Libraries")
                 total_successful += result["completed"]
