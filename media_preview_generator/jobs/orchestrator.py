@@ -234,6 +234,214 @@ def _dispatch_webhook_paths_multi_server(
     return counts
 
 
+def _run_full_scan_multi_server(
+    config,
+    *,
+    selected_gpus,
+    server_id_filter: str | None = None,
+    library_ids: list[str] | None = None,
+    progress_callback=None,
+    cancel_check=None,
+    job_id: str | None = None,
+) -> dict:
+    """Multi-server full-library scan via the per-vendor :class:`VendorProcessor`.
+
+    Walks every enabled server (or just ``server_id_filter`` when set) using
+    the right :class:`VendorProcessor` from the registry, then dispatches each
+    enumerated :class:`ProcessableItem` through ``process_canonical_path`` in
+    parallel via a :class:`ThreadPoolExecutor`. Workers are sized off the
+    user's GPU/CPU configuration and items are distributed across GPUs
+    round-robin so a single GPU isn't oversubscribed.
+
+    Plex's legacy :func:`process_item` worker pool is NOT touched — Phase C
+    of the multi-server completion migrates Plex onto this same path. Until
+    then this function only handles the non-Plex case (full-library scans
+    on Emby/Jellyfin-only installs, or on a Plex+E/J install where the user
+    explicitly picked an E/J server in the dropdown).
+
+    Returns the aggregated ProcessingResult counts keyed by enum value
+    (same shape as :func:`_dispatch_webhook_paths_multi_server`).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ..processing import get_processor_for
+    from ..processing.multi_server import process_canonical_path
+    from ..servers import ServerRegistry
+    from ..servers.base import ServerType
+    from ..web.settings_manager import get_settings_manager
+
+    counts = {r.value: 0 for r in ProcessingResult}
+
+    try:
+        raw_servers = list(get_settings_manager().get("media_servers") or [])
+    except Exception as exc:
+        logger.warning(
+            "Could not read media_servers when running multi-server scan ({}: {}). "
+            "Open the Servers page and verify at least one enabled server is configured.",
+            type(exc).__name__,
+            exc,
+        )
+        return counts
+
+    try:
+        registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
+    except Exception as exc:
+        logger.warning(
+            "Could not build the media-server registry for multi-server scan ({}: {}). "
+            "Open the Servers page and verify each server has valid auth and a reachable URL.",
+            type(exc).__name__,
+            exc,
+        )
+        return counts
+
+    # Pick the servers to scan: a single one (when pinned) or every enabled one.
+    candidates = []
+    for cfg in registry.configs():
+        if not cfg.enabled:
+            continue
+        if server_id_filter and cfg.id != server_id_filter:
+            continue
+        candidates.append(cfg)
+    if not candidates:
+        logger.warning(
+            "No enabled servers matched the multi-server scan request (server_id_filter={!r}). Nothing to process.",
+            server_id_filter,
+        )
+        return counts
+
+    # Pre-resolve the GPU device list so worker tasks can pick deterministically.
+    # Each entry in selected_gpus is (gpu_type, gpu_device, gpu_info).
+    gpu_devices = list(selected_gpus or [])
+    cpu_workers = max(0, int(getattr(config, "cpu_threads", 1) or 0))
+    gpu_workers = sum(int(getattr(g[2], "workers", 1) or 1) for g in gpu_devices) if gpu_devices else 0
+    parallelism = max(1, gpu_workers + cpu_workers)
+
+    job_manager = None
+    if job_id:
+        try:
+            from ..web.jobs import get_job_manager
+
+            job_manager = get_job_manager()
+        except Exception:
+            job_manager = None
+
+    # Enumerate every item we'll process (across all servers in scope) so the
+    # progress widget can show "X / total" instead of "X processed".
+    all_items: list = []
+    for server_cfg in candidates:
+        try:
+            processor = get_processor_for(server_cfg.type)
+        except KeyError as exc:
+            logger.warning(
+                "No processor registered for {!r} ({}). Skipping this server.",
+                server_cfg.type,
+                exc,
+            )
+            continue
+        if cancel_check and cancel_check():
+            logger.info("Cancellation requested while enumerating items — aborting scan.")
+            return counts
+        try:
+            for item in processor.list_canonical_paths(
+                server_cfg,
+                library_ids=library_ids,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+            ):
+                all_items.append((server_cfg, item))
+                if cancel_check and cancel_check():
+                    logger.info("Cancellation requested mid-enumeration — aborting scan.")
+                    return counts
+        except Exception as exc:
+            logger.warning(
+                "Enumeration on {} server {!r} failed ({}: {}). Continuing with the next server in scope.",
+                server_cfg.type.value,
+                server_cfg.name or server_cfg.id,
+                type(exc).__name__,
+                exc,
+            )
+
+    total = len(all_items)
+    if total == 0:
+        logger.info(
+            "Multi-server scan walked {} server(s) but found no items to process.",
+            len(candidates),
+        )
+        return counts
+
+    logger.info(
+        "Multi-server scan: dispatching {} item(s) across {} server(s) with parallelism={}",
+        total,
+        len(candidates),
+        parallelism,
+    )
+
+    # Round-robin GPU assignment so a single GPU isn't oversubscribed.
+    # Falls back to CPU (gpu=None) when no GPU devices are configured.
+    def _gpu_for(index: int):
+        if not gpu_devices:
+            return None, None
+        gpu_type, gpu_device, _ = gpu_devices[index % len(gpu_devices)]
+        return gpu_type, gpu_device
+
+    completed = 0
+    is_plex_server = {cfg.id: cfg.type is ServerType.PLEX for cfg in candidates}
+
+    def _process_one(index_and_item):
+        index, (server_cfg, item) = index_and_item
+        if cancel_check and cancel_check():
+            return None
+        gpu_type, gpu_device = _gpu_for(index)
+        try:
+            return process_canonical_path(
+                canonical_path=item.canonical_path,
+                registry=registry,
+                config=config,
+                item_id_by_server=item.item_id_by_server or None,
+                gpu=gpu_type,
+                gpu_device_path=gpu_device,
+                cancel_check=cancel_check,
+                # Scope publishing to the originating server when this is
+                # a multi-vendor install — fan-out across other owners
+                # only for non-pinned scans.
+                server_id_filter=server_cfg.id if is_plex_server.get(server_cfg.id) is False else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Multi-server scan: per-item processing failed for {!r} ({}: {}). "
+                "Other items in this scan will still be processed.",
+                item.canonical_path,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+    with ThreadPoolExecutor(max_workers=parallelism) as pool:
+        for result in pool.map(_process_one, enumerate(all_items)):
+            completed += 1
+            if progress_callback:
+                try:
+                    progress_callback(completed, total, f"Processed {completed}/{total}")
+                except Exception:
+                    pass
+            if result is None:
+                continue
+            for pub in result.publishers or []:
+                key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
+                counts[key] = counts.get(key, 0) + 1
+            if job_manager is not None:
+                try:
+                    job_manager.append_publishers(
+                        job_id,
+                        _publisher_rows_from_result(result, result.canonical_path),
+                    )
+                except Exception as exc:
+                    logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
+
+    logger.info("Multi-server scan complete: {} item(s) processed.", completed)
+    return counts
+
+
 def run_processing(
     config,
     selected_gpus,
@@ -284,7 +492,10 @@ def run_processing(
         # Honest no-op: log clearly and return so the job ends cleanly instead
         # of crashing with a Plex connection error.
         sid_filter = getattr(config, "server_id_filter", None)
-        if sid_filter and isinstance(sid_filter, str) and sid_filter:
+        sid_filter = sid_filter if isinstance(sid_filter, str) and sid_filter else None
+        pinned_entry = None
+        pinned_type = ""
+        if sid_filter:
             try:
                 from ..web.settings_manager import get_settings_manager
 
@@ -292,49 +503,49 @@ def run_processing(
                 pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == sid_filter), None)
             except Exception:
                 pinned_entry = None
-            pinned_type = (pinned_entry or {}).get("type") or ""
-            if pinned_entry and pinned_type and pinned_type.lower() != "plex":
-                if not getattr(config, "webhook_paths", None):
-                    logger.warning(
-                        "Job is pinned to {} server {!r} but full-library scans currently only support Plex. "
-                        "This job ended without processing anything. "
-                        "For Emby/Jellyfin, use the Sonarr/Radarr or Custom webhook on the Triggers tab — "
-                        "those publish previews to any configured server. "
-                        "Multi-server full-scan support is tracked as a follow-up.",
-                        pinned_type,
-                        sid_filter,
-                    )
-                    return {
-                        "outcome": {r.value: 0 for r in ProcessingResult},
-                        "skipped_reason": f"full-library scan not supported for {pinned_type} servers yet",
-                    }
-        if not (config.plex_url and config.plex_token):
-            if getattr(config, "webhook_paths", None):
-                # Webhook-driven jobs CAN still run on a non-Plex install via
-                # the multi-server dispatcher — it walks every owning server
-                # in the registry directly without needing a Plex connection.
-                logger.info(
-                    "No Plex configured — webhook job ({} path(s)) will be dispatched directly to "
-                    "owning media servers via the multi-server registry.",
-                    len(config.webhook_paths),
-                )
-                outcome_counts = _dispatch_webhook_paths_multi_server(
-                    config,
-                    progress_callback=progress_callback,
-                    cancel_check=cancel_check,
-                    job_id=job_id,
-                )
-                return {"outcome": outcome_counts}
-            logger.warning(
-                "Full-library scan was requested but no Plex server is configured. "
-                "Full-scan currently only walks Plex libraries — for Emby/Jellyfin, "
-                "use the Sonarr/Radarr or Custom webhook on the Triggers tab. "
-                "This job ended without processing anything."
+            pinned_type = ((pinned_entry or {}).get("type") or "").lower()
+
+        # Multi-server full-library scan path — fires when:
+        #   * the job is pinned to a non-Plex server AND no webhook paths are
+        #     supplied (webhook-paths jobs always use the per-path dispatcher
+        #     below), OR
+        #   * no Plex is configured at all AND no webhook paths are supplied
+        #     (full-scan request on an Emby/Jellyfin-only install).
+        # Both cases delegate to _run_full_scan_multi_server which uses the
+        # per-vendor VendorProcessor + process_canonical_path so every vendor
+        # works through the same code path. Plex's legacy worker pool below
+        # still handles Plex-pinned full-scans until Phase C lands.
+        no_webhook_paths = not getattr(config, "webhook_paths", None)
+        non_plex_pin = pinned_type and pinned_type != "plex"
+        no_plex_at_all = not (config.plex_url and config.plex_token)
+        if no_webhook_paths and (non_plex_pin or no_plex_at_all):
+            library_ids = list(getattr(config, "plex_library_ids", None) or [])
+            outcome_counts = _run_full_scan_multi_server(
+                config,
+                selected_gpus=selected_gpus,
+                server_id_filter=sid_filter,
+                library_ids=library_ids or None,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                job_id=job_id,
             )
-            return {
-                "outcome": {r.value: 0 for r in ProcessingResult},
-                "skipped_reason": "no Plex server configured for full-library scan",
-            }
+            return {"outcome": outcome_counts}
+
+        # Webhook-paths jobs on a no-Plex install go through the multi-server
+        # dispatcher (path → publishers, no Plex resolution step).
+        if not (config.plex_url and config.plex_token):
+            logger.info(
+                "No Plex configured — webhook job ({} path(s)) will be dispatched directly to "
+                "owning media servers via the multi-server registry.",
+                len(config.webhook_paths),
+            )
+            outcome_counts = _dispatch_webhook_paths_multi_server(
+                config,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                job_id=job_id,
+            )
+            return {"outcome": outcome_counts}
         if progress_callback:
             progress_callback(0, 0, "Connecting to Plex...")
         plex = plex_server(config)

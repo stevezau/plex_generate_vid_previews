@@ -72,26 +72,43 @@ def _isolate(tmp_path):
 
 
 class TestMultiServerGuards:
-    """Tests for the new Phase G1 guards: jobs without Plex configured + jobs
-    pinned to non-Plex servers must end cleanly with a clear log message
-    instead of crashing with a Plex connection error."""
+    """Tests for the multi-server full-scan path (Phase D of the multi-server
+    completion).
 
-    def test_no_plex_full_scan_returns_no_op(self, tmp_path):
+    Originally these were "no-op skip" guards that bailed when no Plex was
+    configured; Phase D wires up the per-vendor processor + ThreadPoolExecutor
+    so non-Plex full-scans actually run instead. The tests now assert the
+    multi-server path is invoked.
+    """
+
+    def test_no_plex_full_scan_routes_through_multi_server_scan(self, tmp_path):
         config = _make_config(tmp_path, plex_url="", plex_token="")
-        result = run_processing(config, selected_gpus=[])
+        with patch(f"{MODULE}._run_full_scan_multi_server") as mock_scan:
+            mock_scan.return_value = {r.value: 0 for r in ProcessingResult}
+            result = run_processing(config, selected_gpus=[])
+        assert mock_scan.called
         assert result is not None
-        assert "skipped_reason" in result
-        assert all(v == 0 for v in result["outcome"].values())
+        assert "outcome" in result
+        # No skip path — the multi-server scan ran (possibly producing zero
+        # output) instead of returning a skipped_reason.
+        assert "skipped_reason" not in result
 
-    def test_pinned_to_non_plex_full_scan_returns_no_op(self, tmp_path):
+    def test_pinned_to_non_plex_full_scan_routes_through_multi_server_scan(self, tmp_path):
         config = _make_config(tmp_path, server_id_filter="emby-1")
-        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch(f"{MODULE}._run_full_scan_multi_server") as mock_scan,
+        ):
             mock_sm.return_value.get.return_value = [
                 {"id": "emby-1", "type": "emby", "name": "My Emby"},
             ]
+            mock_scan.return_value = {r.value: 0 for r in ProcessingResult}
             result = run_processing(config, selected_gpus=[])
+        assert mock_scan.called
+        # The pin must be passed through so the scan only walks that server.
+        assert mock_scan.call_args.kwargs.get("server_id_filter") == "emby-1"
         assert result is not None
-        assert "skipped_reason" in result
+        assert "outcome" in result
 
     def test_no_plex_with_webhook_paths_dispatches_via_registry(self, tmp_path):
         config = _make_config(
