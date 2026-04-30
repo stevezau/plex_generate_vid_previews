@@ -1837,6 +1837,32 @@ class TestSchedulesAPI:
         resp = client.post("/api/schedules", headers=_api_headers(), json={"name": "Test"})
         assert resp.status_code == 400
 
+    def test_update_schedule_invalid_cron_returns_400(self, client):
+        """PUT /api/schedules/<id> with malformed cron must surface 400, not 500.
+
+        Regression: APScheduler's CronTrigger.from_crontab raises ValueError
+        on bad cron syntax, which previously bubbled to the framework's
+        generic 500. Schedule updates must mirror create_schedule's contract
+        so the UI can show an inline error instead of a stack trace.
+        """
+        # Create a valid schedule first
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "valid", "cron_expression": "0 3 * * *"},
+        )
+        assert create_resp.status_code == 201
+        schedule_id = create_resp.get_json()["id"]
+
+        # Update with malformed cron — must return 400, not 500
+        bad = client.put(
+            f"/api/schedules/{schedule_id}",
+            headers=_api_headers(),
+            json={"cron_expression": "not a cron"},
+        )
+        assert bad.status_code == 400
+        assert "error" in bad.get_json()
+
 
 # ---------------------------------------------------------------------------
 # System API

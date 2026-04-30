@@ -93,19 +93,33 @@ def update_schedule(schedule_id):
     # the per-vendor VendorProcessor + multi-server dispatcher, so the
     # previous Plex-only gates here are gone.
     schedule_manager = get_schedule_manager()
-    schedule = schedule_manager.update_schedule(
-        schedule_id=schedule_id,
-        name=data.get("name"),
-        cron_expression=data.get("cron_expression"),
-        interval_minutes=data.get("interval_minutes"),
-        library_id=data.get("library_id"),
-        library_ids=data.get("library_ids"),
-        library_name=data.get("library_name"),
-        config=data.get("config"),
-        enabled=data.get("enabled"),
-        priority=data.get("priority"),
-        server_id=data.get("server_id"),
-    )
+    try:
+        schedule = schedule_manager.update_schedule(
+            schedule_id=schedule_id,
+            name=data.get("name"),
+            cron_expression=data.get("cron_expression"),
+            interval_minutes=data.get("interval_minutes"),
+            library_id=data.get("library_id"),
+            library_ids=data.get("library_ids"),
+            library_name=data.get("library_name"),
+            config=data.get("config"),
+            enabled=data.get("enabled"),
+            priority=data.get("priority"),
+            server_id=data.get("server_id"),
+        )
+    except ValueError as e:
+        # APScheduler's CronTrigger.from_crontab raises ValueError on malformed
+        # input. Surface a friendly 400 instead of the generic 500 the
+        # framework would otherwise emit, mirroring create_schedule's contract.
+        logger.warning(
+            "Schedule {} update rejected — invalid parameters ({}: {}). "
+            "Common causes: malformed cron syntax, or both cron_expression and "
+            "interval_minutes set to mutually-incompatible values.",
+            schedule_id,
+            type(e).__name__,
+            e,
+        )
+        return jsonify({"error": "Invalid schedule parameters"}), 400
 
     if schedule:
         return jsonify(schedule)
