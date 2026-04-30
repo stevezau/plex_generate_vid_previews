@@ -80,10 +80,6 @@
                      step 1 so the existing setup.js handlers (plexSignInBtn etc.) keep
                      working without modification. -->
                 <div id="plexSignInPanel" class="d-none text-center mt-3">
-                    <button type="button" class="btn btn-link text-muted small mb-3" id="vendorPickerBackBtn">
-                        <i class="bi bi-arrow-left me-1"></i>Pick a different server
-                    </button>
-
                     <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">
                         <i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex
                     </button>
@@ -130,17 +126,22 @@
                         </button>
                         <div id="manualPlexResult" class="small mt-2"></div>
                     </details>
+
+                    <div class="d-flex justify-content-start mt-4">
+                        <button type="button" class="btn btn-link" id="vendorPickerBackBtn">
+                            <i class="bi bi-arrow-left me-1"></i>Back
+                        </button>
+                    </div>
                 </div>
 
                 {# Emby/Jellyfin connection panel — revealed inline when the user
                    picks Emby or Jellyfin in the vendor picker (no modal popup).
                    Reuses the exact same connection-form partial that the
                    /servers Add Server modal uses, so server.js wires both up
-                   identically by ID. #}
+                   identically by ID. The form's own bottom-aligned "← Back"
+                   (#step-connect-back) is the single source of truth — no
+                   duplicate top-of-panel back link. #}
                 <div id="ejConnectPanel" class="d-none mt-3">
-                    <button type="button" class="btn btn-link text-muted small mb-3" id="ejVendorBackBtn">
-                        <i class="bi bi-arrow-left me-1"></i>Pick a different server
-                    </button>
                     {% include "_server_connection_form.html" %}
                 </div>
             </div>
@@ -628,7 +629,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     document.getElementById('vendorPickerBackBtn')?.addEventListener('click', _showVendorPicker);
-    document.getElementById('ejVendorBackBtn')?.addEventListener('click', _showVendorPicker);
 
     // The connection form's modal-style Back/Edit buttons default to
     // showing #step-type, which doesn't exist in the wizard's inline

@@ -5,7 +5,7 @@ Regressions covered:
 * Each vendor card reveals the right panel, hides the others.
 * Emby/Jellyfin show the **inline** connection panel (no Bootstrap
   modal overlay) — regression for the popup-vs-inline fix.
-* The "Pick a different server" link returns to the vendor picker.
+* The bottom-aligned ← Back link returns to the vendor picker.
 * Skip Setup link POSTs /api/setup/skip and redirects.
 """
 
@@ -66,7 +66,9 @@ class TestVendorPicker:
     def test_back_link_returns_to_vendor_picker_from_emby(self, wizard_step1: Page) -> None:
         wizard_step1.locator('.wizard-vendor-btn[data-vendor="emby"]').click()
         expect(wizard_step1.locator("#ejConnectPanel")).to_be_visible()
-        wizard_step1.locator("#ejVendorBackBtn").click()
+        # The form's bottom-aligned ← Back is the single back affordance
+        # (no separate "Pick a different server" link at the top).
+        wizard_step1.locator("#step-connect-back").click()
         expect(wizard_step1.locator("#vendorPicker")).to_be_visible()
         expect(wizard_step1.locator("#ejConnectPanel")).to_be_hidden()
 
