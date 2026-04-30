@@ -98,10 +98,10 @@ def _walk_item_paths(item) -> Iterable[str]:
 def _item_has_all_bifs(plex, item, plex_config_folder: str) -> bool:
     """Return ``True`` when every media part for this item already has a BIF.
 
-    Queries Plex's ``/<item_key>/tree`` endpoint (same query
-    :func:`media_preview_generator.media_processing.process_item` uses) to
-    recover the bundle hash for each media part, then checks whether the
-    corresponding ``index-sd.bif`` file exists on disk.
+    Queries Plex's ``/<item_key>/tree`` endpoint (the same query the
+    Plex bundle adapter uses) to recover the bundle hash for each media
+    part, then checks whether the corresponding ``index-sd.bif`` file
+    exists on disk.
 
     A single missing part means the worker needs to run, so we return
     ``False`` and let the item through.  On any query error we also

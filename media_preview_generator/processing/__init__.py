@@ -22,13 +22,11 @@ All public and private names from the sub-modules are re-exported here
 so `from media_preview_generator.processing import X` resolves.
 """
 
-# Per-vendor processor surface (Phase A of the multi-server completion).
-# Concrete VendorProcessor implementations land in Phase B; until then
-# only the types + base interface + registry are exported.
-# Bottom-of-init vendor imports trigger their per-module
-# `register_processor(...)` calls. Keep these last to avoid
-# circular-import surprises when the vendor modules pull from this
-# package's other helpers.
+# Per-vendor processor surface. Concrete implementations live in
+# `.plex`, `.emby`, `.jellyfin`; the imports below trigger each module's
+# `register_processor(...)` side-effect. Keep them last so vendor
+# modules can pull from this package's other helpers without
+# circular-import surprises.
 from . import emby as _emby_processor_module  # noqa: F401, E402
 from . import jellyfin as _jellyfin_processor_module  # noqa: F401, E402
 from . import plex as _plex_processor_module  # noqa: F401, E402

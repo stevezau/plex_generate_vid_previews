@@ -353,10 +353,11 @@ def get_frame_cache(
 ) -> FrameCache:
     """Return the process-wide :class:`FrameCache` (lazily constructed).
 
-    On first construction we read the ``frame_reuse`` settings block to
-    seed the TTL + disk cap. Explicit ``ttl_seconds`` / ``max_disk_mb``
-    arguments override the setting (used by tests that need a known
-    value).
+    The TTL and disk-cap are re-read from the user's ``frame_reuse``
+    settings block on *every* call so toggling Settings → Performance →
+    Frame Reuse takes effect immediately, with no restart. Explicit
+    ``ttl_seconds`` / ``max_disk_mb`` arguments override the setting
+    (used by tests that need a known value).
 
     First call with a non-default ``base_dir`` decides that arg.
     Subsequent calls with a *different* non-default value raise so the
@@ -365,6 +366,10 @@ def get_frame_cache(
     """
     global _singleton
     with _singleton_lock:
+        settings_ttl, settings_disk = _read_frame_reuse_setting()
+        effective_ttl = settings_ttl if ttl_seconds is None else int(ttl_seconds)
+        effective_disk = settings_disk if max_disk_mb is None else int(max_disk_mb)
+
         if _singleton is None:
             if base_dir is None:
                 # Fallback: a tempdir under /tmp keeps tests isolated when no
@@ -372,9 +377,6 @@ def get_frame_cache(
                 import tempfile
 
                 base_dir = os.path.join(tempfile.gettempdir(), "plex-previews-frame-cache")
-            settings_ttl, settings_disk = _read_frame_reuse_setting()
-            effective_ttl = settings_ttl if ttl_seconds is None else int(ttl_seconds)
-            effective_disk = settings_disk if max_disk_mb is None else int(max_disk_mb)
             _singleton = FrameCache(
                 base_dir=base_dir,
                 max_entries=max_entries,
@@ -392,6 +394,12 @@ def get_frame_cache(
                 f"FrameCache singleton already initialised with base_dir={_singleton._base_dir!r}; "
                 f"cannot reconfigure with base_dir={base_dir!r} — call reset_frame_cache() first"
             )
+
+        # Live-update TTL + disk cap so user-visible settings changes take
+        # effect on the next dispatch — no process restart required.
+        with _singleton._lock:
+            _singleton._ttl_seconds = effective_ttl
+            _singleton._max_disk_bytes = effective_disk * 1024 * 1024
         return _singleton
 
 

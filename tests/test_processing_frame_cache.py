@@ -543,3 +543,37 @@ class TestConfigurableFrameReuse:
             cache = get_frame_cache(base_dir=str(tmp_path / "cache"))
         assert cache._ttl_seconds == 30 * 60
         assert cache._max_disk_bytes == 512 * 1024 * 1024
+
+    def test_settings_changes_apply_without_restart(self, tmp_path):
+        """Changing frame_reuse in Settings takes effect on the next dispatch.
+
+        Regression: the singleton used to cache TTL+cap forever, so users
+        toggling Settings → Performance → Frame Reuse saw zero change
+        until gunicorn restarted. ``get_frame_cache()`` now re-reads on
+        every call and live-updates the singleton's fields.
+        """
+        from unittest.mock import patch as _patch
+
+        # First construction: 60-minute TTL.
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {
+                "enabled": True,
+                "ttl_minutes": 60,
+                "max_cache_disk_mb": 2048,
+            }
+            cache = get_frame_cache(base_dir=str(tmp_path / "cache"))
+        assert cache._ttl_seconds == 60 * 60
+        assert cache._max_disk_bytes == 2048 * 1024 * 1024
+
+        # User changes settings and triggers a new dispatch — same singleton
+        # but TTL + cap should reflect the new values immediately.
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {
+                "enabled": True,
+                "ttl_minutes": 5,
+                "max_cache_disk_mb": 256,
+            }
+            cache_again = get_frame_cache(base_dir=str(tmp_path / "cache"))
+        assert cache_again is cache, "should be the same singleton"
+        assert cache_again._ttl_seconds == 5 * 60
+        assert cache_again._max_disk_bytes == 256 * 1024 * 1024

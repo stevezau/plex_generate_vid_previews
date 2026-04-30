@@ -540,11 +540,10 @@ def _run_full_scan_multi_server(
     user's GPU/CPU configuration and items are distributed across GPUs
     round-robin so a single GPU isn't oversubscribed.
 
-    Plex's legacy :func:`process_item` worker pool is NOT touched — Phase C
-    of the multi-server completion migrates Plex onto this same path. Until
-    then this function only handles the non-Plex case (full-library scans
-    on Emby/Jellyfin-only installs, or on a Plex+E/J install where the user
-    explicitly picked an E/J server in the dropdown).
+    All vendors (Plex, Emby, Jellyfin) flow through this same path now —
+    no separate legacy worker pool. The unified :func:`process_canonical_path`
+    handles publish-to-every-owner fan-out so a Plex+Jellyfin install
+    publishes both bundles from a single FFmpeg pass.
 
     Returns the aggregated ProcessingResult counts keyed by enum value
     (same shape as :func:`_dispatch_webhook_paths_multi_server`).
@@ -735,9 +734,9 @@ def run_processing(
         #   * no Plex is configured at all AND no webhook paths are supplied
         #     (full-scan request on an Emby/Jellyfin-only install).
         # Both cases delegate to _run_full_scan_multi_server which uses the
-        # per-vendor VendorProcessor + process_canonical_path so every vendor
-        # works through the same code path. Plex's legacy worker pool below
-        # still handles Plex-pinned full-scans until Phase C lands.
+        # per-vendor VendorProcessor + process_canonical_path. The Plex full-
+        # scan branch below also funnels into process_canonical_path via the
+        # dispatcher's per-vendor registry — no separate worker-pool surface.
         no_webhook_paths = not getattr(config, "webhook_paths", None)
         non_plex_pin = pinned_type and pinned_type != "plex"
         no_plex_at_all = not (config.plex_url and config.plex_token)

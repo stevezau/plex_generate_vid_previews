@@ -216,6 +216,198 @@ class TestJellyfinWebhook:
         assert response.status_code == 202
         assert response.get_json()["status"] == "ignored"
 
+    def test_unresolvable_item_returns_202(self, client, auth_headers, monkeypatch):
+        """Item lookup returns no path → 202 ignored, no dispatch."""
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        monkeypatch.setattr(
+            JellyfinServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: None,
+        )
+
+        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "missing",
+                        "ItemType": "Episode",
+                        "ServerId": "jelly-1",
+                    }
+                ),
+            )
+
+        assert response.status_code == 202
+        proc.assert_not_called()
+
+    def test_path_outside_configured_libraries_skips(self, client, auth_headers, monkeypatch):
+        """Item resolves to a path not covered by any library — webhook is ignored."""
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        monkeypatch.setattr(
+            JellyfinServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/somewhere/else/foo.mkv",
+        )
+
+        # process_canonical_path returns NO_OWNERS for an unowned path —
+        # router still 200s with the result body so the caller can act on it.
+        no_owners = MultiServerResult(
+            canonical_path="/somewhere/else/foo.mkv",
+            status=MultiServerStatus.NO_OWNERS,
+            publishers=[],
+            frame_count=0,
+            message="No configured server owns this path",
+        )
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=no_owners,
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "jf-99",
+                        "ItemType": "Movie",
+                        "ServerId": "jelly-1",
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["status"] == "no_owners"
+        proc.assert_called_once()
+
+    def test_resolution_exception_returns_202(self, client, auth_headers, monkeypatch):
+        """Vendor server raising during item lookup degrades gracefully."""
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        def boom(self, item_id):
+            raise RuntimeError("jellyfin api unreachable")
+
+        monkeypatch.setattr(JellyfinServer, "resolve_item_to_remote_path", boom)
+
+        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "jf-1",
+                        "ItemType": "Episode",
+                        "ServerId": "jelly-1",
+                    }
+                ),
+            )
+
+        # Accepted but ignored — the webhook is well-formed, the failure is
+        # transient on the vendor side. The user's webhook plugin shouldn't
+        # interpret this as needing a retry storm.
+        assert response.status_code == 202
+        proc.assert_not_called()
+
+    def test_path_mapping_applied_to_jellyfin_payload(self, client, auth_headers, monkeypatch):
+        """The configured ``path_mappings`` translate Jellyfin remote path → local."""
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "TV",
+                            "remote_paths": ["/jf/data/tv"],
+                            "enabled": True,
+                        }
+                    ],
+                    "path_mappings": [{"remote_prefix": "/jf/data", "local_prefix": "/local/data"}],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        monkeypatch.setattr(
+            JellyfinServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/jf/data/tv/Foo/S01E01.mkv",
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "jf-1",
+                        "ItemType": "Episode",
+                        "ServerId": "jelly-1",
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        proc.assert_called_once()
+        assert proc.call_args.kwargs["canonical_path"] == "/local/data/tv/Foo/S01E01.mkv"
+
 
 class TestEmbyWebhook:
     def test_library_new_event(self, client, auth_headers, monkeypatch):
@@ -264,6 +456,171 @@ class TestEmbyWebhook:
         proc.assert_called_once()
         # Path mapping translated /em/movies/Foo.mkv -> /data/movies/Foo.mkv.
         assert proc.call_args.kwargs["canonical_path"] == "/data/movies/Foo.mkv"
+
+    def test_irrelevant_event_returns_202(self, client, auth_headers):
+        """Emby's playback events shouldn't trigger preview work."""
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                }
+            ]
+        )
+
+        response = client.post(
+            "/api/webhooks/incoming",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            data=json.dumps(
+                {
+                    "Event": "playback.start",
+                    "Item": {"Id": "x"},
+                    "Server": {"Id": "emby-1"},
+                }
+            ),
+        )
+
+        assert response.status_code == 202
+        assert response.get_json()["status"] == "ignored"
+
+    def test_unresolvable_item_returns_202(self, client, auth_headers, monkeypatch):
+        """Emby item resolution returning None → 202 with no dispatch."""
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/em/movies"], "enabled": True}],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers.emby import EmbyServer
+
+        monkeypatch.setattr(
+            EmbyServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: None,
+        )
+
+        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "Event": "library.new",
+                        "Item": {"Id": "missing"},
+                        "Server": {"Id": "emby-1"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 202
+        proc.assert_not_called()
+
+    def test_resolution_exception_returns_202(self, client, auth_headers, monkeypatch):
+        """Vendor server raising during item lookup degrades gracefully on Emby."""
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/em/movies"], "enabled": True}],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers.emby import EmbyServer
+
+        def boom(self, item_id):
+            raise RuntimeError("emby api unreachable")
+
+        monkeypatch.setattr(EmbyServer, "resolve_item_to_remote_path", boom)
+
+        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "Event": "library.new",
+                        "Item": {"Id": "em-1"},
+                        "Server": {"Id": "emby-1"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 202
+        proc.assert_not_called()
+
+    def test_two_emby_servers_route_by_server_id(self, client, auth_headers, monkeypatch):
+        """Two Emby servers configured — payload's ``Server.Id`` picks the right one."""
+        _seed_servers(
+            [
+                {
+                    "id": "uuid-emby-A",
+                    "type": "emby",
+                    "name": "Emby A",
+                    "enabled": True,
+                    "url": "http://a:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "server_identity": "emby-id-A",
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
+                {
+                    "id": "uuid-emby-B",
+                    "type": "emby",
+                    "name": "Emby B",
+                    "enabled": True,
+                    "url": "http://b:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "server_identity": "emby-id-B",
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
+            ]
+        )
+
+        from media_preview_generator.servers.emby import EmbyServer
+
+        monkeypatch.setattr(
+            EmbyServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/data/movies/Foo.mkv",
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "Event": "library.new",
+                        "Item": {"Id": "em-42"},
+                        "Server": {"Id": "emby-id-B"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 200
+        proc.assert_called_once()
+        # Hint dict only carries the matched server's local id.
+        assert proc.call_args.kwargs["item_id_by_server"] == {"uuid-emby-B": "em-42"}
 
 
 class TestPathFirstWebhook:

@@ -2,10 +2,8 @@
 
 Path-centric orchestration that consumes the :class:`ServerRegistry` and
 fans out a single FFmpeg pass to every server that owns the canonical
-file. Lives alongside the legacy :func:`process_item` entry point in
-:mod:`.orchestrator` so existing callers stay working unchanged; new
-callers (the universal webhook router and the planned scheduled-scan
-refactor) come in through here.
+file. This is the *only* per-item entry point — webhooks, full-library
+scans, and scheduled re-checks all dispatch through here.
 
 Conceptual flow per call:
 
@@ -389,11 +387,10 @@ def process_canonical_path(
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
-    This is the path-centric entry point that consumes
-    :class:`ServerRegistry` and the OutputAdapter pipeline. Existing
-    Plex-only callers still use :func:`orchestrator.process_item`;
-    new path-based callers (webhook router, scheduled scans) come in
-    through here.
+    The single per-item entry point: consumes :class:`ServerRegistry`
+    and the OutputAdapter pipeline. All callers — webhook router,
+    full-library scans, scheduled re-checks, per-vendor processors —
+    funnel through here.
 
     Args:
         canonical_path: Absolute local path of the source media file.
@@ -536,6 +533,7 @@ def process_canonical_path(
                         status=PublisherStatus.SKIPPED_OUTPUT_EXISTS,
                         output_paths=paths,
                         message="Output already exists (source unchanged)",
+                        frame_source="output_existed",
                     )
                 )
             return MultiServerResult(

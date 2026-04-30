@@ -494,10 +494,16 @@ def _sync_start_job_async(request, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _pi(key="test_key", title="Test", media_type="movie", canonical_path=None, server_id="plex-1"):
-    """Build a ``ProcessableItem`` matching what the tests used to assemble as a tuple."""
+def _pi(key="test_key", title="Test", media_type=None, canonical_path=None, server_id="plex-1"):
+    """Build a ``ProcessableItem`` matching what the tests used to assemble as a tuple.
+
+    ``media_type`` is accepted for backward compat with the legacy 3-tuple
+    callsites but is intentionally ignored — :class:`ProcessableItem` has
+    no media-type field; vendor processors derive that from the path.
+    """
     from media_preview_generator.processing.types import ProcessableItem
 
+    del media_type  # see docstring — accepted but unused
     return ProcessableItem(
         canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
         server_id=server_id,
@@ -508,15 +514,15 @@ def _pi(key="test_key", title="Test", media_type="movie", canonical_path=None, s
 
 
 def _pi_list(triples, *, server_id="plex-1"):
-    """Bulk version: convert ``[(key, title, media_type)]`` tuples to ``ProcessableItem`` instances."""
+    """Bulk version: convert ``[(key, title, media_type?)]`` tuples to ``ProcessableItem`` instances."""
     out = []
     for entry in triples:
         if not entry:
             continue
         key = entry[0]
         title = entry[1] if len(entry) > 1 else "Test"
-        media_type = entry[2] if len(entry) > 2 else "movie"
-        out.append(_pi(key, title=title, media_type=media_type, server_id=server_id))
+        # tuple's optional third slot (media_type) is dropped; see _pi docstring.
+        out.append(_pi(key, title=title, server_id=server_id))
     return out
 
 

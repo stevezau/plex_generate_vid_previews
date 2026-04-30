@@ -459,6 +459,10 @@ class TestSkipIfExists:
         assert result.publishers[0].status is PublisherStatus.SKIPPED_OUTPUT_EXISTS
         # Existing file untouched — content unchanged.
         assert existing_sidecar.read_bytes() == b"already here"
+        # Frame provenance: the all-fresh short-circuit means FFmpeg never
+        # ran for this publisher. The badge in the Job UI relies on this
+        # being "output_existed" rather than the default "extracted".
+        assert result.publishers[0].frame_source == "output_existed"
 
     def test_regenerate_overrides_skip(self, mock_config_for_processing, tmp_path):
         media_dir = tmp_path / "data" / "movies"
