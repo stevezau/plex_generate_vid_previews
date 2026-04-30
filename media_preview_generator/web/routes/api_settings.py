@@ -374,6 +374,34 @@ def save_settings():
         }
         updates["frame_reuse"] = cleaned_fr
 
+    # Coerce/reject typed-int fields so a malformed POST can't poison
+    # settings.json with a string (e.g. ``cpu_threads: "notanumber"``)
+    # that later crashes ``load_config``'s ``int()`` calls.
+    int_fields = (
+        "cpu_threads",
+        "gpu_threads",
+        "ffmpeg_threads",
+        "thumbnail_interval",
+        "thumbnail_quality",
+        "log_retention_count",
+        "job_history_days",
+        "webhook_delay",
+        "webhook_retry_count",
+        "webhook_retry_delay",
+        "requeue_max_age_minutes",
+    )
+    for field in int_fields:
+        if field in updates:
+            try:
+                updates[field] = int(updates[field])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{field} must be an integer"}), 400
+
+    bool_fields = ("plex_verify_ssl", "webhook_enabled", "auto_requeue_on_restart")
+    for field in bool_fields:
+        if field in updates and not isinstance(updates[field], bool):
+            return jsonify({"error": f"{field} must be a boolean"}), 400
+
     # Sanitize gpu_config: must be a list of dicts with a device key.
     # Normalize: workers <= 0 forces enabled=false (contradictory state).
     if "gpu_config" in updates:
