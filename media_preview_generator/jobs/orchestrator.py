@@ -234,6 +234,170 @@ def _dispatch_webhook_paths_multi_server(
     return counts
 
 
+def _dispatch_processable_items(
+    items,
+    *,
+    config,
+    registry,
+    selected_gpus,
+    progress_callback=None,
+    cancel_check=None,
+    job_id: str | None = None,
+    label: str = "scan",
+) -> dict:
+    """Run a list of ``(server_config, ProcessableItem)`` pairs in parallel.
+
+    Shared dispatch loop used by :func:`_run_full_scan_multi_server` and
+    :func:`_run_recently_added_multi_server`. Pulled out so adding new
+    enumeration sources doesn't mean copying ~80 lines of GPU rotation +
+    progress-callback + per-publisher aggregation.
+
+    Args:
+        items: Pre-collected list of ``(server_config, ProcessableItem)``.
+        config: Job-wide :class:`Config` used by FFmpeg + frame extraction.
+        registry: Live :class:`ServerRegistry` (publishers fan out via this).
+        selected_gpus: ``[(gpu_type, gpu_device, gpu_info), ...]`` from the
+            UI's GPU selection. Workers use this round-robin.
+        progress_callback: Optional ``(processed, total, msg)`` callback
+            forwarded to the UI's progress widget.
+        cancel_check: Optional callable returning True when the caller wants
+            the dispatch to stop.
+        job_id: Optional job identifier; per-publisher rows get appended to
+            this job for the dashboard's per-server status view.
+        label: Free-text identifier used in info logs ("full scan",
+            "recently-added scan", etc.) so log lines stay grep-friendly.
+
+    Returns:
+        Aggregated ProcessingResult counts keyed by enum value.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ..processing.multi_server import process_canonical_path
+    from ..servers.base import ServerType
+
+    counts = {r.value: 0 for r in ProcessingResult}
+    total = len(items)
+    if total == 0:
+        return counts
+
+    gpu_devices = list(selected_gpus or [])
+    cpu_workers = max(0, int(getattr(config, "cpu_threads", 1) or 0))
+    gpu_workers = sum(int(getattr(g[2], "workers", 1) or 1) for g in gpu_devices) if gpu_devices else 0
+    parallelism = max(1, gpu_workers + cpu_workers)
+
+    job_manager = None
+    if job_id:
+        try:
+            from ..web.jobs import get_job_manager
+
+            job_manager = get_job_manager()
+        except Exception:
+            job_manager = None
+
+    logger.info(
+        "Multi-server {}: dispatching {} item(s) with parallelism={}",
+        label,
+        total,
+        parallelism,
+    )
+
+    def _gpu_for(index: int):
+        if not gpu_devices:
+            return None, None
+        gpu_type, gpu_device, _ = gpu_devices[index % len(gpu_devices)]
+        return gpu_type, gpu_device
+
+    def _process_one(index_and_item):
+        index, (server_cfg, item) = index_and_item
+        if cancel_check and cancel_check():
+            return None
+        gpu_type, gpu_device = _gpu_for(index)
+        try:
+            return process_canonical_path(
+                canonical_path=item.canonical_path,
+                registry=registry,
+                config=config,
+                item_id_by_server=item.item_id_by_server or None,
+                gpu=gpu_type,
+                gpu_device_path=gpu_device,
+                cancel_check=cancel_check,
+                # Scope publishing to the originating server only on
+                # non-Plex installs — Plex scans should still fan out
+                # to every owning sibling so multi-vendor publishers
+                # benefit. (Phase C will revisit once the Plex worker
+                # pool also funnels through here.)
+                server_id_filter=(server_cfg.id if server_cfg.type is not ServerType.PLEX else None),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Multi-server {}: per-item processing failed for {!r} ({}: {}). "
+                "Other items in this run will still be processed.",
+                label,
+                item.canonical_path,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=parallelism) as pool:
+        for result in pool.map(_process_one, enumerate(items)):
+            completed += 1
+            if progress_callback:
+                try:
+                    progress_callback(completed, total, f"Processed {completed}/{total}")
+                except Exception:
+                    pass
+            if result is None:
+                continue
+            for pub in result.publishers or []:
+                key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
+                counts[key] = counts.get(key, 0) + 1
+            if job_manager is not None:
+                try:
+                    job_manager.append_publishers(
+                        job_id,
+                        _publisher_rows_from_result(result, result.canonical_path),
+                    )
+                except Exception as exc:
+                    logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
+
+    logger.info("Multi-server {} complete: {} item(s) processed.", label, completed)
+    return counts
+
+
+def _build_multi_server_registry(config):
+    """Load the live :class:`ServerRegistry` for a multi-server scan/dispatch.
+
+    Wraps the pair of ``settings_manager.get + ServerRegistry.from_settings``
+    calls every multi-server entry point repeats and surfaces any failure
+    as a warning + ``None`` so callers can ``return zero counts`` early.
+    """
+    from ..servers import ServerRegistry
+    from ..web.settings_manager import get_settings_manager
+
+    try:
+        raw_servers = list(get_settings_manager().get("media_servers") or [])
+    except Exception as exc:
+        logger.warning(
+            "Could not read media_servers when running multi-server scan ({}: {}). "
+            "Open the Servers page and verify at least one enabled server is configured.",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    try:
+        return ServerRegistry.from_settings(raw_servers, legacy_config=config)
+    except Exception as exc:
+        logger.warning(
+            "Could not build the media-server registry for multi-server scan ({}: {}). "
+            "Open the Servers page and verify each server has valid auth and a reachable URL.",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _run_full_scan_multi_server(
     config,
     *,
@@ -262,46 +426,17 @@ def _run_full_scan_multi_server(
     Returns the aggregated ProcessingResult counts keyed by enum value
     (same shape as :func:`_dispatch_webhook_paths_multi_server`).
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     from ..processing import get_processor_for
-    from ..processing.multi_server import process_canonical_path
-    from ..servers import ServerRegistry
-    from ..servers.base import ServerType
-    from ..web.settings_manager import get_settings_manager
 
     counts = {r.value: 0 for r in ProcessingResult}
 
-    try:
-        raw_servers = list(get_settings_manager().get("media_servers") or [])
-    except Exception as exc:
-        logger.warning(
-            "Could not read media_servers when running multi-server scan ({}: {}). "
-            "Open the Servers page and verify at least one enabled server is configured.",
-            type(exc).__name__,
-            exc,
-        )
+    registry = _build_multi_server_registry(config)
+    if registry is None:
         return counts
 
-    try:
-        registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
-    except Exception as exc:
-        logger.warning(
-            "Could not build the media-server registry for multi-server scan ({}: {}). "
-            "Open the Servers page and verify each server has valid auth and a reachable URL.",
-            type(exc).__name__,
-            exc,
-        )
-        return counts
-
-    # Pick the servers to scan: a single one (when pinned) or every enabled one.
-    candidates = []
-    for cfg in registry.configs():
-        if not cfg.enabled:
-            continue
-        if server_id_filter and cfg.id != server_id_filter:
-            continue
-        candidates.append(cfg)
+    candidates = [
+        cfg for cfg in registry.configs() if cfg.enabled and (not server_id_filter or cfg.id == server_id_filter)
+    ]
     if not candidates:
         logger.warning(
             "No enabled servers matched the multi-server scan request (server_id_filter={!r}). Nothing to process.",
@@ -309,24 +444,8 @@ def _run_full_scan_multi_server(
         )
         return counts
 
-    # Pre-resolve the GPU device list so worker tasks can pick deterministically.
-    # Each entry in selected_gpus is (gpu_type, gpu_device, gpu_info).
-    gpu_devices = list(selected_gpus or [])
-    cpu_workers = max(0, int(getattr(config, "cpu_threads", 1) or 0))
-    gpu_workers = sum(int(getattr(g[2], "workers", 1) or 1) for g in gpu_devices) if gpu_devices else 0
-    parallelism = max(1, gpu_workers + cpu_workers)
-
-    job_manager = None
-    if job_id:
-        try:
-            from ..web.jobs import get_job_manager
-
-            job_manager = get_job_manager()
-        except Exception:
-            job_manager = None
-
     # Enumerate every item we'll process (across all servers in scope) so the
-    # progress widget can show "X / total" instead of "X processed".
+    # progress widget below can show "X / total" instead of "X processed".
     all_items: list = []
     for server_cfg in candidates:
         try:
@@ -361,85 +480,115 @@ def _run_full_scan_multi_server(
                 exc,
             )
 
-    total = len(all_items)
-    if total == 0:
+    if not all_items:
         logger.info(
             "Multi-server scan walked {} server(s) but found no items to process.",
             len(candidates),
         )
         return counts
 
-    logger.info(
-        "Multi-server scan: dispatching {} item(s) across {} server(s) with parallelism={}",
-        total,
-        len(candidates),
-        parallelism,
+    return _dispatch_processable_items(
+        all_items,
+        config=config,
+        registry=registry,
+        selected_gpus=selected_gpus,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+        job_id=job_id,
+        label="full scan",
     )
 
-    # Round-robin GPU assignment so a single GPU isn't oversubscribed.
-    # Falls back to CPU (gpu=None) when no GPU devices are configured.
-    def _gpu_for(index: int):
-        if not gpu_devices:
-            return None, None
-        gpu_type, gpu_device, _ = gpu_devices[index % len(gpu_devices)]
-        return gpu_type, gpu_device
 
-    completed = 0
-    is_plex_server = {cfg.id: cfg.type is ServerType.PLEX for cfg in candidates}
+def _run_recently_added_multi_server(
+    config,
+    *,
+    selected_gpus,
+    server_id_filter: str | None = None,
+    library_ids: list[str] | None = None,
+    lookback_hours: float = 1.0,
+    progress_callback=None,
+    cancel_check=None,
+    job_id: str | None = None,
+) -> dict:
+    """Recently-added scan for any vendor via :class:`VendorProcessor`.
 
-    def _process_one(index_and_item):
-        index, (server_cfg, item) = index_and_item
-        if cancel_check and cancel_check():
-            return None
-        gpu_type, gpu_device = _gpu_for(index)
+    Walks every enabled server (or just ``server_id_filter``) calling
+    ``processor.scan_recently_added`` for each. Per-vendor processors
+    handle the API differences (Plex's ``addedAt>>`` filter vs.
+    Emby/Jellyfin's ``DateCreated`` sort) so the orchestrator stays
+    vendor-agnostic.
+
+    Returns the aggregated ProcessingResult counts.
+    """
+    from ..processing import get_processor_for
+
+    counts = {r.value: 0 for r in ProcessingResult}
+
+    registry = _build_multi_server_registry(config)
+    if registry is None:
+        return counts
+
+    candidates = [
+        cfg for cfg in registry.configs() if cfg.enabled and (not server_id_filter or cfg.id == server_id_filter)
+    ]
+    if not candidates:
+        logger.warning(
+            "No enabled servers matched the recently-added scan request (server_id_filter={!r}). Nothing to process.",
+            server_id_filter,
+        )
+        return counts
+
+    all_items: list = []
+    for server_cfg in candidates:
         try:
-            return process_canonical_path(
-                canonical_path=item.canonical_path,
-                registry=registry,
-                config=config,
-                item_id_by_server=item.item_id_by_server or None,
-                gpu=gpu_type,
-                gpu_device_path=gpu_device,
-                cancel_check=cancel_check,
-                # Scope publishing to the originating server when this is
-                # a multi-vendor install — fan-out across other owners
-                # only for non-pinned scans.
-                server_id_filter=server_cfg.id if is_plex_server.get(server_cfg.id) is False else None,
+            processor = get_processor_for(server_cfg.type)
+        except KeyError as exc:
+            logger.warning(
+                "No processor registered for {!r} ({}). Skipping this server.",
+                server_cfg.type,
+                exc,
             )
+            continue
+        if cancel_check and cancel_check():
+            logger.info("Cancellation requested while enumerating recently-added items.")
+            return counts
+        try:
+            for item in processor.scan_recently_added(
+                server_cfg,
+                lookback_hours=int(max(1, lookback_hours)),
+                library_ids=library_ids,
+            ):
+                all_items.append((server_cfg, item))
+                if cancel_check and cancel_check():
+                    logger.info("Cancellation requested mid-recently-added scan.")
+                    return counts
         except Exception as exc:
             logger.warning(
-                "Multi-server scan: per-item processing failed for {!r} ({}: {}). "
-                "Other items in this scan will still be processed.",
-                item.canonical_path,
+                "Recently-added scan on {} server {!r} failed ({}: {}). Continuing with the next server.",
+                server_cfg.type.value,
+                server_cfg.name or server_cfg.id,
                 type(exc).__name__,
                 exc,
             )
-            return None
 
-    with ThreadPoolExecutor(max_workers=parallelism) as pool:
-        for result in pool.map(_process_one, enumerate(all_items)):
-            completed += 1
-            if progress_callback:
-                try:
-                    progress_callback(completed, total, f"Processed {completed}/{total}")
-                except Exception:
-                    pass
-            if result is None:
-                continue
-            for pub in result.publishers or []:
-                key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
-                counts[key] = counts.get(key, 0) + 1
-            if job_manager is not None:
-                try:
-                    job_manager.append_publishers(
-                        job_id,
-                        _publisher_rows_from_result(result, result.canonical_path),
-                    )
-                except Exception as exc:
-                    logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
+    if not all_items:
+        logger.info(
+            "Recently-added scan walked {} server(s) but found no items in the lookback window ({}h).",
+            len(candidates),
+            lookback_hours,
+        )
+        return counts
 
-    logger.info("Multi-server scan complete: {} item(s) processed.", completed)
-    return counts
+    return _dispatch_processable_items(
+        all_items,
+        config=config,
+        registry=registry,
+        selected_gpus=selected_gpus,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+        job_id=job_id,
+        label="recently-added scan",
+    )
 
 
 def run_processing(

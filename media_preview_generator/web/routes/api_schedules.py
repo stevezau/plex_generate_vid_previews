@@ -39,43 +39,12 @@ def create_schedule():
     if not data.get("cron_expression") and not data.get("interval_minutes"):
         return jsonify({"error": "Either cron_expression or interval_minutes is required"}), 400
 
-    # Both schedule types currently require Plex on the backend:
-    #   * "recently_added"  — the scanner uses the Plex API
-    #   * "full_library"    — the legacy run_processing walks Plex libraries
-    # Reject non-Plex pins early so an Emby/Jellyfin user gets a clear error
-    # at save time instead of a silent no-op every time the schedule fires.
-    cfg = data.get("config") or {}
-    job_type = str(cfg.get("job_type") or "full_library")
-    target_server_id = data.get("server_id")
-    if target_server_id:
-        from ..settings_manager import get_settings_manager
-
-        raw_servers = get_settings_manager().get("media_servers") or []
-        target = next(
-            (s for s in raw_servers if isinstance(s, dict) and s.get("id") == target_server_id),
-            None,
-        )
-        if target and (target.get("type") or "").lower() != "plex":
-            if job_type == "recently_added":
-                return jsonify(
-                    {
-                        "error": (
-                            "The Recently Added Scanner currently supports Plex only. "
-                            "For Emby/Jellyfin, use the Sonarr/Radarr or Custom webhook on the "
-                            "Triggers tab — those fire as soon as new media lands and work for any server."
-                        )
-                    }
-                ), 400
-            # Full-library scan path
-            return jsonify(
-                {
-                    "error": (
-                        "Full-library scan schedules currently support Plex only — the scan walks Plex's "
-                        "library API. For Emby/Jellyfin, use the Sonarr/Radarr or Custom webhook on the "
-                        "Triggers tab. Multi-server full-scan support is tracked as a follow-up feature."
-                    )
-                }
-            ), 400
+    # Phase E (multi-server completion): both schedule types now work for
+    # every vendor — full-library scans go through
+    # _run_full_scan_multi_server and recently-added through
+    # _run_recently_added_multi_server, both of which dispatch via the
+    # per-vendor VendorProcessor. The previous Plex-only gates here are
+    # gone; non-Plex schedules save and run.
 
     try:
         schedule_manager = get_schedule_manager()
@@ -120,38 +89,9 @@ def update_schedule(schedule_id):
     """Update a schedule."""
     data = request.get_json() or {}
 
-    # Phase H7: same non-Plex pinned-server gate as POST. Recently Added
-    # scanner + full-library scans currently only support Plex.
-    cfg = data.get("config") or {}
-    job_type = str(cfg.get("job_type") or "full_library")
-    target_server_id = data.get("server_id")
-    if target_server_id:
-        from ..settings_manager import get_settings_manager
-
-        raw_servers = get_settings_manager().get("media_servers") or []
-        target = next(
-            (s for s in raw_servers if isinstance(s, dict) and s.get("id") == target_server_id),
-            None,
-        )
-        if target and (target.get("type") or "").lower() != "plex":
-            if job_type == "recently_added":
-                return jsonify(
-                    {
-                        "error": (
-                            "The Recently Added Scanner currently supports Plex only. "
-                            "For Emby/Jellyfin, use the Sonarr/Radarr or Custom webhook on the Triggers tab."
-                        )
-                    }
-                ), 400
-            return jsonify(
-                {
-                    "error": (
-                        "Full-library scan schedules currently support Plex only. For Emby/Jellyfin, "
-                        "use the Sonarr/Radarr or Custom webhook on the Triggers tab."
-                    )
-                }
-            ), 400
-
+    # Phase E (multi-server completion): non-Plex schedules now run through
+    # the per-vendor VendorProcessor + multi-server dispatcher, so the
+    # previous Plex-only gates here are gone.
     schedule_manager = get_schedule_manager()
     schedule = schedule_manager.update_schedule(
         schedule_id=schedule_id,

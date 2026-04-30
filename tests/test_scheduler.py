@@ -437,14 +437,22 @@ class TestExecuteScheduledJobDispatch:
         assert kwargs["library_id"] == "123"
         assert kwargs["library_name"] == "Movies"
 
-    def test_dispatches_recently_added_calls_scanner(self, scheduler_manager, monkeypatch):
-        """A schedule with job_type='recently_added' calls scan_recently_added."""
+    def test_dispatches_recently_added_calls_multi_server_scan(self, scheduler_manager, monkeypatch):
+        """A schedule with job_type='recently_added' invokes the multi-server
+        recently-added dispatcher (Phase E — works for any vendor)."""
         from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scanner = MagicMock(return_value=3)
+        mock_scan = MagicMock(return_value={})
         monkeypatch.setattr(
-            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
-            mock_scanner,
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            mock_scan,
+        )
+        # Stub the heavy load_config / build_selected_gpus paths so the test
+        # stays focused on the dispatch contract.
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -462,16 +470,24 @@ class TestExecuteScheduledJobDispatch:
             config={"job_type": "recently_added", "lookback_hours": 2},
         )
 
-        mock_scanner.assert_called_once_with(2.0, library_ids=["2"])
+        mock_scan.assert_called_once()
+        kwargs = mock_scan.call_args.kwargs
+        assert kwargs["library_ids"] == ["2"]
+        assert kwargs["lookback_hours"] == 2.0
 
     def test_dispatches_recently_added_with_no_library_passes_none(self, scheduler_manager, monkeypatch):
-        """No library_id = scanner gets library_ids=None (scan all sections)."""
+        """No library_id = library_ids=None reaches the multi-server scan."""
         from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scanner = MagicMock(return_value=0)
+        mock_scan = MagicMock(return_value={})
         monkeypatch.setattr(
-            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
-            mock_scanner,
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            mock_scan,
+        )
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -489,16 +505,23 @@ class TestExecuteScheduledJobDispatch:
             config={"job_type": "recently_added", "lookback_hours": 1},
         )
 
-        mock_scanner.assert_called_once_with(1.0, library_ids=None)
+        mock_scan.assert_called_once()
+        assert mock_scan.call_args.kwargs["library_ids"] is None
+        assert mock_scan.call_args.kwargs["lookback_hours"] == 1.0
 
     def test_recently_added_dispatch_clamps_invalid_lookback(self, scheduler_manager, monkeypatch):
         """Garbage lookback_hours values are coerced to a safe default."""
         from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scanner = MagicMock(return_value=0)
+        mock_scan = MagicMock(return_value={})
         monkeypatch.setattr(
-            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
-            mock_scanner,
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            mock_scan,
+        )
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -515,15 +538,21 @@ class TestExecuteScheduledJobDispatch:
         )
 
         # Falls back to 1.0 hour default
-        mock_scanner.assert_called_once_with(1.0, library_ids=None)
+        mock_scan.assert_called_once()
+        assert mock_scan.call_args.kwargs["lookback_hours"] == 1.0
 
     def test_recently_added_dispatch_updates_last_run(self, scheduler_manager, monkeypatch):
         """After dispatching a recently_added scan the schedule's last_run updates."""
         from media_preview_generator.web import scheduler as sched_mod
 
         monkeypatch.setattr(
-            "media_preview_generator.web.recent_added_scanner.scan_recently_added",
-            MagicMock(return_value=0),
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            MagicMock(return_value={}),
+        )
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(

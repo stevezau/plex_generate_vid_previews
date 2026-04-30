@@ -85,20 +85,36 @@ def execute_scheduled_job(
             lookback = 1.0
         lookback = max(0.25, min(720.0, lookback))
         logger.info(
-            "Executing scheduled recently-added scan: {} (library={}, lookback={:.2g}h)",
+            "Executing scheduled recently-added scan: {} (library={}, lookback={:.2g}h, server={})",
             schedule_id,
             library_name or "all libraries",
             lookback,
+            server_id or "(all)",
         )
         try:
-            from .recent_added_scanner import scan_recently_added
+            # Per-vendor processor path (Phase E): works for Plex, Emby,
+            # AND Jellyfin — every vendor's processor implements
+            # scan_recently_added against its native API. No fall-back to
+            # the old Plex-only scanner.
+            from ..config import load_config
+            from ..jobs.orchestrator import _run_recently_added_multi_server
+            from .routes.job_runner import _build_selected_gpus
+            from .settings_manager import get_settings_manager
 
-            scan_recently_added(lookback, library_ids=library_ids or None)
+            run_config = load_config()
+            selected_gpus = _build_selected_gpus(get_settings_manager())
+            _run_recently_added_multi_server(
+                run_config,
+                selected_gpus=selected_gpus,
+                server_id_filter=server_id,
+                library_ids=library_ids or None,
+                lookback_hours=lookback,
+            )
             manager._update_last_run(schedule_id)
         except Exception as e:
             logger.error(
                 "Scheduled 'recently added' scan {} could not run ({}: {}). "
-                "It will retry on its next scheduled tick — verify Plex is reachable and the token in Settings is valid.",
+                "It will retry on its next scheduled tick — verify the target server is reachable and credentials are valid.",
                 schedule_id,
                 type(e).__name__,
                 e,
