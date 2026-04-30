@@ -132,11 +132,23 @@ class _MinimalConfig:
 
 
 def _load_config_or_minimal():
-    """Return a real :class:`Config` if Plex is configured, else a minimal shim."""
+    """Return a real :class:`Config` if Plex is configured, else a minimal shim.
+
+    ``Config.working_tmp_folder`` is normally set by the job runner when
+    it spins up a worker pool (``job_runner.create_working_directory``).
+    Webhooks short-circuit that — they call ``process_canonical_path``
+    directly — so the field is empty and ``os.path.join("", "frame_cache")``
+    yields a *relative* path. The frame-cache singleton then collides
+    with later calls. Fall back to ``tmp_folder`` so the cache's base_dir
+    is always absolute.
+    """
     try:
         from ..config import load_config
 
-        return load_config()
+        config = load_config()
+        if not config.working_tmp_folder:
+            config.working_tmp_folder = config.tmp_folder
+        return config
     except Exception as exc:
         logger.debug("Webhook router: load_config failed; using minimal shim: {}", exc)
         return _MinimalConfig(get_settings_manager())
@@ -520,6 +532,7 @@ def _dispatch_canonical_path(
                 "adapter": p.adapter_name,
                 "status": p.status.value,
                 "message": p.message,
+                "frame_source": p.frame_source,
             }
             for p in result.publishers
         ],

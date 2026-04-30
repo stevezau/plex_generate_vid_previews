@@ -320,39 +320,76 @@ class EmbyApiClient(MediaServer):
         server's path mappings — callers that already have the
         server-view path get an exact match; callers that pass a
         canonical-local path rely on the basename match working.
+
+        Two-pass strategy:
+
+        1. Cheap path: query ``/Items?searchTerm=<stem>``. Works for
+           99% of titles.
+        2. Fallback: when the search returns zero items, enumerate
+           ``/Items`` without a search term (capped to 1000) and apply
+           the same path-tail match locally. Needed because Jellyfin's
+           full-text index quietly skips title tokens like ``4K``,
+           ``HDR``, ``DV``, etc. — so a search for ``"Test 4K HDR
+           (2024)"`` returns nothing even though the item exists.
         """
         basename = os.path.basename(remote_path or "")
         if not basename:
             return None
 
         stem = os.path.splitext(basename)[0]
-        params = {
-            "searchTerm": stem,
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Episode",
-            "Fields": "Path",
-            "Limit": 50,
-        }
-        try:
-            response = self._request("GET", "/Items", params=params)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as exc:
-            logger.debug("{} reverse-lookup search failed for {}: {}", self.vendor_name, remote_path, exc)
+        target_tail = "/".join(remote_path.rstrip("/").split("/")[-2:])
+
+        def _match(items: list) -> str | None:
+            for raw in items:
+                if not isinstance(raw, dict):
+                    continue
+                path = str(raw.get("Path") or "")
+                if not path:
+                    continue
+                if os.path.basename(path) == basename and path.replace("\\", "/").endswith(target_tail):
+                    item_id = str(raw.get("Id") or "")
+                    if item_id:
+                        return item_id
             return None
 
-        target_tail = "/".join(remote_path.rstrip("/").split("/")[-2:])
-        for raw in data.get("Items", []) or []:
-            if not isinstance(raw, dict):
-                continue
-            path = str(raw.get("Path") or "")
-            if not path:
-                continue
-            if os.path.basename(path) == basename and path.replace("\\", "/").endswith(target_tail):
-                item_id = str(raw.get("Id") or "")
-                if item_id:
-                    return item_id
-        return None
+        # Pass 1 — cheap searchTerm query.
+        try:
+            response = self._request(
+                "GET",
+                "/Items",
+                params={
+                    "searchTerm": stem,
+                    "Recursive": "true",
+                    "IncludeItemTypes": "Movie,Episode",
+                    "Fields": "Path",
+                    "Limit": 50,
+                },
+            )
+            response.raise_for_status()
+            hit = _match(response.json().get("Items") or [])
+            if hit:
+                return hit
+        except Exception as exc:
+            logger.debug("{} reverse-lookup search failed for {}: {}", self.vendor_name, remote_path, exc)
+
+        # Pass 2 — full enumeration fallback for titles the search index
+        # skips (Jellyfin omits tokens like 4K/HDR/DV from its index).
+        try:
+            response = self._request(
+                "GET",
+                "/Items",
+                params={
+                    "Recursive": "true",
+                    "IncludeItemTypes": "Movie,Episode",
+                    "Fields": "Path",
+                    "Limit": 1000,
+                },
+            )
+            response.raise_for_status()
+            return _match(response.json().get("Items") or [])
+        except Exception as exc:
+            logger.debug("{} reverse-lookup enumerate failed for {}: {}", self.vendor_name, remote_path, exc)
+            return None
 
 
 def _format_emby_title(item: dict[str, Any]) -> str:
