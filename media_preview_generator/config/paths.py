@@ -79,9 +79,16 @@ def normalize_path_mappings(settings: dict[str, Any]) -> list[dict[str, Any]]:
     """Build path_mappings list from settings (new format or legacy).
 
     New format: settings["path_mappings"] is a list of dicts with keys
-    plex_prefix, local_prefix, and optionally webhook_prefixes (list of strings).
+    ``remote_prefix`` (or legacy ``plex_prefix``) and ``local_prefix``,
+    plus optional ``webhook_prefixes`` (list of strings).
     Legacy: settings has plex_videos_path_mapping and plex_local_videos_path_mapping
     (semicolon-separated); converted to mapping rows with empty webhook_prefixes.
+
+    The output always uses the legacy ``plex_prefix`` key so downstream
+    callers (config/paths.py resolvers, plex_client.py) keep working
+    unchanged. ``ownership.py`` reads the on-disk shape directly and
+    handles both keys there — this normalizer is only the bridge into
+    the legacy resolver, which never grew ``remote_prefix`` awareness.
 
     Args:
         settings: Dict from settings.json or equivalent (e.g. ui_settings).
@@ -96,7 +103,12 @@ def normalize_path_mappings(settings: dict[str, Any]) -> list[dict[str, Any]]:
         for row in raw:
             if not isinstance(row, dict):
                 continue
-            plex = (row.get("plex_prefix") or "").strip()
+            # Accept either the modern ``remote_prefix`` (per-server
+            # multi-vendor schema) or the legacy ``plex_prefix``. Without
+            # this, an entry written by the multi-server code path would
+            # be silently dropped here on its way into the legacy
+            # resolver.
+            plex = (row.get("remote_prefix") or row.get("plex_prefix") or "").strip()
             local = (row.get("local_prefix") or "").strip()
             if not plex or not local:
                 continue

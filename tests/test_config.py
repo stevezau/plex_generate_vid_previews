@@ -335,6 +335,28 @@ class TestNormalizePathMappings:
         assert result[0]["plex_prefix"] == "/plex"
         assert result[0]["local_prefix"] == "/local"
 
+    def test_normalize_path_mappings_accepts_modern_remote_prefix_key(self):
+        """Per-server schema uses ``remote_prefix``; the resolver must accept it.
+
+        ``derive_legacy_plex_view`` passes the per-server entry's
+        path_mappings through verbatim. Without this fallback they'd
+        be silently dropped on entry to the legacy resolver, leaving
+        a Plex job with no path translation at runtime.
+        """
+        settings = {
+            "path_mappings": [
+                {"remote_prefix": "/em-media", "local_prefix": "/data/media"},
+                {"plex_prefix": "/plex-media", "local_prefix": "/data/plex"},  # legacy still works
+            ],
+        }
+        result = normalize_path_mappings(settings)
+        assert len(result) == 2
+        # Both rows normalize to the legacy plex_prefix output shape.
+        assert result[0]["plex_prefix"] == "/em-media"
+        assert result[0]["local_prefix"] == "/data/media"
+        assert result[1]["plex_prefix"] == "/plex-media"
+        assert result[1]["local_prefix"] == "/data/plex"
+
     def test_normalize_path_mappings_skips_malformed_rows(self):
         """Non-dict entries and rows missing plex/local are skipped."""
         settings = {
