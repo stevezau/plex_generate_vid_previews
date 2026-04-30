@@ -419,6 +419,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script src="{{ url_for('static', filename='js/gpu_config_panel.js') }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
