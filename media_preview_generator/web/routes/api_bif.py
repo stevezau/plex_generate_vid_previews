@@ -70,7 +70,14 @@ def _allowed_bif_roots() -> list[str]:
                     for m in mappings:
                         if not isinstance(m, dict):
                             continue
-                        rp = str(m.get("remote_prefix") or "").strip()
+                        # Accept either modern ``remote_prefix`` or
+                        # legacy ``plex_prefix`` — ownership.py:80 does
+                        # the same. Without the fallback, a Plex entry
+                        # written by the legacy JS form would not get
+                        # its library remote path translated, and the
+                        # generated BIFs under that library would be
+                        # rejected by the allow-list.
+                        rp = str(m.get("remote_prefix") or m.get("plex_prefix") or "").strip()
                         lp = str(m.get("local_prefix") or "").strip()
                         if rp and lp and (remote == rp or remote.startswith(rp.rstrip("/") + "/")):
                             translated = lp.rstrip("/") + remote[len(rp.rstrip("/")) :]

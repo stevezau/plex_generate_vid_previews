@@ -260,6 +260,47 @@ class TestBifInfoEndpoint:
         data = resp.get_json()
         assert data["suspect_frame_count"] == 3
 
+    def test_allow_list_accepts_legacy_plex_prefix(self, client, tmp_path):
+        """Allow-list builder must coalesce legacy ``plex_prefix`` like ownership.py.
+
+        A Plex server entry written via the legacy JS form uses
+        ``plex_prefix``-shaped path_mappings. Without the fallback here,
+        the BIF viewer's allow-list wouldn't translate the library
+        remote_path into a local root, so any sidecar BIF under it
+        would be rejected as out-of-allow-list.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        # Build a real BIF inside a tmp tree and point a server entry
+        # at it via the legacy plex_prefix key.
+        media_dir = tmp_path / "media"
+        media_dir.mkdir()
+        bif_dir = media_dir / "Movies"
+        bif_dir.mkdir()
+        bif_path = _write_test_bif(str(bif_dir / "test.bif"))
+
+        get_settings_manager().set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-legacy",
+                    "type": "emby",
+                    "name": "Emby Legacy",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"api_key": "k"},
+                    "libraries": [
+                        {"id": "movies", "name": "Movies", "remote_paths": ["/em-media/Movies"], "enabled": True}
+                    ],
+                    "path_mappings": [{"plex_prefix": "/em-media", "local_prefix": str(media_dir)}],
+                    "output": {"adapter": "emby_sidecar", "width": 320, "frame_interval": 5},
+                }
+            ],
+        )
+
+        resp = client.get(f"/api/bif/info?path={bif_path}", headers=_api_headers())
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+
 
 # ---------------------------------------------------------------------------
 # BIF frame endpoint tests
