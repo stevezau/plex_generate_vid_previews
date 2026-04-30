@@ -720,6 +720,12 @@ function maybeAutoOpenScheduleEdit() {
 
 
 async function loadJobStats() {
+    // Job Statistics card lives only on the dashboard; bail when its
+    // elements are absent so SocketIO reconnect from any other page
+    // doesn't throw on the first getElementById().textContent assignment.
+    if (!document.getElementById('statPending')) {
+        return;
+    }
     try {
         const stats = await apiGet('/api/jobs/stats');
         document.getElementById('statPending').textContent = stats.pending || 0;
@@ -1554,9 +1560,16 @@ let _jobQueueUpdatePending = false;
 
 function updateJobQueue() {
     const tbody = document.getElementById('jobQueue');
+    // The Job Queue table only exists on the dashboard. SocketIO connect/job
+    // events fire on every page, so bail when the target DOM is absent —
+    // otherwise reconnect from /settings or /servers crashes with
+    // "Cannot set properties of null (setting 'innerHTML')".
+    if (!tbody) {
+        return;
+    }
 
     // Defer rebuild while a priority dropdown is open to avoid destroying it
-    if (tbody && tbody.querySelector('.dropdown-menu.show')) {
+    if (tbody.querySelector('.dropdown-menu.show')) {
         _jobQueueUpdatePending = true;
         return;
     }
@@ -1938,6 +1951,11 @@ function updateWorkerStatuses(workers, options = {}) {
         keepBadgeCounts = false
     } = options;
     const container = document.getElementById('workerStatusContainer');
+    // Bail when the dashboard's worker container isn't on the current page
+    // — otherwise SocketIO reconnect from /settings et al. crashes here.
+    if (!container) {
+        return;
+    }
     const cpuWorkersEl = document.getElementById('cpuWorkers');
 
     if (!workers || workers.length === 0) {
