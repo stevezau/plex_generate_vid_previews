@@ -19,8 +19,66 @@ from media_preview_generator.jobs.dispatcher import (
 from media_preview_generator.jobs.worker import WorkerPool
 from media_preview_generator.processing import (
     CodecNotSupportedError,
-    ProcessingResult,
 )
+
+
+# --- Test helpers for the unified ProcessableItem dispatch path ---
+def _pi(key="test_key", title="Test", media_type="movie", canonical_path=None, server_id="plex-1"):
+    """Build a ProcessableItem matching what the tests used to assemble as a tuple."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id="lib-1",
+    )
+
+
+def _pi_list(triples, *, server_id="plex-1"):
+    """Bulk version: convert ``[(key, title, media_type)]`` to ProcessableItems."""
+    out = []
+    for entry in triples:
+        if not entry:
+            continue
+        key = entry[0]
+        title = entry[1] if len(entry) > 1 else "Test"
+        media_type = entry[2] if len(entry) > 2 else "movie"
+        out.append(_pi(key, title=title, media_type=media_type, server_id=server_id))
+    return out
+
+
+def _pi_list_or_passthrough(items):
+    """Pass through a list of ProcessableItems untouched, or convert tuples on the fly."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    if not items:
+        return []
+    if isinstance(items[0], ProcessableItem):
+        return items
+    return _pi_list(items)
+
+
+def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
+    """Build a MultiServerResult that maps back to a specific ProcessingResult."""
+    from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+    status_map = {
+        "generated": MultiServerStatus.PUBLISHED,
+        "published": MultiServerStatus.PUBLISHED,
+        "skipped_bif_exists": MultiServerStatus.SKIPPED,
+        "skipped": MultiServerStatus.SKIPPED,
+        "no_media_parts": MultiServerStatus.NO_OWNERS,
+        "no_owners": MultiServerStatus.NO_OWNERS,
+        "failed": MultiServerStatus.FAILED,
+    }
+    return MultiServerResult(
+        canonical_path=canonical_path,
+        status=status_map.get(status, MultiServerStatus.PUBLISHED),
+        message=message,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,7 +99,7 @@ def _make_gpu_list(n=1):
 
 def _fake_process_item(*args, **kwargs):
     time.sleep(0.02)
-    return ProcessingResult.GENERATED
+    return _ms("generated")
 
 
 # ---------------------------------------------------------------------------
@@ -53,9 +111,9 @@ class TestJobTracker:
     def test_record_completion_success(self):
         tracker = JobTracker(
             job_id="job-1",
-            items=[("k1", "t1", "movie"), ("k2", "t2", "movie")],
+            items=_pi_list_or_passthrough([("k1", "t1", "movie"), ("k2", "t2", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.total_items == 2
         assert tracker.completed == 0
@@ -72,9 +130,9 @@ class TestJobTracker:
     def test_record_completion_failure(self):
         tracker = JobTracker(
             job_id="job-1",
-            items=[("k1", "t1", "movie")],
+            items=_pi_list_or_passthrough([("k1", "t1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         tracker.record_completion(False, "Worker 1", "t1")
         assert tracker.failed == 1
@@ -84,9 +142,9 @@ class TestJobTracker:
         items = [("k1", "t1", "movie"), ("k2", "t2", "movie"), ("k3", "t3", "movie")]
         tracker = JobTracker(
             job_id="job-1",
-            items=items,
+            items=_pi_list_or_passthrough(items),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert len(tracker.item_queue) == 3
         tracker.cancel()
@@ -98,9 +156,9 @@ class TestJobTracker:
     def test_get_result(self):
         tracker = JobTracker(
             job_id="job-1",
-            items=[("k1", "t1", "movie")],
+            items=_pi_list_or_passthrough([("k1", "t1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         tracker.record_completion(True, "W", "t1")
         result = tracker.get_result()
@@ -115,9 +173,9 @@ class TestJobTracker:
 
         tracker = JobTracker(
             job_id="job-1",
-            items=[("k1", "t1", "movie")],
+            items=_pi_list_or_passthrough([("k1", "t1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={
                 "progress_callback": lambda c, t, m: progress_calls.append((c, t)),
                 "on_item_complete": lambda dn, t, s: item_calls.append((dn, t, s)),
@@ -141,7 +199,7 @@ class TestJobDispatcher:
         yield
         reset_dispatcher()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_single_job_completes(self, mock_process):
         """A single job with multiple items completes via the dispatcher."""
         mock_process.side_effect = _fake_process_item
@@ -156,9 +214,9 @@ class TestJobDispatcher:
         ]
         tracker = dispatcher.submit_items(
             job_id="job-1",
-            items=items,
+            items=_pi_list_or_passthrough(items),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         completed = tracker.wait(timeout=10)
         assert completed, "Tracker should complete within timeout"
@@ -167,7 +225,7 @@ class TestJobDispatcher:
         assert result["failed"] == 0
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_two_jobs_share_workers(self, mock_process):
         """Two jobs submitted concurrently share workers."""
         mock_process.side_effect = _fake_process_item
@@ -184,15 +242,15 @@ class TestJobDispatcher:
 
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=items_a,
+            items=_pi_list_or_passthrough(items_a),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         tracker_b = dispatcher.submit_items(
             job_id="job-b",
-            items=items_b,
+            items=_pi_list_or_passthrough(items_b),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
 
         assert tracker_a.wait(timeout=10)
@@ -202,15 +260,15 @@ class TestJobDispatcher:
         assert tracker_b.get_result()["completed"] == 3
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_idle_workers_pick_up_next_job(self, mock_process):
         """If job A has 1 item and 3 workers, free workers spill to job B."""
         call_log = []
 
-        def tracking_process(item_key, *args, **kwargs):
-            call_log.append(item_key)
+        def tracking_process(*args, canonical_path=None, **kwargs):
+            call_log.append(canonical_path)
             time.sleep(0.05)
-            return ProcessingResult.GENERATED
+            return _ms("generated", canonical_path=canonical_path or "/data/test.mkv")
 
         mock_process.side_effect = tracking_process
 
@@ -219,19 +277,21 @@ class TestJobDispatcher:
 
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=[("/a/1", "A1", "movie")],
+            items=_pi_list_or_passthrough([("/a/1", "A1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         tracker_b = dispatcher.submit_items(
             job_id="job-b",
-            items=[
-                ("/b/1", "B1", "movie"),
-                ("/b/2", "B2", "movie"),
-                ("/b/3", "B3", "movie"),
-            ],
+            items=_pi_list_or_passthrough(
+                [
+                    ("/b/1", "B1", "movie"),
+                    ("/b/2", "B2", "movie"),
+                    ("/b/3", "B3", "movie"),
+                ]
+            ),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
 
         assert tracker_a.wait(timeout=10)
@@ -240,12 +300,14 @@ class TestJobDispatcher:
         assert tracker_a.get_result()["completed"] == 1
         assert tracker_b.get_result()["completed"] == 3
 
-        # All 4 items should be processed; /a/1 must appear
-        assert "/a/1" in call_log
-        assert set(call_log) == {"/a/1", "/b/1", "/b/2", "/b/3"}
+        # All 4 items should be processed; the /a/1 canonical_path must appear.
+        # _pi() builds canonical_paths from the first tuple element via
+        # f"/data/{key.strip('/').replace('/', '_')}.mkv".
+        assert "/data/a_1.mkv" in call_log
+        assert set(call_log) == {"/data/a_1.mkv", "/data/b_1.mkv", "/data/b_2.mkv", "/data/b_3.mkv"}
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_cancel_one_job_others_continue(self, mock_process):
         """Cancelling one job does not affect other jobs."""
         processing_started = threading.Event()
@@ -253,7 +315,7 @@ class TestJobDispatcher:
         def slow_process(*args, **kwargs):
             processing_started.set()
             time.sleep(0.15)
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = slow_process
 
@@ -264,20 +326,22 @@ class TestJobDispatcher:
 
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=[
-                ("/a/1", "A1", "movie"),
-                ("/a/2", "A2", "movie"),
-                ("/a/3", "A3", "movie"),
-            ],
+            items=_pi_list_or_passthrough(
+                [
+                    ("/a/1", "A1", "movie"),
+                    ("/a/2", "A2", "movie"),
+                    ("/a/3", "A3", "movie"),
+                ]
+            ),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={"cancel_check": lambda: cancelled.is_set()},
         )
         tracker_b = dispatcher.submit_items(
             job_id="job-b",
-            items=[("/b/1", "B1", "movie")],
+            items=_pi_list_or_passthrough([("/b/1", "B1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
 
         # Wait for processing to actually start before cancelling — previously
@@ -295,7 +359,7 @@ class TestJobDispatcher:
         assert not result_b["cancelled"]
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_pause_one_job_others_continue(self, mock_process):
         """Pausing one job lets other jobs continue."""
         mock_process.side_effect = _fake_process_item
@@ -309,16 +373,16 @@ class TestJobDispatcher:
         # Job A is paused; Job B should still run
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=[("/a/1", "A1", "movie")],
+            items=_pi_list_or_passthrough([("/a/1", "A1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={"pause_check": lambda: paused.is_set()},
         )
         tracker_b = dispatcher.submit_items(
             job_id="job-b",
-            items=[("/b/1", "B1", "movie"), ("/b/2", "B2", "movie")],
+            items=_pi_list_or_passthrough([("/b/1", "B1", "movie"), ("/b/2", "B2", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
 
         # Job B should finish while A is paused
@@ -335,18 +399,18 @@ class TestJobDispatcher:
         assert tracker_a.get_result()["completed"] == 1
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_gpu_fallback_routes_to_correct_job(self, mock_process):
         """GPU codec fallback items route back to the correct job tracker."""
         call_count = {"gpu": 0, "cpu": 0}
 
-        def mixed_process(item_key, gpu, gpu_device, *args, **kwargs):
+        def mixed_process(*args, gpu=None, **kwargs):
             if gpu:
                 call_count["gpu"] += 1
                 raise CodecNotSupportedError("unsupported on GPU")
             call_count["cpu"] += 1
             time.sleep(0.02)
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = mixed_process
 
@@ -357,9 +421,9 @@ class TestJobDispatcher:
         config = _make_config(cpu_threads=1, gpu_threads=1)
         tracker = dispatcher.submit_items(
             job_id="job-fb",
-            items=[("/fb/1", "Fallback Movie", "movie")],
+            items=_pi_list_or_passthrough([("/fb/1", "Fallback Movie", "movie")]),
             config=config,
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
 
         assert tracker.wait(timeout=10)
@@ -369,7 +433,7 @@ class TestJobDispatcher:
         assert result["failed"] == 0
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_mixed_success_and_failure(self, mock_process):
         """Items that succeed and fail are tracked correctly per job."""
         call_idx = {"n": 0}
@@ -379,7 +443,7 @@ class TestJobDispatcher:
             time.sleep(0.02)
             if call_idx["n"] % 2 == 0:
                 raise RuntimeError("boom")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = alternating_process
 
@@ -394,16 +458,16 @@ class TestJobDispatcher:
         ]
         tracker = dispatcher.submit_items(
             job_id="job-mix",
-            items=items,
+            items=_pi_list_or_passthrough(items),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.wait(timeout=10)
         result = tracker.get_result()
         assert result["completed"] + result["failed"] == 4
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_submit_after_previous_completes(self, mock_process):
         """A second job can be submitted after the first finishes."""
         mock_process.side_effect = _fake_process_item
@@ -413,32 +477,32 @@ class TestJobDispatcher:
 
         t1 = dispatcher.submit_items(
             job_id="job-1",
-            items=[("/k/1", "M1", "movie")],
+            items=_pi_list_or_passthrough([("/k/1", "M1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert t1.wait(timeout=10)
         assert t1.get_result()["completed"] == 1
 
         t2 = dispatcher.submit_items(
             job_id="job-2",
-            items=[("/k/2", "M2", "movie"), ("/k/3", "M3", "movie")],
+            items=_pi_list_or_passthrough([("/k/2", "M2", "movie"), ("/k/3", "M3", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert t2.wait(timeout=10)
         assert t2.get_result()["completed"] == 2
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_fifo_priority_drains_first_job_before_second(self, mock_process):
         """FIFO scheduling: all items from job 1 are dispatched before job 2."""
         dispatch_order = []
 
-        def tracking_process(item_key, *args, **kwargs):
-            dispatch_order.append(item_key)
+        def tracking_process(*args, canonical_path=None, **kwargs):
+            dispatch_order.append(canonical_path)
             time.sleep(0.02)
-            return ProcessingResult.GENERATED
+            return _ms("generated", canonical_path=canonical_path or "/data/test.mkv")
 
         mock_process.side_effect = tracking_process
 
@@ -447,29 +511,32 @@ class TestJobDispatcher:
 
         tracker_a = dispatcher.submit_items(
             job_id="job-a",
-            items=[
-                ("/a/1", "A1", "movie"),
-                ("/a/2", "A2", "movie"),
-                ("/a/3", "A3", "movie"),
-            ],
+            items=_pi_list_or_passthrough(
+                [
+                    ("/a/1", "A1", "movie"),
+                    ("/a/2", "A2", "movie"),
+                    ("/a/3", "A3", "movie"),
+                ]
+            ),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         tracker_b = dispatcher.submit_items(
             job_id="job-b",
-            items=[("/b/1", "B1", "movie"), ("/b/2", "B2", "movie")],
+            items=_pi_list_or_passthrough([("/b/1", "B1", "movie"), ("/b/2", "B2", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
 
         assert tracker_a.wait(timeout=10)
         assert tracker_b.wait(timeout=10)
 
-        # With 1 worker, strict FIFO means all of A before any of B
-        assert dispatch_order == ["/a/1", "/a/2", "/a/3", "/b/1", "/b/2"]
+        # With 1 worker, strict FIFO means all of A before any of B.
+        # _pi() builds canonical_paths from f"/data/{key.strip('/').replace('/', '_')}.mkv".
+        assert dispatch_order == ["/data/a_1.mkv", "/data/a_2.mkv", "/data/a_3.mkv", "/data/b_1.mkv", "/data/b_2.mkv"]
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_outcome_counts_merged_to_tracker(self, mock_process):
         """Per-task outcome deltas are correctly merged into the tracker."""
         mock_process.side_effect = _fake_process_item
@@ -479,9 +546,9 @@ class TestJobDispatcher:
 
         tracker = dispatcher.submit_items(
             job_id="job-oc",
-            items=[("/k/1", "M1", "movie"), ("/k/2", "M2", "movie")],
+            items=_pi_list_or_passthrough([("/k/1", "M1", "movie"), ("/k/2", "M2", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.wait(timeout=10)
         result = tracker.get_result()
@@ -489,7 +556,7 @@ class TestJobDispatcher:
         assert result["outcome"].get("generated", 0) == 2
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_drain_orphaned_fallback_routes_to_tracker(self, mock_process):
         """Draining orphan fallback items attributes failures to the correct tracker."""
 
@@ -505,9 +572,9 @@ class TestJobDispatcher:
 
         tracker = dispatcher.submit_items(
             job_id="job-drain",
-            items=[("/d/1", "Drain1", "movie")],
+            items=_pi_list_or_passthrough([("/d/1", "Drain1", "movie")]),
             config=config,
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.wait(timeout=10)
         result = tracker.get_result()
@@ -518,14 +585,14 @@ class TestJobDispatcher:
         assert result["failed"] >= 1
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_cancel_passes_cancel_check_to_worker(self, mock_process):
         """Cancelled job's cancel_check is passed through to the worker thread."""
         cancel_checks_received = []
 
         def capturing_process(*args, **kwargs):
             cancel_checks_received.append(kwargs.get("cancel_check"))
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = capturing_process
 
@@ -537,9 +604,9 @@ class TestJobDispatcher:
 
         tracker = dispatcher.submit_items(
             job_id="job-cc",
-            items=[("/cc/1", "CC1", "movie")],
+            items=_pi_list_or_passthrough([("/cc/1", "CC1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={"cancel_check": cancel_fn},
         )
         assert tracker.wait(timeout=10)
@@ -548,7 +615,7 @@ class TestJobDispatcher:
         assert cancel_checks_received[0] is cancel_fn
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_cancelled_fallback_items_are_not_dispatched(self, mock_process):
         """Fallback items from a cancelled job are skipped, not assigned to CPU."""
         call_count = [0]
@@ -560,7 +627,7 @@ class TestJobDispatcher:
                 cancelled.set()
                 raise CodecNotSupportedError("test codec error")
             time.sleep(0.1)
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = process_fn
 
@@ -573,9 +640,9 @@ class TestJobDispatcher:
 
         tracker = dispatcher.submit_items(
             job_id="job-fb",
-            items=[("/fb/1", "FB1", "movie")],
+            items=_pi_list_or_passthrough([("/fb/1", "FB1", "movie")]),
             config=_make_config(cpu_threads=1),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={"cancel_check": lambda: cancelled.is_set()},
         )
         assert tracker.wait(timeout=10)
@@ -596,7 +663,7 @@ class TestJobDispatcher:
 class TestDispatchLoopOrdering:
     """Verify that task assignment happens before status emissions."""
 
-    @patch("media_preview_generator.jobs.worker.process_item", _fake_process_item)
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path", _fake_process_item)
     def test_first_worker_update_shows_busy_worker(self):
         """The first worker_callback emission should reflect a busy worker,
         not stale idle data from before task assignment."""
@@ -610,9 +677,9 @@ class TestDispatchLoopOrdering:
 
         tracker = dispatcher.submit_items(
             job_id="order-test",
-            items=[("k1", "File1", "movie")],
+            items=_pi_list_or_passthrough([("k1", "File1", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={"worker_callback": capture_workers},
         )
         assert tracker.wait(timeout=10)
@@ -655,7 +722,7 @@ class TestInProgressFraction:
 class TestProgressCallbackPercentOverride:
     """Verify that progress_callback accepts percent_override."""
 
-    @patch("media_preview_generator.jobs.worker.process_item", _fake_process_item)
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path", _fake_process_item)
     def test_progress_includes_in_flight_work(self):
         """Progress percent should be non-zero while a file is processing,
         not stuck at 0% until the first completion."""
@@ -676,9 +743,9 @@ class TestProgressCallbackPercentOverride:
 
         tracker = dispatcher.submit_items(
             job_id="pct-test",
-            items=[("k1", "F1", "movie"), ("k2", "F2", "movie")],
+            items=_pi_list_or_passthrough([("k1", "F1", "movie"), ("k2", "F2", "movie")]),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             callbacks={"progress_callback": capture_progress},
         )
         assert tracker.wait(timeout=10)
@@ -700,14 +767,14 @@ class TestReapRetrySkipThroughput:
         yield
         reset_dispatcher()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_fast_items_complete_quickly(self, mock_process):
         """Items that complete nearly instantly (< 1ms) should not each
         cost a full 5ms dispatch cycle.  With 10 instant items and 1
         worker, total wall time should be well under 100ms."""
 
         def instant_process(*args, **kwargs):
-            return ProcessingResult.SKIPPED_BIF_EXISTS
+            return _ms("skipped_bif_exists")
 
         mock_process.side_effect = instant_process
 
@@ -718,9 +785,9 @@ class TestReapRetrySkipThroughput:
         t0 = time.monotonic()
         tracker = dispatcher.submit_items(
             job_id="skip-fast",
-            items=items,
+            items=_pi_list_or_passthrough(items),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.wait(timeout=5), "Fast-skip items should complete quickly"
         elapsed = time.monotonic() - t0
@@ -730,18 +797,19 @@ class TestReapRetrySkipThroughput:
         assert elapsed < 0.5, f"Expected < 500ms, took {elapsed:.3f}s"
         dispatcher.shutdown()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_slow_and_fast_items_mixed(self, mock_process):
         """When one worker is busy with a slow item, another worker
         should still cycle through fast items efficiently."""
         call_order = []
 
-        def mixed_process(item_key, *args, **kwargs):
-            call_order.append(item_key)
-            if "slow" in item_key:
+        def mixed_process(*args, canonical_path=None, **kwargs):
+            cp = canonical_path or ""
+            call_order.append(cp)
+            if "slow" in cp:
                 time.sleep(0.1)
-                return ProcessingResult.GENERATED
-            return ProcessingResult.SKIPPED_BIF_EXISTS
+                return _ms("generated", canonical_path=cp)
+            return _ms("skipped_bif_exists", canonical_path=cp)
 
         mock_process.side_effect = mixed_process
 
@@ -757,9 +825,9 @@ class TestReapRetrySkipThroughput:
         ]
         tracker = dispatcher.submit_items(
             job_id="mixed",
-            items=items,
+            items=_pi_list_or_passthrough(items),
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.wait(timeout=5)
         result = tracker.get_result()
@@ -777,11 +845,11 @@ class TestPoolReconciliationOnDispatch:
         yield
         reset_dispatcher()
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_pool_gains_workers_via_callback(self, mock_process):
         """A pool created with 0 GPU workers should gain workers when the
         worker_pool_callback reconciles with fresh settings."""
-        mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
+        mock_process.return_value = _ms("skipped_bif_exists")
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=0, selected_gpus=[])
         assert len(pool.workers) == 0
@@ -803,9 +871,9 @@ class TestPoolReconciliationOnDispatch:
         items = [(f"/key/{i}", f"Item {i}", "movie") for i in range(4)]
         tracker = dispatcher.submit_items(
             job_id="reconciled",
-            items=items,
+            items=_pi_list_or_passthrough(items),
             config=_make_config(gpu_threads=2, cpu_threads=0),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.wait(timeout=5), "Items should complete after reconciliation"
         assert tracker.get_result()["completed"] == 4

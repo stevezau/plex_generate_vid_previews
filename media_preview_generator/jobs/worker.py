@@ -19,7 +19,6 @@ from ..processing.orchestrator import (
     CodecNotSupportedError,
     ProcessingResult,
     failure_scope,
-    process_item,
 )
 from ..utils import format_display_title
 
@@ -213,236 +212,6 @@ class Worker:
 
     def assign_task(
         self,
-        item_key: str,
-        config: Config,
-        plex,
-        progress_callback=None,
-        media_title: str = "",
-        media_type: str = "",
-        title_max_width: int = 20,
-        job_id: str | None = None,
-        library_name: str = "",
-        cancel_check=None,
-    ) -> None:
-        """Assign a new task to this worker.
-
-        Args:
-            item_key: Plex media item key to process
-            config: Configuration object
-            plex: Plex server instance
-            progress_callback: Callback function for progress updates
-            media_title: Media title for display
-            media_type: Media type ('episode' or 'movie')
-            title_max_width: Maximum width for title display
-            job_id: Optional job identifier for multi-job dispatch routing
-            library_name: Library name the item belongs to
-            cancel_check: Optional callable returning True when job is cancelled
-
-        """
-        if self.is_busy:
-            raise RuntimeError(f"{self.display_name} is already busy")
-
-        # Snapshot pre-task baselines for per-task success/failure detection
-        self._pre_task_completed = self.completed
-        self._pre_task_failed = self.failed
-        self._pre_task_outcome_counts = dict(self.outcome_counts)
-
-        # Reset all progress tracking to ensure clean state
-        self.is_busy = True
-        self.current_task = item_key
-        self.current_job_id = job_id
-        self.media_title = media_title
-        self.media_type = media_type
-        self.media_file = ""  # Will be populated by progress callback
-        self.library_name = library_name
-        self.title_max_width = title_max_width
-        self.display_title = format_display_title(media_title, media_type, title_max_width)
-        # Show GPU name in display for GPU workers, show CPU identifier for CPU workers
-        if self.worker_type == "GPU":
-            gpu_display = self._format_gpu_name_for_display()
-            self.task_title = f"[{gpu_display}]: {self.display_title}"
-        else:
-            self.task_title = f"[CPU      ]: {self.display_title}"
-        self.progress_percent = 0
-        self.speed = "0.0x"
-        self.current_duration = 0.0
-        self.total_duration = 0.0
-        self.remaining_time = 0.0
-        self.ffmpeg_started = False
-        self.task_start_time = time.time()
-        # Clear any lingering fallback state from the previous task.
-        self.fallback_active = False
-        self.fallback_reason = None
-        self.cancel_check = cancel_check
-
-        # Reset FFmpeg data fields
-        self.frame = 0
-        self.fps = 0
-        self.q = 0
-        self.size = 0
-        self.time_str = "00:00:00.00"
-        self.bitrate = 0
-
-        # Reset tracking variables for clean state
-        self.last_progress_percent = -1
-        self.last_speed = ""
-        self.last_update_time = 0
-        self.last_verbose_log_time = 0
-
-        # Start processing in background thread
-        self.current_thread = threading.Thread(
-            target=self._process_item,
-            args=(item_key, config, plex, progress_callback),
-            daemon=True,
-        )
-        self.current_thread.start()
-
-    def _process_item(
-        self,
-        item_key: str,
-        config: Config,
-        plex,
-        progress_callback=None,
-    ) -> None:
-        """Process a media item in the background thread.
-
-        Args:
-            item_key: Plex media item key
-            config: Configuration object
-            plex: Plex server instance
-            progress_callback: Callback function for progress updates
-
-        """
-        register_job_thread()
-
-        # Scope failure tracking to the job that owns this task so any
-        # record_failure() calls deep inside process_item → generate_images →
-        # _run_ffmpeg land in this job's bucket instead of bleeding across
-        # concurrent jobs that share the worker pool.
-        with failure_scope(self.current_job_id):
-            # Use file path if available, otherwise fall back to title or item_key
-            display_name = self.media_file if self.media_file else (self.media_title if self.media_title else item_key)
-
-            # Bind structured context so every log line in this thread carries
-            # worker metadata (useful for JSON/ELK aggregation pipelines)
-            ctx_logger = logger.bind(
-                worker_id=self.worker_id,
-                worker_type=self.worker_type,
-                gpu_index=self.gpu_index,
-                media_title=self.media_title,
-                item_key=item_key,
-            )
-            ctx_logger.info("{} started: {}", self.display_name, display_name)
-
-            try:
-                result = process_item(
-                    item_key,
-                    self.gpu,
-                    self.gpu_device,
-                    config,
-                    plex,
-                    progress_callback,
-                    ffmpeg_threads_override=self.ffmpeg_threads,
-                    cancel_check=self.cancel_check,
-                    worker_name=self.display_name,
-                )
-                self.outcome_counts[result.value] += 1
-                if result == ProcessingResult.FAILED:
-                    self.failed += 1
-                else:
-                    self.completed += 1
-            except CancellationError:
-                ctx_logger.info("{} cancelled while processing {}", self.display_name, display_name)
-                self.outcome_counts["failed"] += 1
-                self.failed += 1
-            except CodecNotSupportedError as e:
-                if self.worker_type == "GPU":
-                    # In-place GPU→CPU fallback.  The GPU path couldn't
-                    # finish this item (unsupported codec on HW decoder,
-                    # HW-accel runtime failure, or signal-killed FFmpeg);
-                    # retry on CPU using this same worker and surface the
-                    # reason to the UI + logs.
-                    reason = str(e) or "GPU processing failed"
-                    if self.cancel_check and self.cancel_check():
-                        ctx_logger.info("{} cancelled before CPU fallback for {}", self.display_name, display_name)
-                        self.outcome_counts["failed"] += 1
-                        self.failed += 1
-                    else:
-                        self.fallback_active = True
-                        self.fallback_reason = reason
-                        ctx_logger.warning(
-                            "{} couldn't process {} on the GPU and is retrying on CPU. Reason: {}. "
-                            "No action needed — the file will still get a preview, it'll just be slower. "
-                            "If this happens for many files, your GPU may not support the codec; consider raising "
-                            "CPU worker count under Settings → CPU.",
-                            self.display_name,
-                            display_name,
-                            reason,
-                        )
-                        try:
-                            result = process_item(
-                                item_key,
-                                None,
-                                None,
-                                config,
-                                plex,
-                                progress_callback,
-                                ffmpeg_threads_override=None,
-                                cancel_check=self.cancel_check,
-                                worker_name=self.display_name,
-                            )
-                            self.outcome_counts[result.value] += 1
-                            if result == ProcessingResult.FAILED:
-                                self.failed += 1
-                            else:
-                                self.completed += 1
-                            ctx_logger.info(
-                                "{} completed CPU fallback for {} ({})", self.display_name, display_name, result.value
-                            )
-                        except CancellationError:
-                            ctx_logger.info("{} cancelled during CPU fallback for {}", self.display_name, display_name)
-                            self.outcome_counts["failed"] += 1
-                            self.failed += 1
-                        except Exception as retry_exc:
-                            ctx_logger.error(
-                                "{} also couldn't process {} on CPU after the GPU attempt failed: {}. "
-                                "Marking this file as failed; other items keep processing. "
-                                "Check Settings → Failed items for details and re-queue if you want to try again later.",
-                                self.display_name,
-                                display_name,
-                                retry_exc,
-                            )
-                            self.outcome_counts["failed"] += 1
-                            self.failed += 1
-                else:
-                    # CPU worker received codec error - this is unexpected, treat as failure
-                    ctx_logger.error(
-                        "CPU worker {} couldn't decode {}: {}. The file may be corrupt or use a codec FFmpeg "
-                        "doesn't support. Marking this file as failed; other items keep processing. "
-                        "Try playing the file in Plex to confirm it works there; if it doesn't, the file itself is the problem.",
-                        self.display_name,
-                        display_name,
-                        e,
-                    )
-                    self.outcome_counts["failed"] += 1
-                    self.failed += 1
-            except Exception as e:
-                ctx_logger.error(
-                    "{} failed to generate a preview for {}: {}. "
-                    "Marking this file as failed; other items keep processing. "
-                    "Enable Debug logging under Settings → Logging and re-run for the full traceback if you want to dig in.",
-                    self.display_name,
-                    display_name,
-                    e,
-                )
-                self.outcome_counts["failed"] += 1
-                self.failed += 1
-            finally:
-                if self._done_event is not None:
-                    self._done_event.set()
-
-    def assign_canonical_task(
-        self,
         item,
         config: Config,
         registry,
@@ -452,16 +221,24 @@ class Worker:
         library_name: str = "",
         cancel_check=None,
     ) -> None:
-        """Assign a vendor-agnostic :class:`ProcessableItem` to this worker.
-
-        Sibling of :meth:`assign_task` for the post-Phase-C unified pipeline.
-        The thread target dispatches into ``process_canonical_path`` instead
-        of the legacy Plex-only ``process_item``.
+        """Assign a :class:`ProcessableItem` to this worker.
 
         Worker UI fields (media_title, media_file, library_name) are
         populated from the ProcessableItem so the dashboard's per-worker
-        panel keeps showing what each worker is doing — same shape Plex
-        already gets.
+        panel shows what each worker is doing.
+
+        Args:
+            item: ProcessableItem describing the canonical_path + per-server
+                ids the unified ``process_canonical_path`` pipeline needs.
+            config: Configuration object passed through to FFmpeg helpers.
+            registry: Live :class:`ServerRegistry` — publishers fan out via
+                this.
+            progress_callback: Optional callback for progress updates.
+            title_max_width: Maximum width for title display.
+            job_id: Optional job identifier for multi-job dispatch routing.
+            library_name: Library name the item belongs to.
+            cancel_check: Optional callable returning True when job is
+                cancelled.
         """
         if self.is_busy:
             raise RuntimeError(f"{self.display_name} is already busy")
@@ -511,27 +288,25 @@ class Worker:
         self.last_verbose_log_time = 0
 
         self.current_thread = threading.Thread(
-            target=self._process_canonical_item,
+            target=self._process_item,
             args=(item, config, registry, progress_callback),
             daemon=True,
         )
         self.current_thread.start()
 
-    def _process_canonical_item(
+    def _process_item(
         self,
         item,
         config: Config,
         registry,
         progress_callback=None,
     ) -> None:
-        """Background-thread target for :meth:`assign_canonical_task`.
+        """Background-thread target for :meth:`assign_task`.
 
         Dispatches into ``process_canonical_path`` (the per-vendor publisher
         funnel) and translates its :class:`MultiServerResult` into the
-        legacy ProcessingResult counters the rest of the WorkerPool
-        accounting consumes. Mirrors :meth:`_process_item`'s error
-        handling for cancellation and CPU fallback so behavioural parity
-        is preserved across the dual-pipeline kill.
+        :class:`ProcessingResult` counters the WorkerPool accounting consumes.
+        Handles in-place GPU→CPU fallback on :class:`CodecNotSupportedError`.
         """
         from ..processing.multi_server import (
             MultiServerStatus,
@@ -590,6 +365,11 @@ class Worker:
                 self.failed += 1
             except CodecNotSupportedError as e:
                 if self.worker_type == "GPU":
+                    # In-place GPU→CPU fallback: the GPU path couldn't
+                    # finish this item (unsupported codec on HW decoder,
+                    # HW-accel runtime failure, signal-killed FFmpeg);
+                    # retry on CPU using this same worker and surface
+                    # the reason to the UI + logs.
                     reason = str(e) or "GPU processing failed"
                     if self.cancel_check and self.cancel_check():
                         ctx_logger.info("{} cancelled before CPU fallback for {}", self.display_name, display_name)
@@ -599,7 +379,10 @@ class Worker:
                         self.fallback_active = True
                         self.fallback_reason = reason
                         ctx_logger.warning(
-                            "{} couldn't process {} on the GPU and is retrying on CPU. Reason: {}.",
+                            "{} couldn't process {} on the GPU and is retrying on CPU. Reason: {}. "
+                            "No action needed — the file will still get a preview, it'll just be slower. "
+                            "If this happens for many files, your GPU may not support the codec; consider "
+                            "raising CPU worker count under Settings → CPU.",
                             self.display_name,
                             display_name,
                             reason,
@@ -618,9 +401,14 @@ class Worker:
                                 display_name,
                                 result.value,
                             )
+                        except CancellationError:
+                            ctx_logger.info("{} cancelled during CPU fallback for {}", self.display_name, display_name)
+                            self.outcome_counts["failed"] += 1
+                            self.failed += 1
                         except Exception as retry_exc:
                             ctx_logger.error(
-                                "{} also couldn't process {} on CPU after the GPU attempt failed: {}",
+                                "{} also couldn't process {} on CPU after the GPU attempt failed: {}. "
+                                "Marking this file as failed; other items keep processing.",
                                 self.display_name,
                                 display_name,
                                 retry_exc,
@@ -628,8 +416,11 @@ class Worker:
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
                 else:
+                    # CPU worker received codec error — unexpected, treat as failure.
                     ctx_logger.error(
-                        "CPU worker {} couldn't decode {}: {}.",
+                        "CPU worker {} couldn't decode {}: {}. The file may be corrupt or use a codec "
+                        "FFmpeg doesn't support. Marking this file as failed; other items keep "
+                        "processing.",
                         self.display_name,
                         display_name,
                         e,
@@ -638,7 +429,10 @@ class Worker:
                     self.failed += 1
             except Exception as e:
                 ctx_logger.error(
-                    "{} failed to generate a preview for {}: {}",
+                    "{} failed to generate a preview for {}: {}. "
+                    "Marking this file as failed; other items keep processing. "
+                    "Enable Debug logging under Settings → Logging and re-run for the full "
+                    "traceback if you want to dig in.",
                     self.display_name,
                     display_name,
                     e,
@@ -1036,53 +830,19 @@ class WorkerPool:
                     return worker
             return None
 
-    def _get_plex_media_info(self, plex, item_key: str) -> tuple[str, str]:
-        """Re-query Plex for media information if not available.
-
-        Returns:
-            Tuple of (media_title, media_type)
-
-        """
-        try:
-            from .plex_client import retry_plex_call
-
-            data = retry_plex_call(plex.query, item_key)
-            if data is not None:
-                video_element = data.find("Video") or data.find("Directory")
-                if video_element is not None:
-                    return (
-                        video_element.get("title", "Unknown (fallback)"),
-                        video_element.tag.lower(),
-                    )
-        except Exception as e:
-            logger.debug("Could not re-query Plex for {}: {}", item_key, e)
-        return ("Unknown (fallback)", "unknown")
-
     def _assign_main_queue_task(
         self,
         worker: "Worker",
-        media_queue: list[tuple],
+        media_queue: deque,
         config: Config,
-        plex,
+        registry,
         title_max_width: int,
         cancel_check=None,
     ) -> bool:
-        """Assign a task from main queue to a worker.
-
-        Accepts either:
-          * a Plex tuple ``(item_key, title, media_type[, library_name])`` —
-            legacy Plex flow, dispatched via :meth:`Worker.assign_task` →
-            ``process_item(item_key, ..., plex, ...)``.
-          * a :class:`ProcessableItem` — Phase C unified flow, dispatched
-            via :meth:`Worker.assign_canonical_task` → ``process_canonical_path``.
-
-        The ``plex`` parameter is reused as the registry handle when the
-        queue contains ProcessableItems (callers pass ``ServerRegistry``
-        in that slot); the type check below picks the right thread target.
+        """Pop the next :class:`ProcessableItem` and assign it to ``worker``.
 
         Returns:
-            True if task was assigned, False if queue was empty
-
+            True if a task was assigned, False if the queue was empty.
         """
         if not media_queue:
             return False
@@ -1090,42 +850,20 @@ class WorkerPool:
         item = media_queue.popleft()
         progress_callback = partial(self._update_worker_progress, worker)
 
-        # ProcessableItem: dispatch through the unified canonical-path path.
-        from ..processing.types import ProcessableItem
-
-        if isinstance(item, ProcessableItem):
-            worker.assign_canonical_task(
-                item,
-                config,
-                plex,  # caller-supplied ServerRegistry in this slot
-                progress_callback=progress_callback,
-                title_max_width=title_max_width,
-                library_name="",
-                cancel_check=cancel_check,
-            )
-            logger.info(
-                "Dispatch: assigned canonical item to {} (path={!r})",
-                worker.display_name,
-                item.canonical_path,
-            )
-            return True
-
-        # Legacy Plex tuple shape.
-        item_key, media_title, media_type = item[0], item[1], item[2]
-        library_name = item[3] if len(item) > 3 else ""
-
         worker.assign_task(
-            item_key,
+            item,
             config,
-            plex,
+            registry,
             progress_callback=progress_callback,
-            media_title=media_title,
-            media_type=media_type,
             title_max_width=title_max_width,
-            library_name=library_name,
+            library_name="",
             cancel_check=cancel_check,
         )
-        logger.info("Dispatch: assigned main queue item to {} (title={!r})", worker.display_name, media_title)
+        logger.info(
+            "Dispatch: assigned canonical item to {} (path={!r})",
+            worker.display_name,
+            item.canonical_path,
+        )
         return True
 
     def _has_cpu_capable_workers(self) -> bool:
@@ -1135,29 +873,28 @@ class WorkerPool:
 
     def process_items(
         self,
-        media_items: list[tuple],
+        media_items: list,
         config: Config,
-        plex,
+        registry,
         worker_progress,
         main_progress,
         main_task_id=None,
         title_max_width: int = 20,
         library_name: str = "",
     ) -> dict:
-        """Process all media items using available workers with Rich progress display.
+        """Process :class:`ProcessableItem`s using available workers with Rich progress display.
 
-        Uses dynamic task assignment - workers pull tasks as they become available.
+        Uses dynamic task assignment — workers pull tasks as they become available.
 
         Args:
-            media_items: List of tuples (key, title, media_type) to process
-            config: Configuration object
-            plex: Plex server instance
-            worker_progress: Rich Progress object for displaying worker progress
-            main_progress: Rich Progress object for main progress bar
-            main_task_id: ID of the main progress task to update
-            title_max_width: Maximum width for title display
-            library_name: Name of the library section being processed
-
+            media_items: List of :class:`ProcessableItem` instances to process.
+            config: Configuration object.
+            registry: Live :class:`ServerRegistry` — publishers fan out via this.
+            worker_progress: Rich Progress object for displaying worker progress.
+            main_progress: Rich Progress object for main progress bar.
+            main_task_id: ID of the main progress task to update.
+            title_max_width: Maximum width for title display.
+            library_name: Name of the library section being processed.
         """
         # Create progress tasks for each worker in the worker progress instance
         for worker in self._snapshot_workers():
@@ -1227,7 +964,7 @@ class WorkerPool:
         return self._process_items_loop(
             media_items=media_items,
             config=config,
-            plex=plex,
+            registry=registry,
             title_max_width=title_max_width,
             library_name=library_name,
             on_task_complete=on_task_complete,
@@ -1238,9 +975,9 @@ class WorkerPool:
 
     def process_items_headless(
         self,
-        media_items: list[tuple],
+        media_items: list,
         config: Config,
-        plex,
+        registry,
         title_max_width: int = 20,
         library_name: str = "",
         progress_callback=None,
@@ -1249,23 +986,21 @@ class WorkerPool:
         cancel_check=None,
         pause_check=None,
     ) -> dict:
-        """Process all media items using available workers in headless mode (no Rich display).
+        """Process :class:`ProcessableItem`s using available workers in headless mode.
 
-        Uses dynamic task assignment - workers pull tasks as they become available.
-        This is used for web/background execution where Rich console is not available.
+        Used for web/background execution where Rich console is not available.
 
         Args:
-            media_items: List of tuples (key, title, media_type) to process
-            config: Configuration object
-            plex: Plex server instance
-            title_max_width: Maximum width for title display
-            library_name: Name of the library section being processed
-            progress_callback: Optional callback function(current, total, message) for progress updates
-            worker_callback: Optional callback function(workers_list) for worker status updates
-            on_item_complete: Optional callback(display_name, title, success) when a worker finishes an item
-            cancel_check: Optional callable returning True when processing should stop
-            pause_check: Optional callable returning True when dispatch should pause
-
+            media_items: List of :class:`ProcessableItem` instances to process.
+            config: Configuration object.
+            registry: Live :class:`ServerRegistry` — publishers fan out via this.
+            title_max_width: Maximum width for title display.
+            library_name: Name of the library section being processed.
+            progress_callback: Optional ``(current, total, message)`` callback.
+            worker_callback: Optional ``(workers_list)`` callback for worker status.
+            on_item_complete: Optional ``(display_name, title, success)`` per-item callback.
+            cancel_check: Optional callable returning True when processing should stop.
+            pause_check: Optional callable returning True when dispatch should pause.
         """
         last_worker_update = time.time()
         last_progress_update = time.time()
@@ -1357,7 +1092,7 @@ class WorkerPool:
         return self._process_items_loop(
             media_items=media_items,
             config=config,
-            plex=plex,
+            registry=registry,
             title_max_width=title_max_width,
             library_name=library_name,
             on_task_complete=on_task_complete,
@@ -1368,48 +1103,11 @@ class WorkerPool:
             pause_check=pause_check,
         )
 
-    def process_canonical_items_headless(
-        self,
-        items: list,
-        config: Config,
-        registry,
-        title_max_width: int = 20,
-        library_name: str = "",
-        progress_callback=None,
-        worker_callback=None,
-        on_item_complete=None,
-        cancel_check=None,
-        pause_check=None,
-    ) -> dict:
-        """Process a list of :class:`ProcessableItem` via the WorkerPool.
-
-        Phase C unified entry point — delegates to :meth:`process_items_headless`
-        with ``registry`` in the slot the legacy flow used for the Plex
-        client. The dispatch step (``_assign_main_queue_task``) is type-aware
-        and routes ProcessableItems to ``Worker.assign_canonical_task`` →
-        ``process_canonical_path``.
-
-        Returns the same outcome-counts dict shape ``process_items_headless``
-        returns so callers stay vendor-agnostic.
-        """
-        return self.process_items_headless(
-            items,
-            config,
-            registry,
-            title_max_width=title_max_width,
-            library_name=library_name,
-            progress_callback=progress_callback,
-            worker_callback=worker_callback,
-            on_item_complete=on_item_complete,
-            cancel_check=cancel_check,
-            pause_check=pause_check,
-        )
-
     def _process_items_loop(
         self,
-        media_items: list[tuple],
+        media_items: list,
         config: Config,
-        plex,
+        registry,
         title_max_width: int,
         library_name: str,
         on_task_complete: Any | None = None,
@@ -1419,24 +1117,23 @@ class WorkerPool:
         cancel_check: Any | None = None,
         pause_check: Any | None = None,
     ) -> dict:
-        """Core processing loop shared by process_items and process_items_headless.
+        """Core processing loop shared by ``process_items`` and ``process_items_headless``.
 
         Handles queue management, task assignment, exit-condition checking, and
-        adaptive sleeping. Progress reporting is delegated to the caller via callbacks.
+        adaptive sleeping. Progress reporting is delegated to the caller via
+        callbacks.
 
         Args:
-            media_items: List of tuples (key, title, media_type) to process
-            config: Configuration object
-            plex: Plex server instance
-            title_max_width: Maximum width for title display
-            library_name: Name of the library section being processed
-            on_task_complete: Called as on_task_complete(completed_tasks, total_items) after each task finishes
-            on_poll: Called as on_poll(completed_tasks, total_items) every poll cycle for UI updates
-            on_finish: Called as on_finish(total_completed, total_failed, total_items) at the end
-            on_item_complete: Optional. Called as on_item_complete(display_name, title, success)
-                when a worker finishes an item (not called for GPU→CPU handoffs; CPU completion is reported when CPU finishes).
-            cancel_check: Optional callable returning True when processing should stop
-
+            media_items: List of :class:`ProcessableItem` instances to process.
+            config: Configuration object.
+            registry: Live :class:`ServerRegistry`.
+            title_max_width: Maximum width for title display.
+            library_name: Name of the library section being processed.
+            on_task_complete: ``(completed_tasks, total_items)`` callback after each task.
+            on_poll: ``(completed_tasks, total_items)`` callback every poll cycle.
+            on_finish: ``(total_completed, total_failed, total_items)`` end-of-run callback.
+            on_item_complete: Optional ``(display_name, title, success)`` per-item callback.
+            cancel_check: Optional callable returning True when processing should stop.
         """
         media_queue = deque(media_items)  # O(1) popleft
         completed_tasks = 0
@@ -1570,7 +1267,7 @@ class WorkerPool:
                     available_worker,
                     media_queue,
                     config,
-                    plex,
+                    registry,
                     title_max_width,
                     cancel_check=cancel_check,
                 ):

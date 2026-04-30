@@ -40,20 +40,13 @@ class JobTracker:
 
     Args:
         job_id: Unique job identifier.
-        items: Either legacy ``(item_key, title, media_type[, library])``
-            tuples (Plex-only path) or :class:`ProcessableItem` instances
-            (vendor-agnostic path). The dispatcher's ``_assign_tasks``
-            checks the type per-item.
+        items: List of :class:`ProcessableItem` instances.
         config: Config object for this job's processing.
-        plex: Plex server instance (used by tuple-shape items).
-        registry: Optional :class:`ServerRegistry` (used by
-            ProcessableItem-shape items). Either ``plex`` or ``registry``
-            must be set; the right one is picked at dispatch time.
+        registry: Live :class:`ServerRegistry` — publishers fan out via this.
         title_max_width: Max display width for titles.
         library_name: Library name for log prefixes.
         callbacks: Dict of per-job callback functions.
         priority: Dispatch priority (1=high, 2=normal, 3=low).
-
     """
 
     def __init__(
@@ -61,8 +54,7 @@ class JobTracker:
         job_id: str,
         items: list,
         config: Config,
-        plex=None,
-        registry=None,
+        registry,
         title_max_width: int = 20,
         library_name: str = "",
         callbacks: dict[str, Any] | None = None,
@@ -73,7 +65,6 @@ class JobTracker:
         self.priority = priority
         self.submission_order = _next_submission_order()
         self.config = config
-        self.plex = plex
         self.registry = registry
         self.title_max_width = title_max_width
         self.library_name = library_name
@@ -215,8 +206,7 @@ class JobDispatcher:
         job_id: str,
         items: list,
         config: Config,
-        plex=None,
-        registry=None,
+        registry,
         title_max_width: int = 20,
         library_name: str = "",
         callbacks: dict[str, Any] | None = None,
@@ -226,13 +216,9 @@ class JobDispatcher:
 
         Args:
             job_id: Unique job identifier.
-            items: Legacy tuples ``(item_key, title, media_type[, library])``
-                **or** :class:`ProcessableItem` instances. Mixed lists are
-                supported — the dispatcher routes each item by shape.
+            items: List of :class:`ProcessableItem` instances.
             config: Configuration for processing these items.
-            plex: Plex server instance (required for tuple-shape items).
-            registry: Live :class:`ServerRegistry` (required for
-                ProcessableItem-shape items).
+            registry: Live :class:`ServerRegistry` — publishers fan out via this.
             title_max_width: Max title display width.
             library_name: Library name for log prefixes.
             callbacks: Dict with keys: progress_callback, worker_callback,
@@ -241,13 +227,11 @@ class JobDispatcher:
 
         Returns:
             JobTracker that callers can wait() on for completion.
-
         """
         tracker = JobTracker(
             job_id=job_id,
             items=items,
             config=config,
-            plex=plex,
             registry=registry,
             title_max_width=title_max_width,
             library_name=library_name,
@@ -418,8 +402,6 @@ class JobDispatcher:
 
     def _assign_tasks(self) -> None:
         """Assign items from active jobs to available workers."""
-        from ..processing.types import ProcessableItem
-
         self.worker_pool._apply_deferred_removals()
 
         while True:
@@ -427,54 +409,34 @@ class JobDispatcher:
             if not worker:
                 break
 
-            # Pull next item (highest priority, then oldest submission)
+            # Pull next item (highest priority, then oldest submission).
             picked = self._get_next_item()
             if not picked:
                 break
 
-            job_id, raw_item, library_name = picked
+            job_id, item, library_name = picked
             with self._trackers_lock:
                 tracker = self._trackers.get(job_id)
             if not tracker:
                 continue
 
             progress_callback = partial(self.worker_pool._update_worker_progress, worker)
-
-            # ProcessableItem → vendor-agnostic publisher fan-out via
-            # process_canonical_path. Tuple → legacy Plex-only process_item.
-            if isinstance(raw_item, ProcessableItem):
-                worker.assign_canonical_task(
-                    raw_item,
-                    tracker.config,
-                    tracker.registry,
-                    progress_callback=progress_callback,
-                    title_max_width=tracker.title_max_width,
-                    job_id=job_id,
-                    library_name=library_name,
-                    cancel_check=tracker.cancel_check,
-                )
-                logger.info(
-                    "Dispatch: assigned canonical item {!r} (job {}) to {}",
-                    raw_item.canonical_path,
-                    job_id[:8],
-                    worker.display_name,
-                )
-                continue
-
-            item_key, media_title, media_type = raw_item[0], raw_item[1], raw_item[2]
             worker.assign_task(
-                item_key,
+                item,
                 tracker.config,
-                tracker.plex,
+                tracker.registry,
                 progress_callback=progress_callback,
-                media_title=media_title,
-                media_type=media_type,
                 title_max_width=tracker.title_max_width,
                 job_id=job_id,
                 library_name=library_name,
                 cancel_check=tracker.cancel_check,
             )
-            logger.info("Dispatch: assigned {!r} (job {}) to {}", media_title, job_id[:8], worker.display_name)
+            logger.info(
+                "Dispatch: assigned canonical item {!r} (job {}) to {}",
+                item.canonical_path,
+                job_id[:8],
+                worker.display_name,
+            )
 
     def _has_dispatchable_items(self) -> bool:
         """Check if any active (non-paused, non-cancelled) tracker has items."""
@@ -507,13 +469,11 @@ class JobDispatcher:
         Within the same priority, earlier submissions are preferred.
 
         Returns:
-            ``(job_id, raw_item, library_name)`` or ``None``. ``raw_item``
-            is either a legacy ``(item_key, title, media_type[, lib])``
-            tuple or a :class:`ProcessableItem`; the caller picks the
-            right ``Worker.assign_*`` method based on the type.
+            ``(job_id, item, library_name)`` or ``None``. ``item`` is a
+            :class:`ProcessableItem`; ``library_name`` always blank for now
+            (the canonical-path flow doesn't carry a per-item library tag at
+            dispatch time).
         """
-        from ..processing.types import ProcessableItem
-
         with self._trackers_lock:
             eligible = [
                 t
@@ -523,11 +483,7 @@ class JobDispatcher:
             eligible.sort(key=lambda t: (t.priority, t.submission_order))
             for tracker in eligible:
                 item = tracker.item_queue.popleft()
-                if isinstance(item, ProcessableItem):
-                    library_name = ""
-                else:
-                    library_name = item[3] if len(item) > 3 else ""
-                return (tracker.job_id, item, library_name)
+                return (tracker.job_id, item, "")
         return None
 
     def _emit_worker_updates(self) -> None:

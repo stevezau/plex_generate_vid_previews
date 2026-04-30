@@ -2,19 +2,77 @@
 Tests for ProcessingResult tracking and misconfiguration detection.
 
 Covers:
-- ProcessingResult enum returned by process_item()
-- Worker.outcome_counts tracking
-- WorkerPool outcome aggregation
-- CLI enhanced logging and misconfiguration warnings
-- JobProgress.outcome field serialization
+- ProcessingResult enum produced by Worker._process_item via the
+  unified MultiServerStatus → ProcessingResult translator.
+- Worker.outcome_counts tracking.
+- WorkerPool outcome aggregation.
+- CLI enhanced logging and misconfiguration warnings.
+- JobProgress.outcome field serialization.
 """
 
-import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
 from media_preview_generator.jobs.worker import Worker
-from media_preview_generator.processing import ProcessingResult, process_item
+from media_preview_generator.processing import ProcessingResult
 from media_preview_generator.web.jobs import JobManager, JobProgress
+
+
+# --- Test helpers for the unified ProcessableItem dispatch path ---
+def _pi(key="test_key", title="Test", media_type="movie", canonical_path=None, server_id="plex-1"):
+    """Build a ProcessableItem matching what the tests used to assemble as a tuple."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id="lib-1",
+    )
+
+
+def _pi_list_or_passthrough(items):
+    """Pass through a list of ProcessableItems untouched, or convert tuples on the fly."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    if not items:
+        return []
+    if isinstance(items[0], ProcessableItem):
+        return items
+    return _pi_list(items)
+
+
+def _pi_list(triples, *, server_id="plex-1"):
+    """Bulk version: convert ``[(key, title, media_type)]`` to ProcessableItems."""
+    out = []
+    for entry in triples:
+        if not entry:
+            continue
+        key = entry[0]
+        title = entry[1] if len(entry) > 1 else "Test"
+        media_type = entry[2] if len(entry) > 2 else "movie"
+        out.append(_pi(key, title=title, media_type=media_type, server_id=server_id))
+    return out
+
+
+def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
+    """Build a MultiServerResult that maps back to a specific ProcessingResult."""
+    from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+    status_map = {
+        "generated": MultiServerStatus.PUBLISHED,
+        "published": MultiServerStatus.PUBLISHED,
+        "skipped_bif_exists": MultiServerStatus.SKIPPED,
+        "skipped": MultiServerStatus.SKIPPED,
+        "no_media_parts": MultiServerStatus.NO_OWNERS,
+        "no_owners": MultiServerStatus.NO_OWNERS,
+        "failed": MultiServerStatus.FAILED,
+    }
+    return MultiServerResult(
+        canonical_path=canonical_path,
+        status=status_map.get(status, MultiServerStatus.PUBLISHED),
+        message=message,
+    )
 
 
 class TestProcessingResultEnum:
@@ -39,119 +97,6 @@ class TestProcessingResultEnum:
             assert isinstance(r.value, str)
 
 
-class TestProcessItemReturnsResult:
-    """Test that process_item returns the correct ProcessingResult."""
-
-    def test_plex_api_error_returns_failed(self, mock_config):
-        """Plex query exception returns FAILED."""
-        mock_plex = MagicMock()
-        mock_plex.query.side_effect = Exception("connection refused")
-
-        result = process_item("/library/metadata/1", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.FAILED
-
-    def test_no_media_parts_returns_no_media_parts(self, mock_config):
-        """XML with no MediaPart elements returns NO_MEDIA_PARTS."""
-        mock_plex = MagicMock()
-        xml = '<MediaContainer size="1"><Video><Media></Media></Video></MediaContainer>'
-        mock_plex.query.return_value = ET.fromstring(xml)
-
-        result = process_item("/library/metadata/1", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.NO_MEDIA_PARTS
-
-    @patch("os.path.isfile")
-    def test_missing_file_returns_skipped_file_not_found(self, mock_isfile, mock_config, plex_xml_movie_tree):
-        """File that doesn't exist locally returns SKIPPED_FILE_NOT_FOUND."""
-        mock_plex = MagicMock()
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-        mock_isfile.return_value = False
-        mock_config.plex_config_folder = "/config/plex"
-
-        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.SKIPPED_FILE_NOT_FOUND
-
-    @patch("os.path.isfile")
-    def test_excluded_path_returns_skipped_excluded(self, mock_isfile, mock_config, plex_xml_movie_tree):
-        """Path matching exclude_paths returns SKIPPED_EXCLUDED."""
-        mock_plex = MagicMock()
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.exclude_paths = [{"value": "/data/movies", "type": "path"}]
-
-        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.SKIPPED_EXCLUDED
-
-    def test_invalid_hash_returns_skipped_invalid_hash(self, mock_config):
-        """Empty or too-short bundle hash returns SKIPPED_INVALID_HASH."""
-        mock_plex = MagicMock()
-        xml = """<MediaContainer size="1">
-            <Video>
-                <Media>
-                    <MediaPart hash="" file="/data/movies/test.mkv"/>
-                </Media>
-            </Video>
-        </MediaContainer>"""
-        mock_plex.query.return_value = ET.fromstring(xml)
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.exclude_paths = None
-
-        result = process_item("/library/metadata/1", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.SKIPPED_INVALID_HASH
-
-    @patch("os.path.isfile")
-    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
-    def test_bif_exists_returns_skipped_bif_exists(
-        self, mock_process_canonical, mock_isfile, mock_config, plex_xml_movie_tree
-    ):
-        """When the unified pipeline reports SKIPPED, the shim returns SKIPPED_BIF_EXISTS."""
-        from media_preview_generator.processing.multi_server import (
-            MultiServerResult,
-            MultiServerStatus,
-        )
-
-        mock_plex = MagicMock()
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-        mock_isfile.return_value = True
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.regenerate_thumbnails = False
-        mock_process_canonical.return_value = MultiServerResult(
-            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
-            status=MultiServerStatus.SKIPPED,
-            message="Output already exists",
-        )
-
-        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.SKIPPED_BIF_EXISTS
-
-    @patch("os.path.isfile")
-    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
-    def test_successful_generation_returns_generated(
-        self,
-        mock_process_canonical,
-        mock_isfile,
-        mock_config,
-        plex_xml_movie_tree,
-    ):
-        """When the unified pipeline reports PUBLISHED, the shim returns GENERATED."""
-        from media_preview_generator.processing.multi_server import (
-            MultiServerResult,
-            MultiServerStatus,
-        )
-
-        mock_plex = MagicMock()
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-        mock_isfile.return_value = True
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.regenerate_thumbnails = False
-        mock_process_canonical.return_value = MultiServerResult(
-            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
-            status=MultiServerStatus.PUBLISHED,
-        )
-
-        result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-        assert result == ProcessingResult.GENERATED
-
-
 class TestWorkerOutcomeCounts:
     """Test Worker.outcome_counts tracking."""
 
@@ -161,89 +106,47 @@ class TestWorkerOutcomeCounts:
         for r in ProcessingResult:
             assert worker.outcome_counts[r.value] == 0
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_completed_item_increments_outcome(self, mock_process):
         """Successful process_item updates both completed and outcome_counts."""
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
-
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Test",
-            media_type="movie",
-        )
+        registry = MagicMock()
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry)
         worker.current_thread.join(timeout=2)
 
         assert worker.outcome_counts["generated"] == 1
         assert worker.completed == 1
         assert worker.failed == 0
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_skipped_item_counts_as_completed_not_failed(self, mock_process):
         """Skipped items (e.g. BIF exists) count as completed, not failed."""
-        mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
+        mock_process.return_value = _ms("skipped_bif_exists")
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
-
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Test",
-            media_type="movie",
-        )
+        registry = MagicMock()
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry)
         worker.current_thread.join(timeout=2)
 
         assert worker.outcome_counts["skipped_bif_exists"] == 1
         assert worker.completed == 1
         assert worker.failed == 0
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_failed_result_counts_as_failed(self, mock_process):
         """ProcessingResult.FAILED increments worker.failed."""
-        mock_process.return_value = ProcessingResult.FAILED
+        mock_process.return_value = _ms("failed")
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
-
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Test",
-            media_type="movie",
-        )
+        registry = MagicMock()
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry)
         worker.current_thread.join(timeout=2)
 
         assert worker.outcome_counts["failed"] == 1
         assert worker.failed == 1
         assert worker.completed == 0
-
-    @patch("media_preview_generator.jobs.worker.process_item")
-    def test_file_not_found_counts_as_completed(self, mock_process):
-        """SKIPPED_FILE_NOT_FOUND is a completed item (no exception)."""
-        mock_process.return_value = ProcessingResult.SKIPPED_FILE_NOT_FOUND
-        worker = Worker(0, "CPU")
-        config = MagicMock()
-        plex = MagicMock()
-
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Test",
-            media_type="movie",
-        )
-        worker.current_thread.join(timeout=2)
-
-        assert worker.outcome_counts["skipped_file_not_found"] == 1
-        assert worker.completed == 1
-        assert worker.failed == 0
 
 
 class TestJobProgressOutcome:
@@ -349,23 +252,22 @@ class TestMisconfigurationDetection:
 class TestOutcomeInWorkerPoolResult:
     """Test that WorkerPool includes outcome in its return dict."""
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_process_items_headless_includes_outcome(self, mock_process):
         """process_items_headless result dict contains an 'outcome' key."""
-        mock_process.return_value = ProcessingResult.SKIPPED_BIF_EXISTS
+        mock_process.return_value = _ms("skipped_bif_exists")
 
         from media_preview_generator.jobs.worker import WorkerPool
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         config.cpu_threads = 1
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [("/library/metadata/1", "Movie 1", "movie")]
         result = pool.process_items_headless(
-            items,
+            _pi_list_or_passthrough(items),
             config,
-            plex,
+            registry,
             title_max_width=30,
             library_name="Test",
         )
@@ -374,14 +276,14 @@ class TestOutcomeInWorkerPoolResult:
         assert isinstance(result["outcome"], dict)
         assert result["outcome"]["skipped_bif_exists"] >= 1
 
-    @patch("media_preview_generator.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_outcome_counts_match_items_processed(self, mock_process):
         """Sum of all outcome values equals total items processed."""
         results_iter = iter(
             [
-                ProcessingResult.GENERATED,
-                ProcessingResult.SKIPPED_BIF_EXISTS,
-                ProcessingResult.SKIPPED_FILE_NOT_FOUND,
+                _ms("generated"),
+                _ms("skipped_bif_exists"),
+                _ms("generated"),
             ]
         )
         mock_process.side_effect = lambda *args, **kwargs: next(results_iter)
@@ -391,24 +293,28 @@ class TestOutcomeInWorkerPoolResult:
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
         config.cpu_threads = 1
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("/library/metadata/1", "Movie 1", "movie"),
             ("/library/metadata/2", "Movie 2", "movie"),
             ("/library/metadata/3", "Movie 3", "movie"),
         ]
         result = pool.process_items_headless(
-            items,
+            _pi_list_or_passthrough(items),
             config,
-            plex,
+            registry,
             title_max_width=30,
             library_name="Test",
         )
 
         outcome = result["outcome"]
+        # 3 items processed; outcomes: 2 generated + 1 skipped_bif_exists.
+        # The legacy test tried to mix three distinct ProcessingResult enum
+        # values, but the unified pipeline only produces a subset
+        # (PUBLISHED → GENERATED, SKIPPED → SKIPPED_BIF_EXISTS,
+        # NO_OWNERS → NO_MEDIA_PARTS, FAILED → FAILED). The granular Plex-only
+        # SKIPPED_FILE_NOT_FOUND distinction is gone.
         total_outcome = sum(outcome.values())
         assert total_outcome == 3
-        assert outcome["generated"] == 1
+        assert outcome["generated"] == 2
         assert outcome["skipped_bif_exists"] == 1
-        assert outcome["skipped_file_not_found"] == 1

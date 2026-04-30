@@ -161,7 +161,7 @@ class TestJobTrackerPriority:
             job_id="j1",
             items=[("k1", "t1", "movie")],
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert tracker.priority == PRIORITY_NORMAL
 
@@ -170,7 +170,7 @@ class TestJobTrackerPriority:
             job_id="j2",
             items=[("k1", "t1", "movie")],
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
             priority=PRIORITY_HIGH,
         )
         assert tracker.priority == PRIORITY_HIGH
@@ -180,13 +180,13 @@ class TestJobTrackerPriority:
             job_id="j1",
             items=[("k1", "t1", "movie")],
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         t2 = JobTracker(
             job_id="j2",
             items=[("k1", "t1", "movie")],
             config=_make_config(),
-            plex=MagicMock(),
+            registry=MagicMock(),
         )
         assert t2.submission_order > t1.submission_order
 
@@ -208,20 +208,19 @@ class TestDispatcherPriority:
         """Items from a high-priority job should be returned before normal."""
         dispatcher = self._make_dispatcher()
         config = _make_config()
-        plex = MagicMock()
 
         dispatcher.submit_items(
             job_id="low-job",
             items=[("k1", "Low Item", "movie")],
             config=config,
-            plex=plex,
+            registry=MagicMock(),
             priority=PRIORITY_LOW,
         )
         dispatcher.submit_items(
             job_id="high-job",
             items=[("k2", "High Item", "movie")],
             config=config,
-            plex=plex,
+            registry=MagicMock(),
             priority=PRIORITY_HIGH,
         )
 
@@ -237,20 +236,19 @@ class TestDispatcherPriority:
         """Within the same priority, earlier submissions should come first."""
         dispatcher = self._make_dispatcher()
         config = _make_config()
-        plex = MagicMock()
 
         dispatcher.submit_items(
             job_id="first",
             items=[("k1", "First", "movie")],
             config=config,
-            plex=plex,
+            registry=MagicMock(),
             priority=PRIORITY_NORMAL,
         )
         dispatcher.submit_items(
             job_id="second",
             items=[("k2", "Second", "movie")],
             config=config,
-            plex=plex,
+            registry=MagicMock(),
             priority=PRIORITY_NORMAL,
         )
 
@@ -262,20 +260,19 @@ class TestDispatcherPriority:
         """Changing a job's priority should affect subsequent dispatch order."""
         dispatcher = self._make_dispatcher()
         config = _make_config()
-        plex = MagicMock()
 
         dispatcher.submit_items(
             job_id="job-a",
             items=[("k1", "A1", "movie"), ("k2", "A2", "movie")],
             config=config,
-            plex=plex,
+            registry=MagicMock(),
             priority=PRIORITY_NORMAL,
         )
         dispatcher.submit_items(
             job_id="job-b",
             items=[("k3", "B1", "movie")],
             config=config,
-            plex=plex,
+            registry=MagicMock(),
             priority=PRIORITY_NORMAL,
         )
 

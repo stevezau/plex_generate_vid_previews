@@ -17,6 +17,53 @@ from media_preview_generator.processing.retry_queue import (
 )
 
 
+# --- Test helpers for the unified ProcessableItem dispatch path ---
+def _pi(key="test_key", title="Test", media_type="movie", canonical_path=None, server_id="plex-1"):
+    """Build a ProcessableItem matching what the tests used to assemble as a tuple."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id="lib-1",
+    )
+
+
+def _pi_list(triples, *, server_id="plex-1"):
+    """Bulk version: convert ``[(key, title, media_type)]`` to ProcessableItems."""
+    out = []
+    for entry in triples:
+        if not entry:
+            continue
+        key = entry[0]
+        title = entry[1] if len(entry) > 1 else "Test"
+        media_type = entry[2] if len(entry) > 2 else "movie"
+        out.append(_pi(key, title=title, media_type=media_type, server_id=server_id))
+    return out
+
+
+def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
+    """Build a MultiServerResult that maps back to a specific ProcessingResult."""
+    from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+    status_map = {
+        "generated": MultiServerStatus.PUBLISHED,
+        "published": MultiServerStatus.PUBLISHED,
+        "skipped_bif_exists": MultiServerStatus.SKIPPED,
+        "skipped": MultiServerStatus.SKIPPED,
+        "no_media_parts": MultiServerStatus.NO_OWNERS,
+        "no_owners": MultiServerStatus.NO_OWNERS,
+        "failed": MultiServerStatus.FAILED,
+    }
+    return MultiServerResult(
+        canonical_path=canonical_path,
+        status=status_map.get(status, MultiServerStatus.PUBLISHED),
+        message=message,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_singleton():
     """Drop the process-wide retry scheduler between tests so timers don't bleed."""

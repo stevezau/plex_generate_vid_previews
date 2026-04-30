@@ -850,7 +850,6 @@ def run_processing(
                     job_id=job_id,
                     items=items,
                     config=config,
-                    plex=plex,
                     registry=registry,
                     title_max_width=title_max_width,
                     library_name=library_name,
@@ -866,17 +865,10 @@ def run_processing(
                     progress_callback(0, len(items), f"Starting {library_name}")
                 if worker_pool is None:
                     worker_pool = _create_worker_pool()
-                # _assign_main_queue_task is type-aware: if the queue holds
-                # ProcessableItems it dispatches via assign_canonical_task and
-                # uses the second positional arg as the registry, not as a
-                # Plex client. Pick the right handle here so both paths work.
-                from ..processing.types import ProcessableItem as _PI
-
-                handle = registry if items and isinstance(items[0], _PI) else plex
                 return worker_pool.process_items_headless(
                     items,
                     config,
-                    handle,
+                    registry,
                     title_max_width,
                     library_name=library_name,
                     progress_callback=progress_callback,

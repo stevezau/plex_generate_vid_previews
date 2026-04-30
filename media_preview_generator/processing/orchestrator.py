@@ -20,7 +20,6 @@ from enum import Enum
 
 from loguru import logger
 
-from ..utils import sanitize_path
 from .filter_chain import (
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
@@ -53,17 +52,6 @@ class ProcessingResult(Enum):
     NO_MEDIA_PARTS = "no_media_parts"
 
 
-# When a media item has multiple parts, the most significant outcome wins.
-_RESULT_PRIORITY = {
-    ProcessingResult.GENERATED: 6,
-    ProcessingResult.FAILED: 5,
-    ProcessingResult.SKIPPED_FILE_NOT_FOUND: 4,
-    ProcessingResult.SKIPPED_INVALID_HASH: 3,
-    ProcessingResult.SKIPPED_EXCLUDED: 2,
-    ProcessingResult.SKIPPED_BIF_EXISTS: 1,
-    ProcessingResult.NO_MEDIA_PARTS: 0,
-}
-
 # If FFmpeg produces no progress output for this many seconds, the process is
 # killed to avoid hanging the worker indefinitely (e.g. unresponsive NAS).
 FFMPEG_STALL_TIMEOUT_SEC = 300
@@ -78,8 +66,9 @@ FFMPEG_STALL_TIMEOUT_SEC = 300
 # — that sets a ContextVar which all record/get/clear helpers read to know
 # *which* job's records to touch.  The job runner enters the scope on its
 # dispatcher thread; each worker thread enters the scope on its own thread
-# using ``worker.current_job_id`` so calls made deep inside process_item /
-# generate_images / _run_ffmpeg land in the right bucket.
+# using ``worker.current_job_id`` so calls made deep inside the
+# ``process_canonical_path`` / ``generate_images`` / ``_run_ffmpeg`` chain
+# land in the right bucket.
 
 _failure_lock = threading.Lock()
 _failures_by_job: dict[str, list[dict]] = {}
@@ -259,8 +248,7 @@ except Exception as e:
         e,
     )
 
-from ..config import Config, is_path_excluded, plex_path_to_local  # noqa: E402
-from ..plex_client import retry_plex_call  # noqa: E402
+from ..config import Config  # noqa: E402
 
 
 class CodecNotSupportedError(Exception):
@@ -1279,191 +1267,3 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     # K2: server context — destination path encodes the server but the log is silent on it.
     _bif_server_prefix = f"[{config.server_display_name}] " if getattr(config, "server_display_name", None) else ""
     logger.info("{}Generated BIF file: {} ({} thumbnails)", _bif_server_prefix, bif_filename, len(images))
-
-
-def process_item(
-    item_key: str,
-    gpu: str | None,
-    gpu_device_path: str | None,
-    config: Config,
-    plex,
-    progress_callback=None,
-    ffmpeg_threads_override: int | None = None,
-    cancel_check=None,
-    worker_name: str = "",
-) -> ProcessingResult:
-    """Process a Plex item — Plex-specific shim over ``process_canonical_path``.
-
-    The legacy single-Plex worker still accepts ``(item_key, plex)`` tuples
-    via :meth:`Worker.assign_task`. This shim queries Plex for the item's
-    ``MediaPart`` rows so it knows which canonical paths to dispatch, then
-    funnels each path through the unified per-vendor publisher pipeline
-    (``process_canonical_path``). Same FFmpeg, same BIF writer, same
-    publisher fan-out — every vendor now lands in the same code.
-
-    The pre-flight checks (path-mapping, exclusion, invalid bundle hash,
-    file-not-found) are kept here so the legacy ``ProcessingResult`` outcome
-    enum still distinguishes the same skip reasons callers built dashboards
-    around. The actual frame extraction and BIF write happen inside
-    ``process_canonical_path``; we just translate the ``MultiServerStatus``
-    back into a ``ProcessingResult``.
-    """
-    from ..servers.base import ServerType
-    from ..servers.registry import ServerRegistry
-    from .multi_server import MultiServerStatus, process_canonical_path
-
-    try:
-        data = retry_plex_call(plex.query, f"{item_key}/tree")
-    except Exception as e:
-        request_url = getattr(getattr(e, "request", None), "url", None)
-        url_hint = f" (request URL: {request_url})" if request_url else ""
-        logger.error(
-            "Could not fetch metadata for Plex item {} after several retries ({}: {}){}. "
-            "This usually means Plex is offline, restarting, or the token in Settings has "
-            "expired. Confirm Plex is running and re-test the connection in Settings → Plex. "
-            "This item is skipped; the queue continues.",
-            item_key,
-            type(e).__name__,
-            e,
-            url_hint,
-        )
-        _notify_file_result(
-            f"item:{item_key}",
-            ProcessingResult.FAILED,
-            f"Plex API query failed: {type(e).__name__}",
-            worker_name,
-        )
-        return ProcessingResult.FAILED
-
-    registry = ServerRegistry.from_legacy_config(config)
-    plex_cfg = next((c for c in registry.configs() if c.type is ServerType.PLEX), None)
-    plex_server_id = plex_cfg.id if plex_cfg else None
-
-    best_result = ProcessingResult.NO_MEDIA_PARTS
-
-    def _update_best(result: ProcessingResult) -> None:
-        nonlocal best_result
-        if _RESULT_PRIORITY[result] > _RESULT_PRIORITY[best_result]:
-            best_result = result
-
-    for media_part in data.findall(".//MediaPart"):
-        if "hash" not in media_part.attrib:
-            continue
-
-        bundle_hash = media_part.attrib["hash"]
-        plex_path = media_part.attrib["file"]
-        mappings = getattr(config, "path_mappings", None) or []
-        media_file = sanitize_path(plex_path_to_local(plex_path, mappings) if mappings else plex_path)
-
-        if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
-            logger.info("Skipping (excluded path): {}", media_file)
-            _update_best(ProcessingResult.SKIPPED_EXCLUDED)
-            _notify_file_result(
-                media_file,
-                ProcessingResult.SKIPPED_EXCLUDED,
-                "Path excluded by filter",
-                worker_name,
-            )
-            continue
-
-        if not bundle_hash or len(bundle_hash) < 2:
-            hash_value = f'"{bundle_hash}"' if bundle_hash else "(empty)"
-            logger.warning(
-                "Skipping {} — Plex returned an invalid internal ID for this file ({}, length {}). "
-                "This usually means Plex hasn't finished scanning the file yet. Wait for Plex's "
-                "library scan to complete and re-trigger, or let the next scheduled scan pick it up. "
-                "Other files in the queue continue.",
-                media_file,
-                hash_value,
-                len(bundle_hash) if bundle_hash else 0,
-            )
-            _update_best(ProcessingResult.SKIPPED_INVALID_HASH)
-            _notify_file_result(
-                media_file,
-                ProcessingResult.SKIPPED_INVALID_HASH,
-                f"Invalid bundle hash: {hash_value}",
-                worker_name,
-            )
-            continue
-
-        if not os.path.isfile(media_file):
-            logger.warning(
-                "Skipping {} — Plex says this file should exist on disk, but it doesn't. "
-                "This usually means the file was moved/deleted, or the path mapping under "
-                "Settings → Plex doesn't match your actual mount. Other files keep processing.",
-                media_file,
-            )
-            _update_best(ProcessingResult.SKIPPED_FILE_NOT_FOUND)
-            _notify_file_result(
-                media_file,
-                ProcessingResult.SKIPPED_FILE_NOT_FOUND,
-                "File not found on disk",
-                worker_name,
-            )
-            continue
-
-        item_id_hint = {plex_server_id: item_key} if plex_server_id else {}
-
-        try:
-            ms_result = process_canonical_path(
-                canonical_path=media_file,
-                registry=registry,
-                config=config,
-                item_id_by_server=item_id_hint,
-                gpu=gpu,
-                gpu_device_path=gpu_device_path,
-                progress_callback=progress_callback,
-                ffmpeg_threads_override=ffmpeg_threads_override,
-                cancel_check=cancel_check,
-                regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
-            )
-        except (CancellationError, CodecNotSupportedError):
-            raise
-        except Exception as e:
-            logger.error(
-                "Unexpected error generating previews for {} ({}: {}). "
-                "This file will be skipped. If you keep seeing this, enable Debug logging "
-                "under Settings → Logging and report the full traceback as a bug. "
-                "Other files in the queue continue processing.",
-                media_file,
-                type(e).__name__,
-                e,
-            )
-            _update_best(ProcessingResult.FAILED)
-            _notify_file_result(
-                media_file,
-                ProcessingResult.FAILED,
-                f"{type(e).__name__}: {e}",
-                worker_name,
-            )
-            continue
-
-        # Translate MultiServerStatus → legacy ProcessingResult so the
-        # worker pool's outcome counters and the per-file callback see
-        # the same enum values they always have.
-        if ms_result.status is MultiServerStatus.PUBLISHED:
-            _update_best(ProcessingResult.GENERATED)
-            _notify_file_result(media_file, ProcessingResult.GENERATED, "", worker_name)
-        elif ms_result.status is MultiServerStatus.SKIPPED:
-            _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
-            _notify_file_result(
-                media_file,
-                ProcessingResult.SKIPPED_BIF_EXISTS,
-                ms_result.message or "Output already exists",
-                worker_name,
-            )
-        elif ms_result.status is MultiServerStatus.NO_OWNERS:
-            # No publisher owns the path — keep best_result at its
-            # current value (defaults to NO_MEDIA_PARTS) so the legacy
-            # bookkeeping still treats this as "nothing to do here".
-            _update_best(ProcessingResult.NO_MEDIA_PARTS)
-        else:
-            _update_best(ProcessingResult.FAILED)
-            _notify_file_result(
-                media_file,
-                ProcessingResult.FAILED,
-                ms_result.message or "Multi-server publish failed",
-                worker_name,
-            )
-
-    return best_result
