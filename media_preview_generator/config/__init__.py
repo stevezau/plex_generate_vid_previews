@@ -101,21 +101,6 @@ def get_config_value(cli_args, field_name: str, env_key: str, default, value_typ
         return default
 
 
-def get_config_value_str(cli_args, field_name: str, env_key: str, default: str = "") -> str:
-    """Get string configuration value."""
-    return get_config_value(cli_args, field_name, env_key, default, str)
-
-
-def get_config_value_int(cli_args, field_name: str, env_key: str, default: int = 0) -> int:
-    """Get integer configuration value."""
-    return get_config_value(cli_args, field_name, env_key, default, int)
-
-
-def get_config_value_bool(cli_args, field_name: str, env_key: str, default: bool = False) -> bool:
-    """Get boolean configuration value."""
-    return get_config_value(cli_args, field_name, env_key, default, bool)
-
-
 @dataclass
 class Config:
     """Configuration object containing all application settings."""

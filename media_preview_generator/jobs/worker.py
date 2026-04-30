@@ -869,11 +869,6 @@ class WorkerPool:
         )
         return True
 
-    def _has_cpu_capable_workers(self) -> bool:
-        """Check if any CPU workers exist in the pool."""
-        with self._workers_lock:
-            return any(w.worker_type == "CPU" for w in self.workers)
-
     def process_items(
         self,
         media_items: list,

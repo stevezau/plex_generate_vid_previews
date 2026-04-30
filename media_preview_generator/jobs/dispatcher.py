@@ -255,11 +255,6 @@ class JobDispatcher:
             tracker.cancel()
             logger.info("Dispatcher: cancelled job {}", job_id[:8])
 
-    def get_tracker(self, job_id: str) -> JobTracker | None:
-        """Get the tracker for a job, if it exists."""
-        with self._trackers_lock:
-            return self._trackers.get(job_id)
-
     def shutdown(self) -> None:
         """Stop the dispatch loop and shut down the worker pool."""
         self._shutdown = True
@@ -437,18 +432,6 @@ class JobDispatcher:
                 job_id[:8],
                 worker.display_name,
             )
-
-    def _has_dispatchable_items(self) -> bool:
-        """Check if any active (non-paused, non-cancelled) tracker has items."""
-        with self._trackers_lock:
-            for tracker in self._trackers.values():
-                if tracker.done_event.is_set():
-                    continue
-                if tracker.is_paused() or tracker.is_cancelled():
-                    continue
-                if tracker.item_queue:
-                    return True
-        return False
 
     def update_job_priority(self, job_id: str, priority: int) -> None:
         """Update the dispatch priority of a running job's tracker.
