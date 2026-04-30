@@ -182,3 +182,130 @@ class TestMultiServerFullScan:
 
         assert counts.get("published", 0) == 1
         assert counts.get("failed", 0) == 1
+
+
+class TestMultiPlexDeduping:
+    """Phase P4: when the same canonical_path appears on more than one
+    enabled server (e.g. two Plex servers sharing storage, or Plex+Jellyfin
+    over the same media), the dispatcher dedups by canonical_path and
+    merges every server's vendor item-id into a single ProcessableItem
+    so each adapter still finds its target."""
+
+    def test_two_plex_servers_sharing_media_dispatches_once_per_path(self, tmp_path):
+        cfg_plex_a = _server_config("plex-a", ServerType.PLEX)
+        cfg_plex_b = _server_config("plex-b", ServerType.PLEX)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex_a, cfg_plex_b]
+
+        # Same canonical_path enumerated by both Plex servers, each with
+        # its own vendor item-id.
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Movies/Foo.mkv",
+                    server_id="plex-a",
+                    item_id_by_server={"plex-a": "rk-A"},
+                ),
+            ]
+        )
+        proc_b = MagicMock()
+        proc_b.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Movies/Foo.mkv",
+                    server_id="plex-b",
+                    item_id_by_server={"plex-b": "rk-B"},
+                ),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc_a),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+                {"id": "plex-b", "type": "plex", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            # Both processors return the same path — proc_a is returned
+            # by get_processor_for(plex), so we hand-feed proc_b's items
+            # by chaining the iterator.
+            chained_iter = iter(
+                [
+                    *list(proc_a.list_canonical_paths.return_value),
+                    *list(proc_b.list_canonical_paths.return_value),
+                ]
+            )
+            proc_a.list_canonical_paths.return_value = chained_iter
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        # process_canonical_path fired EXACTLY once despite the path
+        # appearing twice in enumeration — Phase P4 dedup.
+        assert mock_process.call_count == 1
+        # And the merged hint includes BOTH servers' item-ids so each
+        # PlexBundleAdapter call (plex-a's and plex-b's) can resolve
+        # its own bundle hash.
+        kwargs = mock_process.call_args.kwargs
+        merged = kwargs.get("item_id_by_server") or {}
+        assert merged.get("plex-a") == "rk-A", merged
+        assert merged.get("plex-b") == "rk-B", merged
+
+    def test_plex_plus_jellyfin_sharing_media_dispatches_once(self, tmp_path):
+        """Cross-vendor variant of the above — Plex + Jellyfin both own
+        the same canonical_path. Single dispatch, item-id hints carry
+        both vendor identifiers."""
+        cfg_plex = _server_config("plex-1", ServerType.PLEX)
+        cfg_jf = _server_config("jf-1", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex, cfg_jf]
+
+        proc_plex = MagicMock()
+        proc_plex.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Show/S01E01.mkv",
+                    server_id="plex-1",
+                    item_id_by_server={"plex-1": "rk-1"},
+                ),
+            ]
+        )
+        proc_jf = MagicMock()
+        proc_jf.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Show/S01E01.mkv",
+                    server_id="jf-1",
+                    item_id_by_server={"jf-1": "jf-id"},
+                ),
+            ]
+        )
+
+        def _get_proc(stype):
+            return {ServerType.PLEX: proc_plex, ServerType.JELLYFIN: proc_jf}[stype]
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", side_effect=_get_proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-1", "type": "plex", "enabled": True},
+                {"id": "jf-1", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        assert mock_process.call_count == 1
+        merged = mock_process.call_args.kwargs.get("item_id_by_server") or {}
+        assert merged.get("plex-1") == "rk-1", merged
+        assert merged.get("jf-1") == "jf-id", merged
