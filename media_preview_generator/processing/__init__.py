@@ -21,6 +21,10 @@ All public and private names from the sub-modules are re-exported here
 so `from media_preview_generator.processing import X` resolves.
 """
 
+# Per-vendor processor surface (Phase A of the multi-server completion).
+# Concrete VendorProcessor implementations land in Phase B; until then
+# only the types + base interface + registry are exported.
+from .base import VendorProcessor  # noqa: F401
 from .filter_chain import (  # noqa: F401
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
@@ -62,11 +66,13 @@ from .orchestrator import (  # noqa: F401
     record_failure,
     set_file_result_callback,
 )
+from .registry import get_processor_for, register_processor, registered_types  # noqa: F401
 from .retry_cascade import (  # noqa: F401
     RetryTier,
     classify_cpu_fallback_reason,
     classify_dv_safe_retry_reason,
 )
+from .types import ProcessableItem, ScanOutcome  # noqa: F401
 
 # Legacy underscore-prefixed aliases — the HDR helpers used to live in
 # ``media_processing`` as private names; keep them importable under the
