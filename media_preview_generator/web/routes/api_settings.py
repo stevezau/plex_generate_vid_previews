@@ -306,6 +306,12 @@ def get_settings():
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
+            # B0c — frame_reuse block. The Settings → Performance UI
+            # populates its toggle/TTL/disk-cap inputs from this field;
+            # without it here the panel shows defaults forever and
+            # POST below silently drops user changes.
+            "frame_reuse": settings.get("frame_reuse")
+            or {"enabled": True, "ttl_minutes": 60, "max_cache_disk_mb": 2048},
         }
     )
 
@@ -349,9 +355,24 @@ def save_settings():
         "webhook_secret",
         "auto_requeue_on_restart",
         "requeue_max_age_minutes",
+        "frame_reuse",
     ]
 
     updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+    # Validate frame_reuse shape — the UI sends a dict with three keys.
+    # Reject malformed payloads early so we don't poison settings.json
+    # with garbage that the cache reader will then fail to parse.
+    if "frame_reuse" in updates:
+        fr = updates["frame_reuse"]
+        if not isinstance(fr, dict):
+            return jsonify({"error": "frame_reuse must be an object"}), 400
+        cleaned_fr = {
+            "enabled": bool(fr.get("enabled", True)),
+            "ttl_minutes": max(1, int(fr.get("ttl_minutes", 60) or 60)),
+            "max_cache_disk_mb": max(64, int(fr.get("max_cache_disk_mb", 2048) or 2048)),
+        }
+        updates["frame_reuse"] = cleaned_fr
 
     # Sanitize gpu_config: must be a list of dicts with a device key.
     # Normalize: workers <= 0 forces enabled=false (contradictory state).
