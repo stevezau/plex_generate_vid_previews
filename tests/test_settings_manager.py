@@ -21,7 +21,7 @@ class TestSettingsManager:
     @pytest.fixture
     def settings_manager(self, temp_config_dir):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=temp_config_dir)
 
@@ -54,7 +54,7 @@ class TestSettingsManager:
 
     def test_persistence(self, temp_config_dir):
         """Test that settings persist across instances."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         # Create manager and set value
         manager1 = SettingsManager(config_dir=temp_config_dir)
@@ -79,8 +79,8 @@ class TestPreviewSettingsAfterUpdate:
     """preview_settings_after_update matches SettingsManager.update for gpu_threads."""
 
     def test_gpu_threads_distribution_matches_update(self, tmp_path):
-        from plex_generate_previews.config import validate_processing_thread_totals
-        from plex_generate_previews.web.settings_manager import (
+        from media_preview_generator.config import validate_processing_thread_totals
+        from media_preview_generator.web.settings_manager import (
             SettingsManager,
             preview_settings_after_update,
         )
@@ -104,7 +104,7 @@ class TestSettingsManagerProperties:
     @pytest.fixture
     def settings_manager(self, tmp_path):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -175,7 +175,7 @@ class TestSettingsManagerProperties:
         """Test cpu_threads=0 is preserved (issue #142)."""
         settings_manager.cpu_threads = 0
         assert settings_manager.cpu_threads == 0
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         sm2 = SettingsManager(config_dir=str(settings_manager.config_dir))
         assert sm2.cpu_threads == 0
@@ -196,7 +196,7 @@ class TestGpuConfig:
 
     @pytest.fixture
     def settings_manager(self, tmp_path, monkeypatch):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         monkeypatch.delenv("GPU_THREADS", raising=False)
         monkeypatch.delenv("GPU_SELECTION", raising=False)
@@ -326,7 +326,7 @@ class TestSettingsManagerConfigStatus:
     @pytest.fixture
     def settings_manager(self, tmp_path, monkeypatch):
         """Create a SettingsManager with clean environment."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         # Clear environment variables
         monkeypatch.delenv("PLEX_URL", raising=False)
@@ -343,6 +343,72 @@ class TestSettingsManagerConfigStatus:
         settings_manager.set("plex_token", "test-token")
         assert settings_manager.is_configured() is True
 
+    def test_is_configured_true_for_jellyfin_only_install(self, settings_manager):
+        """B1: a multi-server install with only Jellyfin (no Plex) must pass setup."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "name": "Home Jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {"method": "api_key", "api_key": "abc123"},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is True
+
+    def test_is_configured_true_for_emby_only_install(self, settings_manager):
+        """B1: same for an Emby-only install."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Home Emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {"method": "api_key", "api_key": "xyz"},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is True
+
+    def test_is_configured_false_when_only_disabled_servers(self, settings_manager):
+        """B1: disabled entries don't count — every enabled entry would have to pass."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {"api_key": "x"},
+                    "enabled": False,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_false_when_emby_missing_api_key(self, settings_manager):
+        """B1: an Emby/Jellyfin entry with no api_key isn't enough."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
     def test_is_plex_authenticated_false(self, settings_manager):
         """Test is_plex_authenticated returns False when no token."""
         assert settings_manager.is_plex_authenticated() is False
@@ -358,7 +424,7 @@ class TestClientIdentifier:
 
     def test_get_client_identifier_generates_id(self, tmp_path):
         """Test that get_client_identifier generates a new ID."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         manager = SettingsManager(config_dir=str(tmp_path))
 
@@ -367,7 +433,7 @@ class TestClientIdentifier:
 
     def test_client_identifier_persists(self, tmp_path):
         """Test that client identifier persists across instances."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         manager1 = SettingsManager(config_dir=str(tmp_path))
         client_id1 = manager1.get_client_identifier()
@@ -384,7 +450,7 @@ class TestSetupState:
     @pytest.fixture
     def settings_manager(self, tmp_path):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -429,7 +495,7 @@ class TestApplyChanges:
 
     @pytest.fixture
     def settings_manager(self, tmp_path):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -468,7 +534,7 @@ class TestGpuConfigEdgeCases:
 
     @pytest.fixture
     def settings_manager(self, tmp_path):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 

@@ -2,11 +2,13 @@
      When you update README.md significantly, update this file to match.
      Docker Hub does not render mermaid diagrams, GitHub admonitions, or relative images. -->
 
-# Plex Generate Previews
+# Media Preview Generator
 
-GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web UI only** — no CLI.
+GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfin**. **Web UI only** — no CLI.
 
-**The Problem:** Plex's built-in preview generation is painfully slow.
+> Previously named **Plex Generate Previews** at `stevezzau/plex_generate_vid_previews`. That image keeps mirroring updates until **2026-10-29**; after that, only this repo (`stevezzau/media_preview_generator`) is published. Update your `compose` to the new name when convenient — settings and volumes carry over unchanged.
+
+**The Problem:** Built-in preview generation in Plex / Emby / Jellyfin is painfully slow.
 
 **The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
 
@@ -32,7 +34,7 @@ GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web 
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -42,7 +44,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -74,8 +76,8 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -112,8 +114,8 @@ Set GPU Workers to 0 and CPU Workers as needed in the web UI Settings.
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -156,7 +158,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ### GPU + CPU Fallback
@@ -182,11 +184,11 @@ Application-level env vars (PLEX_URL, PLEX_TOKEN, CPU_THREADS, etc.) act as one-
 
 ## Unraid
 
-Search for "plex-generate-previews" in Community Applications, or run manually:
+Search for "media-preview-generator" in Community Applications, or run manually:
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -194,9 +196,9 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ## Performance Tuning
@@ -213,17 +215,17 @@ Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 Full documentation is available on GitHub:
 
-- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
-- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
-- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md) — All settings, env vars, and REST API
-- [FAQ](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
+- [Getting Started](https://github.com/stevezau/media_preview_generator/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
+- [Guides & Troubleshooting](https://github.com/stevezau/media_preview_generator/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
+- [Configuration & API Reference](https://github.com/stevezau/media_preview_generator/blob/main/docs/reference.md) — All settings, env vars, and REST API
+- [FAQ](https://github.com/stevezau/media_preview_generator/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
 
 ## Support
 
-- [Report a Bug](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug)
-- [Request a Feature](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement)
-- [GitHub Repository](https://github.com/stevezau/plex_generate_vid_previews)
+- [Report a Bug](https://github.com/stevezau/media_preview_generator/issues/new?labels=bug)
+- [Request a Feature](https://github.com/stevezau/media_preview_generator/issues/new?labels=enhancement)
+- [GitHub Repository](https://github.com/stevezau/media_preview_generator)
 
 ## License
 
-MIT License. See [LICENSE](https://github.com/stevezau/plex_generate_vid_previews/blob/main/LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/stevezau/media_preview_generator/blob/main/LICENSE) for details.

@@ -1,4 +1,4 @@
-# Plex Generate Previews
+# Media Preview Generator
 
 GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, QSV, VideoToolbox) and parallel workers. Docker-only deployment with a web UI as the sole interface (no CLI).
 
@@ -9,7 +9,7 @@ GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. 
 pip install -e ".[dev]"
 
 # Run (web UI)
-gunicorn plex_generate_previews.web.wsgi:app --bind 0.0.0.0:8080 --worker-class gthread --workers 1
+gunicorn media_preview_generator.web.wsgi:app --bind 0.0.0.0:8080 --worker-class gthread --workers 1
 
 # Test — default runs parallel (xdist), excludes gpu + e2e, keeps coverage
 pytest                                          # ~5s, 1321 tests, ~79% cov
@@ -28,7 +28,7 @@ docker build -t plex-previews:dev .
 ## Architecture
 
 ```
-plex_generate_previews/
+media_preview_generator/
 ├── config.py              # @dataclass Config, loads from settings.json
 ├── plex_client.py         # Plex API: library queries, path resolution, retry
 ├── worker.py              # ThreadPool workers, GPU task assignment

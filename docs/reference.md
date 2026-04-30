@@ -583,9 +583,37 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | GET | `/api/system/config` | Yes | Current configuration |
 | GET | `/api/libraries` | Yes | Plex libraries |
 
+### Multi-Media-Server Endpoints
+
+For full design and per-vendor details see [Multi-Media-Server](multi-server.md).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/servers` | List configured servers (auth redacted) |
+| POST | `/api/servers` | Add a new server (auto-generates id) |
+| GET | `/api/servers/<id>` | Fetch one server (auth redacted) |
+| PUT/PATCH | `/api/servers/<id>` | Update; redacted auth values are kept |
+| DELETE | `/api/servers/<id>` | Remove a server |
+| POST | `/api/servers/test-connection` | Test a candidate config without saving |
+| POST | `/api/servers/<id>/refresh-libraries` | Re-fetch the server's library list |
+| GET | `/api/servers/owners?path=...` | Diagnose which servers own a given path |
+| GET | `/api/servers/<id>/output-status?path=...` | Whether publisher output files exist for a path on this server |
+| POST | `/api/servers/auth/emby/password` | Username+password → Emby token |
+| POST | `/api/servers/auth/jellyfin/password` | Username+password → Jellyfin token |
+| POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Begin Quick Connect ceremony |
+| POST | `/api/servers/auth/jellyfin/quick-connect/poll` | Poll for approval |
+| POST | `/api/servers/auth/jellyfin/quick-connect/exchange` | Exchange approved secret for token |
+| POST | `/api/servers/<id>/jellyfin/fix-trickplay` | Auto-flip `EnableTrickplayImageExtraction` on a Jellyfin server's libraries (one-click fix for the most common Jellyfin gotcha — see [docs/multi-server#jellyfin-trickplay-extraction-flag](multi-server.md#jellyfin-trickplay-extraction-flag-the-most-common-gotcha)) |
+| GET | `/api/bif/servers/<id>/search?q=<query>` | Multi-server BIF Viewer search; returns `preview_kind` (`bif` or `trickplay`) per result so the viewer renders the right format |
+| GET | `/api/bif/trickplay/info?server_id=...&path=...` | Parse a Jellyfin trickplay manifest + report sheet metadata |
+| GET | `/api/bif/trickplay/frame?server_id=...&sheets_dir=...&index=N&tile_width=10&tile_height=10` | Slice and serve a single thumbnail JPEG from a trickplay tile sheet |
+
 ### Webhook Endpoints
 
 Inbound webhook endpoints for Radarr/Sonarr/Custom integration. Webhook endpoints accept `X-Auth-Token`, `Authorization: Bearer`, or a configured `webhook_secret`.
+
+> [!TIP]
+> The new **universal webhook URL** at `POST /api/webhooks/incoming` auto-detects the vendor (Plex / Emby / Jellyfin / Sonarr / Radarr / templated path) so you only need one URL across every server. Falls back to per-server URLs at `POST /api/webhooks/server/<server_id>` for ambiguous setups (rare). See [Multi-Media-Server — Webhook configuration](multi-server.md#webhook-configuration-per-vendor) for details.
 
 #### POST /api/webhooks/radarr
 

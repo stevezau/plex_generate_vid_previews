@@ -1,0 +1,1386 @@
+{% extends "base.html" %}
+
+{% block title %}Setup - Media Preview Generator{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/setup.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="setup-container">
+    <div class="setup-header">
+        <h1><i class="bi bi-film me-2"></i>Media Preview Generator</h1>
+        <p class="text-muted">Setup wizard</p>
+    </div>
+
+    <!-- Progress Indicator -->
+    <div class="setup-progress">
+        <div class="progress-step active" data-step="1">
+            <div class="step-number">1</div>
+            <span class="d-none d-md-inline">Sign In</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="2">
+            <div class="step-number">2</div>
+            <span class="d-none d-md-inline">Server</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="3">
+            <div class="step-number">3</div>
+            <span class="d-none d-md-inline">Paths</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="4">
+            <div class="step-number">4</div>
+            <span class="d-none d-md-inline">Options</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="progress-step" data-step="5">
+            <div class="step-number">5</div>
+            <span class="d-none d-md-inline">Security</span>
+        </div>
+    </div>
+
+    <!-- Step 1: Choose your media server (vendor picker → vendor-specific flow) -->
+    <div class="setup-step active" data-step="1">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title text-center mb-2">Choose your media server</h4>
+                <p class="text-muted text-center mb-4">
+                    Pick your first server. You can add more from the Servers page later.
+                </p>
+
+                <!-- Vendor picker (visible by default) -->
+                <div id="vendorPicker" class="row g-2 mb-2">
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-outline-primary w-100 h-100 py-3 wizard-vendor-btn" data-vendor="plex">
+                            <img src="{{ url_for('static', filename='images/vendors/plex.svg') }}" width="36" height="36" class="d-block mx-auto mb-1" alt="Plex">
+                            Plex
+                            <div class="small text-muted">auto-discovery via plex.tv</div>
+                        </button>
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-outline-success w-100 h-100 py-3 wizard-vendor-btn" data-vendor="emby">
+                            <img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" width="36" height="36" class="d-block mx-auto mb-1" alt="Emby">
+                            Emby
+                            <div class="small text-muted">URL + API key or password</div>
+                        </button>
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-outline-info w-100 h-100 py-3 wizard-vendor-btn" data-vendor="jellyfin">
+                            <img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" width="36" height="36" class="d-block mx-auto mb-1" alt="Jellyfin">
+                            Jellyfin
+                            <div class="small text-muted">Quick Connect or URL+key</div>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Plex sign-in panel — revealed when the Plex card is clicked. The
+                     id+structure of every nested element is unchanged from the original
+                     step 1 so the existing setup.js handlers (plexSignInBtn etc.) keep
+                     working without modification. -->
+                <div id="plexSignInPanel" class="d-none text-center mt-3">
+                    <button type="button" class="btn plex-sign-in-btn" id="plexSignInBtn">
+                        <i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex
+                    </button>
+
+                    <div id="authStatus" class="auth-status d-none">
+                        <i class="bi bi-check-circle-fill text-success me-2"></i>
+                        <span>Signed in successfully!</span>
+                    </div>
+
+                    <div id="authError" class="alert alert-danger mt-3 d-none"></div>
+
+                    <hr class="my-4">
+
+                    <details id="manualConnectDetails" class="text-start">
+                        <summary class="text-muted" style="cursor: pointer;">
+                            <i class="bi bi-sliders me-1"></i>Can&rsquo;t reach <code>plex.tv</code>? Enter server details manually
+                        </summary>
+                        <p class="text-muted small mt-2 mb-3">
+                            Use this if your network blocks <code>plex.tv</code>, or if you&rsquo;d rather
+                            paste a URL and token directly. You&rsquo;ll still see your libraries on the next step.
+                        </p>
+                        <div class="mb-2">
+                            <label for="manualPlexUrl" class="form-label small mb-1">Plex Server URL</label>
+                            <input type="text" class="form-control form-control-sm" id="manualPlexUrl"
+                                   placeholder="http://192.168.1.100:32400">
+                        </div>
+                        <div class="mb-2">
+                            <label for="manualPlexToken" class="form-label small mb-1">Plex Token</label>
+                            <input type="password" class="form-control form-control-sm" id="manualPlexToken"
+                                   placeholder="X-Plex-Token value">
+                            <div class="form-text">
+                                Find it in your Plex web app URL after loading any item
+                                (see <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener">this Plex support article</a>).
+                            </div>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="manualPlexVerifySsl" checked>
+                            <label class="form-check-label small" for="manualPlexVerifySsl">
+                                Verify Plex HTTPS certificate
+                            </label>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="manualPlexTestBtn">
+                            <i class="bi bi-plug me-1"></i>Verify connection
+                        </button>
+                        <div id="manualPlexResult" class="small mt-2"></div>
+                    </details>
+
+                    <div class="d-flex justify-content-start mt-4">
+                        <button type="button" class="btn btn-link" id="vendorPickerBackBtn">
+                            <i class="bi bi-arrow-left me-1"></i>Back
+                        </button>
+                    </div>
+                </div>
+
+                {# Emby/Jellyfin connection panel — revealed inline when the user
+                   picks Emby or Jellyfin in the vendor picker (no modal popup).
+                   Reuses the exact same connection-form partial that the
+                   /servers Add Server modal uses, so server.js wires both up
+                   identically by ID. The form's own bottom-aligned "← Back"
+                   (#step-connect-back) is the single source of truth — no
+                   duplicate top-of-panel back link. #}
+                <div id="ejConnectPanel" class="d-none mt-3">
+                    {% include "_server_connection_form.html" %}
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mt-4">
+            <button type="button" class="btn btn-link text-muted small p-0" id="skipSetupBtn"
+                    title="Mark setup complete and add servers later from the Servers page">
+                <i class="bi bi-skip-end me-1"></i>Skip — I&rsquo;ll add servers later
+            </button>
+            <button type="button" class="btn btn-primary d-none" id="step1Next" disabled>
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 2: Server & Libraries -->
+    <div class="setup-step" data-step="2">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h4 class="card-title mb-3">Select Your Server</h4>
+
+                <div id="serverLoading" class="text-center py-3">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="text-muted mt-2">Discovering servers...</p>
+                </div>
+
+                <select class="form-select d-none" id="serverSelect">
+                    <option value="">Select a server...</option>
+                </select>
+
+                <div id="serverUrlOverride" class="mt-3 d-none">
+                    <label for="serverUrlInput" class="form-label">Server URL</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="serverUrlInput"
+                               placeholder="http://192.168.1.100:32400">
+                        <button class="btn btn-outline-secondary" type="button" id="serverUrlApply">
+                            Apply
+                        </button>
+                    </div>
+                    <div class="form-text">
+                        Auto-detected from Plex. Override if the URL isn't reachable from this
+                        host (e.g. inside Docker use the container network IP or
+                        <code>host.docker.internal</code>).
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="setupPlexVerifySsl" checked>
+                        <label class="form-check-label" for="setupPlexVerifySsl">
+                            Verify Plex HTTPS certificate
+                        </label>
+                    </div>
+                    <div class="form-text">Disable only if your Plex server uses a self-signed certificate.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" id="librariesCard" style="display: none;">
+            <div class="card-body">
+                <h4 class="card-title mb-3">Libraries to Process</h4>
+                <p class="text-muted mb-3">Tick the libraries you want previews for. Tick none to include all.</p>
+
+                <div id="libraryLoading" class="text-center py-3 d-none">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+
+                <div id="libraryGrid" class="library-grid"></div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step2Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-primary" id="step2Next" disabled>
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 3: Path Configuration -->
+    <div class="setup-step" data-step="3">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title mb-4">Path Configuration</h4>
+
+                <div class="mb-3">
+                    {# id is wizardPlexConfigFolder (not plexConfigFolder) to avoid
+                       colliding with the same-named input inside the included
+                       _server_connection_form partial — that one is hidden in
+                       #auth-fields-token-plex on /setup but still in the DOM, so
+                       getElementById('plexConfigFolder') would return the wrong
+                       element and the validator would silently no-op. #}
+                    <label for="wizardPlexConfigFolder" class="form-label">
+                        Plex Media Server data folder
+                        <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip"
+                           title="Path inside this container to Plex&#39;s data folder (where previews are written)"></i>
+                    </label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="wizardPlexConfigFolder"
+                               value="/plex" placeholder="/plex">
+                        <button type="button" class="btn btn-outline-secondary" id="wizardPlexConfigFolderBrowseBtn" title="Browse folders">
+                            <i class="bi bi-folder2-open"></i>
+                        </button>
+                        <div class="invalid-feedback small"></div>
+                        <div class="valid-feedback small">Looks like a valid Plex config folder</div>
+                    </div>
+                    <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
+                </div>
+
+                <hr class="my-4">
+                <h5 class="mb-2">Media path mapping (optional)</h5>
+                <div class="alert alert-info py-2 mb-3 small" role="alert">
+                    Only needed if Plex and this app see the same media at different paths.
+                    <strong>Example:</strong> Plex sees <code>/data</code>, app sees <code>/mnt/data</code> → one row: <code>/data</code> → <code>/mnt/data</code>. The <em>Webhook path</em> column is only for when Sonarr/Radarr/Tdarr send yet a third path.
+                </div>
+
+                <div id="setupPathMappingsContainer">
+                    <div class="d-flex gap-2 mb-1 path-mapping-header">
+                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                            <span class="form-label small mb-0">Path in Plex</span>
+                        </div>
+                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                            <span class="form-label small mb-0">Path in this app</span>
+                        </div>
+                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                            <span class="form-label small mb-0 text-muted">Webhook path (if different)</span>
+                        </div>
+                        <div class="flex-shrink-0" style="width: 38px;"></div>
+                    </div>
+                    <div class="path-mapping-rows mb-2"></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddPathMappingBtn">
+                        <i class="bi bi-plus-lg me-1"></i>Add another mapping
+                    </button>
+                </div>
+
+                <hr class="my-4">
+                <h6 class="mb-2">Exclude paths (optional)</h6>
+                <p class="text-muted small mb-2">Paths or folders to skip for preview generation. Path prefix or regex.</p>
+                <div id="setupExcludePathsContainer">
+                    <div class="exclude-path-rows mb-2"></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddExcludePathBtn">
+                        <i class="bi bi-plus-lg me-1"></i>Add exclude path
+                    </button>
+                </div>
+
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step3Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-primary" id="step3Next">
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 4: Processing Options -->
+    <div class="setup-step" data-step="4">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title mb-4">Processing Options</h4>
+
+                <h6 class="mb-3"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
+                <p class="form-text mt-0 mb-3">GPU workers use both GPU and CPU. For standard content, the GPU does most of the work. For HDR and Dolby Vision content, CPU usage will be higher due to additional tone mapping processing.</p>
+                <div id="gpuConfigContainer">
+                    <div class="text-muted mb-3" id="gpuDetecting">
+                        <div class="spinner-border spinner-border-sm me-2" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        Detecting GPUs...
+                    </div>
+                    <div id="gpuConfigList"></div>
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-4"
+                        id="gpuRescanBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs
+                </button>
+
+                <h6 class="mb-3"><i class="bi bi-cpu me-2"></i>CPU Workers</h6>
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
+                        <label for="cpuThreads" class="form-label">
+                            CPU Workers
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="How many items the CPU processes at the same time, in addition to any GPU workers. Each worker keeps one job busy at a time. Set to 0 to disable CPU processing entirely."></i>
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="cpuThreads"
+                               min="0" max="32" value="1">
+                        <div class="form-text">Parallel preview jobs on the CPU.</div>
+                    </div>
+                </div>
+                <div class="alert alert-secondary py-2 mb-4">
+                    <small>
+                        If a GPU worker can&rsquo;t process a file (unsupported codec, hardware error),
+                        the same worker retries it on CPU in-place.
+                    </small>
+                </div>
+
+                <h6 class="mb-3"><i class="bi bi-image me-2"></i>Thumbnail Settings</h6>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailInterval" class="form-label">
+                            Thumbnail Interval
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."></i>
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control has-stepper" id="thumbnailInterval"
+                                   value="2" min="1" max="60">
+                            <span class="input-group-text">seconds</span>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailQuality" class="form-label">
+                            Thumbnail Quality
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="JPEG quality of each thumbnail (1 = smallest and blurriest, 10 = sharpest and largest). Default 4 looks fine at typical scrubbing sizes. Raise if thumbs look blocky on a 4K display; lower to shrink BIF files."></i>
+                        </label>
+                        <input type="range" class="form-range" id="thumbnailQuality"
+                               value="4" min="1" max="10">
+                        <div class="form-text">
+                            Quality: <span id="qualityValue">4</span>/10
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step4Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-primary" id="step4Next">
+                Next <i class="bi bi-arrow-right ms-1"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 5: Security / Access Token -->
+    <div class="setup-step" data-step="5">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title mb-2"><i class="bi bi-shield-lock me-2"></i>Set your access token</h4>
+
+                <p class="text-muted mb-2">
+                    The access token is what you'll type to log in to this web UI.
+                </p>
+                <p class="text-muted mb-4">
+                    Pick a new one below — it has to be different from the auto-generated token
+                    you're using right now. You can change it again later from
+                    <strong>Settings &rarr; Web Authentication</strong>.
+                </p>
+
+                <!-- Environment variable notice -->
+                <div id="tokenEnvNotice" class="alert alert-info d-none">
+                    <i class="bi bi-info-circle me-2"></i>
+                    <strong>Token is controlled by environment variable.</strong>
+                    <br>The <code>WEB_AUTH_TOKEN</code> environment variable is set, so the token cannot be changed here.
+                </div>
+
+                <div id="customTokenSection">
+                    <div class="mb-3">
+                        <label for="newToken" class="form-label">New token</label>
+                        <input type="password" class="form-control" id="newToken"
+                               placeholder="At least 8 characters" minlength="8" autocomplete="new-password" required>
+                        <div class="form-text">Minimum 8 characters.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="confirmToken" class="form-label">Confirm token</label>
+                        <input type="password" class="form-control" id="confirmToken"
+                               placeholder="Type the same token again" autocomplete="new-password" required>
+                    </div>
+
+                    <div id="tokenError" class="alert alert-danger d-none"></div>
+                    <div id="tokenSuccess" class="alert alert-success d-none">
+                        <i class="bi bi-check-circle me-2"></i>Token updated successfully!
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between mt-4">
+            <button type="button" class="btn btn-outline-secondary" id="step5Back">
+                <i class="bi bi-arrow-left me-1"></i> Back
+            </button>
+            <button type="button" class="btn btn-success" id="finishSetup">
+                <i class="bi bi-check-lg me-1"></i> Complete Setup
+            </button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/plex_webhook_panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/folder_picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/gpu_config_panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/servers.js') }}"></script>
+<script>
+// Per-GPU panel calls markDirty() on every input change to trigger
+// /settings autosave. The wizard advances on Next, not autosave, so
+// stub this out — it's intentionally a no-op here.
+function markDirty() {}
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize managers
+    const plexAuth = new PlexAuth({
+        onSuccess: onAuthSuccess,
+        onError: onAuthError,
+        onCancel: onAuthCancel
+    });
+    const serverManager = new PlexServerManager();
+    const settingsManager = new SettingsManager();
+    const setupManager = new SetupManager();
+
+    // State
+    let currentStep = 1;
+    let isAuthenticated = false;
+    let selectedServer = null;
+    let selectedLibraries = [];
+    // Tracks the vendor the user picked on Step 1 ("plex" | "emby" | "jellyfin").
+    // Plex flows visit Steps 2–3 (libraries + Plex paths); Emby/Jellyfin flows
+    // skip straight to Step 4. Used by the Back button on Step 4 so non-Plex
+    // users don't land on the Plex-only paths page they never visited.
+    let chosenVendor = null;
+
+    // Elements
+    const steps = document.querySelectorAll('.setup-step');
+    const progressSteps = document.querySelectorAll('.progress-step');
+    const connectors = document.querySelectorAll('.step-connector');
+
+    // Initialize tooltips
+    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+    tooltipTriggerList.forEach(el => new bootstrap.Tooltip(el));
+
+    // Wrap every numeric input flagged .has-stepper with −/+ buttons.
+    if (window.MPGShared && window.MPGShared.attachSteppersTo) {
+        window.MPGShared.attachSteppersTo(document);
+    }
+
+    // Load saved state
+    loadSavedState();
+
+    // =========================================================================
+    // Step Navigation
+    // =========================================================================
+
+    function goToStep(step) {
+        currentStep = step;
+
+        // Update step visibility
+        steps.forEach(s => {
+            s.classList.toggle('active', parseInt(s.dataset.step) === step);
+        });
+
+        // Update progress indicators
+        progressSteps.forEach((p, i) => {
+            const stepNum = parseInt(p.dataset.step);
+            p.classList.toggle('active', stepNum === step);
+            p.classList.toggle('completed', stepNum < step);
+        });
+
+        // Update connectors
+        connectors.forEach((c, i) => {
+            c.classList.toggle('completed', i < step - 1);
+        });
+
+        // Save state
+        saveState();
+
+        // Step-specific actions
+        if (step === 2 && isAuthenticated) {
+            if (manualPlexMode && selectedServer) {
+                // Manual URL + token path: skip server discovery, pre-fill
+                // the server card, and jump straight to loading libraries.
+                document.getElementById('serverLoading').classList.add('d-none');
+                const select = document.getElementById('serverSelect');
+                select.innerHTML = '';
+                const option = document.createElement('option');
+                option.value = JSON.stringify(selectedServer);
+                option.textContent = `${selectedServer.name} (${selectedServer.uri})`;
+                option.selected = true;
+                select.appendChild(option);
+                select.classList.remove('d-none');
+
+                const overrideEl = document.getElementById('serverUrlOverride');
+                document.getElementById('serverUrlInput').value = selectedServer.uri;
+                overrideEl.classList.remove('d-none');
+
+                document.getElementById('librariesCard').style.display = 'block';
+                loadLibraries();
+            } else {
+                loadServers();
+            }
+        } else if (step === 3) {
+            settingsManager.get().then(settings => {
+                setupRenderPathMappingRows(settings.path_mappings || setupLegacyToPathMappings(settings));
+                setupRenderExcludePathRows(settings.exclude_paths || []);
+            }).catch(() => {
+                setupRenderPathMappingRows([]);
+                setupRenderExcludePathRows([]);
+            });
+            // Re-run validation against the prefilled Plex config folder so
+            // the user sees green/red feedback the moment they land on this
+            // step — without having to edit the value to nudge the input
+            // event.
+            const plexCfg = document.getElementById('wizardPlexConfigFolder');
+            if (plexCfg && plexCfg.value && window.MPGShared) {
+                window.MPGShared.validateLocalPathInput(plexCfg);
+            }
+        } else if (step === 4) {
+            loadGpuInfo();
+        } else if (step === 5) {
+            loadTokenInfo();
+        }
+    }
+
+    // =========================================================================
+    // Step 1: Plex Authentication
+    // =========================================================================
+
+    document.getElementById('plexSignInBtn').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Connecting...';
+
+        try {
+            await plexAuth.login();
+        } catch (error) {
+            // Error handled in callbacks
+        }
+
+        this.disabled = false;
+        this.innerHTML = '<i class="bi bi-box-arrow-in-right me-2"></i>Sign in with Plex';
+    });
+
+    function onAuthSuccess(token) {
+        isAuthenticated = true;
+        document.getElementById('authStatus').classList.remove('d-none');
+        document.getElementById('authStatus').classList.add('authenticated');
+        document.getElementById('authError').classList.add('d-none');
+        document.getElementById('step1Next').disabled = false;
+        // Brief pause so the success state is visible, then auto-advance —
+        // there's nothing else for the user to do on this step once Plex
+        // accepted them. Guard against the rare case where the user (or a
+        // test) clicked Next manually in the meantime — re-stepping back
+        // would snap them backward.
+        setTimeout(() => { if (currentStep === 1) goToStep(2); }, 600);
+    }
+
+    function onAuthError(error) {
+        document.getElementById('authError').textContent = error.message;
+        document.getElementById('authError').classList.remove('d-none');
+    }
+
+    function onAuthCancel() {
+        document.getElementById('authError').textContent = 'Authentication was cancelled.';
+        document.getElementById('authError').classList.remove('d-none');
+    }
+
+    document.getElementById('step1Next').addEventListener('click', () => goToStep(2));
+
+    // Vendor picker on Step 1:
+    //   * Plex → reveal the existing OAuth panel in-place.
+    //   * Emby / Jellyfin → reveal the shared connection form INLINE in the
+    //     same step card (no modal popup). The form posts to /api/servers
+    //     and dispatches `mediaServerAdded`; the handler below catches it
+    //     and jumps to wizard step 4 (GPU). servers.js's pickVendor helper
+    //     primes the form for the chosen vendor.
+    function _showVendorPicker() {
+        chosenVendor = null;
+        document.getElementById('plexSignInPanel').classList.add('d-none');
+        document.getElementById('ejConnectPanel').classList.add('d-none');
+        document.getElementById('vendorPicker').classList.remove('d-none');
+        document.getElementById('step1Next').classList.add('d-none');
+        if (window.MPGShared && window.MPGShared.resetServerWizard) {
+            window.MPGShared.resetServerWizard();
+        }
+    }
+
+    document.querySelectorAll('.wizard-vendor-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const vendor = btn.dataset.vendor;
+            chosenVendor = vendor;
+            document.getElementById('vendorPicker').classList.add('d-none');
+            if (vendor === 'plex') {
+                document.getElementById('plexSignInPanel').classList.remove('d-none');
+                document.getElementById('step1Next').classList.remove('d-none');
+                return;
+            }
+            // E/J inline panel — reveal it then ask servers.js to set up
+            // the form state for this vendor (vendor label + auth-method
+            // visibility + step-connect view).
+            document.getElementById('ejConnectPanel').classList.remove('d-none');
+            if (window.MPGShared && window.MPGShared.pickVendor) {
+                window.MPGShared.pickVendor(vendor);
+            }
+        });
+    });
+
+    document.getElementById('vendorPickerBackBtn')?.addEventListener('click', _showVendorPicker);
+
+    // The connection form's modal-style Back/Edit buttons default to
+    // showing #step-type, which doesn't exist in the wizard's inline
+    // panel. Re-target them to return to the vendor picker instead.
+    document.getElementById('step-connect-back')?.addEventListener('click', _showVendorPicker);
+
+    // After the Add Server modal saves an Emby / Jellyfin server, jump
+    // the wizard from step 1 directly to step 4 (GPU). Steps 2 and 3 are
+    // Plex-specific (Plex library multi-select + Plex config folder)
+    // and were already handled inside the modal for the non-Plex case.
+    // isAuthenticated is set so that step-internal "needs auth" gates
+    // (used by the Plex flow) don't block the non-Plex finish.
+    document.addEventListener('mediaServerAdded', (event) => {
+        const t = (event.detail && event.detail.type) || '';
+        if (t === 'plex') {
+            // Multi-Plex add fires this too; reload so the Plex flow
+            // picks up the freshly added server(s) on its next step.
+            // (We don't need to short-circuit to step 4 here — the
+            // Plex wizard path is the existing happy path.)
+            return;
+        }
+        isAuthenticated = true;
+        goToStep(4);
+    });
+
+    // Manual URL + token fallback for environments where plex.tv is
+    // unreachable or OAuth discovery isn't working.  The button verifies
+    // the credentials against /api/plex/libraries, then treats auth as
+    // successful and synthesises a `selectedServer` so Step 2 can skip
+    // the OAuth-driven server discovery.
+    let manualPlexMode = false;
+
+    document.getElementById('manualPlexTestBtn').addEventListener('click', async function() {
+        const urlInput = document.getElementById('manualPlexUrl');
+        const tokenInput = document.getElementById('manualPlexToken');
+        const verifySslInput = document.getElementById('manualPlexVerifySsl');
+        const resultEl = document.getElementById('manualPlexResult');
+
+        const url = urlInput.value.trim().replace(/\/$/, '');
+        const token = tokenInput.value.trim();
+        const verifySsl = verifySslInput.checked;
+
+        resultEl.className = 'small mt-2 text-muted';
+        resultEl.textContent = '';
+
+        if (!url || !token) {
+            resultEl.className = 'small mt-2 text-warning';
+            resultEl.textContent = 'Enter both a server URL and a token.';
+            return;
+        }
+
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Checking...';
+
+        try {
+            const qs = new URLSearchParams({ url, token, verify_ssl: verifySsl ? '1' : '0' });
+            const resp = await fetch('/api/plex/libraries?' + qs.toString());
+            const data = await resp.json().catch(() => ({}));
+
+            if (!resp.ok) {
+                const msg = data && data.error ? data.error : 'Couldn\'t reach Plex at that URL.';
+                resultEl.className = 'small mt-2 text-danger';
+                resultEl.textContent = msg;
+                return;
+            }
+
+            await settingsManager.save({
+                plex_url: url,
+                plex_name: 'Plex Server',
+                plex_token: token,
+                plex_verify_ssl: verifySsl
+            });
+
+            // Synthesise a "selected server" object so Step 2 can treat us
+            // the same as a user who came in via OAuth discovery.
+            selectedServer = {
+                name: 'Plex Server',
+                host: url.replace(/^https?:\/\//, '').split(':')[0] || '',
+                port: (url.match(/:(\d+)/) || [])[1] || '32400',
+                access_token: token,
+                ssl: url.startsWith('https://'),
+                local: true,
+                uri: url,
+                owned: true
+            };
+            manualPlexMode = true;
+
+            isAuthenticated = true;
+            document.getElementById('authStatus').classList.remove('d-none');
+            document.getElementById('authStatus').classList.add('authenticated');
+            document.getElementById('authError').classList.add('d-none');
+            document.getElementById('step1Next').disabled = false;
+
+            const libraryCount = Array.isArray(data.libraries) ? data.libraries.length : 0;
+            resultEl.className = 'small mt-2 text-success';
+            resultEl.innerHTML =
+                '<i class="bi bi-check-circle-fill me-1"></i>' +
+                'Connected&nbsp;&mdash;&nbsp;found ' + libraryCount + ' librar' +
+                (libraryCount === 1 ? 'y' : 'ies') + '. Loading libraries…';
+            setTimeout(() => { if (currentStep === 1) goToStep(2); }, 600);
+        } catch (err) {
+            resultEl.className = 'small mt-2 text-danger';
+            resultEl.textContent = 'Connection failed: ' + (err && err.message ? err.message : 'unknown error');
+        } finally {
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-plug me-1"></i>Verify connection';
+        }
+    });
+
+    // =========================================================================
+    // Step 2: Server & Libraries
+    // =========================================================================
+
+    async function loadServers() {
+        const loading = document.getElementById('serverLoading');
+        const select = document.getElementById('serverSelect');
+
+        loading.classList.remove('d-none');
+        select.classList.add('d-none');
+
+        try {
+            const servers = await serverManager.getServers();
+
+            select.innerHTML = '<option value="">Select a server...</option>';
+            servers.forEach(server => {
+                const option = document.createElement('option');
+                option.value = JSON.stringify(server);
+                option.textContent = `${server.name} (${server.host}:${server.port})`;
+                if (server.owned) option.textContent += ' - Owned';
+                select.appendChild(option);
+            });
+
+            loading.classList.add('d-none');
+            select.classList.remove('d-none');
+
+        } catch (error) {
+            loading.innerHTML = `<p class="text-danger">Failed to load servers: ${error.message}</p>`;
+        }
+    }
+
+    function getServerUrl() {
+        const protocol = selectedServer.ssl ? 'https' : 'http';
+        if (selectedServer.local) {
+            return `${protocol}://${selectedServer.host}:${selectedServer.port}`;
+        }
+        return selectedServer.uri || `${protocol}://${selectedServer.host}:${selectedServer.port}`;
+    }
+
+    document.getElementById('serverSelect').addEventListener('change', async function() {
+        const overrideEl = document.getElementById('serverUrlOverride');
+        const urlInput = document.getElementById('serverUrlInput');
+
+        if (!this.value) {
+            document.getElementById('librariesCard').style.display = 'none';
+            document.getElementById('step2Next').disabled = true;
+            overrideEl.classList.add('d-none');
+            return;
+        }
+
+        selectedServer = JSON.parse(this.value);
+
+        urlInput.value = getServerUrl();
+        overrideEl.classList.remove('d-none');
+
+        document.getElementById('librariesCard').style.display = 'block';
+        await loadLibraries();
+    });
+
+    document.getElementById('serverUrlApply').addEventListener('click', async function() {
+        await loadLibraries();
+    });
+    document.getElementById('setupPlexVerifySsl').addEventListener('change', async function() {
+        if (selectedServer) {
+            await loadLibraries();
+        }
+    });
+
+    async function loadLibraries() {
+        const loading = document.getElementById('libraryLoading');
+        const grid = document.getElementById('libraryGrid');
+
+        loading.classList.remove('d-none');
+        grid.innerHTML = '';
+
+        try {
+            const url = document.getElementById('serverUrlInput').value.trim() || getServerUrl();
+            const token = selectedServer.access_token;
+            const verifySsl = document.getElementById('setupPlexVerifySsl').checked;
+
+            await settingsManager.save({
+                plex_url: url,
+                plex_name: selectedServer.name,
+                plex_token: token,
+                plex_verify_ssl: verifySsl
+            });
+
+            const libraries = await serverManager.getLibraries(url, token, verifySsl);
+
+            loading.classList.add('d-none');
+
+            libraries.forEach(lib => {
+                // The card itself is a <label for="lib-X"> so the browser
+                // toggles the checkbox natively when the user clicks anywhere
+                // inside it (including the strong/small text). The previous
+                // version used a separate <label> AND a card click handler,
+                // which double-toggled (browser flip + handler flip) and
+                // left the box unchecked — see plan iridescent-churning-bear.
+                const card = document.createElement('label');
+                card.className = 'library-card mb-0';
+                card.dataset.id = lib.id;
+                card.htmlFor = `lib-${lib.id}`;
+                card.innerHTML = `
+                    <input type="checkbox" id="lib-${lib.id}">
+                    <strong>${lib.name}</strong>
+                    <br><small class="text-muted">${libraryTypeLabel(lib)}</small>
+                `;
+                const checkbox = card.querySelector('input[type="checkbox"]');
+                checkbox.addEventListener('change', () => {
+                    card.classList.toggle('selected', checkbox.checked);
+                    updateSelectedLibraries();
+                });
+                grid.appendChild(card);
+            });
+
+        } catch (error) {
+            loading.classList.add('d-none');
+            grid.innerHTML = `
+                <div class="alert alert-danger" role="alert">
+                    <strong>Failed to load libraries:</strong> ${error.message}
+                    <hr class="my-2">
+                    <small>
+                        Try editing the Server URL above. In Docker deployments the
+                        auto-detected address is often unreachable from inside the container
+                        &mdash; use the Docker network IP or <code>host.docker.internal</code> instead.
+                    </small>
+                </div>`;
+        }
+    }
+
+    function updateSelectedLibraries() {
+        const cards = document.querySelectorAll('.library-card');
+        selectedLibraries = [];
+
+        cards.forEach(card => {
+            if (card.classList.contains('selected')) {
+                selectedLibraries.push(card.dataset.id);
+            }
+        });
+
+        document.getElementById('step2Next').disabled = selectedLibraries.length === 0;
+    }
+
+    document.getElementById('step2Back').addEventListener('click', () => goToStep(1));
+    document.getElementById('step2Next').addEventListener('click', async () => {
+        // Save selected libraries
+        await settingsManager.save({ selected_libraries: selectedLibraries });
+        goToStep(3);
+    });
+
+    // =========================================================================
+    // Step 3: Path Configuration
+    // =========================================================================
+
+    function setupLegacyToPathMappings(settings) {
+        const plex = (settings.plex_videos_path_mapping || '').trim();
+        const local = (settings.plex_local_videos_path_mapping || '').trim();
+        if (!plex || !local) return [];
+        const plexList = plex.split(';').map(s => s.trim()).filter(Boolean);
+        const localList = local.split(';').map(s => s.trim()).filter(Boolean);
+        if (localList.length === 1) {
+            return plexList.map(p => ({ plex_prefix: p, local_prefix: localList[0], webhook_prefixes: [] }));
+        }
+        if (plexList.length === localList.length) {
+            return plexList.map((p, i) => ({ plex_prefix: p, local_prefix: localList[i], webhook_prefixes: [] }));
+        }
+        return plexList.length ? [{ plex_prefix: plexList[0], local_prefix: localList[0] || local, webhook_prefixes: [] }] : [];
+    }
+
+    function setupCollectPathMappingRows() {
+        const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
+        if (!container) return [];
+        const rows = [];
+        container.querySelectorAll('.path-mapping-row').forEach(rowEl => {
+            const plex = (rowEl.querySelector('.path-mapping-plex')?.value || '').trim();
+            const local = (rowEl.querySelector('.path-mapping-local')?.value || '').trim();
+            if (!plex || !local) return;
+            const webRaw = (rowEl.querySelector('.path-mapping-webhook')?.value || '').trim();
+            const webhook_prefixes = webRaw ? webRaw.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
+            rows.push({ plex_prefix: plex, local_prefix: local, webhook_prefixes });
+        });
+        return rows;
+    }
+
+    // Path mapping rows mirror the /servers Edit modal (same Browse button +
+    // same /api/settings/validate-local-path debounced validation). The
+    // shared validator + debouncer come from servers.js via window.MPGShared.
+    function _esc(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    }
+
+    function setupCreatePathMappingRow(row) {
+        const div = document.createElement('div');
+        div.className = 'path-mapping-row d-flex align-items-start gap-2 mb-2';
+        const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
+        div.innerHTML = `
+            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${_esc(row.plex_prefix)}">
+            </div>
+            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${_esc(row.local_prefix)}">
+                    <button type="button" class="btn btn-outline-secondary path-mapping-browse" title="Browse folders">
+                        <i class="bi bi-folder2-open"></i>
+                    </button>
+                    <div class="invalid-feedback small"></div>
+                    <div class="valid-feedback small">Path exists</div>
+                </div>
+            </div>
+            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+                <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${_esc(webhookVal)}">
+            </div>
+            <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove flex-shrink-0" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
+        `;
+        div.querySelector('.path-mapping-remove').addEventListener('click', function() {
+            const parent = div.closest('.path-mapping-rows');
+            const rows = parent ? parent.querySelectorAll('.path-mapping-row') : [];
+            if (rows.length > 1) div.remove();
+        });
+        const localInput = div.querySelector('.path-mapping-local');
+        const validate = window.MPGShared && window.MPGShared.validateLocalPathInput;
+        const debounced = window.MPGShared && window.MPGShared.debouncedValidatePath;
+        if (debounced) localInput.addEventListener('input', debounced(localInput));
+        if (validate && row.local_prefix) validate(localInput);
+        div.querySelector('.path-mapping-browse').addEventListener('click', () => {
+            const start = (localInput.value || '').trim() || '/';
+            window.openFolderPicker(start, (picked) => {
+                localInput.value = picked;
+                if (validate) validate(localInput);
+            });
+        });
+        return div;
+    }
+
+    function setupRenderPathMappingRows(rows) {
+        const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            container.appendChild(setupCreatePathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+            return;
+        }
+        rows.forEach(r => container.appendChild(setupCreatePathMappingRow(r)));
+    }
+
+    function setupRenderExcludePathRows(rows) {
+        const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            container.appendChild(setupCreateExcludePathRow({ value: '', type: 'path' }));
+            return;
+        }
+        rows.forEach(r => container.appendChild(setupCreateExcludePathRow({ value: r.value || '', type: (r.type || 'path') })));
+    }
+
+    function setupCreateExcludePathRow(row) {
+        const div = document.createElement('div');
+        div.className = 'exclude-path-row d-flex align-items-end gap-2 mb-2';
+        const typeVal = (row.type || 'path') === 'regex' ? 'regex' : 'path';
+        const valEsc = (row.value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+        div.innerHTML = `
+            <div class="flex-grow-1" style="flex-basis: 0;">
+                <label class="form-label small mb-0">Path or pattern</label>
+                <input type="text" class="form-control form-control-sm exclude-path-value" placeholder="e.g. /mnt/media/foo or .*\\.iso$" value="${valEsc}">
+            </div>
+            <div style="width: 140px;">
+                <label class="form-label small mb-0">Match type</label>
+                <select class="form-select form-select-sm exclude-path-type">
+                    <option value="path" ${typeVal === 'path' ? 'selected' : ''}>Path prefix</option>
+                    <option value="regex" ${typeVal === 'regex' ? 'selected' : ''}>Regex</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-outline-danger btn-sm exclude-path-remove flex-shrink-0" title="Remove"><i class="bi bi-dash-lg"></i></button>
+        `;
+        div.querySelector('.exclude-path-remove').addEventListener('click', function() {
+            div.remove();
+        });
+        return div;
+    }
+
+    function setupCollectExcludePathRows() {
+        const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
+        if (!container) return [];
+        const rows = [];
+        container.querySelectorAll('.exclude-path-row').forEach(rowEl => {
+            const value = (rowEl.querySelector('.exclude-path-value')?.value || '').trim();
+            if (!value) return;
+            const type = (rowEl.querySelector('.exclude-path-type')?.value || 'path') === 'regex' ? 'regex' : 'path';
+            rows.push({ value, type });
+        });
+        return rows;
+    }
+
+    document.getElementById('step3Back').addEventListener('click', () => goToStep(2));
+
+    document.getElementById('setupAddPathMappingBtn').addEventListener('click', function() {
+        const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
+        if (container) container.appendChild(setupCreatePathMappingRow({ plex_prefix: '', local_prefix: '', webhook_prefixes: [] }));
+    });
+    document.getElementById('setupAddExcludePathBtn').addEventListener('click', function() {
+        const container = document.querySelector('#setupExcludePathsContainer .exclude-path-rows');
+        if (container) container.appendChild(setupCreateExcludePathRow({ value: '', type: 'path' }));
+    });
+
+    // Plex config folder: same debounced validation + Browse button as the
+    // /servers Edit modal. The validator (servers.js) recognises the wizard
+    // ID and runs the deeper structural Plex check via
+    // /api/settings/validate-plex-config-folder.
+    const plexCfgInput = document.getElementById('wizardPlexConfigFolder');
+    if (plexCfgInput && window.MPGShared) {
+        plexCfgInput.addEventListener('input', window.MPGShared.debouncedValidatePath(plexCfgInput));
+        if (plexCfgInput.value) window.MPGShared.validateLocalPathInput(plexCfgInput);
+    }
+    const plexCfgBrowseBtn = document.getElementById('wizardPlexConfigFolderBrowseBtn');
+    if (plexCfgBrowseBtn) {
+        plexCfgBrowseBtn.addEventListener('click', () => {
+            const start = (plexCfgInput.value || '').trim() || '/';
+            window.openFolderPicker(start, (picked) => {
+                plexCfgInput.value = picked;
+                if (window.MPGShared) window.MPGShared.validateLocalPathInput(plexCfgInput);
+            });
+        });
+    }
+
+    // No "Validate Paths" button — every input on this step validates
+    // inline as the user types (Plex config folder + each path-mapping
+    // row hit /api/settings/validate-{plex-config-folder,local-path}
+    // with debounced feedback). The Next button advances when the user
+    // is satisfied; the same checks fire server-side on save anyway.
+
+    document.getElementById('step3Next').addEventListener('click', async () => {
+        await settingsManager.save({
+            plex_config_folder: document.getElementById('wizardPlexConfigFolder').value,
+            path_mappings: setupCollectPathMappingRows(),
+            exclude_paths: setupCollectExcludePathRows()
+        });
+        goToStep(4);
+    });
+
+    // =========================================================================
+    // Step 4: Processing Options
+    // =========================================================================
+
+    // Step 4 reuses the same per-GPU panel as /settings (one card per detected
+    // GPU with enable toggle / Workers / FFmpeg Threads). renderGpuConfigPanel +
+    // collectGpuConfig come from static/js/gpu_config_panel.js.
+    async function loadGpuInfo() {
+        // Pre-populate cpu_threads + saved gpu_config from settings so the
+        // wizard reflects whatever the user (or env-seeding) already set.
+        try {
+            const settings = await settingsManager.get();
+            window._gpuConfig = settings.gpu_config || [];
+            if (typeof settings.cpu_threads === 'number') {
+                document.getElementById('cpuThreads').value = settings.cpu_threads;
+            }
+        } catch (_e) {
+            window._gpuConfig = [];
+        }
+        try {
+            const response = await fetch('/api/system/status');
+            const data = await response.json();
+            document.getElementById('gpuDetecting').classList.add('d-none');
+            if (data.gpus && data.gpus.length > 0) {
+                renderGpuConfigPanel(data.gpus, window._gpuConfig);
+            } else {
+                document.getElementById('gpuConfigList').innerHTML =
+                    '<div class="alert alert-warning mb-0">' +
+                    '<i class="bi bi-exclamation-triangle me-2"></i>' +
+                    'No GPU detected. CPU processing will be used.</div>';
+            }
+        } catch (error) {
+            document.getElementById('gpuDetecting').classList.add('d-none');
+            document.getElementById('gpuConfigList').innerHTML =
+                '<div class="alert alert-danger mb-0">' +
+                '<i class="bi bi-x-circle me-2"></i>Failed to detect GPUs.</div>';
+        }
+    }
+
+    document.getElementById('gpuRescanBtn').addEventListener('click', async function() {
+        const btn = this;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning...';
+        try {
+            const response = await fetch('/api/system/rescan-gpus', { method: 'POST' });
+            const data = await response.json();
+            if (data.gpus && data.gpus.length > 0) {
+                renderGpuConfigPanel(data.gpus, collectGpuConfig());
+            } else {
+                document.getElementById('gpuConfigList').innerHTML =
+                    '<div class="alert alert-warning mb-0">No GPUs detected.</div>';
+            }
+        } catch (error) {
+            if (typeof showToast === 'function') {
+                showToast('GPU rescan failed', error.message, 'danger');
+            }
+        }
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs';
+    });
+
+    // Quality slider value display
+    document.getElementById('thumbnailQuality').addEventListener('input', function() {
+        document.getElementById('qualityValue').textContent = this.value;
+    });
+
+    document.getElementById('step4Back').addEventListener('click', () => {
+        // Plex visited Steps 2–3 on the way here; E/J skipped both.
+        // Send each user back to where they actually came from.
+        goToStep(chosenVendor === 'plex' ? 3 : 1);
+    });
+
+    document.getElementById('step4Next').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+
+        try {
+            // Per-GPU config matches the /settings shape so settings_manager
+            // doesn't need the legacy gpu_threads distribution shim.
+            await settingsManager.save({
+                gpu_config: collectGpuConfig(),
+                cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+                thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
+                thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value)
+            });
+
+            goToStep(5);
+
+        } catch (error) {
+            if (typeof showToast === 'function') {
+                showToast('Failed to save options', error.message, 'danger');
+            }
+        }
+
+        this.disabled = false;
+        this.innerHTML = 'Next <i class="bi bi-arrow-right ms-1"></i>';
+    });
+
+    // =========================================================================
+    // Step 5: Security / Access Token
+    //
+    // Mirrors /settings \u2192 Web Authentication: never show the current token,
+    // just offer "set a new one". User can leave the fields blank to skip.
+    // The /api/setup/token-info endpoint is only used here to detect the
+    // env-controlled lock; the actual token value is intentionally not read.
+    // =========================================================================
+
+    async function loadTokenInfo() {
+        try {
+            const response = await fetch('/api/setup/token-info');
+            const data = await response.json();
+            if (data.env_controlled) {
+                document.getElementById('tokenEnvNotice').classList.remove('d-none');
+                document.getElementById('customTokenSection').classList.add('d-none');
+            } else {
+                document.getElementById('tokenEnvNotice').classList.add('d-none');
+                document.getElementById('customTokenSection').classList.remove('d-none');
+            }
+        } catch (error) {
+            console.error('Failed to load token info:', error);
+        }
+    }
+
+    document.getElementById('step5Back').addEventListener('click', () => goToStep(4));
+
+    // Phase H8: "Skip setup — I'll add my server later" lets Emby/Jellyfin
+    // (and Plex-on-LAN) users bypass the Plex-first wizard and jump to the
+    // dashboard. The Servers page handles all three vendors first-class.
+    const skipBtn = document.getElementById('skipSetupBtn');
+    if (skipBtn) {
+        skipBtn.addEventListener('click', async function() {
+            if (!confirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.")) {
+                return;
+            }
+            this.disabled = true;
+            try {
+                const resp = await fetch('/api/setup/skip', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
+                    },
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    window.location.href = '/servers';
+                } else {
+                    if (typeof showToast === 'function') {
+                        showToast('Could not skip setup', data.error || 'Unknown error', 'danger');
+                    }
+                    this.disabled = false;
+                }
+            } catch (err) {
+                if (typeof showToast === 'function') {
+                    showToast(
+                        'Could not skip setup',
+                        err && err.message ? err.message : 'Network error',
+                        'danger',
+                    );
+                }
+                this.disabled = false;
+            }
+        });
+    }
+
+    document.getElementById('finishSetup').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+
+        const tokenError = document.getElementById('tokenError');
+        const tokenSuccess = document.getElementById('tokenSuccess');
+        const restoreBtn = () => {
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-check-lg me-1"></i> Complete Setup';
+        };
+        tokenError.classList.add('d-none');
+        tokenSuccess.classList.add('d-none');
+
+        try {
+            // env-controlled tokens can't be changed from the UI — let the
+            // user proceed without entering anything (the section is hidden).
+            const envControlled = !document.getElementById('tokenEnvNotice').classList.contains('d-none');
+            const newToken = document.getElementById('newToken').value;
+            const confirmToken = document.getElementById('confirmToken').value;
+
+            if (!envControlled) {
+                if (!newToken || !confirmToken) {
+                    tokenError.textContent = 'Please set a new access token to finish setup.';
+                    tokenError.classList.remove('d-none');
+                    restoreBtn();
+                    return;
+                }
+                if (newToken.length < 8) {
+                    tokenError.textContent = 'Token must be at least 8 characters long.';
+                    tokenError.classList.remove('d-none');
+                    restoreBtn();
+                    return;
+                }
+                if (newToken !== confirmToken) {
+                    tokenError.textContent = 'Tokens do not match.';
+                    tokenError.classList.remove('d-none');
+                    restoreBtn();
+                    return;
+                }
+
+                const tokenResponse = await fetch('/api/setup/set-token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : ''
+                    },
+                    body: JSON.stringify({ token: newToken, confirm_token: confirmToken })
+                });
+
+                const tokenData = await tokenResponse.json();
+                if (!tokenData.success) {
+                    // Surfaces the server's "token must be different from
+                    // the current one" rejection so the user knows what to fix.
+                    tokenError.textContent = tokenData.error || 'Failed to set token.';
+                    tokenError.classList.remove('d-none');
+                    restoreBtn();
+                    return;
+                }
+
+                tokenSuccess.classList.remove('d-none');
+            }
+
+            // Complete setup
+            const result = await setupManager.complete();
+
+            // Redirect to dashboard
+            window.location.href = result.redirect || '/';
+
+        } catch (error) {
+            tokenError.textContent = 'Failed to complete setup: ' + error.message;
+            tokenError.classList.remove('d-none');
+            restoreBtn();
+        }
+    });
+
+    // =========================================================================
+    // State Management
+    // =========================================================================
+
+    async function loadSavedState() {
+        try {
+            const settings = await settingsManager.get();
+            document.getElementById('setupPlexVerifySsl').checked = settings.plex_verify_ssl !== false;
+
+            const status = await setupManager.getStatus();
+
+            if (status.plex_authenticated) {
+                isAuthenticated = true;
+                document.getElementById('authStatus').classList.remove('d-none');
+                document.getElementById('authStatus').classList.add('authenticated');
+                document.getElementById('step1Next').disabled = false;
+            }
+
+            if (status.current_step && status.current_step > 1) {
+                goToStep(status.current_step);
+            }
+        } catch (error) {
+            console.log('No saved state found');
+        }
+    }
+
+    async function saveState() {
+        try {
+            await setupManager.saveState(currentStep, {
+                isAuthenticated,
+                selectedServer,
+                selectedLibraries
+            });
+        } catch (error) {
+            console.warn('Failed to save state:', error);
+        }
+    }
+});
+</script>
+{% endblock %}

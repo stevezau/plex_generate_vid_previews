@@ -10,10 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.jobs.orchestrator import run_processing
-from plex_generate_previews.processing import ProcessingResult
+from media_preview_generator.jobs.orchestrator import run_processing
+from media_preview_generator.processing import ProcessingResult
 
-MODULE = "plex_generate_previews.jobs.orchestrator"
+MODULE = "media_preview_generator.jobs.orchestrator"
 
 
 def _make_config(tmp_path, **overrides):
@@ -24,6 +24,9 @@ def _make_config(tmp_path, **overrides):
         "working_tmp_folder": str(tmp_path / "work"),
         "webhook_paths": None,
         "sort_by": None,
+        "plex_url": "http://plex:32400",
+        "plex_token": "tok",
+        "server_id_filter": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -47,6 +50,49 @@ def _make_section(title):
     return SimpleNamespace(title=title)
 
 
+def _processable(key, title, *, canonical_path=None, server_id="plex-1", library_id="lib-1"):
+    """Build a :class:`ProcessableItem` for tests.
+
+    Mirrors what ``PlexProcessor.list_canonical_paths`` would yield.
+    ``canonical_path`` defaults to a unique path derived from ``title`` so
+    dedup-by-path doesn't accidentally collapse distinct items.
+    """
+    from media_preview_generator.processing.types import ProcessableItem
+
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{title.replace(' ', '_')}_{key}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id=library_id,
+    )
+
+
+def _processables(items, *, server_id="plex-1", library_id="lib-1"):
+    """Bulk version of :func:`_processable` — converts ``[(key, title, _media)]``."""
+    return [_processable(key, title, server_id=server_id, library_id=library_id) for key, title, *_ in items]
+
+
+def _webhook_resolution_payload(items=None, unresolved=None, skipped=None, path_hints=None):
+    """Build a webhook-resolution stand-in that includes ``items_with_locations``.
+
+    ``run_processing`` reads ``items_with_locations`` (4-tuples with the Plex
+    side's locations) to build ProcessableItems for dispatch, while the
+    legacy ``items`` field stays the 3-tuple shape callers historically used.
+    """
+    items = items or []
+    items_with_locations = [
+        (key, [f"/data/{title.replace(' ', '_')}_{key}.mkv"], title, mt) for key, title, mt in items
+    ]
+    return SimpleNamespace(
+        items=list(items),
+        unresolved_paths=unresolved or [],
+        skipped_paths=skipped or [],
+        path_hints=path_hints or [],
+        items_with_locations=items_with_locations,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patches applied to every test
 # ---------------------------------------------------------------------------
@@ -68,21 +114,198 @@ def _isolate(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+class TestMultiServerGuards:
+    """Tests for the multi-server full-scan path (Phase D of the multi-server
+    completion).
+
+    Originally these were "no-op skip" guards that bailed when no Plex was
+    configured; Phase D wires up the per-vendor processor + ThreadPoolExecutor
+    so non-Plex full-scans actually run instead. The tests now assert the
+    multi-server path is invoked.
+    """
+
+    def test_no_plex_full_scan_routes_through_multi_server_scan(self, tmp_path):
+        config = _make_config(tmp_path, plex_url="", plex_token="")
+        with patch(f"{MODULE}._run_full_scan_multi_server") as mock_scan:
+            mock_scan.return_value = {r.value: 0 for r in ProcessingResult}
+            result = run_processing(config, selected_gpus=[])
+        assert mock_scan.called
+        assert result is not None
+        assert "outcome" in result
+        # No skip path — the multi-server scan ran (possibly producing zero
+        # output) instead of returning a skipped_reason.
+        assert "skipped_reason" not in result
+
+    def test_pinned_to_non_plex_full_scan_routes_through_multi_server_scan(self, tmp_path):
+        config = _make_config(tmp_path, server_id_filter="emby-1")
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch(f"{MODULE}._run_full_scan_multi_server") as mock_scan,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "emby-1", "type": "emby", "name": "My Emby"},
+            ]
+            mock_scan.return_value = {r.value: 0 for r in ProcessingResult}
+            result = run_processing(config, selected_gpus=[])
+        assert mock_scan.called
+        # The pin must be passed through so the scan only walks that server.
+        assert mock_scan.call_args.kwargs.get("server_id_filter") == "emby-1"
+        assert result is not None
+        assert "outcome" in result
+
+    def test_no_plex_with_webhook_paths_dispatches_via_registry(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            plex_url="",
+            plex_token="",
+            webhook_paths=["/data/movies/Foo.mkv"],
+        )
+        # Mock both the registry build and the per-path dispatcher.
+        with (
+            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+        ):
+            mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
+            result = run_processing(config, selected_gpus=[])
+        assert mock_dispatch.called
+        assert result is not None
+        assert "outcome" in result
+
+    def test_k4_unresolved_paths_fall_back_to_multi_server_when_emby_present(self, tmp_path):
+        """K4: when Plex is configured AND has at least one Emby/Jellyfin
+        sibling, paths Plex couldn't resolve flow into the multi-server
+        dispatcher with just the unresolved subset (not the whole batch)."""
+        from media_preview_generator.plex_client import WebhookResolutionResult
+
+        config = _make_config(
+            tmp_path,
+            webhook_paths=["/data/a.mkv", "/data/b.mkv", "/data/c.mkv"],
+        )
+
+        # Plex resolves only "a.mkv"; b + c are unresolved → K4 fallback
+        # should dispatch only those two through the multi-server path.
+        resolution = WebhookResolutionResult(
+            items=[(MagicMock(name="MediaPart-A"), MagicMock())],
+            unresolved_paths=["/data/b.mkv", "/data/c.mkv"],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        with (
+            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+                {"id": "emby-1", "type": "emby", "enabled": True},
+            ]
+            mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
+            run_processing(config, selected_gpus=[])
+
+        # Fallback called for the unresolved subset only.
+        assert mock_dispatch.called
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs.get("paths") == ["/data/b.mkv", "/data/c.mkv"]
+
+    def test_owning_servers_breadcrumb_logged_before_resolver(self, tmp_path):
+        """Before the resolver runs, an info-level breadcrumb names the
+        owning server(s) for the webhook paths so an operator reading the
+        log top-down sees the routing decision before per-server work
+        starts. Single-Plex install: the message names Plex.
+        """
+        from loguru import logger
+
+        from media_preview_generator.plex_client import WebhookResolutionResult
+
+        config = _make_config(tmp_path, webhook_paths=["/data_16tb/Movies/x.mkv"])
+        resolution = WebhookResolutionResult(
+            items=[(MagicMock(), MagicMock())],
+            unresolved_paths=[],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO")
+        try:
+            with (
+                patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+                patch(f"{MODULE}.plex_server"),
+                patch(f"{MODULE}.WorkerPool") as MockPool,
+                patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            ):
+                MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+                mock_sm.return_value.get.return_value = [
+                    {
+                        "id": "plex-a",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://x",
+                        "auth": {"method": "token", "token": "t"},
+                        "libraries": [
+                            {
+                                "id": "1",
+                                "name": "Movies",
+                                "remote_paths": ["/data_16tb/Movies"],
+                                "enabled": True,
+                            }
+                        ],
+                        "path_mappings": [],
+                    }
+                ]
+                run_processing(config, selected_gpus=[])
+        finally:
+            logger.remove(sink_id)
+
+        assert any("owning server" in line.lower() and "plex" in line.lower() for line in captured), captured
+
+    def test_k4_no_fallback_when_only_plex_configured(self, tmp_path):
+        """K4: don't churn — when only Plex is configured, the unresolved
+        paths go to the existing retry queue, not into the dispatcher."""
+        from media_preview_generator.plex_client import WebhookResolutionResult
+
+        config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
+        resolution = WebhookResolutionResult(
+            items=[],
+            unresolved_paths=["/data/x.mkv"],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        with (
+            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
+            # Only Plex configured → no Emby/Jellyfin → K4 fallback should NOT fire.
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+            ]
+            run_processing(config, selected_gpus=[])
+
+        assert not mock_dispatch.called
+
+
 class TestLibraryScanFlow:
     """Tests for the normal library enumeration + dispatch path."""
 
     def test_processes_multiple_libraries(self, tmp_path):
         """Items from multiple libraries are merged and dispatched together."""
         config = _make_config(tmp_path)
-        section_a = _make_section("Movies")
-        section_b = _make_section("TV Shows")
-        items_a = [("k1", "Movie 1", "movie"), ("k2", "Movie 2", "movie")]
-        items_b = [("k3", "Show 1", "episode")]
+        items_a = _processables([("k1", "Movie 1", "movie"), ("k2", "Movie 2", "movie")])
+        items_b = _processables([("k3", "Show 1", "episode")])
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section_a, items_a), (section_b, items_b)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items_a + items_b),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -98,14 +321,13 @@ class TestLibraryScanFlow:
         assert len(dispatched_items) == 3
 
     def test_skips_empty_library(self, tmp_path):
-        """Libraries with 0 items are skipped without dispatch."""
+        """When the enumerator yields nothing, no dispatch occurs."""
         config = _make_config(tmp_path)
-        empty_section = _make_section("Empty Lib")
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(empty_section, [])]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter([]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -119,7 +341,7 @@ class TestLibraryScanFlow:
         config = _make_config(tmp_path)
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool"),
         ):
             result = run_processing(config, selected_gpus=[])
@@ -130,10 +352,8 @@ class TestLibraryScanFlow:
     def test_sort_by_random_shuffles_combined_items(self, tmp_path):
         """sort_by='random' reorders the combined cross-library list before dispatch."""
         config = _make_config(tmp_path, sort_by="random")
-        section_a = _make_section("Movies")
-        section_b = _make_section("TV Shows")
-        items_a = [(f"k{i}", f"Movie {i}", "movie") for i in range(5)]
-        items_b = [(f"kt{i}", f"Show {i}", "episode") for i in range(5)]
+        items_a = _processables([(f"k{i}", f"Movie {i}", "movie") for i in range(5)])
+        items_b = _processables([(f"kt{i}", f"Show {i}", "episode") for i in range(5)])
         original_order = items_a + items_b
 
         # Deterministic stand-in for random.Random(): shuffle reverses the list
@@ -143,8 +363,8 @@ class TestLibraryScanFlow:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section_a, items_a), (section_b, items_b)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items_a + items_b),
             ),
             patch(f"{MODULE}.random.Random", return_value=_RevShuffler()),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -158,13 +378,12 @@ class TestLibraryScanFlow:
     def test_sort_by_non_random_preserves_order(self, tmp_path):
         """Without sort_by='random', item order is preserved as yielded."""
         config = _make_config(tmp_path, sort_by="newest")
-        section = _make_section("Movies")
-        items = [("k1", "Movie A", "movie"), ("k2", "Movie B", "movie"), ("k3", "Movie C", "movie")]
+        items = _processables([("k1", "Movie A", "movie"), ("k2", "Movie B", "movie"), ("k3", "Movie C", "movie")])
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section, items)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -177,14 +396,13 @@ class TestLibraryScanFlow:
     def test_progress_callback_invoked(self, tmp_path):
         """progress_callback reports pre-dispatch stages + the dispatch tick."""
         config = _make_config(tmp_path)
-        section = _make_section("Movies")
-        items = [("k1", "M1", "movie"), ("k2", "M2", "movie")]
+        items = _processables([("k1", "M1", "movie"), ("k2", "M2", "movie")])
         progress = MagicMock()
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
-                return_value=iter([(section, items)]),
+                f"{MODULE}._enumerate_plex_full_scan_items",
+                return_value=iter(items),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
@@ -209,11 +427,11 @@ class TestWebhookFlow:
     """Tests for the webhook-targeted processing path."""
 
     def _webhook_resolution(self, items=None, unresolved=None, skipped=None, path_hints=None):
-        return SimpleNamespace(
-            items=items or [],
-            unresolved_paths=unresolved or [],
-            skipped_paths=skipped or [],
-            path_hints=path_hints or [],
+        return _webhook_resolution_payload(
+            items=items,
+            unresolved=unresolved,
+            skipped=skipped,
+            path_hints=path_hints,
         )
 
     def test_webhook_with_resolved_items(self, tmp_path):
@@ -301,7 +519,7 @@ class TestCancellation:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -316,7 +534,7 @@ class TestCancellation:
         config = _make_config(tmp_path)
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
             result = run_processing(
@@ -350,7 +568,7 @@ class TestSummaryAndWarnings:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -377,7 +595,7 @@ class TestSummaryAndWarnings:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -403,7 +621,7 @@ class TestSummaryAndWarnings:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -463,7 +681,7 @@ class TestCleanup:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -483,7 +701,7 @@ class TestCleanup:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -508,7 +726,7 @@ class TestCleanup:
         config = _make_config(tmp_path, working_tmp_folder=str(work_dir))
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool"),
         ):
             run_processing(config, selected_gpus=[])
@@ -531,7 +749,7 @@ class TestCleanup:
         config = _make_config(tmp_path)
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch(f"{MODULE}.get_dispatcher", create=True),
         ):
@@ -565,23 +783,23 @@ class TestJobDispatcherPath:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(
-                "plex_generate_previews.jobs.orchestrator.get_dispatcher",
+                "media_preview_generator.jobs.orchestrator.get_dispatcher",
                 side_effect=[mock_dispatcher, mock_dispatcher],
                 create=True,
             ) as mock_get_disp,
-            patch("plex_generate_previews.web.jobs.PRIORITY_NORMAL", 2, create=True),
+            patch("media_preview_generator.web.jobs.PRIORITY_NORMAL", 2, create=True),
         ):
             # Patch the import inside _dispatch_items
             with (
                 patch.dict(
                     "sys.modules",
                     {
-                        "plex_generate_previews.jobs.dispatcher": MagicMock(get_dispatcher=mock_get_disp),
-                        "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
+                        "media_preview_generator.jobs.dispatcher": MagicMock(get_dispatcher=mock_get_disp),
+                        "media_preview_generator.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                     },
                 ),
             ):
@@ -618,7 +836,7 @@ class TestJobDispatcherPath:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool"),
@@ -626,8 +844,8 @@ class TestJobDispatcherPath:
             with patch.dict(
                 "sys.modules",
                 {
-                    "plex_generate_previews.jobs.dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
-                    "plex_generate_previews.web.jobs": MagicMock(PRIORITY_NORMAL=2),
+                    "media_preview_generator.jobs.dispatcher": MagicMock(get_dispatcher=fake_get_dispatcher),
+                    "media_preview_generator.web.jobs": MagicMock(PRIORITY_NORMAL=2),
                 },
             ):
                 result = run_processing(
@@ -661,7 +879,7 @@ class TestSummaryBranches:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -692,7 +910,7 @@ class TestCleanupEdgeCases:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,
@@ -713,7 +931,7 @@ class TestCleanupEdgeCases:
         config = _make_config(tmp_path, working_tmp_folder=str(work_dir))
 
         with (
-            patch(f"{MODULE}.get_library_sections", return_value=iter([])),
+            patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
             patch(f"{MODULE}.WorkerPool"),
             patch(f"{MODULE}.shutil.rmtree", side_effect=OSError("perm denied")),
         ):
@@ -739,7 +957,7 @@ class TestCleanupEdgeCases:
 
         with (
             patch(
-                f"{MODULE}.get_library_sections",
+                f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section_a, items_a), (section_b, items_b)]),
             ),
             patch(f"{MODULE}.WorkerPool") as MockPool,

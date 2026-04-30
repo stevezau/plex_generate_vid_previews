@@ -1,0 +1,814 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/automation_triggers.css') }}">
+
+        <!-- Section 1: Overview -->
+        <div class="card section-card" id="section-webhooks-overview">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>Overview
+            </div>
+            <div class="card-body">
+                <p class="mb-3">
+                    Webhooks generate previews automatically when new media lands in Plex, Emby, or Jellyfin. Pick the trigger source below that matches how your media gets in.
+                </p>
+
+                <h6 class="mb-2"><i class="bi bi-signpost me-1"></i>How do you add media?</h6>
+                <div class="decision-list mb-4">
+                    <div class="decision-row">
+                        <div class="decision-scenario">
+                            Sonarr / Radarr / Sportarr grab your media
+                            <div class="text-muted small">Sportarr is the Sonarr fork for sports content. Works for any server.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation"><a href="#section-webhooks-sonarr-radarr"><i class="bi bi-arrow-right-circle me-1"></i>Use the *arr webhook</a></div>
+                    </div>
+                    <div class="decision-row">
+                        <div class="decision-scenario">Tdarr or a script transcodes files
+                            <div class="text-muted small">Works for any server.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation"><a href="#section-webhooks-custom"><i class="bi bi-arrow-right-circle me-1"></i>Use the Custom webhook</a></div>
+                    </div>
+                    <div class="decision-row">
+                        <div class="decision-scenario">
+                            You add media manually to <strong>Plex</strong> (drag &amp; drop, Plex import, etc.)
+                            <div class="text-muted small">Plex-only — Plex is the only server vendor that exposes a server-side webhook we can subscribe to.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation">
+                            <a href="/servers"><i class="bi bi-arrow-right-circle me-1"></i>Servers &rarr; Edit Plex &rarr; Webhook &amp; Scanner</a>
+                            <span class="text-muted small d-block">Plex Direct webhook + Recently Added Scanner</span>
+                        </div>
+                    </div>
+                    <div class="decision-row">
+                        <div class="decision-scenario">
+                            You add media manually to <strong>Emby</strong>
+                            <div class="text-muted small">Emby has built-in server-side webhooks (Premiere). Dashboard &rarr; Webhooks &rarr; Add Webhook, point it at <code>https://&lt;your-host&gt;/api/webhooks/incoming?token=&lt;webhook secret&gt;</code> and tick the <strong>Library &rarr; New Media Added</strong> event.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation">
+                            Emby Dashboard &rarr; Webhooks
+                            <span class="text-muted small d-block">Posts to the same <code>/incoming</code> URL — vendor auto-detected.</span>
+                        </div>
+                    </div>
+                    <div class="decision-row">
+                        <div class="decision-scenario">
+                            You add media manually to <strong>Jellyfin</strong>
+                            <div class="text-muted small">Install the official <strong>Webhook</strong> plugin (Dashboard &rarr; Plugins &rarr; Catalog). Add a <em>Generic</em> destination &rarr; URL <code>https://&lt;your-host&gt;/api/webhooks/incoming?token=&lt;webhook secret&gt;</code>, subscribe to the <strong>Item Added</strong> notification.</div>
+                        </div>
+                        <div class="decision-arrow">→</div>
+                        <div class="decision-recommendation">
+                            Jellyfin Webhook plugin &rarr; Generic destination
+                            <span class="text-muted small d-block">Same <code>/incoming</code> URL as Plex / Emby.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="upgrade-caveat">
+                    <strong><i class="bi bi-exclamation-triangle me-1"></i>Note about file upgrades:</strong>
+                    The server-side webhook options (Plex Direct + Recently Added Scanner; Emby Webhooks; Jellyfin's Webhook plugin) only fire on <em>brand-new</em> library items. When Sonarr or Radarr <em>upgrades</em> an existing file in place, the media server keeps the same library item and the new file isn't seen as "added", so the server-side webhooks don't fire. Use the Sonarr/Radarr <strong>"On Upgrade"</strong> webhook event for those replacements &mdash; it works regardless of which media server you use.
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 4: *arr apps (Sonarr / Radarr / Sportarr) -->
+        <div class="card section-card" id="section-webhooks-sonarr-radarr">
+            <div class="card-header">
+                <i class="bi bi-download me-2"></i>*arr apps
+                <span class="badge bg-secondary ms-2">Per-import trigger</span>
+            </div>
+            <div class="card-body">
+                <p class="mb-3">
+                    Sonarr, Radarr, and Sportarr POST to this app as soon as they finish importing or upgrading a file.
+                    Copy the webhook URL from the relevant tab below into the app's settings, add your auth token,
+                    and you're done.
+                </p>
+
+                <div class="mb-3">
+                    <label for="webhookServerScope" class="form-label small mb-1">
+                        <strong>Publish to which server?</strong>
+                    </label>
+                    <select class="form-select form-select-sm" id="webhookServerScope">
+                        <option value="">All servers (publish to whoever owns the file)</option>
+                    </select>
+                    <div class="form-text">
+                        Pick a server to scope these webhook URLs to it (adds <code>?server_id=&lt;id&gt;</code>).
+                        Use this when the same library exists on more than one server (e.g. both Plex and Emby
+                        have <em>Movies</em>) and you want this webhook to publish previews to one specific server only.
+                    </div>
+                </div>
+
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="tab-sonarr-tab" data-bs-toggle="tab" data-bs-target="#tab-sonarr" type="button" role="tab">
+                            <span class="badge source-badge sonarr me-1">Sonarr</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="tab-radarr-tab" data-bs-toggle="tab" data-bs-target="#tab-radarr" type="button" role="tab">
+                            <span class="badge source-badge radarr me-1">Radarr</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="tab-sportarr-tab" data-bs-toggle="tab" data-bs-target="#tab-sportarr" type="button" role="tab">
+                            <span class="badge source-badge sportarr me-1">Sportarr</span>
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content">
+                    <!-- Sonarr -->
+                    <div class="tab-pane fade show active" id="tab-sonarr" role="tabpanel">
+                        <label class="form-label">Sonarr Webhook URL</label>
+                        <div class="input-group mb-3">
+                            <input type="text" class="form-control webhook-url" id="sonarrUrl" readonly>
+                            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('sonarrUrl')">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                        <h6 class="small text-muted mb-2">Setup in Sonarr</h6>
+                        <ol class="small mb-0">
+                            <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
+                            <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
+                            <li>Set <strong>URL</strong>: copy the URL above</li>
+                            <li>Under <strong>Events</strong>, enable <em>On File Import</em> and <em>On File Upgrade</em></li>
+                            <li><strong>Authentication</strong>:
+                                <ul class="mb-0">
+                                    <li><strong>Username/Password</strong>: Leave Username blank and put your webhook secret in Password.</li>
+                                    <li><strong>Headers</strong> (if your form has this field): Add <code>X-Auth-Token</code> = your webhook secret.</li>
+                                </ul>
+                            </li>
+                            <li>Click <strong>Test</strong>, then <strong>Save</strong></li>
+                        </ol>
+                    </div>
+                    <!-- Radarr -->
+                    <div class="tab-pane fade" id="tab-radarr" role="tabpanel">
+                        <label class="form-label">Radarr Webhook URL</label>
+                        <div class="input-group mb-3">
+                            <input type="text" class="form-control webhook-url" id="radarrUrl" readonly>
+                            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('radarrUrl')">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                        <h6 class="small text-muted mb-2">Setup in Radarr</h6>
+                        <ol class="small mb-0">
+                            <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
+                            <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
+                            <li>Set <strong>URL</strong>: copy the URL above</li>
+                            <li>Under <strong>Events</strong>, enable <em>On Import</em> and <em>On Upgrade</em></li>
+                            <li><strong>Authentication</strong>:
+                                <ul class="mb-0">
+                                    <li><strong>Username/Password</strong>: Leave Username blank and put your webhook secret in Password.</li>
+                                    <li><strong>Headers</strong> (if your form has this field): Add <code>X-Auth-Token</code> = your webhook secret.</li>
+                                </ul>
+                            </li>
+                            <li>Click <strong>Test</strong>, then <strong>Save</strong></li>
+                        </ol>
+                    </div>
+                    <!-- Sportarr -->
+                    <div class="tab-pane fade" id="tab-sportarr" role="tabpanel">
+                        <label class="form-label">Sportarr Webhook URL</label>
+                        <div class="input-group mb-3">
+                            <input type="text" class="form-control webhook-url" id="sportarrUrl" readonly>
+                            <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('sportarrUrl')">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                        <h6 class="small text-muted mb-2">Setup in Sportarr</h6>
+                        <ol class="small mb-0">
+                            <li>Go to <strong>Settings → Connect → + → Webhook</strong></li>
+                            <li>Set <strong>Name</strong>: <code>Plex Previews</code></li>
+                            <li>Set <strong>URL</strong>: copy the URL above</li>
+                            <li>Under <strong>Events</strong>, enable <em>On File Import</em> and <em>On File Upgrade</em></li>
+                            <li><strong>Authentication</strong>:
+                                <ul class="mb-0">
+                                    <li><strong>Username/Password</strong>: Leave Username blank and put your webhook secret in Password.</li>
+                                    <li><strong>Headers</strong> (if your form has this field): Add <code>X-Auth-Token</code> = your webhook secret.</li>
+                                </ul>
+                            </li>
+                            <li>Click <strong>Test</strong>, then <strong>Save</strong></li>
+                        </ol>
+                    </div>
+                </div>
+
+                <div class="alert alert-info small mb-0 mt-3">
+                    <i class="bi bi-shield-lock me-1"></i>
+                    Authentication uses the webhook secret (or API token) configured in the
+                    <a href="#section-webhooks-settings">Settings section</a> below.
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 5: Custom Webhook -->
+        <div class="card section-card" id="section-webhooks-custom">
+            <div class="card-header">
+                <i class="bi bi-plug me-2"></i>Custom Webhook
+                <span class="badge bg-secondary ms-2">Any HTTP client</span>
+            </div>
+            <div class="card-body">
+                <p>Use this endpoint to trigger preview generation from any tool that can send an HTTP POST — Tdarr, shell scripts, Bash hooks, anything. Send a file path and the app queues it through the same pipeline as Sonarr/Radarr.</p>
+
+                <label class="form-label">Custom Webhook URL</label>
+                <div class="input-group mb-2">
+                    <input type="text" class="form-control webhook-url" id="customUrl" readonly>
+                    <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('customUrl')">
+                        <i class="bi bi-clipboard"></i>
+                    </button>
+                </div>
+                <div class="form-text mb-3">
+                    To pin this URL to one configured server, use the
+                    <a href="#section-webhooks-sonarr-radarr">Publish to which server?</a>
+                    picker in the <em>arr apps</em> section above — it appends
+                    <code>?server_id=&lt;id&gt;</code> to every URL on this tab.
+                </div>
+
+                <h6 class="small text-muted">Payload — single file</h6>
+                <pre class="bg-body-tertiary p-2 rounded small mb-2"><code>{% raw %}{
+  "file_path": "/media/movies/Movie (2024)/Movie.mkv"
+}{% endraw %}</code></pre>
+
+                <h6 class="small text-muted">Payload — multiple files</h6>
+                <pre class="bg-body-tertiary p-2 rounded small mb-2"><code>{% raw %}{
+  "file_paths": ["/media/tv/Show/S01E01.mkv", "/media/tv/Show/S01E02.mkv"],
+  "title": "Optional display label"
+}{% endraw %}</code></pre>
+
+                <p class="small text-muted mb-3">
+                    Send <code>{% raw %}{"eventType": "Test"}{% endraw %}</code> to verify connectivity without triggering processing.
+                </p>
+
+                <details class="mb-2">
+                    <summary class="small fw-semibold" style="cursor:pointer;">Tdarr setup</summary>
+                    <div class="mt-2">
+                        <ol class="small">
+                            <li>Open your Tdarr <strong>Flow</strong> and add a <strong>Send Web Request</strong> plugin after your transcode step</li>
+                            <li>Set <strong>Method</strong>: <code>POST</code></li>
+                            <li>Set <strong>Request URL</strong>: copy the Custom Webhook URL above</li>
+                            <li>Set <strong>Request Headers</strong>:
+                                <pre class="bg-body-tertiary p-2 rounded small mt-1 mb-1"><code>{% raw %}{
+  "Content-Type": "application/json",
+  "X-Auth-Token": "YOUR_TOKEN"
+}{% endraw %}</code></pre>
+                            </li>
+                            <li>Set <strong>Request Body</strong>:
+                                <pre class="bg-body-tertiary p-2 rounded small mt-1 mb-1"><code>{% raw %}{"file_path": "{{{args.inputFileObj._id}}}"}{% endraw %}</code></pre>
+                            </li>
+                            <li>Save the flow</li>
+                        </ol>
+                        <p class="small text-muted mb-0">The <code>{% raw %}{{{args.inputFileObj._id}}}{% endraw %}</code> template is replaced by Tdarr at runtime with the full file path of the transcoded file.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary class="small fw-semibold" style="cursor:pointer;">curl example</summary>
+                    <pre class="bg-body-tertiary p-2 rounded small mt-2 mb-0"><code>{% raw %}curl -X POST "http://your-server:8080/api/webhooks/custom" \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"file_path": "/media/movies/Movie.mkv"}'{% endraw %}</code></pre>
+                </details>
+            </div>
+        </div>
+
+        <!-- Section 6: Settings -->
+        <div class="card section-card" id="section-webhooks-settings">
+            <div class="card-header">
+                <i class="bi bi-sliders me-2"></i>Settings
+            </div>
+            <div class="card-body">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="webhookEnabled" checked>
+                    <label class="form-check-label" for="webhookEnabled">Enable webhook processing</label>
+                    <div class="form-text">Master switch for all incoming webhooks (Sonarr, Radarr, Custom, and the per-server Plex Direct webhook). Disable to pause without touching any individual settings.</div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="webhookDelay" class="form-label">
+                        Delay before processing: <strong><span id="delayValue">60</span>s</strong>
+                    </label>
+                    <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
+                    <div class="form-text">
+                        Imports are queued and processed in batches. A batch runs only after this many seconds pass with <em>no new</em> imports from that source — if a file arrives just before the batch would run, it joins the queue and the timer resets. The delay gives Plex time to finish indexing the new file before we try to process it.
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="webhookRetryCount" class="form-label">Retry count</label>
+                    <input type="number" class="form-control" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 6rem;">
+                    <div class="form-text">
+                        When an item from a webhook can't be found in Plex (e.g. Plex hasn't indexed it yet), how many times to retry. Each retry runs as a separate job after the retry delay. Set to 0 to disable retries.
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="webhookRetryDelay" class="form-label">
+                        Delay between retries: <strong><span id="retryDelayValue">30</span>s</strong>
+                    </label>
+                    <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
+                    <div class="form-text">
+                        Initial delay before the first retry. Subsequent retries use exponential backoff (2×, 4×, etc., capped at the slider maximum).
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="webhookSecret" class="form-label">Webhook Secret</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
+                        <button class="btn btn-outline-secondary" type="button" onclick="toggleSecretVisibility()">
+                            <i class="bi bi-eye" id="secretToggleIcon"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" type="button" onclick="generateSecret()">
+                            Generate
+                        </button>
+                    </div>
+                    <div class="form-text">
+                        Dedicated secret for webhook authentication (Sonarr/Radarr/Custom, and also embedded in the Plex Direct webhook URL configured in Servers &rarr; your Plex card &rarr; Webhook &amp; Scanner). Leave empty to use the main API token instead. Rotating this value automatically re-registers any Plex Direct webhook the next time you save it from the Servers page.
+                    </div>
+                </div>
+
+                <hr class="my-4">
+
+                <h6 class="mb-3"><i class="bi bi-arrow-repeat me-2"></i>Restart Recovery</h6>
+
+                <div class="mb-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="autoRequeueOnRestart" checked>
+                        <label class="form-check-label" for="autoRequeueOnRestart">Auto-requeue interrupted jobs on restart</label>
+                    </div>
+                    <div class="form-text">
+                        When the server restarts, automatically re-queue any jobs that were running or waiting.
+                        Only jobs created within the configured time window are requeued; older jobs are left as-is.
+                    </div>
+                </div>
+
+                <div class="mb-0" id="requeueMaxAgeGroup">
+                    <label for="requeueMaxAge" class="form-label">
+                        Max requeue age: <strong><span id="requeueMaxAgeValue">12h</span></strong>
+                    </label>
+                    <input type="range" class="form-range" id="requeueMaxAge" min="5" max="1440" step="5" value="720">
+                    <div class="form-text">
+                        How old a job can be to qualify for automatic requeue after restart (5 minutes – 24 hours).
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 7: Activity Log -->
+        <div class="card section-card" id="section-webhooks-activity">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock-history me-2"></i>Activity Log</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="clearHistory()">
+                    <i class="bi bi-trash me-1"></i>Clear
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="historyLoading" class="text-center py-3">
+                    <div class="spinner-border spinner-border-sm" role="status"></div>
+                    <span class="ms-2">Loading...</span>
+                </div>
+                <div id="historyEmpty" class="d-none text-center text-muted py-3">
+                    <div>No webhook events received yet.</div>
+                    <div class="small">Set up a trigger source in the sections above to start receiving events.</div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm history-table d-none" id="historyTable">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Source</th>
+                                <th>Server</th>
+                                <th>Title</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer d-none py-2 px-3" id="historyPaginationFooter">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <label class="form-label mb-0 small text-muted" for="historyPerPageSelect">Show</label>
+                        <select class="form-select form-select-sm" id="historyPerPageSelect" style="width: auto;" onchange="changeHistoryPerPage(this.value)">
+                            <option value="10">10</option>
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
+                        </select>
+                        <span class="small text-muted" id="historyPaginationInfo"></span>
+                    </div>
+                    <nav aria-label="Webhook history pagination">
+                        <ul class="pagination pagination-sm mb-0" id="historyPaginationControls"></ul>
+                    </nav>
+                </div>
+            </div>
+        </div>
+
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script>
+// Format a minute count as a short human-readable string for slider labels.
+// 45 → "45m", 90 → "1h 30m", 120 → "2h", 1440 → "1d". Used so the live value
+// on the Max requeue age slider reads as "12h" instead of "720 min".
+function _formatMinutesShort(mins) {
+    var n = Math.max(0, Math.round(Number(mins) || 0));
+    if (n < 60) return n + 'm';
+    if (n < 1440) {
+        var hours = Math.floor(n / 60);
+        var rem = n % 60;
+        return rem === 0 ? hours + 'h' : hours + 'h ' + rem + 'm';
+    }
+    var days = Math.floor(n / 1440);
+    var hoursPart = Math.round((n % 1440) / 60);
+    if (hoursPart === 24) { days += 1; hoursPart = 0; }
+    return hoursPart === 0 ? days + 'd' : days + 'd ' + hoursPart + 'h';
+}
+
+// Per-server webhook scoping: when set, the user is publishing to one
+// configured server only. We append ?server_id=<id> to the visible URLs
+// so the inbound webhook handler routes the resulting job to that server.
+window._webhookServerId = '';
+
+function _refreshWebhookUrls() {
+    var qs = window._webhookServerId
+        ? '?server_id=' + encodeURIComponent(window._webhookServerId)
+        : '';
+    var origin = window.location.origin;
+    var inputs = {
+        radarrUrl:   '/api/webhooks/radarr',
+        sonarrUrl:   '/api/webhooks/sonarr',
+        sportarrUrl: '/api/webhooks/sportarr',
+        customUrl:   '/api/webhooks/custom',
+    };
+    Object.keys(inputs).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.value = origin + inputs[id] + qs;
+    });
+}
+
+async function _populateWebhookServerPicker() {
+    var sel = document.getElementById('webhookServerScope');
+    if (!sel) return;
+    try {
+        var resp = await fetch('/api/servers');
+        var data = await resp.json();
+        var servers = (data.servers || []).filter(function(s) { return s.enabled !== false; });
+        sel.innerHTML = '<option value="">All servers (publish to whoever owns the file)</option>';
+        servers.forEach(function(s) {
+            var opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.name + ' (' + ((s.type || '') + '').toUpperCase() + ')';
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', function() {
+            window._webhookServerId = sel.value;
+            _refreshWebhookUrls();
+        });
+    } catch (e) {
+        // Picker is optional — don't block trigger UI on failure.
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Set webhook URLs from current origin
+    _refreshWebhookUrls();
+    _populateWebhookServerPicker();
+
+    var savedHistoryPerPage = localStorage.getItem('historyPerPage');
+    if (savedHistoryPerPage) {
+        historyPerPage = parseInt(savedHistoryPerPage, 10) || 25;
+    }
+    var hpSelect = document.getElementById('historyPerPageSelect');
+    if (hpSelect) hpSelect.value = String(historyPerPage);
+
+    loadWebhookSettings();
+    loadHistory();
+
+    document.getElementById('webhookDelay').addEventListener('input', function() {
+        document.getElementById('delayValue').textContent = this.value;
+    });
+    document.getElementById('webhookRetryDelay').addEventListener('input', function() {
+        document.getElementById('retryDelayValue').textContent = this.value;
+    });
+    document.getElementById('requeueMaxAge').addEventListener('input', function() {
+        document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(this.value);
+    });
+    document.getElementById('autoRequeueOnRestart').addEventListener('change', function() {
+        document.getElementById('requeueMaxAgeGroup').style.opacity = this.checked ? '1' : '0.5';
+        document.getElementById('requeueMaxAge').disabled = !this.checked;
+    });
+
+    // Auto-save: any stateful control inside #pane-triggers that isn't
+    // explicitly skipped kicks a debounced save through saveWebhookSettings.
+    if (typeof window.bindAutoSave === 'function') {
+        window.bindAutoSave({
+            containerSelector: '#pane-triggers',
+            saveFn: saveWebhookSettings,
+            indicatorId: 'saveStatusIndicator',
+            skipSelectors: [
+                '#sonarrUrl',
+                '#radarrUrl',
+                '#sportarrUrl',
+                '#customUrl',
+                '#historyPerPageSelect',
+            ],
+        });
+    }
+});
+
+let allHistoryEvents = [];
+let historyPage = 1;
+let historyPerPage = parseInt(localStorage.getItem('historyPerPage') || '25', 10);
+
+async function loadWebhookSettings() {
+    try {
+        const data = await apiGet('/api/settings');
+        document.getElementById('webhookEnabled').checked = data.webhook_enabled !== false;
+        document.getElementById('webhookDelay').value = data.webhook_delay || 60;
+        document.getElementById('delayValue').textContent = data.webhook_delay || 60;
+        document.getElementById('webhookRetryCount').value = Math.min(10, Math.max(0, parseInt(data.webhook_retry_count, 10) || 3));
+        document.getElementById('webhookRetryDelay').value = data.webhook_retry_delay || 30;
+        document.getElementById('retryDelayValue').textContent = data.webhook_retry_delay || 30;
+        if (data.webhook_secret && data.webhook_secret !== '****') {
+            document.getElementById('webhookSecret').value = data.webhook_secret;
+        } else if (data.webhook_secret === '****') {
+            document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
+        }
+        const autoRequeue = data.auto_requeue_on_restart !== false;
+        document.getElementById('autoRequeueOnRestart').checked = autoRequeue;
+        const maxAge = Math.min(1440, Math.max(5, parseInt(data.requeue_max_age_minutes, 10) || 720));
+        document.getElementById('requeueMaxAge').value = maxAge;
+        document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(maxAge);
+        document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
+        document.getElementById('requeueMaxAge').disabled = !autoRequeue;
+
+        try {
+            if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
+        } catch (_e) { }
+    } catch (e) {
+        console.error('Failed to load webhook settings:', e);
+    }
+}
+
+async function saveWebhookSettings() {
+    const retryCount = Math.min(10, Math.max(0, parseInt(document.getElementById('webhookRetryCount').value, 10) || 0));
+
+    const payload = {
+        webhook_enabled: document.getElementById('webhookEnabled').checked,
+        webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
+        webhook_retry_count: retryCount,
+        webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
+        auto_requeue_on_restart: document.getElementById('autoRequeueOnRestart').checked,
+        requeue_max_age_minutes: parseInt(document.getElementById('requeueMaxAge').value, 10) || 720,
+    };
+
+    const secretVal = document.getElementById('webhookSecret').value;
+    if (secretVal && secretVal !== '****') {
+        payload.webhook_secret = secretVal;
+    }
+
+    await apiPost('/api/settings', payload);
+}
+
+async function loadHistory() {
+    try {
+        const data = await apiGet('/api/webhooks/history');
+        allHistoryEvents = data.events || [];
+        renderHistoryPage();
+    } catch (e) {
+        console.error('Failed to load history:', e);
+        document.getElementById('historyLoading').classList.add('d-none');
+    }
+}
+
+function renderHistoryPage() {
+    const loading = document.getElementById('historyLoading');
+    const empty = document.getElementById('historyEmpty');
+    const table = document.getElementById('historyTable');
+    const tbody = document.getElementById('historyBody');
+
+    loading.classList.add('d-none');
+
+    if (allHistoryEvents.length === 0) {
+        empty.classList.remove('d-none');
+        table.classList.add('d-none');
+        renderHistoryPagination();
+        return;
+    }
+
+    empty.classList.add('d-none');
+    table.classList.remove('d-none');
+    tbody.innerHTML = '';
+
+    const total = allHistoryEvents.length;
+    const totalPages = Math.max(1, Math.ceil(total / historyPerPage));
+    if (historyPage > totalPages) historyPage = totalPages;
+    const start = (historyPage - 1) * historyPerPage;
+    const pageEvents = allHistoryEvents.slice(start, start + historyPerPage);
+
+    pageEvents.forEach(function(evt, localIdx) {
+        const idx = start + localIdx;
+        const tr = document.createElement('tr');
+        tr.id = 'history-row-' + idx;
+        const time = new Date(evt.timestamp);
+        const relative = timeAgo(time);
+
+        var sourceBadgeMap = {radarr: 'Radarr', sonarr: 'Sonarr', sportarr: 'Sportarr', custom: 'Custom', plex: 'Plex', emby: 'Emby', jellyfin: 'Jellyfin', recently_added: 'Recently Added'};
+        var sourceBadgeClass = sourceBadgeMap[evt.source] ? evt.source : 'custom';
+        var sourceBadgeLabel = sourceBadgeMap[evt.source] || evt.source;
+        const sourceBadge = '<span class="badge source-badge ' + sourceBadgeClass + '">' + sourceBadgeLabel + '</span>';
+
+        const statusLabelMap = {
+            queued: 'Queued',
+            triggered: 'Triggered',
+            ignored: 'Ignored',
+            ignored_no_path: 'No file path',
+            ignored_no_paths: 'No file paths',
+            test: 'Test',
+            disabled: 'Disabled',
+            error: 'Error'
+        };
+        const statusClass = evt.status || 'ignored';
+        const statusLabel = statusLabelMap[evt.status] || evt.status;
+        const hasFiles = evt.status === 'triggered' && evt.files_preview && evt.files_preview.length > 0;
+        const pathCount = typeof evt.path_count === 'number' ? evt.path_count : (evt.files_preview ? evt.files_preview.length : 0);
+        let titleCell = escapeHtml(evt.title || '-');
+        if (hasFiles) {
+            titleCell += ' <button type="button" class="btn btn-sm btn-link p-0 ms-1 align-baseline" id="history-files-toggle-' + idx + '" onclick="toggleHistoryFiles(' + idx + ')" aria-expanded="false" aria-controls="history-detail-' + idx + '" title="Show files"><i class="bi bi-chevron-down"></i></button>';
+        }
+
+        // Per-server badge (added in Phase G5). Three states:
+        //   * server_name/server_type set → coloured per-vendor badge
+        //   * pre-existing entry from before the column existed → "—"
+        //     with a tooltip explaining
+        //   * deliberately fan-out webhook (no server_id query param) →
+        //     "All" with a tooltip
+        const hasServerData = !!(evt.server_name || evt.server_type);
+        let serverCell;
+        if (hasServerData) {
+            const palette = { plex: 'bg-warning text-dark', emby: 'bg-success', jellyfin: 'bg-info text-dark' };
+            const stype = (evt.server_type || '').toLowerCase();
+            const cls = palette[stype] || 'bg-secondary';
+            const label = evt.server_name || stype.toUpperCase() || 'Server';
+            serverCell = '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>';
+        } else if (evt.timestamp && new Date(evt.timestamp).getTime() < new Date('2026-04-29').getTime()) {
+            // History entries from before this column existed have no
+            // server attribution. Show an em-dash + tooltip rather than
+            // the misleading "All".
+            serverCell = '<span class="text-muted small" title="This webhook fired before the per-server attribution column was added in this version. Future events will show the destination server.">—</span>';
+        } else {
+            serverCell = '<span class="text-muted small" title="No ?server_id= on the inbound webhook URL — fanned out to every owning server.">All</span>';
+        }
+
+        tr.innerHTML =
+            '<td title="' + escapeHtml(time.toLocaleString()) + '">' + escapeHtml(relative) + '</td>' +
+            '<td>' + sourceBadge + '</td>' +
+            '<td>' + serverCell + '</td>' +
+            '<td>' + titleCell + '</td>' +
+            '<td><span class="badge status-badge ' + escapeHtml(statusClass) + '">' + escapeHtml(statusLabel) + '</span></td>';
+        tbody.appendChild(tr);
+
+        if (hasFiles) {
+            const filesList = evt.files_preview
+                .map(function(f) { return '<div class="text-muted">' + escapeHtml(f) + '</div>'; })
+                .join('');
+            const overflow = pathCount > evt.files_preview.length
+                ? '<div class="text-muted mt-1">(+' + (pathCount - evt.files_preview.length) + ' more)</div>'
+                : '';
+            const detailTr = document.createElement('tr');
+            detailTr.id = 'history-detail-' + idx;
+            detailTr.className = 'd-none history-files-detail';
+            detailTr.setAttribute('aria-hidden', 'true');
+            detailTr.innerHTML = '<td colspan="5" class="bg-body-tertiary small py-2 ps-4"><strong>Files:</strong><div class="mt-1">' + filesList + overflow + '</div></td>';
+            tbody.appendChild(detailTr);
+        }
+    });
+
+    renderHistoryPagination();
+}
+
+function renderHistoryPagination() {
+    const footer = document.getElementById('historyPaginationFooter');
+    const info = document.getElementById('historyPaginationInfo');
+    const controls = document.getElementById('historyPaginationControls');
+    const perPageSelect = document.getElementById('historyPerPageSelect');
+    if (!footer) return;
+
+    const total = allHistoryEvents.length;
+    if (total === 0) {
+        footer.classList.add('d-none');
+        return;
+    }
+    footer.classList.remove('d-none');
+    perPageSelect.value = String(historyPerPage);
+
+    const totalPages = Math.max(1, Math.ceil(total / historyPerPage));
+    const start = (historyPage - 1) * historyPerPage + 1;
+    const end = Math.min(historyPage * historyPerPage, total);
+    info.textContent = 'Showing ' + start + '\u2013' + end + ' of ' + total;
+
+    var html = '';
+    html += '<li class="page-item ' + (historyPage <= 1 ? 'disabled' : '') + '">' +
+        '<a class="page-link" href="#" onclick="goToHistoryPage(' + (historyPage - 1) + '); return false;" aria-label="Previous">&lsaquo;</a></li>';
+
+    var maxVisible = 5;
+    var rangeStart = Math.max(1, historyPage - Math.floor(maxVisible / 2));
+    var rangeEnd = Math.min(totalPages, rangeStart + maxVisible - 1);
+    if (rangeEnd - rangeStart + 1 < maxVisible) {
+        rangeStart = Math.max(1, rangeEnd - maxVisible + 1);
+    }
+
+    if (rangeStart > 1) {
+        html += '<li class="page-item"><a class="page-link" href="#" onclick="goToHistoryPage(1); return false;">1</a></li>';
+        if (rangeStart > 2) {
+            html += '<li class="page-item disabled"><span class="page-link">&hellip;</span></li>';
+        }
+    }
+    for (var p = rangeStart; p <= rangeEnd; p++) {
+        html += '<li class="page-item ' + (p === historyPage ? 'active' : '') + '">' +
+            '<a class="page-link" href="#" onclick="goToHistoryPage(' + p + '); return false;">' + p + '</a></li>';
+    }
+    if (rangeEnd < totalPages) {
+        if (rangeEnd < totalPages - 1) {
+            html += '<li class="page-item disabled"><span class="page-link">&hellip;</span></li>';
+        }
+        html += '<li class="page-item"><a class="page-link" href="#" onclick="goToHistoryPage(' + totalPages + '); return false;">' + totalPages + '</a></li>';
+    }
+
+    html += '<li class="page-item ' + (historyPage >= totalPages ? 'disabled' : '') + '">' +
+        '<a class="page-link" href="#" onclick="goToHistoryPage(' + (historyPage + 1) + '); return false;" aria-label="Next">&rsaquo;</a></li>';
+
+    controls.innerHTML = html;
+}
+
+function goToHistoryPage(page) {
+    var totalPages = Math.max(1, Math.ceil(allHistoryEvents.length / historyPerPage));
+    if (page < 1 || page > totalPages) return;
+    historyPage = page;
+    renderHistoryPage();
+}
+
+function changeHistoryPerPage(value) {
+    historyPerPage = parseInt(value, 10) || 25;
+    historyPage = 1;
+    localStorage.setItem('historyPerPage', String(historyPerPage));
+    renderHistoryPage();
+}
+
+function toggleHistoryFiles(index) {
+    const detailRow = document.getElementById('history-detail-' + index);
+    const btn = document.getElementById('history-files-toggle-' + index);
+    if (!detailRow || !btn) return;
+    const isExpanded = !detailRow.classList.contains('d-none');
+    detailRow.classList.toggle('d-none');
+    detailRow.setAttribute('aria-hidden', isExpanded ? 'true' : 'false');
+    const icon = btn.querySelector('i');
+    if (icon) {
+        icon.classList.toggle('bi-chevron-down', isExpanded);
+        icon.classList.toggle('bi-chevron-up', !isExpanded);
+    }
+    btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
+}
+
+async function clearHistory() {
+    if (!confirm('Clear the entire webhook activity log? This cannot be undone.')) return;
+    try {
+        await apiDelete('/api/webhooks/history');
+        loadHistory();
+    } catch (e) {
+        showToast('Error', 'Failed to clear history: ' + e.message, 'danger');
+    }
+}
+
+function copyUrl(elementId) {
+    const input = document.getElementById(elementId);
+    copyToClipboard(input.value, 'URL copied to clipboard.', 'Failed to copy URL.');
+}
+
+function generateSecret() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const hex = Array.from(bytes, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+    const input = document.getElementById('webhookSecret');
+    input.value = hex;
+    input.type = 'text';
+    document.getElementById('secretToggleIcon').classList.replace('bi-eye', 'bi-eye-slash');
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function toggleSecretVisibility() {
+    const input = document.getElementById('webhookSecret');
+    const icon = document.getElementById('secretToggleIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.replace('bi-eye', 'bi-eye-slash');
+    } else {
+        input.type = 'password';
+        icon.classList.replace('bi-eye-slash', 'bi-eye');
+    }
+}
+
+function timeAgo(date) {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    return days + 'd ago';
+}
+</script>

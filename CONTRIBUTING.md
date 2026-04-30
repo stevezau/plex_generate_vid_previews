@@ -1,6 +1,6 @@
 # Contributing & Development
 
-Thank you for contributing to Plex Generate Previews!
+Thank you for contributing to Media Preview Generator!
 
 The supported way to run the app in production is **Docker** and the **web UI**. The setup below is for developing and testing the codebase (run the web app locally).
 
@@ -16,7 +16,7 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ### Reporting Bugs
 
-1. Check [existing issues](https://github.com/stevezau/plex_generate_vid_previews/issues) first
+1. Check [existing issues](https://github.com/stevezau/media_preview_generator/issues) first
 2. Create a new issue with:
    - Clear description of the problem
    - Steps to reproduce
@@ -26,7 +26,7 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ### Suggesting Features
 
-1. Check [existing issues](https://github.com/stevezau/plex_generate_vid_previews/issues) for similar requests
+1. Check [existing issues](https://github.com/stevezau/media_preview_generator/issues) for similar requests
 2. Create an issue with label `enhancement`
 3. Describe the use case and proposed solution
 
@@ -45,8 +45,8 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ```bash
 # Clone and setup
-git clone https://github.com/stevezau/plex_generate_vid_previews.git
-cd plex_generate_vid_previews
+git clone https://github.com/stevezau/media_preview_generator.git
+cd media_preview_generator
 python -m venv venv
 source venv/bin/activate  # Linux/macOS (use .\venv\Scripts\activate on Windows)
 pip install -e ".[dev,test]"
@@ -64,10 +64,10 @@ gunicorn \
   --bind 0.0.0.0:8080 \
   --worker-class gthread \
   --workers 1 \
-  "plex_generate_previews.web.wsgi:app"
+  "media_preview_generator.web.wsgi:app"
 
 # Web UI with dev server (Flask reload)
-python -m plex_generate_previews.web.app
+python -m media_preview_generator.web.app
 ```
 
 ---
@@ -115,7 +115,7 @@ test: Add tests for SettingsManager
 
 ```bash
 pytest                                          # All tests
-pytest --cov=plex_generate_previews             # With coverage
+pytest --cov=media_preview_generator             # With coverage
 pytest tests/test_config.py -v                  # Specific file
 pytest -m "not gpu"                             # Skip GPU tests
 pytest tests/ --ignore=tests/e2e -x             # Quick tests only
@@ -152,7 +152,7 @@ Locust is a dev dependency — install with `pip install -e ".[dev]"`.
 ## Project Structure
 
 ```
-plex_generate_previews/
+media_preview_generator/
 ├── config/               # Config dataclass, paths, validation
 ├── gpu/                  # GPU discovery + FFmpeg capability probing
 ├── jobs/                 # Orchestrator, dispatcher, worker pool
@@ -211,7 +211,7 @@ docker run --rm -p 8080:8080 -v $(pwd)/config:/config plex-previews:dev
 
 # Multi-architecture build
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t stevezzau/plex_generate_vid_previews:dev --push .
+  -t stevezzau/media_preview_generator:dev --push .
 ```
 
 ---
@@ -239,8 +239,8 @@ Required repository secrets (**Settings → Secrets and variables → Actions**)
 ## Debugging
 
 ```bash
-LOG_LEVEL=DEBUG python -m plex_generate_previews.web.app  # Debug logging
-docker exec -it plex-generate-previews /bin/bash   # Inspect container
+LOG_LEVEL=DEBUG python -m media_preview_generator.web.app  # Debug logging
+docker exec -it media-preview-generator /bin/bash   # Inspect container
 ```
 
 Check detected GPUs in the web UI (**Settings** or **Setup**).
@@ -268,7 +268,7 @@ Check detected GPUs in the web UI (**Settings** or **Setup**).
 
 ## Release Process
 
-1. Update version in `plex_generate_previews/_version.py`
+1. Update version in `media_preview_generator/_version.py`
 2. Update `CHANGELOG.md`
 3. Create PR and merge to main
 4. Tag release: `git tag vX.Y.Z && git push --tags`

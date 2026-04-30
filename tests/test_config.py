@@ -10,8 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.config import (
+from media_preview_generator.config import (
     ConfigValidationError,
+    derive_legacy_plex_view,
     expand_path_mapping_candidates,
     get_config_value,
     get_path_mapping_pairs,
@@ -32,14 +33,14 @@ from plex_generate_previews.config import (
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
     """Ensure load_config uses a fresh empty settings.json and no .env file."""
-    from plex_generate_previews.web import settings_manager
+    from media_preview_generator.web import settings_manager
 
     monkeypatch.setattr(settings_manager, "_settings_manager", None)
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr("plex_generate_previews.config.load_dotenv", lambda: None)
+    monkeypatch.setattr("media_preview_generator.config.load_dotenv", lambda: None)
 
     # Clear config cache to avoid stale values between tests
-    from plex_generate_previews.config import clear_config_cache
+    from media_preview_generator.config import clear_config_cache
 
     clear_config_cache()
 
@@ -651,6 +652,235 @@ class TestLocalPathToWebhookAliases:
         assert result == []
 
 
+class TestDeriveLegacyPlexView:
+    """Test the helper that flattens media_servers[0] into legacy plex_* keys.
+
+    Phase 0 of the multi-server migration relies on this helper so that
+    every legacy reader (load_config, job_runner, recent_added_scanner,
+    webhooks) keeps working when settings.json only has media_servers[0].
+    """
+
+    def test_empty_list_returns_empty(self):
+        assert derive_legacy_plex_view([]) == {}
+
+    def test_non_list_returns_empty(self):
+        assert derive_legacy_plex_view(None) == {}
+        assert derive_legacy_plex_view("not-a-list") == {}
+
+    def test_no_plex_entry_returns_empty(self):
+        # Only Emby/Jellyfin configured — derived view stays empty so the
+        # legacy global plex_* keys remain authoritative for any consumer
+        # that still wants Plex-flavoured config (none should, eventually).
+        servers = [
+            {"id": "1", "type": "emby", "name": "Emby", "url": "http://emby:8096", "enabled": True},
+            {"id": "2", "type": "jellyfin", "name": "JF", "url": "http://jf:8096", "enabled": True},
+        ]
+        assert derive_legacy_plex_view(servers) == {}
+
+    def test_disabled_plex_entry_is_skipped(self):
+        servers = [
+            {"id": "1", "type": "plex", "name": "Plex", "url": "http://plex:32400", "enabled": False},
+        ]
+        assert derive_legacy_plex_view(servers) == {}
+
+    def test_first_enabled_plex_wins_over_later_entries(self):
+        servers = [
+            {
+                "id": "1",
+                "type": "plex",
+                "name": "Plex A",
+                "url": "http://a:32400",
+                "enabled": True,
+                "auth": {"token": "tok-a"},
+            },
+            {
+                "id": "2",
+                "type": "plex",
+                "name": "Plex B",
+                "url": "http://b:32400",
+                "enabled": True,
+                "auth": {"token": "tok-b"},
+            },
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert view["plex_url"] == "http://a:32400"
+        assert view["plex_token"] == "tok-a"
+
+    def test_full_projection_round_trip(self):
+        servers = [
+            {
+                "id": "plex-default",
+                "type": "plex",
+                "name": "Plex",
+                "enabled": True,
+                "url": "http://plex.lan:32400",
+                "auth": {"method": "token", "token": "abc123"},
+                "verify_ssl": False,
+                "timeout": 90,
+                "libraries": [
+                    {"id": "1", "name": "Movies", "enabled": True},
+                    {"id": "2", "name": "Anime", "enabled": False},
+                    {"id": "3", "name": "TV", "enabled": True},
+                ],
+                "path_mappings": [{"plex_prefix": "/data", "local_prefix": "/mnt"}],
+                "exclude_paths": [{"value": "/data/Trailers/", "type": "path"}],
+                "output": {"adapter": "plex_bundle", "plex_config_folder": "/srv/plex_config", "frame_interval": 5},
+            }
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert view == {
+            "plex_url": "http://plex.lan:32400",
+            "plex_token": "abc123",
+            "plex_verify_ssl": False,
+            "plex_timeout": 90,
+            "plex_config_folder": "/srv/plex_config",
+            "selected_libraries": ["1", "3"],  # disabled "Anime" excluded
+            "path_mappings": [{"plex_prefix": "/data", "local_prefix": "/mnt"}],
+            "exclude_paths": [{"value": "/data/Trailers/", "type": "path"}],
+            # K2: server display name flows through to the Config so log
+            # emitters can prefix lines with [<name>].
+            "server_display_name": "Plex",
+        }
+
+    def test_empty_optional_fields_omitted(self):
+        # No libraries / path_mappings / exclude_paths → the corresponding
+        # keys are simply absent from the view, so callers fall back to
+        # their normal default-handling rather than getting a forced empty list.
+        servers = [
+            {
+                "id": "plex-default",
+                "type": "plex",
+                "url": "http://plex:32400",
+                "enabled": True,
+                "auth": {"token": "t"},
+                "libraries": [],
+                "path_mappings": [],
+                "exclude_paths": [],
+                "output": {},
+            }
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert "selected_libraries" not in view
+        assert "path_mappings" not in view
+        assert "exclude_paths" not in view
+        assert "plex_config_folder" not in view
+        assert view["plex_url"] == "http://plex:32400"
+        assert view["plex_token"] == "t"
+
+    def test_server_id_pin_picks_specific_plex_in_multi_plex_install(self):
+        """When the caller passes server_id='plex-b', derive from THAT entry,
+        not the first enabled Plex. Used by job_runner so a job pinned to
+        a specific Plex server gets that server's URL/token/path mappings."""
+        servers = [
+            {
+                "id": "plex-a",
+                "type": "plex",
+                "name": "Plex A",
+                "url": "http://a:32400",
+                "enabled": True,
+                "auth": {"token": "tok-a"},
+                "path_mappings": [{"plex_prefix": "/a", "local_prefix": "/mnt/a"}],
+            },
+            {
+                "id": "plex-b",
+                "type": "plex",
+                "name": "Plex B",
+                "url": "http://b:32400",
+                "enabled": True,
+                "auth": {"token": "tok-b"},
+                "path_mappings": [{"plex_prefix": "/b", "local_prefix": "/mnt/b"}],
+            },
+        ]
+        view = derive_legacy_plex_view(servers, server_id="plex-b")
+        assert view["plex_url"] == "http://b:32400"
+        assert view["plex_token"] == "tok-b"
+        assert view["path_mappings"] == [{"plex_prefix": "/b", "local_prefix": "/mnt/b"}]
+
+    def test_server_id_pin_unknown_falls_back_to_first_plex(self):
+        """Unknown server_id must not raise — fall back to the first-enabled
+        Plex (the historical default) so callers keep working."""
+        servers = [
+            {"id": "plex-a", "type": "plex", "url": "http://a", "enabled": True, "auth": {"token": "a"}},
+        ]
+        view = derive_legacy_plex_view(servers, server_id="does-not-exist")
+        assert view["plex_url"] == "http://a"
+
+    def test_invalid_timeout_is_skipped(self):
+        # Garbage timeout shouldn't blow up callers — we just omit the key
+        # so the legacy default kicks in.
+        servers = [
+            {
+                "id": "plex-default",
+                "type": "plex",
+                "url": "http://plex:32400",
+                "enabled": True,
+                "timeout": "not-a-number",
+            }
+        ]
+        view = derive_legacy_plex_view(servers)
+        assert "plex_timeout" not in view
+
+    def test_server_display_name_uses_name_then_falls_back_to_id(self):
+        """K2: server_display_name flows through. Prefers `name`, then `id`."""
+        with_name = derive_legacy_plex_view(
+            [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "name": "Living Room",
+                    "url": "http://a",
+                    "enabled": True,
+                    "auth": {"token": "x"},
+                }
+            ]
+        )
+        assert with_name["server_display_name"] == "Living Room"
+
+        no_name = derive_legacy_plex_view(
+            [{"id": "plex-only", "type": "plex", "url": "http://a", "enabled": True, "auth": {"token": "x"}}]
+        )
+        assert no_name["server_display_name"] == "plex-only"
+
+    def test_pinned_server_picks_its_own_path_mappings_in_multi_plex(self):
+        """K3: when a job is pinned to plex-b, the derived view must carry
+        plex-b's path_mappings + exclude_paths, not plex-a's. Today's bug:
+        derive_legacy_plex_view called without server_id falls back to the
+        first Plex (plex-a), so a schedule pinned to plex-b silently runs
+        against plex-a's mappings.
+        """
+        servers = [
+            {
+                "id": "plex-a",
+                "type": "plex",
+                "name": "Plex A",
+                "url": "http://a",
+                "enabled": True,
+                "auth": {"token": "tok-a"},
+                "path_mappings": [{"plex_prefix": "/a/data", "local_prefix": "/mnt/a"}],
+                "exclude_paths": [{"value": "/a/Trailers", "type": "path"}],
+            },
+            {
+                "id": "plex-b",
+                "type": "plex",
+                "name": "Plex B",
+                "url": "http://b",
+                "enabled": True,
+                "auth": {"token": "tok-b"},
+                "path_mappings": [{"plex_prefix": "/b/data", "local_prefix": "/mnt/b"}],
+                "exclude_paths": [{"value": "/b/Trailers", "type": "path"}],
+            },
+        ]
+        view_pinned_b = derive_legacy_plex_view(servers, server_id="plex-b")
+        assert view_pinned_b["plex_url"] == "http://b"
+        assert view_pinned_b["path_mappings"] == [{"plex_prefix": "/b/data", "local_prefix": "/mnt/b"}]
+        assert view_pinned_b["exclude_paths"] == [{"value": "/b/Trailers", "type": "path"}]
+        assert view_pinned_b["server_display_name"] == "Plex B"
+
+        # Without pinning, falls back to the first enabled (plex-a's mappings).
+        view_unpinned = derive_legacy_plex_view(servers)
+        assert view_unpinned["path_mappings"] == [{"plex_prefix": "/a/data", "local_prefix": "/mnt/a"}]
+
+
 class TestLoadConfig:
     """Test configuration loading and validation."""
 
@@ -661,7 +891,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_all_required_present(
         self,
         mock_logging,
@@ -739,7 +969,7 @@ class TestLoadConfig:
             gpu_threads=None,
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -759,7 +989,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_succeeds_when_both_cpu_and_gpu_zero(
         self,
         mock_logging,
@@ -772,8 +1002,8 @@ class TestLoadConfig:
         mock_which,
     ):
         """Both CPU and GPU totals zero must return a valid Config (not crash/exit)."""
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -829,10 +1059,78 @@ class TestLoadConfig:
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.path.isdir")
+    @patch("os.access")
+    @patch("os.statvfs", create=True)
+    @patch("media_preview_generator.logging_config.setup_logging")
+    def test_load_config_succeeds_when_only_emby_configured(
+        self,
+        mock_logging,
+        mock_statvfs,
+        mock_access,
+        mock_isdir,
+        mock_exists,
+        mock_run,
+        mock_which,
+    ):
+        """An install with only an Emby/Jellyfin server (no Plex) must boot.
+
+        Before the fix, _validate_plex_config unconditionally demanded
+        PLEX_URL / PLEX_TOKEN / PLEX_CONFIG_FOLDER and an Emby-only user could
+        not start the app. The new logic skips Plex validation when there is
+        no Plex entry in media_servers and no legacy plex_* globals.
+        """
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
+        mock_exists.return_value = True
+        mock_isdir.return_value = True
+        mock_access.return_value = True
+        statvfs_result = MagicMock()
+        statvfs_result.f_frsize = 4096
+        statvfs_result.f_bavail = 1024 * 1024 * 250
+        mock_statvfs.return_value = statvfs_result
+
+        sm = get_settings_manager()
+        sm.apply_changes(
+            {
+                "plex_url": "",
+                "plex_token": "",
+                "plex_config_folder": "",
+                "media_servers": [
+                    {
+                        "id": "emby-1",
+                        "type": "emby",
+                        "name": "My Emby",
+                        "url": "http://emby:8096",
+                        "enabled": True,
+                        "auth": {"method": "api_key", "api_key": "secret"},
+                        "verify_ssl": True,
+                        "timeout": 30,
+                    }
+                ],
+                "cpu_threads": 1,
+            }
+        )
+        clear_config_cache()
+
+        with patch.dict("os.environ", {}, clear=True):
+            config = load_config()
+        assert config is not None
+        assert config.cpu_threads == 1
+        # Plex fields should remain empty (no Plex configured) — but no error.
+        assert config.plex_url == ""
+        assert config.plex_token == ""
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.isdir")
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_accepts_sort_by_random(
         self,
         mock_logging,
@@ -845,8 +1143,8 @@ class TestLoadConfig:
         mock_which,
     ):
         """sort_by='random' must load without a validation error."""
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -888,7 +1186,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.access")
     @patch("os.statvfs", create=True)
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_rejects_invalid_sort_by(
         self,
         mock_logging,
@@ -901,8 +1199,8 @@ class TestLoadConfig:
         mock_which,
     ):
         """sort_by values outside the enum must raise ConfigValidationError."""
-        from plex_generate_previews.config import clear_config_cache
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.config import clear_config_cache
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.return_value = MagicMock(returncode=0, stdout="ffmpeg version 7.0.0")
@@ -938,7 +1236,7 @@ class TestLoadConfig:
             load_config()
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_missing_plex_url(self, mock_logging, mock_which):
         """Test error when PLEX_URL is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -967,7 +1265,7 @@ class TestLoadConfig:
                 load_config()
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_missing_plex_token(self, mock_logging, mock_which):
         """Test error when PLEX_TOKEN is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -996,8 +1294,8 @@ class TestLoadConfig:
                 load_config()
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.config.load_dotenv")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.config.load_dotenv")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_missing_config_folder(self, mock_logging, mock_load_dotenv, mock_which):
         """Test error when config folder is missing."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -1030,8 +1328,8 @@ class TestLoadConfig:
     @patch("shutil.which")
     @patch("subprocess.run")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.config.load_dotenv")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.config.load_dotenv")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_invalid_path(self, mock_logging, mock_load_dotenv, mock_exists, mock_run, mock_which):
         """Test error when config folder doesn't exist."""
         mock_which.return_value = "/usr/bin/ffmpeg"
@@ -1066,7 +1364,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_invalid_plex_structure(
         self, mock_logging, mock_exists, mock_isdir, mock_listdir, mock_run, mock_which
     ):
@@ -1107,7 +1405,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_validates_numeric_ranges(
         self,
         mock_logging,
@@ -1147,7 +1445,7 @@ class TestLoadConfig:
             gpu_threads=None,
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1163,7 +1461,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_validates_thread_counts(
         self,
         mock_logging,
@@ -1203,7 +1501,7 @@ class TestLoadConfig:
             gpu_threads=50,  # Invalid: > 32
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1219,7 +1517,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_validates_ffmpeg_threads(
         self,
         mock_logging,
@@ -1260,7 +1558,7 @@ class TestLoadConfig:
             cpu_threads=None,
             ffmpeg_threads=50,  # Invalid: > 32
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1277,7 +1575,7 @@ class TestLoadConfig:
     @patch("os.path.isdir")
     @patch("os.path.exists")
     @patch("os.makedirs")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_tmp_folder_auto_creation(
         self,
         mock_logging,
@@ -1296,7 +1594,7 @@ class TestLoadConfig:
 
         # Mock that tmp_folder doesn't exist initially, but plex_config_folder does
         def mock_exists_side_effect(path):
-            if path == "/tmp/plex_generate_previews":
+            if path == "/tmp/media_preview_generator":
                 return False  # tmp folder doesn't exist
             return True  # other paths exist
 
@@ -1342,7 +1640,7 @@ class TestLoadConfig:
             plex_url="http://localhost:32400",
             plex_token="token",
             plex_config_folder="/config/plex",
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1363,7 +1661,7 @@ class TestLoadConfig:
         # Should succeed and create the folder
         assert config is not None
         assert config.tmp_folder_created_by_us is True
-        mock_makedirs.assert_called_once_with("/tmp/plex_generate_previews", exist_ok=True)
+        mock_makedirs.assert_called_once_with("/tmp/media_preview_generator", exist_ok=True)
 
     @patch("shutil.which")
     @patch("subprocess.run")
@@ -1372,7 +1670,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_tmp_folder_not_empty(
         self,
         mock_logging,
@@ -1392,7 +1690,7 @@ class TestLoadConfig:
             return True  # All paths exist
 
         def mock_listdir_side_effect(path):
-            if path == "/tmp/plex_generate_previews":
+            if path == "/tmp/media_preview_generator":
                 return [
                     "file1.txt",
                     "file2.txt",
@@ -1436,7 +1734,7 @@ class TestLoadConfig:
             plex_url="http://localhost:32400",
             plex_token="token",
             plex_config_folder="/config/plex",
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             plex_timeout=None,
             plex_libraries=None,
             plex_local_videos_path_mapping=None,
@@ -1456,10 +1754,10 @@ class TestLoadConfig:
 
         # Should succeed even though tmp folder is not empty
         assert config is not None
-        assert config.tmp_folder == "/tmp/plex_generate_previews"
+        assert config.tmp_folder == "/tmp/media_preview_generator"
 
     @patch("shutil.which")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_ffmpeg_not_found(self, mock_logging, mock_which):
         """Test error when FFmpeg is not found."""
         mock_which.return_value = None
@@ -1494,8 +1792,8 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.utils.is_docker_environment")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.utils.is_docker_environment")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_docker_environment(
         self,
         mock_logging,
@@ -1553,7 +1851,7 @@ class TestLoadConfig:
     @patch("os.listdir")
     @patch("os.path.isdir")
     @patch("os.path.exists")
-    @patch("plex_generate_previews.logging_config.setup_logging")
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_load_config_comma_separated_libraries(
         self,
         mock_logging,
@@ -1624,7 +1922,7 @@ class TestLoadConfig:
             gpu_threads=None,
             cpu_threads=None,
             gpu_config=None,
-            tmp_folder="/tmp/plex_generate_previews",
+            tmp_folder="/tmp/media_preview_generator",
             log_level=None,
         )
 
@@ -1711,7 +2009,7 @@ class TestResolveFfmpegPath:
         which_returns,
         expected,
     ):
-        from plex_generate_previews.config import (
+        from media_preview_generator.config import (
             _JELLYFIN_FFMPEG_PATH,
             _resolve_ffmpeg_path,
         )
@@ -1722,9 +2020,9 @@ class TestResolveFfmpegPath:
         def fake_access(p, mode):
             return p == _JELLYFIN_FFMPEG_PATH and jellyfin_executable
 
-        monkeypatch.setattr("plex_generate_previews.config.os.path.isfile", fake_isfile)
-        monkeypatch.setattr("plex_generate_previews.config.os.access", fake_access)
-        monkeypatch.setattr("plex_generate_previews.config.shutil.which", lambda name: which_returns)
+        monkeypatch.setattr("media_preview_generator.config.os.path.isfile", fake_isfile)
+        monkeypatch.setattr("media_preview_generator.config.os.access", fake_access)
+        monkeypatch.setattr("media_preview_generator.config.shutil.which", lambda name: which_returns)
 
         assert _resolve_ffmpeg_path() == expected
 
@@ -1732,7 +2030,7 @@ class TestResolveFfmpegPath:
 class TestDockerHelp:
     """Test docker help rendering."""
 
-    @patch("plex_generate_previews.config.logger.info")
+    @patch("media_preview_generator.config.logger.info")
     def test_show_docker_help_logs_key_sections(self, mock_info):
         """Ensure Docker help prints required guidance lines."""
         show_docker_help()
@@ -1740,3 +2038,53 @@ class TestDockerHelp:
         assert any("Docker Environment Detected" in line for line in logged_lines)
         assert any("One-time seed environment variables" in line for line in logged_lines)
         assert any("Infrastructure environment variables" in line for line in logged_lines)
+
+
+class TestThumbnailIntervalAlias:
+    """Phase G: ``thumbnail_interval`` is the vendor-neutral name for what
+    was historically ``plex_bif_frame_interval``. The two attributes must
+    round-trip and stay in sync."""
+
+    def _make_config(self, **overrides):
+        from media_preview_generator.config import Config
+
+        defaults = dict(
+            plex_url="http://test:32400",
+            plex_token="t",
+            plex_timeout=30,
+            plex_verify_ssl=True,
+            plex_libraries=[],
+            plex_config_folder="/plex",
+            plex_local_videos_path_mapping="",
+            plex_videos_path_mapping="",
+            path_mappings=[],
+            plex_bif_frame_interval=10,
+            thumbnail_quality=4,
+            regenerate_thumbnails=False,
+            sort_by=None,
+            gpu_threads=0,
+            cpu_threads=1,
+            ffmpeg_threads=2,
+            tmp_folder="/tmp",
+            tmp_folder_created_by_us=False,
+            ffmpeg_path="/usr/bin/ffmpeg",
+            log_level="INFO",
+        )
+        defaults.update(overrides)
+        return Config(**defaults)
+
+    def test_alias_returns_underlying_field(self):
+        cfg = self._make_config(plex_bif_frame_interval=7)
+        assert cfg.thumbnail_interval == 7
+
+    def test_alias_setter_propagates_to_underlying_field(self):
+        cfg = self._make_config(plex_bif_frame_interval=10)
+        cfg.thumbnail_interval = 5
+        assert cfg.plex_bif_frame_interval == 5
+        assert cfg.thumbnail_interval == 5
+
+    def test_alias_setter_coerces_to_int(self):
+        cfg = self._make_config(plex_bif_frame_interval=10)
+        cfg.thumbnail_interval = "12"  # type: ignore[assignment]
+        assert cfg.plex_bif_frame_interval == 12
+        assert isinstance(cfg.plex_bif_frame_interval, int)

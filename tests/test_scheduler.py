@@ -1,11 +1,11 @@
-"""Tests for plex_generate_previews.web.scheduler."""
+"""Tests for media_preview_generator.web.scheduler."""
 
 import os
 from unittest.mock import MagicMock
 
 import pytest
 
-from plex_generate_previews.web.scheduler import (
+from media_preview_generator.web.scheduler import (
     ScheduleManager,
     get_schedule_manager,
 )
@@ -19,7 +19,7 @@ def scheduler_manager(tmp_path, monkeypatch):
 
     manager = ScheduleManager(config_dir=config_dir, run_job_callback=None)
     # Make this the global singleton so execute_scheduled_job uses it
-    monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager)
+    monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager)
     manager.start()
 
     yield manager
@@ -317,7 +317,7 @@ class TestSchedulePersistence:
         os.makedirs(config_dir, exist_ok=True)
 
         manager1 = ScheduleManager(config_dir=config_dir)
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager1)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager1)
         manager1.start()
         schedule = manager1.create_schedule(
             name="Persistent",
@@ -329,7 +329,7 @@ class TestSchedulePersistence:
         manager1.stop()
 
         manager2 = ScheduleManager(config_dir=config_dir)
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", manager2)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager2)
         manager2.start()
 
         retrieved = manager2.get_schedule(sid)
@@ -377,7 +377,7 @@ class TestGetScheduleManager:
 
     def test_returns_singleton(self, tmp_path, monkeypatch):
         """Test that get_schedule_manager returns the same instance."""
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", None)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", None)
 
         config_dir = str(tmp_path / "config")
         os.makedirs(config_dir, exist_ok=True)
@@ -390,7 +390,7 @@ class TestGetScheduleManager:
 
     def test_sets_callback_on_existing(self, tmp_path, monkeypatch):
         """Test that a callback can be set on an existing singleton."""
-        monkeypatch.setattr("plex_generate_previews.web.scheduler._schedule_manager", None)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", None)
 
         config_dir = str(tmp_path / "config")
         os.makedirs(config_dir, exist_ok=True)
@@ -413,7 +413,7 @@ class TestExecuteScheduledJobDispatch:
 
     def test_dispatches_full_library_by_default(self, scheduler_manager):
         """A schedule with no job_type in config goes through run_job_callback."""
-        from plex_generate_previews.web.scheduler import execute_scheduled_job
+        from media_preview_generator.web.scheduler import execute_scheduled_job
 
         mock_callback = MagicMock()
         scheduler_manager.set_run_job_callback(mock_callback)
@@ -437,14 +437,22 @@ class TestExecuteScheduledJobDispatch:
         assert kwargs["library_id"] == "123"
         assert kwargs["library_name"] == "Movies"
 
-    def test_dispatches_recently_added_calls_scanner(self, scheduler_manager, monkeypatch):
-        """A schedule with job_type='recently_added' calls scan_recently_added."""
-        from plex_generate_previews.web import scheduler as sched_mod
+    def test_dispatches_recently_added_calls_multi_server_scan(self, scheduler_manager, monkeypatch):
+        """A schedule with job_type='recently_added' invokes the multi-server
+        recently-added dispatcher (Phase E — works for any vendor)."""
+        from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scanner = MagicMock(return_value=3)
+        mock_scan = MagicMock(return_value={})
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
-            mock_scanner,
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            mock_scan,
+        )
+        # Stub the heavy load_config / build_selected_gpus paths so the test
+        # stays focused on the dispatch contract.
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -462,16 +470,24 @@ class TestExecuteScheduledJobDispatch:
             config={"job_type": "recently_added", "lookback_hours": 2},
         )
 
-        mock_scanner.assert_called_once_with(2.0, library_ids=["2"])
+        mock_scan.assert_called_once()
+        kwargs = mock_scan.call_args.kwargs
+        assert kwargs["library_ids"] == ["2"]
+        assert kwargs["lookback_hours"] == 2.0
 
     def test_dispatches_recently_added_with_no_library_passes_none(self, scheduler_manager, monkeypatch):
-        """No library_id = scanner gets library_ids=None (scan all sections)."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        """No library_id = library_ids=None reaches the multi-server scan."""
+        from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scanner = MagicMock(return_value=0)
+        mock_scan = MagicMock(return_value={})
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
-            mock_scanner,
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            mock_scan,
+        )
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -489,16 +505,23 @@ class TestExecuteScheduledJobDispatch:
             config={"job_type": "recently_added", "lookback_hours": 1},
         )
 
-        mock_scanner.assert_called_once_with(1.0, library_ids=None)
+        mock_scan.assert_called_once()
+        assert mock_scan.call_args.kwargs["library_ids"] is None
+        assert mock_scan.call_args.kwargs["lookback_hours"] == 1.0
 
     def test_recently_added_dispatch_clamps_invalid_lookback(self, scheduler_manager, monkeypatch):
         """Garbage lookback_hours values are coerced to a safe default."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scanner = MagicMock(return_value=0)
+        mock_scan = MagicMock(return_value={})
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
-            mock_scanner,
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            mock_scan,
+        )
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -515,15 +538,21 @@ class TestExecuteScheduledJobDispatch:
         )
 
         # Falls back to 1.0 hour default
-        mock_scanner.assert_called_once_with(1.0, library_ids=None)
+        mock_scan.assert_called_once()
+        assert mock_scan.call_args.kwargs["lookback_hours"] == 1.0
 
     def test_recently_added_dispatch_updates_last_run(self, scheduler_manager, monkeypatch):
         """After dispatching a recently_added scan the schedule's last_run updates."""
-        from plex_generate_previews.web import scheduler as sched_mod
+        from media_preview_generator.web import scheduler as sched_mod
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.recent_added_scanner.scan_recently_added",
-            MagicMock(return_value=0),
+            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
+            MagicMock(return_value={}),
+        )
+        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
+            MagicMock(return_value=[]),
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -542,3 +571,87 @@ class TestExecuteScheduledJobDispatch:
 
         updated = scheduler_manager.get_schedule(schedule["id"])
         assert updated["last_run"] is not None
+
+
+class TestMultiLibrarySchedules:
+    """Phase H7: Schedule.library_ids list + back-compat migration."""
+
+    def test_create_schedule_with_multiple_libraries(self, scheduler_manager):
+        schedule = scheduler_manager.create_schedule(
+            name="Multi",
+            interval_minutes=60,
+            library_ids=["1", "2", "3"],
+            library_name="Movies, TV, Anime",
+        )
+        assert schedule["library_ids"] == ["1", "2", "3"]
+        # library_id stays None when there's more than one library.
+        assert schedule["library_id"] is None
+
+    def test_create_schedule_with_single_library_keeps_back_compat(self, scheduler_manager):
+        schedule = scheduler_manager.create_schedule(
+            name="Single",
+            interval_minutes=60,
+            library_ids=["7"],
+            library_name="Movies",
+        )
+        assert schedule["library_ids"] == ["7"]
+        assert schedule["library_id"] == "7"  # mirrored for legacy readers
+
+    def test_legacy_library_id_arg_still_works(self, scheduler_manager):
+        # Older callers that still pass library_id= keep working.
+        schedule = scheduler_manager.create_schedule(
+            name="Legacy",
+            interval_minutes=60,
+            library_id="42",
+            library_name="Movies",
+        )
+        assert schedule["library_id"] == "42"
+        assert schedule["library_ids"] == ["42"]
+
+    def test_load_migrates_legacy_library_id_to_library_ids(self, tmp_path):
+        """Schedules persisted in pre-H7 shape (only library_id) should migrate
+        to library_ids on read so the rest of the codebase stays uniform."""
+        import json
+
+        config_dir = str(tmp_path / "config")
+        os.makedirs(config_dir, exist_ok=True)
+        legacy = {
+            "schedules": {
+                "abc": {
+                    "id": "abc",
+                    "name": "Legacy",
+                    "trigger_type": "interval",
+                    "trigger_value": "60",
+                    "library_id": "5",
+                    "library_name": "Movies",
+                    "config": {},
+                    "enabled": True,
+                    "created_at": "2025-01-01T00:00:00+00:00",
+                    "last_run": None,
+                    "next_run": None,
+                    "priority": None,
+                }
+            }
+        }
+        with open(os.path.join(config_dir, "schedules.json"), "w") as f:
+            json.dump(legacy, f)
+
+        manager = ScheduleManager(config_dir=config_dir, run_job_callback=None)
+        sched = manager.get_schedule("abc")
+        assert sched["library_ids"] == ["5"]  # promoted on load
+        assert sched["library_id"] == "5"  # original kept
+
+    def test_update_schedule_with_library_ids(self, scheduler_manager):
+        sched = scheduler_manager.create_schedule(
+            name="X",
+            interval_minutes=60,
+            library_id="1",
+            library_name="Movies",
+        )
+        updated = scheduler_manager.update_schedule(
+            sched["id"],
+            library_ids=["1", "2", "3"],
+            library_name="Movies, TV, Anime",
+        )
+        assert updated["library_ids"] == ["1", "2", "3"]
+        assert updated["library_id"] is None  # cleared when multi

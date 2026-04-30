@@ -1,0 +1,489 @@
+{% extends "base.html" %}
+
+{% block title %}Logs - Media Preview Generator{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/logs.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="log-page">
+    <div class="log-toolbar bg-body-tertiary">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <span id="serverLevelBadge" class="badge bg-secondary me-1" title="Server log level (change in Settings)">…</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Minimum level to show">
+                <button type="button" class="btn btn-outline-secondary log-level-btn" data-level="DEBUG">Debug</button>
+                <button type="button" class="btn btn-outline-info log-level-btn" data-level="INFO">Info</button>
+                <button type="button" class="btn btn-outline-warning log-level-btn" data-level="WARNING">Warning</button>
+                <button type="button" class="btn btn-outline-danger log-level-btn" data-level="ERROR">Error</button>
+            </div>
+
+            <div class="input-group input-group-sm" style="max-width: 300px;">
+                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                <input type="text" class="form-control" id="logSearch" placeholder="Filter logs..." autocomplete="off">
+                <button class="btn btn-outline-secondary" type="button" id="logSearchRegex" title="Toggle regex mode">.*</button>
+                <button class="btn btn-outline-secondary" type="button" id="logSearchClear" title="Clear search">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+
+            <button class="btn btn-sm btn-outline-secondary" id="logClearBtn" title="Clear log buffer">
+                <i class="bi bi-trash"></i> Clear
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" id="logCopyBtn" title="Copy visible logs to clipboard">
+                <i class="bi bi-clipboard"></i> Copy
+            </button>
+
+            <span id="logCount" class="text-muted ms-auto">0 lines</span>
+            <span id="liveIndicator" class="text-success"><span class="live-dot"></span>Live</span>
+            <span id="logConnStatus" class="badge bg-secondary">connecting...</span>
+        </div>
+    </div>
+
+    <div class="log-scroll-wrap">
+        <div id="logContainer" class="bg-body-tertiary text-body">
+            <button id="loadOlderBtn" class="btn btn-sm btn-outline-secondary w-100 my-1">
+                <i class="bi bi-clock-history me-1"></i>Load older...
+            </button>
+            <span id="logPlaceholder" class="text-muted">Loading log history...</span>
+        </div>
+
+        <span id="followPill" class="badge rounded-pill bg-info text-dark px-3 py-2">
+            <i class="bi bi-arrow-down-short"></i> New logs — click to follow
+        </span>
+
+        <div class="log-nav-btns">
+            <button class="btn btn-sm btn-outline-secondary opacity-75" id="logScrollTop" title="Scroll to top">
+                <i class="bi bi-chevron-double-up"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-secondary opacity-75" id="logScrollBottom" title="Scroll to bottom & follow">
+                <i class="bi bi-chevron-double-down"></i>
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const MAX_LINES = 2000;
+    const HISTORY_LIMIT = 500;
+    const LS_KEY = 'logViewerLevel';
+
+    const container = document.getElementById('logContainer');
+    const countEl = document.getElementById('logCount');
+    const connBadge = document.getElementById('logConnStatus');
+    const clearBtn = document.getElementById('logClearBtn');
+    const searchInput = document.getElementById('logSearch');
+    const regexBtn = document.getElementById('logSearchRegex');
+    const searchClearBtn = document.getElementById('logSearchClear');
+    const loadOlderBtn = document.getElementById('loadOlderBtn');
+    const copyBtn = document.getElementById('logCopyBtn');
+    const followPill = document.getElementById('followPill');
+    const liveIndicator = document.getElementById('liveIndicator');
+    const serverLevelBadge = document.getElementById('serverLevelBadge');
+    const placeholder = document.getElementById('logPlaceholder');
+
+    let following = true;   // auto-scroll active
+    let lineCount = 0;
+    let newWhileAway = 0;   // live messages that arrived while not following
+    let regexMode = false;
+    let currentLevel = 'INFO';
+    let serverLevel = 'INFO';
+    let socket = null;
+    let oldestTs = '';
+    let hasMore = false;
+    let loadingOlder = false;
+    let suppressScroll = 0;
+
+    const LEVEL_CLASS = {
+        DEBUG: 'log-level-debug',
+        INFO: 'log-level-info',
+        SUCCESS: 'log-level-info',
+        WARNING: 'log-level-warning',
+        ERROR: 'log-level-error',
+        CRITICAL: 'log-level-critical',
+    };
+
+    // --- Server level badge ---
+    const LEVEL_BADGE_CLASS = {
+        DEBUG: 'bg-secondary', INFO: 'bg-info text-dark',
+        WARNING: 'bg-warning text-dark', ERROR: 'bg-danger',
+    };
+
+    const LEVEL_RANK = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+
+    function applyServerLevel(level) {
+        serverLevel = level;
+        serverLevelBadge.textContent = 'Server: ' + level;
+        serverLevelBadge.className = 'badge me-1 ' + (LEVEL_BADGE_CLASS[level] || 'bg-secondary');
+        const minRank = LEVEL_RANK[level] ?? 0;
+        document.querySelectorAll('.log-level-btn').forEach(btn => {
+            const rank = LEVEL_RANK[btn.dataset.level] ?? 0;
+            btn.disabled = rank < minRank;
+            if (rank < minRank) btn.title = 'Below server log level (' + level + ')';
+            else btn.title = '';
+        });
+    }
+
+    async function fetchServerLevel() {
+        try {
+            const resp = await fetch('/api/settings');
+            if (resp.ok) {
+                const data = await resp.json();
+                const level = (data.log_level || 'INFO').toUpperCase();
+                if (['DEBUG','INFO','WARNING','ERROR','CRITICAL'].includes(level)) {
+                    applyServerLevel(level);
+                    return level;
+                }
+            }
+        } catch {}
+        applyServerLevel('INFO');
+        return 'INFO';
+    }
+
+    // --- Smart level default ---
+    // Honour the user's localStorage override, but only if the server level
+    // hasn't changed since they set it.  This way, changing the level in
+    // Settings immediately takes effect in the log viewer on next visit.
+    async function resolveDefaultLevel() {
+        const serverLevel = await fetchServerLevel();
+        const stored = localStorage.getItem(LS_KEY);
+        const storedFor = localStorage.getItem(LS_KEY + '_server');
+        if (stored && storedFor === serverLevel && ['DEBUG','INFO','WARNING','ERROR'].includes(stored)) {
+            return stored;
+        }
+        localStorage.removeItem(LS_KEY);
+        localStorage.removeItem(LS_KEY + '_server');
+        return serverLevel;
+    }
+
+    function setLevelUI(level) {
+        currentLevel = level;
+        document.querySelectorAll('.log-level-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.level === level);
+        });
+    }
+
+    // --- Follow / scroll helpers ---
+    function isAtBottom() {
+        return container.scrollHeight - container.scrollTop - container.clientHeight < 40;
+    }
+
+    function scrollToBottom() {
+        suppressScroll = Date.now() + 300;
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function startFollowing() {
+        following = true;
+        newWhileAway = 0;
+        followPill.style.display = 'none';
+        liveIndicator.style.opacity = '1';
+        scrollToBottom();
+    }
+
+    function stopFollowing() {
+        if (!following) return;
+        following = false;
+        liveIndicator.style.opacity = '0.3';
+    }
+
+    function showFollowPill() {
+        followPill.style.display = '';
+        followPill.innerHTML = '<i class="bi bi-arrow-down-short"></i> ' +
+            (newWhileAway > 0 ? newWhileAway + ' new — click to follow' : 'Click to follow');
+    }
+
+    container.addEventListener('scroll', () => {
+        if (Date.now() < suppressScroll) return;
+        if (isAtBottom()) {
+            if (!following) startFollowing();
+        } else {
+            stopFollowing();
+            if (newWhileAway > 0) showFollowPill();
+        }
+    });
+
+    followPill.addEventListener('click', startFollowing);
+
+    // --- Build a log line DOM element ---
+    function buildLogLine(data) {
+        const level = data.level || 'INFO';
+        const span = document.createElement('span');
+        span.className = 'log-line ' + (LEVEL_CLASS[level] || '');
+        span.dataset.raw = (data.ts || '') + ' ' + level + ' ' + (data.mod || '') + ' ' + (data.msg || '');
+
+        const ts = '<span class="log-ts">' + esc(data.ts || '') + '</span>';
+        const lvl = '<span class="log-lvl">' + esc(level) + '</span>';
+        const mod = data.mod ? '<span class="log-mod">[' + esc(data.mod) + ']</span>' : '';
+        const msg = '<span class="log-msg">' + esc(data.msg || '') + '</span>';
+        const detail = '<div class="log-detail">' + esc(data.mod || '') + '.' + esc(data.func || '') + ':' + (data.line || '') + '</div>';
+
+        span.innerHTML = ts + lvl + mod + msg + detail;
+        span.addEventListener('click', () => span.classList.toggle('expanded'));
+
+        const q = searchInput.value;
+        if (q && !matchesSearch(span.dataset.raw, q)) {
+            span.classList.add('log-line-hidden');
+        }
+        return span;
+    }
+
+    // --- Load history from the API ---
+    async function loadHistory(before) {
+        const params = new URLSearchParams({ limit: HISTORY_LIMIT, level: currentLevel });
+        if (before) params.set('before', before);
+        try {
+            const resp = await fetch('/api/logs/history?' + params.toString());
+            if (!resp.ok) return { lines: [], has_more: false, oldest_ts: '' };
+            return await resp.json();
+        } catch {
+            return { lines: [], has_more: false, oldest_ts: '' };
+        }
+    }
+
+    async function loadInitialHistory() {
+        const data = await loadHistory();
+        if (placeholder) placeholder.remove();
+
+        if (data.lines.length > 0) {
+            const frag = document.createDocumentFragment();
+            data.lines.forEach(entry => {
+                frag.appendChild(buildLogLine(entry));
+                lineCount++;
+            });
+            container.appendChild(frag);
+            oldestTs = data.oldest_ts || '';
+            hasMore = data.has_more;
+            loadOlderBtn.style.display = hasMore ? '' : 'none';
+            countEl.textContent = lineCount.toLocaleString() + ' log lines';
+            scrollToBottom();
+        } else {
+            container.insertAdjacentHTML('beforeend', '<span class="text-muted">No log history available. New messages will appear here.</span>');
+        }
+    }
+
+    loadOlderBtn.addEventListener('click', async () => {
+        if (loadingOlder || !hasMore) return;
+        loadingOlder = true;
+        loadOlderBtn.disabled = true;
+        loadOlderBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading...';
+
+        const scrollBefore = container.scrollHeight;
+        const data = await loadHistory(oldestTs);
+
+        if (data.lines.length > 0) {
+            const refNode = loadOlderBtn.nextSibling;
+            const frag = document.createDocumentFragment();
+            data.lines.forEach(entry => {
+                frag.appendChild(buildLogLine(entry));
+                lineCount++;
+            });
+            container.insertBefore(frag, refNode);
+            oldestTs = data.oldest_ts || oldestTs;
+            hasMore = data.has_more;
+            countEl.textContent = lineCount.toLocaleString() + ' log lines';
+            suppressScroll = Date.now() + 300;
+            container.scrollTop += container.scrollHeight - scrollBefore;
+        }
+
+        loadOlderBtn.style.display = hasMore ? '' : 'none';
+        loadOlderBtn.disabled = false;
+        loadOlderBtn.innerHTML = '<i class="bi bi-clock-history me-1"></i>Load older...';
+        loadingOlder = false;
+    });
+
+    // --- SocketIO connection ---
+    function connectSocket() {
+        socket = io('/logs', {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 2000,
+        });
+
+        socket.on('connect', () => {
+            connBadge.textContent = 'connected';
+            connBadge.className = 'badge bg-success';
+            socket.emit('set_level', { level: currentLevel });
+        });
+
+        socket.on('disconnect', () => {
+            connBadge.textContent = 'disconnected';
+            connBadge.className = 'badge bg-danger';
+        });
+
+        socket.on('connect_error', () => {
+            connBadge.textContent = 'error';
+            connBadge.className = 'badge bg-danger';
+        });
+
+        socket.on('log_message', onLogMessage);
+    }
+
+    // --- Live log message ---
+    function onLogMessage(data) {
+        container.appendChild(buildLogLine(data));
+        lineCount++;
+
+        while (lineCount > MAX_LINES) {
+            const first = container.querySelector('.log-line');
+            if (first) { first.remove(); lineCount--; }
+            else break;
+        }
+
+        countEl.textContent = lineCount.toLocaleString() + ' log lines';
+
+        if (following) {
+            scrollToBottom();
+        } else {
+            newWhileAway++;
+            showFollowPill();
+        }
+    }
+
+    function clearLogContent() {
+        container.querySelectorAll('.log-line, .text-muted').forEach(el => {
+            if (el.id !== 'logPlaceholder') el.remove();
+        });
+        lineCount = 0;
+        oldestTs = '';
+        hasMore = false;
+        newWhileAway = 0;
+        followPill.style.display = 'none';
+        loadOlderBtn.style.display = 'none';
+        countEl.textContent = '0 lines';
+    }
+
+    function esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    // --- Search ---
+    function matchesSearch(raw, query) {
+        if (!query) return true;
+        if (regexMode) {
+            try { return new RegExp(query, 'i').test(raw); }
+            catch { return true; }
+        }
+        return raw.toLowerCase().includes(query.toLowerCase());
+    }
+
+    function applySearch() {
+        const q = searchInput.value;
+        for (const line of container.querySelectorAll('.log-line')) {
+            if (!q) {
+                line.classList.remove('log-line-hidden');
+                line.querySelectorAll('.log-msg').forEach(el => {
+                    el.innerHTML = esc(el.textContent);
+                });
+                continue;
+            }
+            const raw = line.dataset.raw || '';
+            if (matchesSearch(raw, q)) {
+                line.classList.remove('log-line-hidden');
+                if (!regexMode) {
+                    line.querySelectorAll('.log-msg').forEach(el => {
+                        const text = el.textContent;
+                        const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+                        el.innerHTML = esc(text).replace(re, '<mark class="log-highlight">$1</mark>');
+                    });
+                }
+            } else {
+                line.classList.add('log-line-hidden');
+            }
+        }
+    }
+
+    let searchDebounce = null;
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(applySearch, 150);
+    });
+
+    regexBtn.addEventListener('click', () => {
+        regexMode = !regexMode;
+        regexBtn.classList.toggle('active', regexMode);
+        applySearch();
+    });
+
+    searchClearBtn.addEventListener('click', () => {
+        searchInput.value = '';
+        applySearch();
+    });
+
+    // --- Level buttons ---
+    document.querySelectorAll('.log-level-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const level = btn.dataset.level;
+            setLevelUI(level);
+            localStorage.setItem(LS_KEY, level);
+            localStorage.setItem(LS_KEY + '_server', serverLevelBadge.textContent.replace('Server: ', ''));
+            if (socket && socket.connected) {
+                socket.emit('set_level', { level: level });
+            }
+            clearLogContent();
+            following = true;
+            await loadInitialHistory();
+        });
+    });
+
+    // --- Scroll nav buttons ---
+    document.getElementById('logScrollTop').addEventListener('click', () => {
+        suppressScroll = Date.now() + 600;
+        following = false;
+        container.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    document.getElementById('logScrollBottom').addEventListener('click', startFollowing);
+
+    // --- Clear ---
+    clearBtn.addEventListener('click', () => {
+        clearLogContent();
+        following = true;
+    });
+
+    // --- Copy visible logs to clipboard ---
+    copyBtn.addEventListener('click', async () => {
+        const lines = container.querySelectorAll('.log-line:not(.log-line-hidden)');
+        if (!lines.length) return;
+        const text = Array.from(lines).map(el => {
+            const ts = el.querySelector('.log-ts')?.textContent || '';
+            const lvl = el.querySelector('.log-lvl')?.textContent || '';
+            const mod = el.querySelector('.log-mod')?.textContent || '';
+            const msg = el.querySelector('.log-msg')?.textContent || '';
+            return (ts + ' ' + lvl + ' ' + mod + ' ' + msg).trim();
+        }).join('\n');
+
+        const wrapped = '```\n' + text + '\n```';
+        try {
+            await navigator.clipboard.writeText(wrapped);
+            copyBtn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+            setTimeout(() => { copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> Copy'; }, 2000);
+        } catch {
+            const ta = document.createElement('textarea');
+            ta.value = wrapped;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            copyBtn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+            setTimeout(() => { copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> Copy'; }, 2000);
+        }
+    });
+
+    // --- Boot ---
+    (async function boot() {
+        currentLevel = await resolveDefaultLevel();
+        setLevelUI(currentLevel);
+        await loadInitialHistory();
+        connectSocket();
+    })();
+})();
+</script>
+{% endblock %}

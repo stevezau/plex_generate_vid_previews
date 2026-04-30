@@ -1,0 +1,143 @@
+{# Reusable Add Server connection form (URL + auth + test + result).
+   Included from:
+   * _add_server_modal.html → renders inside the modal dialog (used on /servers).
+   * setup.html → renders inline within wizard step 1 (Emby/Jellyfin path).
+   The same servers.js wizard JS binds by these IDs, so both surfaces share one
+   implementation. The vendor picker (#step-type) is intentionally NOT in this
+   partial — the modal supplies one, and the wizard supplies its own. #}
+
+<!-- Connection -->
+<div id="step-connect" class="server-step d-none">
+    <h6 class="text-muted mb-3">Connect to <span id="step-connect-vendor"></span></h6>
+    <div class="mb-3">
+        <label class="form-label">Server URL</label>
+        <input type="text" id="serverUrl" class="form-control" placeholder="http://hostname:port" autocomplete="off">
+        <div class="invalid-feedback">Enter the server URL.</div>
+        <div class="form-text">Examples: <code>http://emby.local:8096</code>, <code>http://192.168.1.10:32400</code></div>
+    </div>
+    <div class="mb-3">
+        <label class="form-label">Display name</label>
+        <input type="text" id="serverName" class="form-control" placeholder="e.g. Home Plex">
+        <div class="invalid-feedback">Give this server a name to recognise it later.</div>
+    </div>
+
+    <!-- Auth method picker (Emby / Jellyfin only) -->
+    <div id="auth-method-section" class="mb-3 d-none">
+        <label class="form-label">Authentication</label>
+        <div class="btn-group w-100" role="group">
+            <input type="radio" class="btn-check" name="authMethod" id="auth-quick" value="quick_connect" autocomplete="off">
+            <label class="btn btn-outline-primary" for="auth-quick">Quick Connect</label>
+            <input type="radio" class="btn-check" name="authMethod" id="auth-pw" value="password" autocomplete="off" checked>
+            <label class="btn btn-outline-primary" for="auth-pw">Username + Password</label>
+            <input type="radio" class="btn-check" name="authMethod" id="auth-key" value="api_key" autocomplete="off">
+            <label class="btn btn-outline-primary" for="auth-key">API Key</label>
+        </div>
+    </div>
+
+    <div id="auth-fields-password" class="d-none">
+        <div class="mb-2">
+            <label class="form-label">Username</label>
+            <input type="text" id="authUsername" class="form-control" autocomplete="username">
+            <div class="invalid-feedback">Enter the username.</div>
+        </div>
+        <div class="mb-2">
+            <label class="form-label">Password</label>
+            <input type="password" id="authPassword" class="form-control" autocomplete="current-password">
+            <div class="form-text">Sent once to the server; not stored here.</div>
+        </div>
+    </div>
+    <div id="auth-fields-api-key" class="d-none">
+        <div class="mb-2">
+            <label class="form-label">API key</label>
+            <input type="password" id="authApiKey" class="form-control" autocomplete="off">
+            <div class="invalid-feedback">Enter the API key.</div>
+        </div>
+    </div>
+    <div id="auth-fields-quick-connect" class="d-none">
+        <p class="text-muted small mb-1">
+            Click <strong>Start Quick Connect</strong> to get a code, then enter it in your Jellyfin profile menu.
+            <em>Quick Connect must be enabled by your Jellyfin admin under Server → Quick Connect.</em>
+        </p>
+        <button type="button" class="btn btn-primary mb-2" id="quickConnectStart">
+            <i class="bi bi-magic me-1"></i>Start Quick Connect
+        </button>
+        <div id="quickConnectCode" class="alert alert-info d-none"></div>
+        <div class="alert alert-warning small mb-0 mt-2">
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            Jellyfin needs <em>Trickplay image extraction</em> enabled per library to show previews. The Servers page has a one-click <strong>Fix trickplay</strong> button.
+        </div>
+    </div>
+
+    <div id="auth-fields-token-plex" class="d-none">
+        <div class="mb-3">
+            <button type="button" class="btn btn-warning w-100" id="plexOAuthStart">
+                <i class="bi bi-shield-check me-1"></i>Sign in with Plex (auto-discover servers)
+            </button>
+            <small class="text-muted d-block mt-1">
+                Recommended. Lists every Plex server your account can access so you can pick one (or add several from one sign-in).
+            </small>
+        </div>
+
+        <div id="plexDiscoveredList" class="d-none mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="form-label mb-0">Discovered Plex servers</label>
+                <small class="text-muted">Tick one or more to add</small>
+            </div>
+            <div id="plexDiscoveredServers" class="list-group"></div>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+                <small class="form-text"><span id="plexSelectedCount">0</span> selected</small>
+                <button type="button" class="btn btn-success btn-sm d-none" id="plexAddSelected">
+                    <i class="bi bi-check2-circle me-1"></i>Add selected servers
+                </button>
+            </div>
+            <div class="form-text mt-1">
+                Tick a single server to fill the wizard fields below (lets you customise the
+                config folder per server). Tick multiple servers to add them all at once with
+                shared defaults — you can still edit each one from the Servers page afterwards.
+            </div>
+        </div>
+
+        <details class="mb-2">
+            <summary class="text-muted small">Or enter the token manually</summary>
+            <div class="mt-2">
+                <label class="form-label">Plex token</label>
+                <input type="password" id="plexToken" class="form-control" autocomplete="off">
+                <div class="invalid-feedback">Sign in with Plex above, or paste a token here.</div>
+                <div class="form-text">Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>.</div>
+            </div>
+        </details>
+
+        <div class="mb-2">
+            <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
+            <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
+            <div class="form-text">
+                BIF files land in <code>{this folder}/Media/localhost/.../*.bundle/Contents/Indexes/</code>.
+                Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.
+            </div>
+        </div>
+    </div>
+
+    {# Form-level error region — shown by servers.js when password/API-key
+       auth fails or any non-field error needs to surface inline (instead
+       of as a popup). Kept outside the auth-method panels so it's visible
+       regardless of which auth method is active. #}
+    <div id="connectFormError" class="alert alert-danger d-none mt-3" role="alert"></div>
+
+    <div class="d-flex justify-content-between">
+        <button type="button" class="btn btn-link" id="step-connect-back">← Back</button>
+        <button type="button" class="btn btn-primary" id="step-connect-test">
+            Test connection →
+        </button>
+    </div>
+</div>
+
+<!-- Test result -->
+<div id="step-result" class="server-step d-none">
+    <div id="connectResult" class="alert"></div>
+    <div class="d-flex justify-content-between">
+        <button type="button" class="btn btn-link" id="step-result-back">← Edit</button>
+        <button type="button" class="btn btn-success" id="step-result-save">
+            <i class="bi bi-save me-1"></i>Save server
+        </button>
+    </div>
+</div>

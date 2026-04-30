@@ -5,7 +5,7 @@ Job-level ETA was removed; worker ETA (from ffmpeg) is still exposed via WorkerS
 This module tests the data model and formatting contract for worker ETA.
 """
 
-from plex_generate_previews.web.jobs import JobProgress, WorkerStatus
+from media_preview_generator.web.jobs import JobProgress, WorkerStatus
 
 
 def _format_eta(seconds: float) -> str:

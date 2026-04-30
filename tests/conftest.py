@@ -29,7 +29,7 @@ import pytest
 try:
     from apscheduler.jobstores.memory import MemoryJobStore as _MemoryJobStore
 
-    import plex_generate_previews.web.scheduler as _sched_mod
+    import media_preview_generator.web.scheduler as _sched_mod
 
     class _TestMemoryJobStore(_MemoryJobStore):
         def __init__(self, *args, **kwargs):  # noqa: D401
@@ -38,6 +38,27 @@ try:
     _sched_mod.SQLAlchemyJobStore = _TestMemoryJobStore
 except ImportError:  # pragma: no cover
     pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_frame_cache_between_tests():
+    """Drop the frame-cache singleton before AND after every test.
+
+    The cache is a module-level singleton with a ``base_dir`` lock —
+    tests that construct it with different ``base_dir`` values (often
+    via MagicMock-derived paths) would otherwise trip the
+    "already initialised with a different base_dir" guard. Resetting
+    keeps tests independent without each one needing to remember to
+    do this in setup.
+    """
+    try:
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
+    except Exception:
+        yield
+        return
+    reset_frame_cache()
+    yield
+    reset_frame_cache()
 
 
 @pytest.fixture
@@ -111,7 +132,7 @@ def mock_config():
     config.gpu_threads = 1
     config.cpu_threads = 1
     config.gpu_config = []
-    config.tmp_folder = "/tmp/plex_generate_previews"
+    config.tmp_folder = "/tmp/media_preview_generator"
     config.tmp_folder_created_by_us = False
     config.ffmpeg_path = "/usr/bin/ffmpeg"
     config.ffmpeg_threads = 2
@@ -342,7 +363,7 @@ def _neutralize_prewarm_caches(request, monkeypatch):
     if request.node.get_closest_marker("real_prewarm"):
         return
     try:
-        import plex_generate_previews.web.app as app_mod
+        import media_preview_generator.web.app as app_mod
     except ImportError:
         return
     monkeypatch.setattr(app_mod, "_prewarm_caches", lambda: None)
@@ -362,8 +383,8 @@ def _neutralize_setup_logging(request, monkeypatch):
     if request.node.get_closest_marker("real_logging"):
         return
     try:
-        import plex_generate_previews.logging_config as lc_mod
-        import plex_generate_previews.web.app as app_mod
+        import media_preview_generator.logging_config as lc_mod
+        import media_preview_generator.web.app as app_mod
     except ImportError:
         return
     noop = lambda *a, **kw: None  # noqa: E731
@@ -392,7 +413,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
     """
     if request.node.get_closest_marker("real_plex_server") is None:
         try:
-            import plex_generate_previews.plex_client as pc_mod
+            import media_preview_generator.plex_client as pc_mod
 
             mock_server = MagicMock()
             mock_server.library.sections.return_value = []
@@ -409,7 +430,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
         # read, which sends ``_ensure_gpu_cache`` back to the real ffmpeg
         # subprocess probes.
         try:
-            import plex_generate_previews.gpu.detect as gd_mod
+            import media_preview_generator.gpu.detect as gd_mod
 
             monkeypatch.setattr(gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True)
         except ImportError:
@@ -422,7 +443,7 @@ def _sync_start_job_async(request, monkeypatch):
 
     Route handlers (``POST /api/jobs``, webhook endpoints, settings resume, …)
     normally spawn a daemon ``run_job`` thread via
-    ``plex_generate_previews.web.routes.job_runner._start_job_async``. That
+    ``media_preview_generator.web.routes.job_runner._start_job_async``. That
     thread escapes the test's ``with patch(...)`` scope and keeps running
     after teardown — enumerating the real Plex library (if ``PLEX_URL`` is
     set), probing real GPUs, and flooding stderr with ``I/O operation on
@@ -446,7 +467,7 @@ def _sync_start_job_async(request, monkeypatch):
     if request.node.get_closest_marker("real_job_async"):
         return
     try:
-        import plex_generate_previews.web.routes.job_runner as jr_mod
+        import media_preview_generator.web.routes.job_runner as jr_mod
     except ImportError:
         return
 
@@ -484,8 +505,85 @@ def _sync_start_job_async(request, monkeypatch):
     monkeypatch.setattr(jr_mod, "threading", _ThreadingShim(), raising=True)
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for the unified ProcessableItem dispatch path.
+#
+# Six test modules historically duplicated the same _pi/_pi_list/
+# _pi_list_or_passthrough/_ms helper trio. They now live here and are
+# imported by name from this conftest. Keep the signatures stable —
+# changing them ripples across the whole worker test surface.
+# ---------------------------------------------------------------------------
+
+
+def _pi(key="test_key", title="Test", media_type=None, canonical_path=None, server_id="plex-1"):
+    """Build a ``ProcessableItem`` matching what the tests used to assemble as a tuple.
+
+    ``media_type`` is accepted for backward compat with the legacy 3-tuple
+    callsites but is intentionally ignored — :class:`ProcessableItem` has
+    no media-type field; vendor processors derive that from the path.
+    """
+    from media_preview_generator.processing.types import ProcessableItem
+
+    del media_type  # see docstring — accepted but unused
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id="lib-1",
+    )
+
+
+def _pi_list(triples, *, server_id="plex-1"):
+    """Bulk version: convert ``[(key, title, media_type?)]`` tuples to ``ProcessableItem`` instances."""
+    out = []
+    for entry in triples:
+        if not entry:
+            continue
+        key = entry[0]
+        title = entry[1] if len(entry) > 1 else "Test"
+        # tuple's optional third slot (media_type) is dropped; see _pi docstring.
+        out.append(_pi(key, title=title, server_id=server_id))
+    return out
+
+
+def _pi_list_or_passthrough(items):
+    """Pass through a list of ``ProcessableItem`` instances untouched, or convert tuples on the fly."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    if not items:
+        return []
+    if isinstance(items[0], ProcessableItem):
+        return items
+    return _pi_list(items)
+
+
+def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
+    """Build a ``MultiServerResult`` whose status maps back to a specific ``ProcessingResult``."""
+    from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+    status_map = {
+        "generated": MultiServerStatus.PUBLISHED,
+        "published": MultiServerStatus.PUBLISHED,
+        "skipped_bif_exists": MultiServerStatus.SKIPPED,
+        "skipped": MultiServerStatus.SKIPPED,
+        "no_media_parts": MultiServerStatus.NO_OWNERS,
+        "no_owners": MultiServerStatus.NO_OWNERS,
+        "failed": MultiServerStatus.FAILED,
+    }
+    return MultiServerResult(
+        canonical_path=canonical_path,
+        status=status_map.get(status, MultiServerStatus.PUBLISHED),
+        message=message,
+    )
+
+
 # Export helper functions so tests can use them
 __all__ = [
+    "_ms",
+    "_pi",
+    "_pi_list",
+    "_pi_list_or_passthrough",
     "create_mock_ffmpeg_process",
     "create_mock_mediainfo",
 ]

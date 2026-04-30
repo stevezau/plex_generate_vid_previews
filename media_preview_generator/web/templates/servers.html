@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+
+{% block title %}Servers · Media Preview Generator{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="mb-0">
+                <i class="bi bi-hdd-stack me-2"></i>Media Servers
+            </h1>
+        </div>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
+            <i class="bi bi-plus-lg me-1"></i>Add Server
+        </button>
+    </div>
+
+    <div id="serverList" class="row g-3">
+        <div class="col-12 text-center text-muted py-5">
+            <div class="spinner-border" role="status"></div>
+            <div class="mt-2">Loading servers…</div>
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-body">
+            <h5 class="card-title">
+                <i class="bi bi-info-circle me-2"></i>Webhook URL
+            </h5>
+            <p class="card-text mb-2">
+                One URL for all vendors — copy it into your media server (or *arr) webhook settings.
+            </p>
+            <div class="input-group">
+                <input id="webhookUrl" type="text" class="form-control font-monospace" readonly>
+                <button class="btn btn-outline-secondary" type="button" id="copyWebhookUrl">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+            </div>
+            <small class="text-muted d-block mt-2">
+                See <a href="/static/docs/multi-server.md" target="_blank">the multi-server guide</a>
+                for vendor-specific webhook configuration tips.
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- Add Server Modal — shared partial, also included from /setup so the
+     wizard's vendor picker can open the same connection flow inline
+     instead of redirecting users away to /servers. -->
+{% include "_add_server_modal.html" %}
+
+<!-- Edit Server Modal — per-server config editor for an already-saved server.
+     Submits via PUT /api/servers/<id>; the Add wizard above stays focused on
+     first-time onboarding. -->
+<div class="modal fade" id="editServerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-pencil me-1"></i>Edit
+                    <span id="editServerName" class="text-muted"></span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editServerId">
+                <input type="hidden" id="editServerType">
+
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#edit-tab-general" type="button">General</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-libraries" type="button">Libraries</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-paths" type="button">Path mappings</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-excludes" type="button">Exclude paths</button></li>
+                    <!-- Plex-only: hidden via JS for non-Plex servers. Surfaces the
+                         existing global Plex Direct webhook + Recently Added Scanner
+                         controls without duplicating their full implementation. -->
+                    <li class="nav-item d-none" id="editTabAutomationLi">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-automation" type="button">
+                            Webhook &amp; Scanner
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- General -->
+                    <div class="tab-pane fade show active" id="edit-tab-general">
+                        <div class="mb-3">
+                            <label class="form-label">Display name</label>
+                            <input type="text" id="editServerDisplayName" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Server URL</label>
+                            <input type="text" id="editServerUrl" class="form-control" autocomplete="off">
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" id="editServerVerifySsl" class="form-check-input">
+                            <label class="form-check-label" for="editServerVerifySsl">Verify SSL certificate</label>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" id="editServerEnabled" class="form-check-input">
+                            <label class="form-check-label" for="editServerEnabled">Server enabled (uncheck to pause publishing)</label>
+                        </div>
+
+                        <!-- Plex-only: config folder -->
+                        <div id="editPlexConfigGroup" class="mb-3 d-none">
+                            <label class="form-label">Plex config folder</label>
+                            <div class="input-group">
+                                <input type="text" id="editPlexConfigFolder" class="form-control">
+                                <button type="button" class="btn btn-outline-secondary"
+                                        id="editPlexConfigBrowseBtn"
+                                        title="Browse folders">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                                <div class="invalid-feedback small"></div>
+                                <div class="valid-feedback small">Path exists</div>
+                            </div>
+                            <div class="form-text">Where this Plex server's preview bundles will be written.</div>
+                        </div>
+
+                        <details class="mb-3">
+                            <summary class="text-muted small">Re-authenticate (only if needed)</summary>
+                            <div class="mt-2">
+                                <p class="small text-muted mb-2">Token / API key is already saved — leave blank to keep it. Paste a new value only to rotate.</p>
+                                <input type="password" id="editServerToken" class="form-control" placeholder="•••••••• (unchanged)" autocomplete="off">
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Libraries -->
+                    <div class="tab-pane fade" id="edit-tab-libraries">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <p class="small text-muted mb-0">Tick the libraries this app should publish previews for.</p>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editRefreshLibrariesBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
+                            </button>
+                        </div>
+                        <div id="editLibraryList" class="list-group small"></div>
+                    </div>
+
+                    <!-- Path mappings -->
+                    <div class="tab-pane fade" id="edit-tab-paths">
+                        <p class="small text-muted mb-2">
+                            Translate a path the media server reports (e.g. <code>/data_16tb/movies</code>) into the path this app
+                            sees on disk (e.g. <code>/mnt/plex/movies</code>). Add one row per mount difference. Leave empty when the server and this
+                            app share the same view.
+                        </p>
+                        <p class="small text-muted mb-2">
+                            <strong>Path the webhook sends</strong> &mdash; if Sonarr / Radarr / Tdarr / Plex Direct posts a different prefix than what this server stores
+                            on disk (e.g. a MergerFS or union mount like <code>/data</code> on top of <code>/data_16tb*</code>), put that source prefix here.
+                            One per row &mdash; if the same disk shows up under multiple webhook sources, add another row with the same local path.
+                            Leave blank when the webhook source already sends the same paths the server uses.
+                        </p>
+                        <table class="table table-sm" id="editPathMappingsTable">
+                            <thead><tr><th>Path on Media Server</th><th>Local path on this app</th><th>Path the webhook sends</th><th></th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                        <div class="d-flex justify-content-between mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editAddPathMapping">
+                                <i class="bi bi-plus-lg me-1"></i>Add row
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editApplyPathMappingsAll" title="Copy these mappings to every other configured server">
+                                <i class="bi bi-arrow-left-right me-1"></i>Apply to all servers
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Exclude paths -->
+                    <div class="tab-pane fade" id="edit-tab-excludes">
+                        <p class="small text-muted mb-2">
+                            Skip preview generation for paths matching these rules — applied per server. Type "path" matches any file
+                            under the given prefix; type "regex" matches the full path.
+                        </p>
+                        <table class="table table-sm" id="editExcludePathsTable">
+                            <thead><tr><th>Value</th><th>Type</th><th></th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                        <div class="d-flex justify-content-between mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editAddExcludePath">
+                                <i class="bi bi-plus-lg me-1"></i>Add row
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editApplyExcludePathsAll" title="Copy these rules to every other configured server">
+                                <i class="bi bi-arrow-left-right me-1"></i>Apply to all servers
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Webhook & Scanner (Plex-only): full controls live here.
+                         The Plex Direct webhook is currently registered against a single
+                         Plex token at app level; per-server registration in a multi-Plex
+                         install is tracked as a follow-up. -->
+                    <div class="tab-pane fade" id="edit-tab-automation">
+                        <div id="editPlexWebhookServerCaption" class="small text-muted mb-3"></div>
+
+                        <!-- Plex Direct Webhook -->
+                        <div class="card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                <div>
+                                    <i class="bi bi-lightning-charge me-2"></i>Plex Direct Webhook
+                                    <span class="badge bg-info ms-2">Instant</span>
+                                    <span class="badge bg-warning text-dark ms-1">Plex Pass required</span>
+                                </div>
+                                <span class="badge badge-status bg-secondary" id="plexWebhookStatusBadge">Checking…</span>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-3">Instant: Plex pings this app the moment it adds a library item.</p>
+
+                                <h6 class="mb-2">Prerequisites</h6>
+                                <ul class="mb-3">
+                                    <li><strong>Plex Pass</strong> active on your server-owner account.</li>
+                                    <li>
+                                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → General.
+                                        <div class="text-muted small mt-1">
+                                            Plex quirk: the <code>library.new</code> webhook only fires when push notifications are on. The toggle just needs to be enabled — you don't actually need to send pushes anywhere.
+                                        </div>
+                                    </li>
+                                </ul>
+
+                                <div id="plexWebhookNoPlexPass" class="alert alert-warning small d-none">
+                                    <i class="bi bi-exclamation-circle me-1"></i>
+                                    Your Plex account doesn't appear to have an active Plex Pass subscription. Plex's webhook feature is Plex-Pass-only — use the Recently Added Scanner below instead.
+                                </div>
+                                <div id="plexWebhookError" class="alert alert-danger small d-none"></div>
+                                <div id="plexWebhookWarning" class="alert alert-warning small d-none"></div>
+
+                                <h6 class="mb-2">Setup</h6>
+                                <ol class="mb-3">
+                                    <li class="mb-3">
+                                        Confirm the URL Plex will POST to. The default is the URL you're using right now, which works for most same-host setups. Override it if Plex is on a different machine or behind a different network/proxy.
+                                        <div class="input-group input-group-sm mt-2">
+                                            <input type="text" class="form-control" id="plexWebhookPublicUrl" placeholder="http://your-host:8080/api/webhooks/incoming">
+                                            <button class="btn btn-outline-secondary" type="button" id="plexWebhookResetUrlBtn" title="Reset to detected URL">
+                                                <i class="bi bi-arrow-counterclockwise"></i>
+                                            </button>
+                                        </div>
+                                        <div class="form-text">Must be reachable from your <strong>Plex Media Server</strong>, not just your browser.</div>
+                                    </li>
+                                    <li>
+                                        Click <strong>Register with Plex</strong> below. The global webhook secret (set under <a href="/automation#section-webhooks-settings">Triggers &rarr; Settings</a>) is embedded in the registered URL so Plex can authenticate. <strong>If you change the secret later</strong>, click Register again to push the new value.
+                                    </li>
+                                </ol>
+
+                                <div class="d-flex gap-2 flex-wrap">
+                                    <button class="btn btn-sm btn-primary" type="button" id="plexWebhookRegisterBtn">
+                                        <i class="bi bi-plus-circle me-1"></i><span>Register with Plex</span>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" type="button" id="plexWebhookTestBtn">
+                                        <i class="bi bi-broadcast-pin me-1"></i>Test reachability
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger d-none" type="button" id="plexWebhookUnregisterBtn">
+                                        <i class="bi bi-x-circle me-1"></i>Remove from Plex
+                                    </button>
+                                </div>
+                                <div id="plexWebhookTestResult" class="small mt-2"></div>
+                            </div>
+                        </div>
+
+                        <!-- Recently Added Scanner -->
+                        <div class="card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                <div>
+                                    <i class="bi bi-arrow-repeat me-2"></i>Plex Recently Added Scanner
+                                    <span class="badge bg-success ms-2">No Plex Pass needed</span>
+                                </div>
+                                <span class="badge badge-status bg-secondary" id="recentlyAddedStatusBadge">Loading…</span>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-3">
+                                    Polls Plex on a schedule. Use this without Plex Pass, or alongside the Direct webhook as a safety net. Customise intervals, lookback windows, and libraries on the <a href="/schedules">Schedules</a> page.
+                                </p>
+
+                                <div id="recentlyAddedNoScanners" class="alert alert-secondary small d-none">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    No Recently Added scanners configured yet. Click <strong>Create default scanner</strong> below
+                                    to create one with sensible defaults (every 15 minutes, 1 hour lookback, all libraries).
+                                </div>
+
+                                <div id="recentlyAddedScannerList" class="mb-3">
+                                    <div class="text-muted small">
+                                        <span class="spinner-border spinner-border-sm me-1"></span>Loading scanners…
+                                    </div>
+                                </div>
+
+                                <div class="d-flex gap-2 flex-wrap">
+                                    <button class="btn btn-sm btn-primary" type="button" id="recentlyAddedCreateDefaultBtn">
+                                        <i class="bi bi-plus-circle me-1"></i>Create default scanner
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-primary d-none" type="button" id="recentlyAddedScanNowBtn">
+                                        <i class="bi bi-play-circle me-1"></i>Scan all now
+                                    </button>
+                                    <a href="/automation#schedules" class="btn btn-sm btn-outline-secondary">
+                                        <i class="bi bi-sliders me-1"></i>Manage on Schedules page
+                                    </a>
+                                </div>
+                                <div id="recentlyAddedScanResult" class="small mt-2"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="editServerResult" class="d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="editServerSave">
+                    <i class="bi bi-save me-1"></i>Save changes
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/plex_webhook_panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/servers.js') }}"></script>
+{% endblock %}

@@ -1,6 +1,6 @@
 # Documentation
 
-> Plex Generate Previews | [Main README](../README.md)
+> Media Preview Generator | [Main README](../README.md)
 
 Pick the right doc for what you're trying to do.
 
@@ -10,6 +10,7 @@ Pick the right doc for what you're trying to do.
 |---|---|
 | **Install and run it** — Docker, Docker Compose, GPU setup, Unraid | [Getting Started](getting-started.md) |
 | **Operate it day-to-day** — Web UI, webhooks, schedules, Plex direct, Recently Added | [Guides](guides.md) |
+| **Add Emby or Jellyfin (and/or multiple Plex servers)** — multi-vendor pipeline, output formats, Quick Connect, vendor-specific webhooks | [Multi-Media-Server](multi-server.md) |
 | **Look up a setting or endpoint** — config keys, env vars, REST API, WebSocket events | [Reference](reference.md) |
 | **Troubleshoot something** — common errors and fixes | [Guides — Troubleshooting](guides.md#troubleshooting) |
 | **Read common questions** — "does it work with…", "how many workers…", HDR behavior | [FAQ](faq.md) |
@@ -27,6 +28,8 @@ Pick the right doc for what you're trying to do.
 | Configuration priority | [Reference — Configuration Priority](reference.md#configuration-priority) |
 | REST API endpoints | [Reference — REST API](reference.md#rest-api) |
 | Path mappings | [Reference — Path Mappings](reference.md#path-mappings) |
+| Connect Emby or Jellyfin | [Multi-Media-Server — Adding a server](multi-server.md#adding-a-server) |
+| Universal webhook URL | [Multi-Media-Server — Webhook configuration](multi-server.md#webhook-configuration-per-vendor) |
 
 ---
 

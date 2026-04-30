@@ -15,14 +15,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.config import load_config
-from plex_generate_previews.utils import is_windows, sanitize_path
+from media_preview_generator.config import load_config
+from media_preview_generator.utils import is_windows, sanitize_path
 
 
 @pytest.fixture(autouse=True)
 def _isolate_settings(tmp_path, monkeypatch):
     """Ensure load_config uses a fresh empty settings.json."""
-    from plex_generate_previews.web import settings_manager
+    from media_preview_generator.web import settings_manager
 
     monkeypatch.setattr(settings_manager, "_settings_manager", None)
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
@@ -70,7 +70,7 @@ class TestWindowsPathSanitization:
         assert result == "C:\\Users\\Test\\Videos\\movie.mkv"
 
     @patch("os.name", "nt")
-    @patch("plex_generate_previews.utils.os.path.normpath")
+    @patch("media_preview_generator.utils.os.path.normpath")
     def test_sanitize_path_normpath(self, mock_normpath):
         """Test path normalization on Windows."""
         # Mock normpath to behave like Windows (resolve .. and .)
@@ -87,7 +87,7 @@ class TestWindowsPathSanitization:
 
     @patch("os.name", "posix")
     @patch(
-        "plex_generate_previews.utils.os.path.normpath",
+        "media_preview_generator.utils.os.path.normpath",
         side_effect=__import__("posixpath").normpath,
     )
     def test_sanitize_path_linux_unchanged(self, _mock_normpath):
@@ -100,7 +100,7 @@ class TestWindowsPathSanitization:
 class TestWindowsTempDirectory:
     """Test Windows temp directory handling."""
 
-    @patch("plex_generate_previews.config.tempfile.gettempdir", return_value="C:\\Temp")
+    @patch("media_preview_generator.config.tempfile.gettempdir", return_value="C:\\Temp")
     @patch("platform.system", return_value="Windows")
     @patch("shutil.which", return_value="C:\\ffmpeg\\ffmpeg.exe")
     @patch("subprocess.run")
@@ -171,7 +171,7 @@ class TestWindowsTempDirectory:
             "PLEX_TIMEOUT": "60",
         }
         with patch.dict("os.environ", env, clear=False):
-            with patch("plex_generate_previews.config.load_dotenv", lambda: None):
+            with patch("media_preview_generator.config.load_dotenv", lambda: None):
                 config = load_config()
 
         # Should use Windows temp directory from tempfile.gettempdir()
@@ -219,7 +219,7 @@ class TestWindowsPathMappings:
     @patch("os.name", "nt")
     def test_path_mapping_windows_to_windows(self):
         """Test path mapping from one Windows path to another."""
-        from plex_generate_previews.utils import sanitize_path
+        from media_preview_generator.utils import sanitize_path
 
         # Simulate what happens in media_processing.py
         plex_path = "D:/PlexMedia/Movies/movie.mkv"
@@ -235,7 +235,7 @@ class TestWindowsPathMappings:
     @patch("os.name", "nt")
     def test_path_mapping_unc_to_local(self):
         """Test path mapping from UNC path to local Windows path."""
-        from plex_generate_previews.utils import sanitize_path
+        from media_preview_generator.utils import sanitize_path
 
         # Plex sees UNC path, local sees C:\ path
         plex_path = "//server/media/Movies/movie.mkv"
@@ -273,7 +273,7 @@ class TestWindowsConfigValidation:
     """Test configuration validation on Windows."""
 
     @patch(
-        "plex_generate_previews.config.tempfile.gettempdir",
+        "media_preview_generator.config.tempfile.gettempdir",
         return_value="C:\\Windows\\Temp",
     )
     @patch("platform.system", return_value="Windows")
@@ -349,7 +349,7 @@ class TestWindowsConfigValidation:
             "PLEX_TIMEOUT": "60",
         }
         with patch.dict("os.environ", env, clear=False):
-            with patch("plex_generate_previews.config.load_dotenv", lambda: None):
+            with patch("media_preview_generator.config.load_dotenv", lambda: None):
                 config = load_config()
 
         assert config is not None

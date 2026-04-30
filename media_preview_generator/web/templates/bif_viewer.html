@@ -1,0 +1,508 @@
+{% extends "base.html" %}
+
+{% block title %}Preview Inspector - Media Preview Generator{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bif_viewer.css') }}">
+{% endblock %}
+
+{% block content %}
+<h2 class="mb-3"><i class="bi bi-film me-2"></i>Preview Inspector</h2>
+
+<!-- Page intro -->
+<div class="row justify-content-center mb-3">
+    <div class="col-lg-8">
+        <div class="card border-0 bg-body-tertiary">
+            <div class="card-body py-3 small text-muted">
+                Search by title, or paste a preview file path from the processing logs.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search bar -->
+<div class="row justify-content-center mb-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body py-3">
+                <ul class="nav nav-pills nav-fill mb-3" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabSearch" type="button">
+                            <i class="bi bi-search me-1"></i>Search media servers
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabPath" type="button">
+                            <i class="bi bi-clipboard me-1"></i>Paste File Path
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="tabSearch">
+                        <div class="row g-2 align-items-stretch">
+                            <div class="col-md-4">
+                                <select id="serverSelect" class="form-select" aria-label="Media server">
+                                    <option value="">Loading servers&hellip;</option>
+                                </select>
+                            </div>
+                            <div class="col-md-8">
+                                <div class="input-group">
+                                    <input type="text" id="searchInput" class="form-control" placeholder="Title, e.g. Inception or Breaking Bad S03E02..." autocomplete="off">
+                                    <button class="btn btn-primary" id="searchBtn" type="button">
+                                        <i class="bi bi-search me-1"></i>Search
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="serverPickerHint" class="form-text mt-2 d-none"></div>
+                    </div>
+                    <div class="tab-pane fade" id="tabPath">
+                        <div class="input-group">
+                            <input type="text" id="pathInput" class="form-control" placeholder="/plex/Media/localhost/.../index-sd.bif">
+                            <button class="btn btn-primary" id="loadPathBtn" type="button">
+                                <i class="bi bi-folder2-open me-1"></i>Load
+                            </button>
+                        </div>
+                        <div class="form-text mt-1">Plex bundle path, Emby BIF sidecar, or Jellyfin trickplay manifest.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search results -->
+<div class="row justify-content-center mb-4">
+    <div class="col-lg-8">
+        <div id="searchResults"></div>
+    </div>
+</div>
+
+<!-- Viewer (hidden until a BIF is loaded) -->
+<div id="viewerPanel" class="d-none">
+    <!-- Metadata badges -->
+    <div class="row justify-content-center mb-3">
+        <div class="col-lg-10">
+            <div class="d-flex flex-wrap gap-2 align-items-center" id="metaBadges"></div>
+        </div>
+    </div>
+
+    <div class="row justify-content-center g-4">
+        <!-- Preview frame -->
+        <div class="col-lg-7">
+            <div class="card">
+                <div class="card-body text-center p-3">
+                    <img id="previewFrame" alt="BIF frame preview" src="">
+                    <div class="mt-3">
+                        <input type="range" class="form-range" id="frameSlider" min="0" max="0" value="0">
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mt-1">
+                        <button class="btn btn-sm btn-outline-secondary" id="prevBtn" title="Previous frame (Left arrow)">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        <span class="text-muted ts-label">
+                            Frame <strong id="currentFrame">0</strong> / <span id="totalFrames">0</span>
+                            &mdash;
+                            <span id="currentTimestamp">00:00:00</span>
+                        </span>
+                        <button class="btn btn-sm btn-outline-secondary" id="nextBtn" title="Next frame (Right arrow)">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Thumbnail grid -->
+        <div class="col-lg-3">
+            <div class="card">
+                <div class="card-header py-2">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span class="small fw-semibold"><i class="bi bi-grid-3x3 me-1"></i>Overview</span>
+                        <select id="gridStep" class="form-select form-select-sm" style="width:auto; font-size:0.75rem;">
+                            <option value="5">Every 5th</option>
+                            <option value="10" selected>Every 10th</option>
+                            <option value="25">Every 25th</option>
+                            <option value="50">Every 50th</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="card-body p-2" id="gridContainer">
+                    <div class="d-flex flex-wrap gap-1 justify-content-center" id="gridThumbs"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Empty state (before any BIF is loaded) -->
+<div id="emptyState" class="text-center text-muted py-5 d-none"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const $ = id => document.getElementById(id);
+
+    let bifPath = '';
+    let bifMeta = null;
+    let servers = [];        // [{id, name, type, enabled, ...}] from /api/servers
+    let viewerMode = 'bif';  // 'bif' (Plex/Emby) or 'trickplay' (Jellyfin)
+    let trickplayState = null; // {path, manifest, sheets} when viewerMode==='trickplay'
+
+    // --- Helpers ---
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function formatTimestamp(frameIndex, intervalMs) {
+        const totalSec = Math.floor(frameIndex * intervalMs / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+
+    function formatDate(iso) {
+        if (!iso) return '';
+        try { return new Date(iso).toLocaleString(); }
+        catch { return iso; }
+    }
+
+    function frameUrl(path, index) {
+        return `/api/bif/frame?path=${encodeURIComponent(path)}&index=${index}`;
+    }
+
+    function selectedServer() {
+        const id = $('serverSelect').value;
+        return servers.find(s => s.id === id) || null;
+    }
+
+    // --- Server picker ---
+
+    async function loadServers() {
+        const select = $('serverSelect');
+        try {
+            const resp = await fetch('/api/servers');
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Failed to load servers');
+            servers = (data.servers || []).filter(s => s.enabled !== false);
+        } catch (e) {
+            select.innerHTML = '<option value="">No servers loaded</option>';
+            $('serverPickerHint').classList.remove('d-none');
+            $('serverPickerHint').textContent = `Could not load media servers: ${e.message}`;
+            return;
+        }
+
+        if (!servers.length) {
+            select.innerHTML = '<option value="">No servers configured</option>';
+            $('serverPickerHint').classList.remove('d-none');
+            $('serverPickerHint').innerHTML = 'No media servers configured. <a href="/servers">Add one</a> to start searching.';
+            return;
+        }
+
+        select.innerHTML = '';
+        servers.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = `${s.name} · ${(s.type || '').toUpperCase()}`;
+            select.appendChild(opt);
+        });
+        $('serverPickerHint').classList.add('d-none');
+    }
+
+    // --- Search ---
+
+    async function doSearch() {
+        const query = $('searchInput').value.trim();
+        if (query.length < 2) {
+            showToast('Preview Inspector', 'Enter at least 2 characters', 'warning');
+            return;
+        }
+
+        const server = selectedServer();
+        if (!server) {
+            showToast('Preview Inspector', 'Select a media server first', 'warning');
+            return;
+        }
+
+        $('searchBtn').disabled = true;
+        $('searchBtn').innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Searching...';
+        $('searchResults').innerHTML = `<div class="text-center text-muted py-3"><div class="spinner-border spinner-border-sm"></div> Searching ${escapeHtml(server.name)}...</div>`;
+
+        try {
+            const resp = await fetch(`/api/bif/servers/${encodeURIComponent(server.id)}/search?q=${encodeURIComponent(query)}`);
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Search failed');
+            renderResults(data.results || [], data.server_type || server.type);
+        } catch (e) {
+            $('searchResults').innerHTML = `<div class="alert alert-danger py-2 small">${escapeHtml(e.message)}</div>`;
+        }
+
+        $('searchBtn').disabled = false;
+        $('searchBtn').innerHTML = '<i class="bi bi-search me-1"></i>Search';
+    }
+
+    function renderResults(results, serverType) {
+        if (!results.length) {
+            $('searchResults').innerHTML = '<div class="text-muted text-center py-3 small">No results found</div>';
+            return;
+        }
+
+        const list = document.createElement('div');
+        list.className = 'list-group';
+
+        for (const r of results) {
+            const a = document.createElement('a');
+            a.href = '#';
+            // Per-server search returns a uniform shape across vendors:
+            // {preview_kind, preview_path, preview_exists, media_file, title}.
+            // Plex never knows up-front (bundle path needs a per-item lookup),
+            // so it always returns preview_exists:false with note \u2014 we still
+            // let the user click to trigger /api/bif/info.
+            const allowClick = r.preview_exists || (serverType || '').toLowerCase() === 'plex';
+            a.className = `list-group-item list-group-item-action result-item py-2 px-3${!allowClick ? ' opacity-50' : ''}`;
+            a.dataset.previewPath = r.preview_path || '';
+            a.dataset.previewKind = r.preview_kind || 'bif';
+            a.dataset.mediaFile = r.media_file || '';
+            a.dataset.allowClick = String(allowClick);
+            a.dataset.serverType = (serverType || '').toLowerCase();
+            a.dataset.title = r.title;
+
+            let statusBadge;
+            if ((serverType || '').toLowerCase() === 'plex') {
+                statusBadge = '<span class="badge bg-info text-dark">Click to load</span>';
+            } else {
+                statusBadge = r.preview_exists
+                    ? '<span class="badge bg-success">Preview</span>'
+                    : '<span class="badge bg-secondary">No preview</span>';
+            }
+            const note = r.note ? `<div class="text-muted small mt-1">${escapeHtml(r.note)}</div>` : '';
+
+            a.innerHTML = `<div class="d-flex align-items-start">
+                <div class="me-2 mt-1">${statusBadge}</div>
+                <div class="result-detail">
+                    <div class="fw-semibold">${escapeHtml(r.title)}</div>
+                    <div class="file-path mt-1">${escapeHtml(r.media_file)}</div>
+                    ${note}
+                </div>
+            </div>`;
+
+            a.addEventListener('click', e => {
+                e.preventDefault();
+                if (a.dataset.allowClick !== 'true') {
+                    showToast('Preview Inspector', 'No preview file exists for this item yet', 'warning');
+                    return;
+                }
+                list.querySelectorAll('.result-item').forEach(el => el.classList.remove('active'));
+                a.classList.add('active');
+                loadPreviewFromResult(a.dataset);
+            });
+
+            list.appendChild(a);
+        }
+
+        $('searchResults').replaceChildren(list);
+    }
+
+    // --- Dispatch by preview kind (BIF for Plex/Emby, trickplay for Jellyfin) ---
+
+    async function loadPreviewFromResult(meta) {
+        const kind = meta.previewKind || 'bif';
+        const title = meta.title || meta.mediaFile || '';
+        if (kind === 'trickplay') {
+            await loadTrickplay(meta.previewPath, title);
+            return;
+        }
+        // BIF flow. For Plex, preview_path may be empty \u2014 fall back to the
+        // media_file the backend resolved; /api/bif/info will look up the
+        // bundle hash from the canonical local path.
+        const path = meta.previewPath || meta.mediaFile;
+        await loadBif(path, title);
+    }
+
+    // --- Load BIF ---
+
+    async function loadBif(path, title) {
+        bifPath = path;
+        viewerMode = 'bif';
+        trickplayState = null;
+
+        try {
+            const resp = await fetch(`/api/bif/info?path=${encodeURIComponent(path)}`);
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Failed to load preview');
+            bifMeta = data;
+            showViewer(title || path);
+        } catch (e) {
+            showToast('Preview Inspector', e.message, 'danger');
+        }
+    }
+
+    // --- Load Jellyfin trickplay ---
+
+    async function loadTrickplay(path, title) {
+        bifPath = path;
+        viewerMode = 'trickplay';
+
+        const server = selectedServer();
+        if (!server) {
+            showToast('Preview Inspector', 'Select a Jellyfin server before opening trickplay paths', 'warning');
+            return;
+        }
+
+        try {
+            const url = `/api/bif/trickplay/info?server_id=${encodeURIComponent(server.id)}&path=${encodeURIComponent(path)}`;
+            const resp = await fetch(url);
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Failed to load trickplay');
+            trickplayState = { ...data, server_id: server.id };
+            // Adapt trickplay metadata to the shared viewer fields so showViewer
+            // and setFrame can stay vendor-agnostic.
+            bifMeta = {
+                frame_count: data.thumbnail_count || 0,
+                frame_interval_ms: data.interval_ms || 10000,
+                created_at: null,
+                file_size: (data.sheets || []).reduce((a, s) => a + (s.size_bytes || 0), 0),
+                avg_frame_size: 0,
+                suspect_frame_count: 0,
+            };
+            showViewer(title || path);
+        } catch (e) {
+            showToast('Preview Inspector', e.message, 'danger');
+        }
+    }
+
+    function trickplayFrameUrl(index) {
+        if (!trickplayState) return '';
+        const params = new URLSearchParams({
+            server_id: trickplayState.server_id || '',
+            sheets_dir: trickplayState.sheets_dir || '',
+            index: String(index),
+            tile_width: String(trickplayState.tile_width || 10),
+            tile_height: String(trickplayState.tile_height || 10),
+        });
+        return `/api/bif/trickplay/frame?${params.toString()}`;
+    }
+
+    function showViewer(title) {
+        $('emptyState').classList.add('d-none');
+        $('viewerPanel').classList.remove('d-none');
+
+        const m = bifMeta;
+        const totalDuration = formatTimestamp(m.frame_count - 1, m.frame_interval_ms);
+
+        let badges = `<span class="badge bg-primary badge-stat">${escapeHtml(title)}</span>`;
+        badges += `<span class="badge bg-info badge-stat"><i class="bi bi-calendar3 me-1"></i>Generated: ${formatDate(m.created_at)}</span>`;
+        badges += `<span class="badge bg-secondary badge-stat"><i class="bi bi-images me-1"></i>${m.frame_count.toLocaleString()} frames</span>`;
+        badges += `<span class="badge bg-secondary badge-stat"><i class="bi bi-clock me-1"></i>${m.frame_interval_ms / 1000}s interval &middot; ${totalDuration}</span>`;
+        badges += `<span class="badge bg-secondary badge-stat"><i class="bi bi-file-earmark me-1"></i>${formatBytes(m.file_size)}</span>`;
+        badges += `<span class="badge bg-secondary badge-stat">Avg frame: ${formatBytes(m.avg_frame_size)}</span>`;
+
+        if (m.suspect_frame_count > 0) {
+            badges += `<span class="badge bg-warning text-dark badge-stat suspect-badge"><i class="bi bi-exclamation-triangle me-1"></i>${m.suspect_frame_count} suspect frame(s)</span>`;
+        }
+
+        $('metaBadges').innerHTML = badges;
+
+        const slider = $('frameSlider');
+        slider.max = m.frame_count - 1;
+        slider.value = 0;
+        $('totalFrames').textContent = (m.frame_count - 1).toLocaleString();
+
+        setFrame(0);
+        buildGrid();
+    }
+
+    function frameUrlForMode(index) {
+        return viewerMode === 'trickplay' ? trickplayFrameUrl(index) : frameUrl(bifPath, index);
+    }
+
+    function setFrame(index) {
+        if (!bifMeta) return;
+        index = Math.max(0, Math.min(index, bifMeta.frame_count - 1));
+        $('frameSlider').value = index;
+        $('currentFrame').textContent = index.toLocaleString();
+        $('currentTimestamp').textContent = formatTimestamp(index, bifMeta.frame_interval_ms);
+        $('previewFrame').src = frameUrlForMode(index);
+
+        // Preload adjacent frames for smoother scrubbing
+        const max = bifMeta.frame_count - 1;
+        for (const adj of [index - 1, index + 1]) {
+            if (adj >= 0 && adj <= max) { new Image().src = frameUrlForMode(adj); }
+        }
+
+        document.querySelectorAll('.grid-thumb.active').forEach(t => t.classList.remove('active'));
+        const activeThumb = document.querySelector(`.grid-thumb[data-index="${index}"]`);
+        if (activeThumb) {
+            activeThumb.classList.add('active');
+            activeThumb.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    }
+
+    // --- Thumbnail grid ---
+
+    function buildGrid() {
+        const step = parseInt($('gridStep').value) || 10;
+        const container = $('gridThumbs');
+        container.innerHTML = '';
+
+        const fragment = document.createDocumentFragment();
+        for (let i = 0; i < bifMeta.frame_count; i += step) {
+            const img = document.createElement('img');
+            img.className = 'grid-thumb';
+            img.alt = `Frame ${i}`;
+            img.title = `Frame ${i} — ${formatTimestamp(i, bifMeta.frame_interval_ms)}`;
+            img.dataset.index = i;
+            img.loading = 'lazy';
+            img.src = frameUrlForMode(i);
+            img.addEventListener('click', () => setFrame(i));
+            fragment.appendChild(img);
+        }
+        container.appendChild(fragment);
+    }
+
+    // --- Event listeners ---
+
+    $('searchBtn').addEventListener('click', doSearch);
+    $('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+    $('loadPathBtn').addEventListener('click', () => {
+        const path = $('pathInput').value.trim();
+        if (!path) { showToast('Preview Inspector', 'Enter a preview file path', 'warning'); return; }
+        // Heuristic: Jellyfin trickplay paths end in manifest.json; everything
+        // else is treated as a Plex/Emby BIF.
+        if (/manifest\.json$/i.test(path)) {
+            loadTrickplay(path, '');
+        } else {
+            loadBif(path, '');
+        }
+    });
+
+    // Initialise the server picker on page load.
+    loadServers();
+    $('pathInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') $('loadPathBtn').click();
+    });
+
+    $('frameSlider').addEventListener('input', e => {
+        setFrame(parseInt(e.target.value));
+    });
+
+    $('prevBtn').addEventListener('click', () => setFrame(parseInt($('frameSlider').value) - 1));
+    $('nextBtn').addEventListener('click', () => setFrame(parseInt($('frameSlider').value) + 1));
+    $('gridStep').addEventListener('change', buildGrid);
+
+    document.addEventListener('keydown', e => {
+        if (!bifMeta) return;
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+        const cur = parseInt($('frameSlider').value);
+        if (e.key === 'ArrowLeft') { e.preventDefault(); setFrame(cur - 1); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); setFrame(cur + 1); }
+    });
+})();
+</script>
+{% endblock %}

@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -23,19 +23,19 @@ from plex_generate_previews.web.settings_manager import reset_settings_manager
 def _reset_singletons():
     """Reset web singletons between tests."""
     reset_settings_manager()
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     # Reset webhook module state
-    import plex_generate_previews.web.webhooks as wh
+    import media_preview_generator.web.webhooks as wh
 
     wh._webhook_history.clear()
     with wh._pending_lock:
@@ -111,7 +111,7 @@ def _auth_headers(token: str = "test-token-12345678") -> dict:
 
 def test_format_sonarr_episode_title():
     """_format_sonarr_episode_title adds SxxExx from episodes to series title."""
-    from plex_generate_previews.web.webhooks import _format_sonarr_episode_title
+    from media_preview_generator.web.webhooks import _format_sonarr_episode_title
 
     assert _format_sonarr_episode_title("Show Name", []) == "Show Name"
     assert _format_sonarr_episode_title("Show Name", None) == "Show Name"
@@ -140,7 +140,7 @@ def test_format_sonarr_episode_title():
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_radarr_webhook_download_event(mock_schedule, client):
     """POST valid Radarr Download payload → 202 and schedules job with file path."""
     payload = {
@@ -156,7 +156,7 @@ def test_radarr_webhook_download_event(mock_schedule, client):
     mock_schedule.assert_called_once_with("radarr", "Inception", "/movies/Inception (2010)/Inception.mkv")
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_sonarr_webhook_download_event(mock_schedule, client):
     """POST valid Sonarr Download payload → 202 and schedules job with file path."""
     payload = {
@@ -172,7 +172,7 @@ def test_sonarr_webhook_download_event(mock_schedule, client):
     mock_schedule.assert_called_once_with("sonarr", "Breaking Bad", "/tv/Breaking Bad/Season 01/S01E01.mkv")
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_sonarr_webhook_download_with_episode_info_includes_season_episode_in_title(mock_schedule, client):
     """Sonarr payload with episodes[] → title includes SxxExx in webhook and history."""
     payload = {
@@ -227,7 +227,7 @@ def test_custom_webhook_test_event(client):
     assert "configured successfully" in data["message"]
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_single_file_path(mock_schedule, client):
     """POST with file_path string → 202 and schedules one job."""
     payload = {"file_path": "/media/movies/Movie (2024)/Movie.mkv"}
@@ -241,7 +241,7 @@ def test_custom_webhook_single_file_path(mock_schedule, client):
     )
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_multiple_file_paths(mock_schedule, client):
     """POST with file_paths array → 202 and schedules each path."""
     payload = {
@@ -258,7 +258,7 @@ def test_custom_webhook_multiple_file_paths(mock_schedule, client):
     assert mock_schedule.call_count == 2
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_with_title(mock_schedule, client):
     """POST with optional title uses it as display label."""
     payload = {
@@ -270,7 +270,7 @@ def test_custom_webhook_with_title(mock_schedule, client):
     mock_schedule.assert_called_once_with("custom", "My Show S01E01", os.path.normpath("/tv/Show/S01E01.mkv"))
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_deduplicates_paths(mock_schedule, client):
     """POST with duplicate paths in file_path + file_paths → schedules only unique paths."""
     payload = {
@@ -310,10 +310,10 @@ def test_custom_webhook_empty_file_paths_array_returns_400(client):
     assert resp.status_code == 400
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_disabled(mock_schedule, client, app):
     """When webhook_enabled is False → 200 with disabled message."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -377,7 +377,7 @@ def test_webhook_invalid_token(client):
 
 def test_webhook_secret_auth(client, app):
     """Configure webhook_secret and authenticate with it (X-Auth-Token)."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -395,7 +395,7 @@ def test_webhook_secret_auth(client, app):
 
 def test_webhook_bearer_token_auth(client, app):
     """Webhook accepts Authorization: Bearer with webhook_secret."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -435,10 +435,10 @@ def test_webhook_basic_auth_password_as_token(client):
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_webhook_disabled(mock_schedule, client, app):
     """When webhook_enabled is False → 200 with disabled message."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -466,7 +466,7 @@ def test_webhook_malformed_payload(client):
     assert resp.status_code == 400
 
 
-@patch("plex_generate_previews.web.webhooks.logger.warning")
+@patch("media_preview_generator.web.webhooks.logger.warning")
 def test_webhook_malformed_payload_logs_warning(mock_warning, client):
     """Malformed webhook JSON should be rejected and logged."""
     resp = client.post(
@@ -522,7 +522,7 @@ def test_webhook_clear_history(authed_client):
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_webhook_debounce(mock_timer_cls, client):
     """Two rapid webhooks for same source should cancel the first timer."""
     mock_timer = MagicMock()
@@ -558,13 +558,16 @@ def test_radarr_download_missing_file_path_is_ignored(client):
     assert "no file path" in data["message"].lower()
 
 
-@patch("plex_generate_previews.web.webhooks.logger.warning")
+@patch("media_preview_generator.web.webhooks.logger.warning")
 def test_radarr_download_missing_file_path_logs_warning(mock_warning, client):
     """Missing Radarr file path should emit a warning log."""
     payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
-    assert any("missing file path" in str(call) for call in mock_warning.call_args_list)
+    assert any(
+        "missing file path" in str(call) or "didn't carry a file path" in str(call)
+        for call in mock_warning.call_args_list
+    )
 
 
 def test_sonarr_download_missing_file_path_is_ignored(client):
@@ -605,12 +608,12 @@ def test_sonarr_download_malformed_episode_file_payload_is_ignored(client):
     assert "no file path" in data["message"].lower()
 
 
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_job_mgr):
     """Debounced execution should pass batched webhook paths in one job."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -634,15 +637,15 @@ def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_
     ]
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_single_file_uses_title_for_library_display(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr
 ):
     """Single-file webhook job uses display title (e.g. Show S01E05) in library_name for dashboard."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -668,10 +671,10 @@ def test_execute_webhook_job_single_file_uses_title_for_library_display(
     assert call_kw["library_name"] == "Sonarr: Murder at the Post Office S01E05"
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_uses_selected_libraries(
     mock_start_job,
     mock_timer_cls,
@@ -679,7 +682,7 @@ def test_execute_webhook_job_uses_selected_libraries(
     mock_settings_mgr,
 ):
     """Webhook jobs should pass selected library IDs from settings."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -700,13 +703,13 @@ def test_execute_webhook_job_uses_selected_libraries(
     assert config_overrides["selected_libraries"] == ["1", "2"]
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_includes_retry_settings(mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr):
     """Webhook job config_overrides include webhook_retry_count and webhook_retry_delay from settings."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -732,12 +735,12 @@ def test_execute_webhook_job_includes_retry_settings(mock_start_job, mock_timer_
     assert config_overrides["webhook_retry_delay"] == 120
 
 
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_timer_cls, mock_job_mgr, client):
     """Path extracted from Radarr payload is passed in job config for mapping-aware resolution."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     # Timer: do not start so we can run _execute_webhook_job ourselves after POST
     mock_timer = MagicMock()
@@ -771,15 +774,15 @@ def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_tim
     )
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_triggered_history_entry_includes_batch_metadata(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, authed_client
 ):
     """Triggered webhook batch adds history entry with job_id, path_count, and files_preview."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -814,24 +817,26 @@ def test_triggered_history_entry_includes_batch_metadata(
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_schedule_webhook_job_dedupes_within_ttl(mock_timer_cls, mock_settings_mgr, app):
     """A second call with the same (source, path) during the TTL window
     should be dropped without starting a new timer, and should log a
     'deduped' history entry."""
     from datetime import datetime, timezone
 
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
 
-    # Prime the dedup cache with a recent dispatch for this exact (source, path).
+    # Prime the dedup cache with a recent dispatch for this exact
+    # (source, server_id, path) — server_id is "" when the webhook isn't
+    # scoped to one configured server.
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     now_ts = datetime.now(timezone.utc).timestamp()
     with wh._pending_lock:
-        wh._recent_dispatches[("sonarr", normalized_path)] = now_ts
+        wh._recent_dispatches[("sonarr", "", normalized_path)] = now_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
@@ -844,14 +849,14 @@ def test_schedule_webhook_job_dedupes_within_ttl(mock_timer_cls, mock_settings_m
     assert any(e.get("source") == "sonarr" and e.get("status") == "deduped" for e in wh._webhook_history)
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_schedule_webhook_job_allows_dispatch_after_ttl(mock_timer_cls, mock_settings_mgr, app):
     """Entries older than _RECENT_DISPATCH_TTL_SECONDS should be pruned
     and no longer block new dispatches."""
     from datetime import datetime, timezone
 
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
@@ -859,23 +864,23 @@ def test_schedule_webhook_job_allows_dispatch_after_ttl(mock_timer_cls, mock_set
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     stale_ts = datetime.now(timezone.utc).timestamp() - wh._RECENT_DISPATCH_TTL_SECONDS - 5
     with wh._pending_lock:
-        wh._recent_dispatches[("sonarr", normalized_path)] = stale_ts
+        wh._recent_dispatches[("sonarr", "", normalized_path)] = stale_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
     assert result is True
     mock_timer_cls.assert_called_once()
     # Stale entry should have been pruned from the cache
-    assert ("sonarr", normalized_path) not in wh._recent_dispatches
+    assert ("sonarr", "", normalized_path) not in wh._recent_dispatches
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_mgr, app):
     """A recent dispatch for ('plex', path) must not block ('sonarr', path)."""
     from datetime import datetime, timezone
 
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
@@ -883,7 +888,7 @@ def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     now_ts = datetime.now(timezone.utc).timestamp()
     with wh._pending_lock:
-        wh._recent_dispatches[("plex", normalized_path)] = now_ts
+        wh._recent_dispatches[("plex", "", normalized_path)] = now_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
@@ -891,16 +896,16 @@ def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_
     mock_timer_cls.assert_called_once()
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_records_dispatch_before_start(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, app
 ):
     """After _execute_webhook_job runs, every path in the batch should be
     recorded in _recent_dispatches so subsequent duplicates are dropped."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_job = MagicMock()
@@ -917,21 +922,66 @@ def test_execute_webhook_job_records_dispatch_before_start(
 
     normalized_e1 = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     normalized_e2 = os.path.normpath("/tv/Show/S01E02.mkv").replace("\\", "/")
-    assert ("sonarr", normalized_e1) in wh._recent_dispatches
-    assert ("sonarr", normalized_e2) in wh._recent_dispatches
+    assert ("sonarr", "", normalized_e1) in wh._recent_dispatches
+    assert ("sonarr", "", normalized_e2) in wh._recent_dispatches
     mock_start_job.assert_called_once()
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_per_server_dedup_is_independent(mock_timer_cls, mock_settings_mgr, app):
+    """A dispatch scoped to one server must not block the same path on another server."""
+    from datetime import datetime, timezone
+
+    from media_preview_generator.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
+
+    normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with wh._pending_lock:
+        # Plex server "p1" already dispatched this path recently...
+        wh._recent_dispatches[("sonarr", "p1", normalized_path)] = now_ts
+
+    # ...the same path coming in for Emby server "e1" should NOT be deduped.
+    result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="e1")
+
+    assert result is True  # not deduped
+    mock_timer_cls.assert_called_once()
+
+
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_per_server_keeps_separate_batches(mock_timer_cls, mock_settings_mgr, app):
+    """Two server-scoped webhooks for the same source land in separate batches."""
+    from media_preview_generator.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
+
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="p1")
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="e1")
+
+    p1_key = wh._debounce_key("sonarr", "p1")
+    e1_key = wh._debounce_key("sonarr", "e1")
+    assert p1_key in wh._pending_batches
+    assert e1_key in wh._pending_batches
+    assert p1_key != e1_key
+    assert wh._pending_batches[p1_key]["server_id"] == "p1"
+    assert wh._pending_batches[e1_key]["server_id"] == "e1"
+
+
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_duplicate_after_dispatch_is_dropped_end_to_end(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, app
 ):
     """End-to-end: fire a batch, then a second 'retry' webhook for the same
     path. The second call must be dropped (no new timer, no second job)."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_job = MagicMock()
