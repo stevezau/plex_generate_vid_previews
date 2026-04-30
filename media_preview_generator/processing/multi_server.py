@@ -185,16 +185,25 @@ def _resolve_publishers(
     publishers: list[tuple[MediaServer, OutputAdapter, str | None]] = []
     item_id_hints = item_id_by_server or {}
 
-    for match in registry.find_owning_servers(canonical_path):
-        server = registry.get(match.server_id)
+    matched_ids = {match.server_id for match in registry.find_owning_servers(canonical_path)}
+    # Hints from the dispatcher are authoritative — if a Plex /tree call
+    # already named the item, we trust the path lives on that server even
+    # when the registry's library path-prefix matcher disagrees (common
+    # when the test suite stubs Plex without populating library remote
+    # paths, or when a user opens a one-off webhook with a path outside
+    # the configured library roots).
+    candidate_ids = list(matched_ids | set(item_id_hints.keys()))
+
+    for sid in candidate_ids:
+        server = registry.get(sid)
         if server is None:
             logger.debug(
-                "find_owning_servers reported {} but no live client exists; skipping",
-                match.server_id,
+                "Publisher candidate {} has no live client; skipping",
+                sid,
             )
             continue
 
-        cfg = registry.get_config(match.server_id)
+        cfg = registry.get_config(sid)
         if cfg is None:
             continue
 
@@ -214,7 +223,7 @@ def _resolve_publishers(
         if adapter is None:
             continue
 
-        publishers.append((server, adapter, item_id_hints.get(match.server_id)))
+        publishers.append((server, adapter, item_id_hints.get(sid)))
 
     return publishers
 

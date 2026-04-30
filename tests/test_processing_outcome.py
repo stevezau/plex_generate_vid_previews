@@ -99,47 +99,54 @@ class TestProcessItemReturnsResult:
         assert result == ProcessingResult.SKIPPED_INVALID_HASH
 
     @patch("os.path.isfile")
-    def test_bif_exists_returns_skipped_bif_exists(self, mock_isfile, mock_config, plex_xml_movie_tree):
-        """Existing BIF file returns SKIPPED_BIF_EXISTS."""
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_bif_exists_returns_skipped_bif_exists(
+        self, mock_process_canonical, mock_isfile, mock_config, plex_xml_movie_tree
+    ):
+        """When the unified pipeline reports SKIPPED, the shim returns SKIPPED_BIF_EXISTS."""
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
         mock_isfile.return_value = True
         mock_config.plex_config_folder = "/config/plex"
         mock_config.regenerate_thumbnails = False
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.SKIPPED,
+            message="Output already exists",
+        )
 
         result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.SKIPPED_BIF_EXISTS
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_successful_generation_returns_generated(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
-        """Successful BIF generation returns GENERATED."""
+        """When the unified pipeline reports PUBLISHED, the shim returns GENERATED."""
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-
-        def isfile_side_effect(path):
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False
+        mock_isfile.return_value = True
         mock_config.plex_config_folder = "/config/plex"
-        mock_config.tmp_folder = "/tmp"
         mock_config.regenerate_thumbnails = False
-        mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
         result = process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
         assert result == ProcessingResult.GENERATED

@@ -553,9 +553,9 @@ class Worker:
             ctx_logger.info("{} started: {}", self.display_name, display_name)
 
             def _record_outcome(status: MultiServerStatus) -> ProcessingResult:
-                # MultiServerStatus → ProcessingResult mapping mirrors what
-                # the legacy _fan_out_secondary_publishers callers expected
-                # so per-job stat aggregations stay consistent.
+                # MultiServerStatus → ProcessingResult mapping so per-job
+                # stat aggregations stay consistent with the rest of the
+                # WorkerPool accounting.
                 if status is MultiServerStatus.PUBLISHED:
                     return ProcessingResult.GENERATED
                 if status is MultiServerStatus.SKIPPED:

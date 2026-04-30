@@ -1157,99 +1157,6 @@ def generate_images(
     return success, image_count, hw, seconds, speed, error_summary
 
 
-def _setup_bundle_paths(bundle_hash: str, config: Config) -> tuple[str, str, str]:
-    """Set up all bundle-related paths.
-
-    Path computation is centralised in :class:`PlexBundleAdapter` so the
-    multi-server publisher pipeline and the legacy orchestrator share a
-    single source of truth for Plex's bundle layout. This function keeps
-    its tuple return shape for callers that still need the indexes
-    directory and tmp path alongside the BIF path.
-
-    Args:
-        bundle_hash: Bundle hash from Plex
-        config: Configuration object
-
-    Returns:
-        Tuple of (indexes_path, index_bif, tmp_path)
-
-    """
-    from ..output.plex_bundle import PlexBundleAdapter
-
-    index_bif_path = PlexBundleAdapter.bundle_bif_path(config.plex_config_folder, bundle_hash)
-    index_bif = sanitize_path(str(index_bif_path))
-    indexes_path = sanitize_path(str(index_bif_path.parent))
-    tmp_path = sanitize_path(os.path.join(config.working_tmp_folder, bundle_hash))
-    return indexes_path, index_bif, tmp_path
-
-
-def _ensure_directories(indexes_path: str, tmp_path: str, media_file: str) -> bool:
-    """Ensure required directories exist.
-
-    Args:
-        indexes_path: Path to indexes directory
-        tmp_path: Path to temporary directory
-        media_file: Media file path for error messages
-
-    Returns:
-        True if directories are ready, False if creation failed
-
-    """
-    if not os.path.isdir(indexes_path):
-        try:
-            os.makedirs(indexes_path)
-        except PermissionError as e:
-            logger.error(
-                "Cannot create Plex preview folder at {} (needed for {}): permission denied. "
-                "The user running this tool needs WRITE access to {}. In Docker, check your "
-                "Plex config volume is mounted read-write and PUID/PGID match the file owner. "
-                "This file is skipped; other files keep processing. Original error: {}",
-                indexes_path,
-                media_file,
-                os.path.dirname(indexes_path),
-                e,
-            )
-            return False
-        except OSError as e:
-            logger.error(
-                "Cannot create Plex preview folder at {} (needed for {}): {}. "
-                "Verify the parent path exists and the disk isn't full. This file is skipped; "
-                "other files keep processing.",
-                indexes_path,
-                media_file,
-                e,
-            )
-            return False
-
-    if not os.path.isdir(tmp_path):
-        try:
-            os.makedirs(tmp_path)
-        except PermissionError as e:
-            logger.error(
-                "Cannot create temporary working folder at {} (needed for {}): permission denied. "
-                "Verify {} is writable, or change the working folder under Settings → Advanced. "
-                "This file is skipped; other files keep processing. Original error: {}",
-                tmp_path,
-                media_file,
-                os.path.dirname(tmp_path),
-                e,
-            )
-            return False
-        except OSError as e:
-            logger.error(
-                "Cannot create temporary working folder at {} (needed for {}): {}. "
-                "Most likely the disk is full or the path doesn't exist. Free up space or "
-                "change the working folder under Settings → Advanced. This file is skipped; "
-                "other files keep processing.",
-                tmp_path,
-                media_file,
-                e,
-            )
-            return False
-
-    return True
-
-
 def _cleanup_temp_directory(tmp_path: str) -> None:
     """Clean up temporary directory, logging warnings on failure.
 
@@ -1272,139 +1179,6 @@ def _cleanup_temp_directory(tmp_path: str) -> None:
             tmp_path,
             cleanup_error,
         )
-
-
-def _generate_and_save_bif(
-    media_file: str,
-    tmp_path: str,
-    index_bif: str,
-    gpu: str | None,
-    gpu_device_path: str | None,
-    config: Config,
-    progress_callback=None,
-    ffmpeg_threads_override: int | None = None,
-    cancel_check=None,
-) -> None:
-    """Generate images and create BIF file.
-
-    Args:
-        media_file: Path to media file.
-        tmp_path: Temporary directory for images.
-        index_bif: Path to output BIF file.
-        gpu: GPU type for acceleration.
-        gpu_device_path: GPU device path.
-        config: Configuration object.
-        progress_callback: Callback function for progress updates.
-        ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
-            config.ffmpeg_threads when set).
-        cancel_check: Optional callable returning True when job is cancelled.
-
-    Raises:
-        CancellationError: If job was cancelled during processing.
-        CodecNotSupportedError: If codec is not supported by GPU.
-        RuntimeError: If thumbnail generation produced 0 images.
-
-    """
-    try:
-        gen_result = generate_images(
-            media_file,
-            tmp_path,
-            gpu,
-            gpu_device_path,
-            config,
-            progress_callback,
-            ffmpeg_threads_override=ffmpeg_threads_override,
-            cancel_check=cancel_check,
-        )
-    except (CancellationError, CodecNotSupportedError):
-        _cleanup_temp_directory(tmp_path)
-        raise
-    except Exception as e:
-        logger.error(
-            "Could not extract preview frames from {} ({}: {}). "
-            "This file will be skipped; the rest of the queue keeps processing. "
-            "Enable Debug logging under Settings → Logging to see FFmpeg's detailed output.",
-            media_file,
-            type(e).__name__,
-            e,
-        )
-        _cleanup_temp_directory(tmp_path)
-        raise RuntimeError(f"Failed to generate images: {e}") from e
-
-    # Determine image count and error summary from result or by scanning
-    image_count = 0
-    ffmpeg_error = ""
-    if isinstance(gen_result, tuple) and len(gen_result) >= 2:
-        _, image_count = bool(gen_result[0]), int(gen_result[1])
-        if len(gen_result) >= 6:
-            ffmpeg_error = gen_result[5] or ""
-    else:
-        if os.path.isdir(tmp_path):
-            image_count = len(glob.glob(os.path.join(tmp_path, "*.jpg")))
-
-    if image_count == 0:
-        logger.error(
-            "No preview frames extracted from {} — cannot create the preview file. "
-            "FFmpeg ran but produced zero JPGs. Most likely the file is corrupted, the codec "
-            "isn't supported by your FFmpeg build, or hardware acceleration silently failed. "
-            "Try playing the file in a media player to confirm it's intact, or enable Debug "
-            "logging to see FFmpeg's detailed output. This file is skipped; the queue continues.",
-            media_file,
-        )
-        _cleanup_temp_directory(tmp_path)
-        detail = f" ({ffmpeg_error})" if ffmpeg_error else ""
-        raise RuntimeError(f"Thumbnail generation produced 0 images for {media_file}{detail}")
-
-    # Generate BIF file
-    try:
-        generate_bif(index_bif, tmp_path, config)
-    except PermissionError as e:
-        # Remove BIF if generation failed
-        try:
-            if os.path.exists(index_bif):
-                os.remove(index_bif)
-        except Exception as remove_error:
-            logger.warning(
-                "Could not delete the partially-written preview file at {}: {}. "
-                "You may need to delete this file manually so the next run can recreate it cleanly. "
-                "The rest of the queue continues processing.",
-                index_bif,
-                remove_error,
-            )
-        logger.error(
-            "Cannot write the Plex preview file at {} (for {}): permission denied. "
-            "The user running this tool needs WRITE access to {}. In Docker, check your "
-            "Plex config volume is mounted read-write and PUID/PGID match the file owner. "
-            "This file is skipped; the rest of the queue continues. Original error: {}",
-            index_bif,
-            media_file,
-            os.path.dirname(index_bif),
-            e,
-        )
-        raise
-    except Exception as e:
-        # PermissionError is already handled above, so this catches other exceptions
-        logger.error(
-            "Could not pack the preview file (BIF) for {} ({}: {}). "
-            "Most likely the working folder ran out of space or the destination became unwritable. "
-            "This file is skipped; the queue continues. Enable Debug logging for full traceback.",
-            media_file,
-            type(e).__name__,
-            e,
-        )
-        # Remove BIF if generation failed
-        try:
-            if os.path.exists(index_bif):
-                os.remove(index_bif)
-        except Exception as remove_error:
-            logger.warning(
-                "Could not delete the partially-written preview file at {}: {}. "
-                "You may need to delete this file manually so the next run can recreate it cleanly. "
-                "The rest of the queue continues processing.",
-                index_bif,
-                remove_error,
-            )
-        raise
 
 
 def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
@@ -1507,146 +1281,6 @@ def generate_bif(bif_filename: str, images_path: str, config: Config) -> None:
     logger.info("{}Generated BIF file: {} ({} thumbnails)", _bif_server_prefix, bif_filename, len(images))
 
 
-def _fan_out_secondary_publishers(
-    canonical_path: str,
-    frame_dir: str | None,
-    config: Config,
-    *,
-    progress_callback=None,
-    cancel_check=None,
-) -> None:
-    """Fan out to every non-Plex configured server.
-
-    Hooked into :func:`process_item`'s success path **and** its
-    "BIF already exists" skip path so a scheduled scan also feeds
-    Emby / Jellyfin / additional Plex servers configured in
-    ``media_servers``.
-
-    Two modes:
-
-    * ``frame_dir`` provided: pre-populate the multi-server frame cache
-      with the frames Plex just extracted, then dispatch — the cache
-      hit lets every other publisher pack its output without a second
-      FFmpeg pass.
-    * ``frame_dir is None``: the originating Plex skipped extraction
-      because its BIF already exists on disk. Dispatch directly; the
-      multi-server pipeline handles its own extraction (cache miss
-      → FFmpeg → publish). The legacy Plex publisher inside that
-      dispatch auto-skips because its BIF is already there.
-
-    Failures here are *non-fatal* — the legacy Plex output already
-    succeeded; this is best-effort additional fan-out. Logged at
-    debug/warning so they show up in diagnostics without crashing the
-    scan.
-    """
-    import shutil
-
-    try:
-        from ..web.settings_manager import get_settings_manager
-
-        settings = get_settings_manager()
-        raw_servers = settings.get("media_servers") or []
-    except Exception as exc:
-        logger.debug("Secondary fan-out: settings unavailable ({}); skipping", exc)
-        return
-
-    if not isinstance(raw_servers, list) or not raw_servers:
-        return
-
-    # Cheap precheck: do we have any non-Plex servers to fan out to?
-    has_secondary = any(
-        isinstance(s, dict) and str(s.get("type") or "").lower() != "plex" and s.get("enabled", True)
-        for s in raw_servers
-    )
-    if not has_secondary:
-        return
-
-    # When the caller supplied a freshly-populated frame_dir, move it
-    # into the cache slot so process_canonical_path finds it via the
-    # cache instead of re-running FFmpeg.
-    if frame_dir is not None:
-        try:
-            from .frame_cache import get_frame_cache
-
-            cache = get_frame_cache(base_dir=os.path.join(config.working_tmp_folder, "frame_cache"))
-            cache_slot = cache.frame_dir_for(canonical_path)
-
-            # If the cache already has a stale entry for this path, evict it
-            # before the rename so the fresh frames take its place.
-            if cache_slot.exists():
-                shutil.rmtree(cache_slot)
-
-            cache_slot.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(frame_dir, cache_slot)
-
-            # Count frames so cache.put records something sensible.
-            frame_count = sum(1 for f in os.listdir(cache_slot) if f.lower().endswith(".jpg"))
-            cache.put(canonical_path, frame_dir=cache_slot, frame_count=frame_count)
-        except Exception as exc:
-            logger.warning(
-                "Could not share extracted frames with secondary servers for {}: {}. "
-                "Plex previews succeeded; Emby/Jellyfin previews will be regenerated from scratch on "
-                "their next trigger (slower, but produces the same result).",
-                canonical_path,
-                exc,
-            )
-            return
-
-    # Build registry + dispatch. Plex publishers in the registry
-    # auto-skip via skip-if-output-exists; Emby/Jellyfin publishers fire.
-    try:
-        from ..servers import ServerRegistry
-        from .multi_server import process_canonical_path
-
-        registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
-        # Coerce to a real string-or-None — defensive against mocks in tests
-        # and against any caller that left the attr unset on a non-Config object.
-        sid_filter_raw = getattr(config, "server_id_filter", None)
-        sid_filter = str(sid_filter_raw) if isinstance(sid_filter_raw, str) and sid_filter_raw else None
-        result = process_canonical_path(
-            canonical_path=canonical_path,
-            registry=registry,
-            config=config,
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-            server_id_filter=sid_filter,
-        )
-        # Phase H5 + Fix-1: attribute publisher rows to the *exact* job that
-        # owns this thread, not "the running job" (which silently dropped
-        # attribution when 2+ jobs ran in parallel via the dispatcher).
-        # Each worker thread enters ``failure_scope(job_id)`` before calling
-        # process_item; we read that ContextVar here so attribution is
-        # correct under any worker-pool concurrency.
-        attr_job_id = _failure_job_id_var.get()
-        if attr_job_id:
-            try:
-                from ..jobs.orchestrator import _publisher_rows_from_result
-                from ..web.jobs import get_job_manager
-
-                get_job_manager().append_publishers(attr_job_id, _publisher_rows_from_result(result, canonical_path))
-            except Exception as exc:
-                logger.debug("Could not attribute fan-out publishers to job {}: {}", attr_job_id, exc)
-        published = [p for p in result.publishers if p.status.value == "published"]
-        if published:
-            logger.info(
-                "Multi-server fan-out for {}: {} publisher(s) succeeded ({})",
-                canonical_path,
-                len(published),
-                ", ".join(p.adapter_name for p in published),
-            )
-    except Exception as exc:
-        # NEVER raise out of the fan-out: the legacy Plex output is
-        # already a success and we don't want to flip the result.
-        logger.warning(
-            "Could not publish previews to your secondary media servers (Emby/Jellyfin) for {}: {}. "
-            "Plex previews already succeeded — only the secondary servers were affected. "
-            "They will retry on the next webhook or scheduled scan. If this happens repeatedly, "
-            "check the secondary server's status and credentials in Settings → Media Servers.",
-            canonical_path,
-            exc,
-        )
-
-
 def process_item(
     item_key: str,
     gpu: str | None,
@@ -1658,40 +1292,29 @@ def process_item(
     cancel_check=None,
     worker_name: str = "",
 ) -> ProcessingResult:
-    """Process a single media item: generate thumbnails and BIF file.
+    """Process a Plex item — Plex-specific shim over ``process_canonical_path``.
 
-    This is the core processing function that handles:
-    - Plex API queries
-    - Path mapping for remote generation
-    - Bundle hash generation
-    - Plex directory structure creation
-    - Thumbnail generation with FFmpeg
-    - BIF file creation
-    - Cleanup
+    The legacy single-Plex worker still accepts ``(item_key, plex)`` tuples
+    via :meth:`Worker.assign_task`. This shim queries Plex for the item's
+    ``MediaPart`` rows so it knows which canonical paths to dispatch, then
+    funnels each path through the unified per-vendor publisher pipeline
+    (``process_canonical_path``). Same FFmpeg, same BIF writer, same
+    publisher fan-out — every vendor now lands in the same code.
 
-    Args:
-        item_key: Plex media item key.
-        gpu: GPU type for acceleration.
-        gpu_device_path: GPU device path.
-        config: Configuration object.
-        plex: Plex server instance.
-        progress_callback: Callback function for progress updates.
-        ffmpeg_threads_override: Per-GPU FFmpeg thread cap (overrides
-            config.ffmpeg_threads when set).
-        cancel_check: Optional callable returning True when job is cancelled.
-        worker_name: Display name of the worker processing this item.
-
-    Returns:
-        ProcessingResult indicating the outcome. When an item has multiple
-        media parts, the most significant outcome is returned (GENERATED
-        wins over any skip; FAILED wins over skips other than file-not-found).
-
+    The pre-flight checks (path-mapping, exclusion, invalid bundle hash,
+    file-not-found) are kept here so the legacy ``ProcessingResult`` outcome
+    enum still distinguishes the same skip reasons callers built dashboards
+    around. The actual frame extraction and BIF write happen inside
+    ``process_canonical_path``; we just translate the ``MultiServerStatus``
+    back into a ``ProcessingResult``.
     """
+    from ..servers.base import ServerType
+    from ..servers.registry import ServerRegistry
+    from .multi_server import MultiServerStatus, process_canonical_path
+
     try:
         data = retry_plex_call(plex.query, f"{item_key}/tree")
     except Exception as e:
-        # Single comprehensive line — keep the request URL for diagnosis
-        # but skip the headers dump (token-redacted but still noisy).
         request_url = getattr(getattr(e, "request", None), "url", None)
         url_hint = f" (request URL: {request_url})" if request_url else ""
         logger.error(
@@ -1712,6 +1335,10 @@ def process_item(
         )
         return ProcessingResult.FAILED
 
+    registry = ServerRegistry.from_legacy_config(config)
+    plex_cfg = next((c for c in registry.configs() if c.type is ServerType.PLEX), None)
+    plex_server_id = plex_cfg.id if plex_cfg else None
+
     best_result = ProcessingResult.NO_MEDIA_PARTS
 
     def _update_best(result: ProcessingResult) -> None:
@@ -1720,206 +1347,123 @@ def process_item(
             best_result = result
 
     for media_part in data.findall(".//MediaPart"):
-        if "hash" in media_part.attrib:
-            bundle_hash = media_part.attrib["hash"]
-            plex_path = media_part.attrib["file"]
-            mappings = getattr(config, "path_mappings", None) or []
-            if mappings:
-                media_file = sanitize_path(plex_path_to_local(plex_path, mappings))
-            else:
-                media_file = sanitize_path(plex_path)
+        if "hash" not in media_part.attrib:
+            continue
 
-            if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
-                logger.info("Skipping (excluded path): {}", media_file)
-                _update_best(ProcessingResult.SKIPPED_EXCLUDED)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.SKIPPED_EXCLUDED,
-                    "Path excluded by filter",
-                    worker_name,
-                )
-                continue
+        bundle_hash = media_part.attrib["hash"]
+        plex_path = media_part.attrib["file"]
+        mappings = getattr(config, "path_mappings", None) or []
+        media_file = sanitize_path(plex_path_to_local(plex_path, mappings) if mappings else plex_path)
 
-            if not bundle_hash or len(bundle_hash) < 2:
-                hash_value = f'"{bundle_hash}"' if bundle_hash else "(empty)"
-                logger.warning(
-                    "Skipping {} — Plex returned an invalid internal ID for this file ({}, length {}). "
-                    "This usually means Plex hasn't finished scanning the file yet. Wait for Plex's "
-                    "library scan to complete and re-trigger, or let the next scheduled scan pick it up. "
-                    "Other files in the queue continue.",
-                    media_file,
-                    hash_value,
-                    len(bundle_hash) if bundle_hash else 0,
-                )
-                _update_best(ProcessingResult.SKIPPED_INVALID_HASH)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.SKIPPED_INVALID_HASH,
-                    f"Invalid bundle hash: {hash_value}",
-                    worker_name,
-                )
-                continue
+        if is_path_excluded(media_file, getattr(config, "exclude_paths", None)):
+            logger.info("Skipping (excluded path): {}", media_file)
+            _update_best(ProcessingResult.SKIPPED_EXCLUDED)
+            _notify_file_result(
+                media_file,
+                ProcessingResult.SKIPPED_EXCLUDED,
+                "Path excluded by filter",
+                worker_name,
+            )
+            continue
 
-            if not os.path.isfile(media_file):
-                logger.warning(
-                    "Skipping {} — Plex says this file should exist on disk, but it doesn't. "
-                    "This usually means the file was moved/deleted, or the path mapping under "
-                    "Settings → Plex doesn't match your actual mount. Other files keep processing.",
-                    media_file,
-                )
-                _update_best(ProcessingResult.SKIPPED_FILE_NOT_FOUND)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.SKIPPED_FILE_NOT_FOUND,
-                    "File not found on disk",
-                    worker_name,
-                )
-                continue
+        if not bundle_hash or len(bundle_hash) < 2:
+            hash_value = f'"{bundle_hash}"' if bundle_hash else "(empty)"
+            logger.warning(
+                "Skipping {} — Plex returned an invalid internal ID for this file ({}, length {}). "
+                "This usually means Plex hasn't finished scanning the file yet. Wait for Plex's "
+                "library scan to complete and re-trigger, or let the next scheduled scan pick it up. "
+                "Other files in the queue continue.",
+                media_file,
+                hash_value,
+                len(bundle_hash) if bundle_hash else 0,
+            )
+            _update_best(ProcessingResult.SKIPPED_INVALID_HASH)
+            _notify_file_result(
+                media_file,
+                ProcessingResult.SKIPPED_INVALID_HASH,
+                f"Invalid bundle hash: {hash_value}",
+                worker_name,
+            )
+            continue
 
-            try:
-                indexes_path, index_bif, tmp_path = _setup_bundle_paths(bundle_hash, config)
-            except Exception as e:
-                logger.error(
-                    "Could not set up the Plex preview folder for {} ({}: {}). "
-                    "This usually means the Plex config folder in Settings doesn't match the "
-                    "actual mount path, or the folder isn't writable. Check Settings → Plex "
-                    "and verify the path exists and is read-write inside this container. "
-                    "This file is skipped; the queue continues.",
-                    media_file,
-                    type(e).__name__,
-                    e,
-                )
-                _update_best(ProcessingResult.FAILED)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.FAILED,
-                    f"Bundle path error: {type(e).__name__}: {e}",
-                    worker_name,
-                )
-                continue
+        if not os.path.isfile(media_file):
+            logger.warning(
+                "Skipping {} — Plex says this file should exist on disk, but it doesn't. "
+                "This usually means the file was moved/deleted, or the path mapping under "
+                "Settings → Plex doesn't match your actual mount. Other files keep processing.",
+                media_file,
+            )
+            _update_best(ProcessingResult.SKIPPED_FILE_NOT_FOUND)
+            _notify_file_result(
+                media_file,
+                ProcessingResult.SKIPPED_FILE_NOT_FOUND,
+                "File not found on disk",
+                worker_name,
+            )
+            continue
 
-            if os.path.isfile(index_bif) and config.regenerate_thumbnails:
-                logger.debug("Deleting existing BIF file at {} to regenerate thumbnails for {}", index_bif, media_file)
-                try:
-                    os.remove(index_bif)
-                except Exception as e:
-                    logger.error(
-                        "Could not delete the existing preview file before regenerating for {} ({}: {}). "
-                        "Most likely a permission problem on your Plex config folder — check that PUID/PGID "
-                        "match the file owner and the volume is mounted read-write. "
-                        "This file is skipped; the queue continues.",
-                        media_file,
-                        type(e).__name__,
-                        e,
-                    )
-                    _update_best(ProcessingResult.FAILED)
-                    _notify_file_result(
-                        media_file,
-                        ProcessingResult.FAILED,
-                        f"Could not delete existing BIF: {e}",
-                        worker_name,
-                    )
-                    continue
+        item_id_hint = {plex_server_id: item_key} if plex_server_id else {}
 
-            if os.path.isfile(index_bif):
-                logger.info("Skipping {} — BIF already exists at {}", media_file, index_bif)
-                _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.SKIPPED_BIF_EXISTS,
-                    f"BIF exists at {index_bif}",
-                    worker_name,
-                )
-                # Plex skipped extraction, but secondary servers (Emby/
-                # Jellyfin) added later may not yet have output for this
-                # file. Dispatch a fan-out without pre-populated frames
-                # so each missing publisher runs (their own skip-if-exists
-                # handles the no-op cases cheaply).
-                _fan_out_secondary_publishers(
-                    media_file,
-                    None,
-                    config,
-                    progress_callback=progress_callback,
-                    cancel_check=cancel_check,
-                )
-                continue
+        try:
+            ms_result = process_canonical_path(
+                canonical_path=media_file,
+                registry=registry,
+                config=config,
+                item_id_by_server=item_id_hint,
+                gpu=gpu,
+                gpu_device_path=gpu_device_path,
+                progress_callback=progress_callback,
+                ffmpeg_threads_override=ffmpeg_threads_override,
+                cancel_check=cancel_check,
+                regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
+            )
+        except (CancellationError, CodecNotSupportedError):
+            raise
+        except Exception as e:
+            logger.error(
+                "Unexpected error generating previews for {} ({}: {}). "
+                "This file will be skipped. If you keep seeing this, enable Debug logging "
+                "under Settings → Logging and report the full traceback as a bug. "
+                "Other files in the queue continue processing.",
+                media_file,
+                type(e).__name__,
+                e,
+            )
+            _update_best(ProcessingResult.FAILED)
+            _notify_file_result(
+                media_file,
+                ProcessingResult.FAILED,
+                f"{type(e).__name__}: {e}",
+                worker_name,
+            )
+            continue
 
-            logger.info("Generating BIF for {} -> {}", media_file, index_bif)
-
-            if not _ensure_directories(indexes_path, tmp_path, media_file):
-                _update_best(ProcessingResult.FAILED)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.FAILED,
-                    "Failed to create output directories",
-                    worker_name,
-                )
-                continue
-
-            try:
-                _generate_and_save_bif(
-                    media_file,
-                    tmp_path,
-                    index_bif,
-                    gpu,
-                    gpu_device_path,
-                    config,
-                    progress_callback,
-                    ffmpeg_threads_override=ffmpeg_threads_override,
-                    cancel_check=cancel_check,
-                )
-                _update_best(ProcessingResult.GENERATED)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.GENERATED,
-                    "",
-                    worker_name,
-                )
-                _fan_out_secondary_publishers(
-                    media_file,
-                    tmp_path,
-                    config,
-                    progress_callback=progress_callback,
-                    cancel_check=cancel_check,
-                )
-            except (CancellationError, CodecNotSupportedError):
-                raise
-            except RuntimeError as e:
-                logger.error(
-                    "Preview generation failed for {}: {}. "
-                    "This file will be skipped. The cause is in the message above — usually "
-                    "a codec issue, corrupted file, or write-permission problem. "
-                    "Other files in the queue continue processing.",
-                    media_file,
-                    e,
-                )
-                _update_best(ProcessingResult.FAILED)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.FAILED,
-                    str(e),
-                    worker_name,
-                )
-                continue
-            except Exception as e:
-                logger.error(
-                    "Unexpected error generating previews for {} ({}: {}). "
-                    "This file will be skipped. If you keep seeing this, enable Debug logging "
-                    "under Settings → Logging and report the full traceback as a bug. "
-                    "Other files in the queue continue processing.",
-                    media_file,
-                    type(e).__name__,
-                    e,
-                )
-                _update_best(ProcessingResult.FAILED)
-                _notify_file_result(
-                    media_file,
-                    ProcessingResult.FAILED,
-                    f"{type(e).__name__}: {e}",
-                    worker_name,
-                )
-                continue
-            finally:
-                _cleanup_temp_directory(tmp_path)
+        # Translate MultiServerStatus → legacy ProcessingResult so the
+        # worker pool's outcome counters and the per-file callback see
+        # the same enum values they always have.
+        if ms_result.status is MultiServerStatus.PUBLISHED:
+            _update_best(ProcessingResult.GENERATED)
+            _notify_file_result(media_file, ProcessingResult.GENERATED, "", worker_name)
+        elif ms_result.status is MultiServerStatus.SKIPPED:
+            _update_best(ProcessingResult.SKIPPED_BIF_EXISTS)
+            _notify_file_result(
+                media_file,
+                ProcessingResult.SKIPPED_BIF_EXISTS,
+                ms_result.message or "Output already exists",
+                worker_name,
+            )
+        elif ms_result.status is MultiServerStatus.NO_OWNERS:
+            # No publisher owns the path — keep best_result at its
+            # current value (defaults to NO_MEDIA_PARTS) so the legacy
+            # bookkeeping still treats this as "nothing to do here".
+            _update_best(ProcessingResult.NO_MEDIA_PARTS)
+        else:
+            _update_best(ProcessingResult.FAILED)
+            _notify_file_result(
+                media_file,
+                ProcessingResult.FAILED,
+                ms_result.message or "Multi-server publish failed",
+                worker_name,
+            )
 
     return best_result

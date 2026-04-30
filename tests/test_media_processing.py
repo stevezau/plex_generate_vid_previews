@@ -1343,79 +1343,64 @@ class TestGenerateImages:
 class TestProcessItem:
     """Test the complete item processing pipeline."""
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_process_item_success(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
-        """Test successful processing of a media item."""
-        # Mock Plex query response
+        """Successful processing dispatches the canonical path through the unified pipeline."""
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
         mock_plex = MagicMock()
 
         import xml.etree.ElementTree as ET
 
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
+        mock_isfile.return_value = True
 
-        # Mock file system - media file exists but index.bif doesn't
-        def isfile_side_effect(path):
-            # Media files exist, but not BIF files
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False  # Directories don't exist yet
-
-        # Set config paths
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
-        # Simulate successful image generation: (success, image_count, hw, seconds, speed)
-        mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
-        # Verify images and BIF were generated
-        assert mock_gen_images.called
-        assert mock_gen_bif.called
+        # Shim funnels into process_canonical_path with the canonical path.
+        assert mock_process_canonical.called
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_process_item_path_mapping(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
-        """Test that path mapping is applied correctly."""
+        """Path mapping is applied to the canonical path passed into process_canonical_path."""
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
         mock_plex = MagicMock()
 
         import xml.etree.ElementTree as ET
 
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
 
-        # Configure path mapping
         mock_config.path_mappings = [
             {
                 "plex_prefix": "/data",
@@ -1426,50 +1411,39 @@ class TestProcessItem:
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.regenerate_thumbnails = False
+        mock_isfile.return_value = True
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/mnt/videos/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
-        # Mock file system - media file exists but index.bif doesn't
-        def isfile_side_effect(path):
-            # Media files exist, but not BIF files
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False  # Directories don't exist yet
-
-        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
-        # Verify generate_images was called with mapped path
-        assert mock_gen_images.called
-        called_path = mock_gen_images.call_args[0][0]
-        # Path should be remapped from /data to /mnt/videos
-        # On Windows, normpath converts forward slashes to backslashes
+        assert mock_process_canonical.called
+        called_canonical = mock_process_canonical.call_args.kwargs["canonical_path"]
         import os as _os
 
         expected_prefix = _os.path.normpath("/mnt/videos")
-        assert called_path.startswith(expected_prefix)
+        assert called_canonical.startswith(expected_prefix)
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_process_item_mergerfs_multiple_plex_roots(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
-        """Multiple Plex roots map to one local path in process_item."""
+        """Multi-mount path_mappings collapse multiple Plex roots onto one local prefix."""
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
         mock_plex = MagicMock()
         import xml.etree.ElementTree as ET
 
-        # Fixture has /data/movies/...; use XML with /data_disk1/ so we map to /data
         tree_xml = plex_xml_movie_tree.replace(
             'file="/data/movies/',
             'file="/data_disk1/movies/',
@@ -1491,41 +1465,38 @@ class TestProcessItem:
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.regenerate_thumbnails = False
-
-        def isfile_side_effect(path):
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False
-        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
+        mock_isfile.return_value = True
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
-        assert mock_gen_images.called
-        called_path = mock_gen_images.call_args[0][0]
+        assert mock_process_canonical.called
+        called_canonical = mock_process_canonical.call_args.kwargs["canonical_path"]
         import os as _os
 
         expected_prefix = _os.path.normpath("/data")
-        assert called_path.startswith(expected_prefix), f"Expected path under /data, got {called_path}"
+        assert called_canonical.startswith(expected_prefix), (
+            f"Expected canonical path under /data, got {called_canonical}"
+        )
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_process_item_no_partial_prefix_match(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
         """Path /database/... is not remapped when mapping is /data -> /mnt/data."""
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
+
         mock_plex = MagicMock()
         import xml.etree.ElementTree as ET
 
@@ -1545,23 +1516,22 @@ class TestProcessItem:
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.regenerate_thumbnails = False
-
-        def isfile_side_effect(path):
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False
-        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
+        mock_isfile.return_value = True
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/database/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
-        assert mock_gen_images.called
-        called_path = mock_gen_images.call_args[0][0]
+        assert mock_process_canonical.called
+        called_canonical = mock_process_canonical.call_args.kwargs["canonical_path"]
         import os as _os
 
-        # Should still be /database/... (no mapping applied)
         expected_prefix = _os.path.normpath("/database")
-        assert called_path.startswith(expected_prefix), f"Expected path under /database, got {called_path}"
+        assert called_canonical.startswith(expected_prefix), (
+            f"Expected canonical path under /database, got {called_canonical}"
+        )
 
     @patch("os.path.isfile")
     def test_process_item_missing_file(self, mock_isfile, mock_config, plex_xml_movie_tree):

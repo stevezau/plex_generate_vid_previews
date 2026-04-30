@@ -1,8 +1,7 @@
 """Tests for the Plex bundle BIF output adapter.
 
 Verifies that:
-- the bundle-hash → on-disk path mapping matches what Plex expects
-  (regression check for the existing `_setup_bundle_paths` behaviour),
+- the bundle-hash → on-disk path mapping matches what Plex expects,
 - multi-part items pick the matching bundle hash by basename,
 - "not yet indexed" cases raise the right exception so the dispatcher's
   slow-backoff queue takes over,

@@ -1,8 +1,7 @@
 """Plex bundle BIF output adapter.
 
 Translates a frame :class:`BifBundle` into Plex's bundle-hash on-disk layout
-and packs the BIF at that location. Plex's expected path structure (verified
-in the existing pipeline at ``processing/orchestrator.py:_setup_bundle_paths``):
+and packs the BIF at that location. Plex's expected path structure:
 
     {plex_config_folder}/Media/localhost/<h0>/<h[1:]>.bundle/Contents/Indexes/index-sd.bif
 

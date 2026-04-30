@@ -14,52 +14,39 @@ from media_preview_generator.processing import ProcessingResult
 class TestFullPipeline:
     """Test complete processing pipeline."""
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_full_pipeline_single_video(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
-        """Test processing a single video through the full pipeline."""
+        """Single-video processing reaches the unified per-vendor pipeline."""
         from media_preview_generator.processing import process_item
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
 
-        # Mock Plex
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-
-        # Mock file system - media file exists but index.bif doesn't
-        def isfile_side_effect(path):
-            # Media files exist, but not BIF files
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False  # Directories don't exist yet
+        mock_isfile.return_value = True
 
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
-        # Simulate successful image generation
-        mock_gen_images.return_value = (True, 3, False, 1.3, "1.0x")
-        # Process single item
         process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
-        # Verify pipeline executed
-        assert mock_gen_images.called
-        assert mock_gen_bif.called
+        assert mock_process_canonical.called
 
     @patch("media_preview_generator.jobs.worker.process_item")
     def test_full_pipeline_multiple_videos(self, mock_process, mock_config):
@@ -152,48 +139,38 @@ class TestFullPipeline:
 class TestWorkerPoolIntegration:
     """Test worker pool integration with processing."""
 
-    @patch("media_preview_generator.processing.orchestrator.generate_bif")
-    @patch("media_preview_generator.processing.orchestrator.generate_images")
     @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_integration(
         self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
+        mock_process_canonical,
         mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
         mock_config,
         plex_xml_movie_tree,
     ):
-        """Test worker pool coordinating multiple workers."""
+        """Worker pool coordinates multiple workers; each item dispatches into the unified pipeline."""
         from media_preview_generator.jobs.worker import WorkerPool
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+        )
 
-        # Mock Plex
         mock_plex = MagicMock()
         mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-
-        # Mock file system - media file exists but index.bif doesn't
-        def isfile_side_effect(path):
-            # Media files exist, but not BIF files
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False  # Directories don't exist yet
+        mock_isfile.return_value = True
 
         mock_config.plex_config_folder = "/config/plex"
         mock_config.tmp_folder = "/tmp"
         mock_config.plex_local_videos_path_mapping = ""
         mock_config.plex_videos_path_mapping = ""
         mock_config.regenerate_thumbnails = False
+        mock_process_canonical.return_value = MultiServerResult(
+            canonical_path="/data/movies/Test Movie (2024)/Test Movie (2024).mkv",
+            status=MultiServerStatus.PUBLISHED,
+        )
 
-        # Create pool with multiple workers
         pool = WorkerPool(gpu_workers=0, cpu_workers=3, selected_gpus=[])
 
-        # Test items
         items = [
             ("/library/metadata/1", "Movie 1", "movie"),
             ("/library/metadata/2", "Movie 2", "movie"),
@@ -204,18 +181,12 @@ class TestWorkerPoolIntegration:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
-        # Each item simulates successful image generation
-        mock_gen_images.return_value = (True, 1, False, 0.8, "1.0x")
-        # Process
         pool.process_items(items, mock_config, mock_plex, worker_progress, main_progress)
 
-        # Verify all completed
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 3
-
-        # Verify images and BIF generation were called
-        assert mock_gen_images.call_count == 3
-        assert mock_gen_bif.call_count == 3
+        # Each of the 3 items should have funneled into process_canonical_path.
+        assert mock_process_canonical.call_count == 3
 
     @patch("media_preview_generator.jobs.worker.process_item")
     def test_worker_pool_load_balancing(self, mock_process, mock_config):
