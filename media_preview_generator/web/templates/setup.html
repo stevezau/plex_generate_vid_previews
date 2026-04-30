@@ -329,7 +329,12 @@
                 <h6 class="mb-3"><i class="bi bi-cpu me-2"></i>CPU Workers</h6>
                 <div class="row mb-4">
                     <div class="col-md-6 mb-3">
-                        <label for="cpuThreads" class="form-label">CPU Workers</label>
+                        <label for="cpuThreads" class="form-label">
+                            CPU Workers
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="How many items the CPU processes at the same time, in addition to any GPU workers. Each worker keeps one job busy at a time. Set to 0 to disable CPU processing entirely."></i>
+                        </label>
                         <input type="number" class="form-control has-stepper" id="cpuThreads"
                                min="0" max="32" value="1">
                         <div class="form-text">Parallel preview jobs on the CPU.</div>
@@ -547,6 +552,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 setupRenderPathMappingRows([]);
                 setupRenderExcludePathRows([]);
             });
+            // Re-run validation against the prefilled Plex config folder so
+            // the user sees green/red feedback the moment they land on this
+            // step — without having to edit the value to nudge the input
+            // event.
+            const plexCfg = document.getElementById('wizardPlexConfigFolder');
+            if (plexCfg && plexCfg.value && window.MPGShared) {
+                window.MPGShared.validateLocalPathInput(plexCfg);
+            }
         } else if (step === 4) {
             loadGpuInfo();
         } else if (step === 5) {
@@ -578,6 +591,10 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('authStatus').classList.add('authenticated');
         document.getElementById('authError').classList.add('d-none');
         document.getElementById('step1Next').disabled = false;
+        // Brief pause so the success state is visible, then auto-advance —
+        // there's nothing else for the user to do on this step once Plex
+        // accepted them.
+        setTimeout(() => goToStep(2), 600);
     }
 
     function onAuthError(error) {
@@ -727,7 +744,8 @@ document.addEventListener('DOMContentLoaded', function() {
             resultEl.innerHTML =
                 '<i class="bi bi-check-circle-fill me-1"></i>' +
                 'Connected&nbsp;&mdash;&nbsp;found ' + libraryCount + ' librar' +
-                (libraryCount === 1 ? 'y' : 'ies') + '. Click <strong>Next</strong> to continue.';
+                (libraryCount === 1 ? 'y' : 'ies') + '. Loading libraries…';
+            setTimeout(() => goToStep(2), 600);
         } catch (err) {
             resultEl.className = 'small mt-2 text-danger';
             resultEl.textContent = 'Connection failed: ' + (err && err.message ? err.message : 'unknown error');

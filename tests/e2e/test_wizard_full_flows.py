@@ -59,10 +59,10 @@ class TestPlexHappyPath:
         wizard_page.locator("#manualPlexToken").fill("plex-tok")
         wizard_page.locator("#manualPlexTestBtn").click()
         expect(wizard_page.locator("#manualPlexResult")).to_contain_text("Connected", timeout=5000)
-        wizard_page.locator("#step1Next").click()
-
-        # Step 2 — pick libraries.
-        expect(wizard_page.locator('div.setup-step[data-step="2"]')).to_have_class("setup-step active")
+        # Wizard auto-advances after a successful Plex sign-in — no Next click
+        # needed. Wait for step 2 to become active rather than driving it
+        # ourselves; this locks the auto-advance behaviour in.
+        expect(wizard_page.locator('div.setup-step[data-step="2"]')).to_have_class("setup-step active", timeout=3000)
         wizard_page.locator(".library-card").first.click()
         wizard_page.locator(".library-card").nth(1).click()
         wizard_page.locator("#step2Next").click()

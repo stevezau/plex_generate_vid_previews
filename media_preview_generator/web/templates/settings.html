@@ -73,7 +73,12 @@
                 <h6 class="mb-3"><i class="bi bi-cpu me-2"></i>CPU Workers</h6>
                 <div class="row mb-4">
                     <div class="col-md-6 mb-3">
-                        <label for="cpuThreads" class="form-label">CPU Workers</label>
+                        <label for="cpuThreads" class="form-label">
+                            CPU Workers
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="How many items the CPU processes at the same time, in addition to any GPU workers. Each worker keeps one job busy at a time. Set to 0 to disable CPU processing entirely."></i>
+                        </label>
                         <input type="number" class="form-control has-stepper" id="cpuThreads"
                                min="0" max="32" value="1">
                         <div class="form-text">Parallel preview jobs to run on the CPU.</div>
