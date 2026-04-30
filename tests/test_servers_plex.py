@@ -215,6 +215,10 @@ class TestListItems:
         assert items[0].title == "Test Movie"
         assert items[0].library_id == "1"
         assert items[0].remote_path.endswith(".mkv")
+        # Regression: id must be the bare ratingKey, not the full
+        # "/library/metadata/<id>" URL — passing the URL doubles the
+        # prefix in PlexBundleAdapter and reports skipped_not_indexed.
+        assert items[0].id == "54321"
 
     def test_yields_episodes_with_formatted_title(self, mock_config, mock_plex_episode):
         wrapper = PlexServer(mock_config)
@@ -232,6 +236,28 @@ class TestListItems:
         assert len(items) == 1
         assert "Test Show" in items[0].title
         assert "S01E01" in items[0].title.upper()
+        assert items[0].id == "12345"
+
+    def test_falls_back_to_key_when_ratingkey_missing(self, mock_config):
+        """``_plex_item_id`` strips ``/library/metadata/`` from ``m.key`` when
+        ``ratingKey`` is unavailable — defensive against custom plexapi shims."""
+        wrapper = PlexServer(mock_config)
+        movie = MagicMock(spec=["key", "title", "locations"])
+        movie.key = "/library/metadata/777"
+        movie.title = "Legacy"
+        movie.locations = ["/data/x.mkv"]
+
+        section = MagicMock()
+        section.key = 1
+        section.METADATA_TYPE = "movie"
+        section.search.return_value = [movie]
+
+        plex = MagicMock()
+        plex.library.sections.return_value = [section]
+        wrapper._plex = plex
+
+        items = list(wrapper.list_items("1"))
+        assert items[0].id == "777"
 
     def test_unknown_library_yields_nothing(self, mock_config):
         wrapper = PlexServer(mock_config)

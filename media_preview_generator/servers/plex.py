@@ -32,6 +32,21 @@ if TYPE_CHECKING:
     from ..config import Config
 
 
+def _plex_item_id(m: Any) -> str:
+    """Return Plex's bare ``ratingKey`` for ``m`` (e.g. ``"54321"``).
+
+    Why: PlexAPI's ``m.key`` is the URL ``/library/metadata/<id>`` — passing it
+    downstream as ``item_id`` doubles the prefix when ``PlexBundleAdapter`` builds
+    ``/library/metadata/{item_id}/tree``, which silently 404s and reports
+    ``skipped_not_indexed`` for every item in a Plex-pinned scan.
+    """
+    raw = getattr(m, "ratingKey", None)
+    if raw not in (None, ""):
+        return str(raw)
+    key = str(getattr(m, "key", "") or "")
+    return key.rsplit("/", 1)[-1] if key else key
+
+
 def _synthesize_legacy_config(cfg: ServerConfig) -> SimpleNamespace:
     """Build a legacy Config-shaped namespace from a per-server ServerConfig.
 
@@ -275,7 +290,7 @@ class PlexServer(MediaServer):
                     if not locations:
                         continue
                     yield MediaItem(
-                        id=str(m.key),
+                        id=_plex_item_id(m),
                         library_id=str(target.key),
                         title=_build_episode_title(m),
                         remote_path=str(locations[0]),
@@ -286,7 +301,7 @@ class PlexServer(MediaServer):
                     if not locations:
                         continue
                     yield MediaItem(
-                        id=str(m.key),
+                        id=_plex_item_id(m),
                         library_id=str(target.key),
                         title=str(getattr(m, "title", "") or ""),
                         remote_path=str(locations[0]),

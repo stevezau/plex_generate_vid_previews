@@ -185,6 +185,7 @@ def mock_plex_movie():
     """Create a mock Plex movie item."""
     movie = MagicMock()
     movie.key = "/library/metadata/54321"
+    movie.ratingKey = 54321
     movie.title = "Test Movie"
     movie.locations = ["/data/movies/Test Movie (2024)/Test Movie (2024).mkv"]
     return movie
@@ -195,6 +196,7 @@ def mock_plex_episode():
     """Create a mock Plex episode item."""
     episode = MagicMock()
     episode.key = "/library/metadata/12345"
+    episode.ratingKey = 12345
     episode.title = "Pilot"
     episode.grandparentTitle = "Test Show"
     episode.seasonEpisode = "s01e01"
