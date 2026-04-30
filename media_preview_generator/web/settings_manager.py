@@ -511,8 +511,10 @@ class SettingsManager:
 
         * Legacy single-Plex install: ``plex_url`` + ``plex_token`` set.
         * Multi-server install: any enabled entry in ``media_servers``
-          with a non-empty ``url`` and a vendor-appropriate auth shape
-          (Plex needs ``auth.token``; Emby/Jellyfin need ``auth.api_key``).
+          with a non-empty ``url`` and a vendor-appropriate auth shape:
+          - Plex: ``auth.token``
+          - Emby / Jellyfin: ``auth.api_key`` (api-key flow) OR
+            ``auth.access_token`` (password / QuickConnect flow)
 
         The Plex fast-path stays so existing pre-multi-server installs
         keep passing without touching the new check; the new path
@@ -537,8 +539,15 @@ class SettingsManager:
             auth = entry.get("auth") or {}
             if stype == "plex" and (auth.get("token") or "").strip():
                 return True
-            if stype in ("emby", "jellyfin") and (auth.get("api_key") or "").strip():
-                return True
+            if stype in ("emby", "jellyfin"):
+                # Emby/Jellyfin support two auth flows — api-key (direct
+                # paste) or password/QuickConnect (returns an access_token
+                # + user_id at probe time). Either yields a usable
+                # credential, so accept either.
+                api_key = (auth.get("api_key") or "").strip()
+                access_token = (auth.get("access_token") or "").strip()
+                if api_key or access_token:
+                    return True
         return False
 
     def is_plex_authenticated(self) -> bool:

@@ -175,13 +175,20 @@ class TestPerServerFallbackWebhook:
 @pytest.mark.integration
 @pytest.mark.slow
 class TestFrameCacheTtlExpiry:
-    def test_cache_entry_evicts_after_ttl(self, emby_credentials, media_root, real_config, tmp_path):
+    def test_cache_entry_evicts_after_ttl(self, emby_credentials, media_root, real_config, tmp_path, monkeypatch):
         """Set a 1-second TTL, dispatch twice with a sleep between → FFmpeg runs twice.
 
         This is the inverse of the concurrent-coalescing test: that
         proves "second-and-later within TTL hit cache"; this proves
         "after TTL, cache is gone and FFmpeg re-runs".
+
+        Uses ``monkeypatch`` on ``_read_frame_reuse_setting`` — ``get_frame_cache()``
+        now live-reads the settings on every call, so an explicit
+        ``ttl_seconds=1`` kwarg at construction gets overwritten on the
+        next call. Patching the settings reader is the only way to
+        simulate a 1-second TTL end-to-end.
         """
+        from media_preview_generator.processing import frame_cache as fc
         from media_preview_generator.processing import multi_server as ms_module
         from media_preview_generator.processing.frame_cache import (
             get_frame_cache,
@@ -190,10 +197,11 @@ class TestFrameCacheTtlExpiry:
         from media_preview_generator.processing.multi_server import process_canonical_path
         from media_preview_generator.servers import ServerRegistry
 
-        # Force a 1-second TTL by using a fresh cache singleton.
+        # Force a 1-second TTL via the settings-read path.
+        monkeypatch.setattr(fc, "_read_frame_reuse_setting", lambda: (1, 2048))
         reset_frame_cache()
         cache_base = tmp_path / "cache_base"
-        get_frame_cache(base_dir=str(cache_base), ttl_seconds=1)
+        get_frame_cache(base_dir=str(cache_base))
 
         raw_servers = [
             {
@@ -228,21 +236,11 @@ class TestFrameCacheTtlExpiry:
             sidecar.unlink()
 
         # The dispatcher hits get_frame_cache with the config's
-        # working_tmp_folder, not our pre-seeded base_dir. That'd
-        # rebuild the singleton with a different base_dir → raises.
-        # Workaround: point real_config at the same base.
+        # working_tmp_folder. Point real_config at the same base so the
+        # singleton's base_dir lookup matches.
         real_config.working_tmp_folder = str(tmp_path)
-        # The cache's base will be working_tmp_folder/frame_cache,
-        # but we already pre-seeded with a different base. Reset and
-        # let the dispatcher build it.
         reset_frame_cache()
-
-        # Re-seed with the EXACT base the dispatcher will use, but with
-        # a 1-second TTL.
-        get_frame_cache(
-            base_dir=str(Path(real_config.working_tmp_folder) / "frame_cache"),
-            ttl_seconds=1,
-        )
+        get_frame_cache(base_dir=str(Path(real_config.working_tmp_folder) / "frame_cache"))
 
         original_generate = ms_module.generate_images
         ffmpeg_calls = []
