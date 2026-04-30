@@ -579,6 +579,26 @@ def create_app(config_dir: str = None) -> Flask:
             "api.get_plex_servers",
             "api.get_plex_libraries",
             "api.test_plex_connection",
+            # Multi-media-server registry endpoints used by the Add Server
+            # wizard before setup is complete. Without these, the
+            # before_request middleware 302s the JS-side fetch back to
+            # /setup, the frontend follows the redirect, gets HTML, fails
+            # to JSON-parse and surfaces a misleading "Authentication
+            # failed (HTTP 200)" / "Connection failed" message instead of
+            # the real backend reason.
+            "api.list_servers",
+            "api.get_server",
+            "api.create_server",
+            "api.test_server_connection",
+            "api.refresh_server_libraries",
+            "api.fix_jellyfin_trickplay",
+            # Vendor auth-flow helpers (Emby/Jellyfin password exchange,
+            # Jellyfin Quick Connect ceremony) — same exemption rationale.
+            "api.emby_password_auth",
+            "api.jellyfin_password_auth",
+            "api.jellyfin_quick_connect_initiate",
+            "api.jellyfin_quick_connect_poll",
+            "api.jellyfin_quick_connect_exchange",
             # Settings (read/write during setup)
             "api.get_settings",
             "api.save_settings",

@@ -441,6 +441,44 @@ class TestTokenEndpoints:
         assert resp.status_code == 409
         assert "WEB_AUTH_TOKEN" in resp.get_json()["error"]
 
+    @pytest.mark.parametrize(
+        "method,path,payload",
+        [
+            ("POST", "/api/servers/auth/jellyfin/password", {"url": "http://x", "username": "u"}),
+            ("POST", "/api/servers/auth/emby/password", {"url": "http://x", "username": "u"}),
+            ("POST", "/api/servers/auth/jellyfin/quick-connect/initiate", {"url": "http://x"}),
+            (
+                "POST",
+                "/api/servers/test-connection",
+                {"type": "jellyfin", "url": "http://x", "auth": {"method": "api_key", "api_key": "k"}},
+            ),
+            ("GET", "/api/servers", None),
+        ],
+    )
+    def test_wizard_server_endpoints_not_redirected_during_setup(self, authed_client, method, path, payload):
+        """Add Server wizard endpoints must reach the route during setup
+        instead of being 302'd back to /setup by the check_setup
+        middleware.
+
+        Without the exempt-endpoints entries the JS-side fetch follows
+        the 302, gets the HTML setup page (HTTP 200), fails to JSON-parse
+        and surfaces a misleading "Authentication failed (HTTP 200)" /
+        "Connection failed" message instead of the actual backend reason.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("setup_complete", False)
+        kwargs = {"json": payload} if payload is not None else {}
+        resp = authed_client.open(path, method=method, **kwargs)
+        # Anything other than a redirect to /setup is fine — the route
+        # may legitimately 4xx for missing fields, or 200 with ok=False
+        # for upstream failures. The bug is *only* the 302 bounce.
+        assert resp.status_code != 302, (
+            f"{method} {path} got 302 to {resp.headers.get('Location')!r} — "
+            "endpoint is missing from check_setup's exempt_endpoints list"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Jobs API
