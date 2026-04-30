@@ -366,6 +366,93 @@ def _dispatch_processable_items(
     return counts
 
 
+def _enumerate_items_for_servers(
+    candidates,
+    *,
+    enumerate_one,
+    cancel_check=None,
+    label: str,
+):
+    """Walk every server in ``candidates`` and collect the items each yields.
+
+    Shared by :func:`_run_full_scan_multi_server` and
+    :func:`_run_recently_added_multi_server` — both walk the same list of
+    candidate :class:`ServerConfig` objects, look up the right
+    :class:`VendorProcessor`, and dispatch to *some* enumeration method
+    on it. ``enumerate_one(processor, server_cfg) -> Iterator[ProcessableItem]``
+    captures the only thing that actually differs between the two callers
+    (``processor.list_canonical_paths`` vs ``processor.scan_recently_added``).
+
+    Returns a list of ``(server_config, ProcessableItem)`` ready to feed
+    into :func:`_dispatch_processable_items`.
+
+    De-duping across servers (Phase P4) lives in this helper so it
+    applies uniformly to full-scan AND recently-added flows.
+    """
+    from ..processing import get_processor_for
+
+    all_items: list = []
+    by_canonical: dict[str, int] = {}  # canonical_path → index in all_items
+
+    for server_cfg in candidates:
+        try:
+            processor = get_processor_for(server_cfg.type)
+        except KeyError as exc:
+            logger.warning(
+                "No processor registered for {!r} ({}). Skipping this server.",
+                server_cfg.type,
+                exc,
+            )
+            continue
+        if cancel_check and cancel_check():
+            logger.info("Cancellation requested while enumerating items — aborting {}.", label)
+            return all_items
+        try:
+            for item in enumerate_one(processor, server_cfg):
+                if cancel_check and cancel_check():
+                    logger.info("Cancellation requested mid-enumeration — aborting {}.", label)
+                    return all_items
+
+                # Phase P4: when the same canonical_path appears on more
+                # than one server (typical: Plex+Jellyfin sharing media,
+                # or two Plex servers with shared storage), keep ONE
+                # ProcessableItem and merge every server's vendor item-id
+                # hint into it. The publish-side fan-out (_resolve_publishers)
+                # already targets every owning server; deduping here just
+                # avoids dispatching the same path twice.
+                existing_index = by_canonical.get(item.canonical_path)
+                if existing_index is None:
+                    by_canonical[item.canonical_path] = len(all_items)
+                    all_items.append((server_cfg, item))
+                else:
+                    existing_cfg, existing_item = all_items[existing_index]
+                    merged_hints = dict(existing_item.item_id_by_server or {})
+                    merged_hints.update(item.item_id_by_server or {})
+                    if merged_hints != (existing_item.item_id_by_server or {}):
+                        from ..processing.types import ProcessableItem
+
+                        all_items[existing_index] = (
+                            existing_cfg,
+                            ProcessableItem(
+                                canonical_path=existing_item.canonical_path,
+                                server_id=existing_item.server_id,
+                                item_id_by_server=merged_hints,
+                                title=existing_item.title or item.title,
+                                library_id=existing_item.library_id,
+                            ),
+                        )
+        except Exception as exc:
+            logger.warning(
+                "Enumeration on {} server {!r} failed ({}: {}). Continuing with the next server in scope.",
+                server_cfg.type.value,
+                server_cfg.name or server_cfg.id,
+                type(exc).__name__,
+                exc,
+            )
+
+    return all_items
+
+
 def _build_multi_server_registry(config):
     """Load the live :class:`ServerRegistry` for a multi-server scan/dispatch.
 
@@ -426,8 +513,6 @@ def _run_full_scan_multi_server(
     Returns the aggregated ProcessingResult counts keyed by enum value
     (same shape as :func:`_dispatch_webhook_paths_multi_server`).
     """
-    from ..processing import get_processor_for
-
     counts = {r.value: 0 for r in ProcessingResult}
 
     registry = _build_multi_server_registry(config)
@@ -444,41 +529,17 @@ def _run_full_scan_multi_server(
         )
         return counts
 
-    # Enumerate every item we'll process (across all servers in scope) so the
-    # progress widget below can show "X / total" instead of "X processed".
-    all_items: list = []
-    for server_cfg in candidates:
-        try:
-            processor = get_processor_for(server_cfg.type)
-        except KeyError as exc:
-            logger.warning(
-                "No processor registered for {!r} ({}). Skipping this server.",
-                server_cfg.type,
-                exc,
-            )
-            continue
-        if cancel_check and cancel_check():
-            logger.info("Cancellation requested while enumerating items — aborting scan.")
-            return counts
-        try:
-            for item in processor.list_canonical_paths(
-                server_cfg,
-                library_ids=library_ids,
-                cancel_check=cancel_check,
-                progress_callback=progress_callback,
-            ):
-                all_items.append((server_cfg, item))
-                if cancel_check and cancel_check():
-                    logger.info("Cancellation requested mid-enumeration — aborting scan.")
-                    return counts
-        except Exception as exc:
-            logger.warning(
-                "Enumeration on {} server {!r} failed ({}: {}). Continuing with the next server in scope.",
-                server_cfg.type.value,
-                server_cfg.name or server_cfg.id,
-                type(exc).__name__,
-                exc,
-            )
+    all_items = _enumerate_items_for_servers(
+        candidates,
+        enumerate_one=lambda processor, server_cfg: processor.list_canonical_paths(
+            server_cfg,
+            library_ids=library_ids,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
+        ),
+        cancel_check=cancel_check,
+        label="full scan",
+    )
 
     if not all_items:
         logger.info(
@@ -520,8 +581,6 @@ def _run_recently_added_multi_server(
 
     Returns the aggregated ProcessingResult counts.
     """
-    from ..processing import get_processor_for
-
     counts = {r.value: 0 for r in ProcessingResult}
 
     registry = _build_multi_server_registry(config)
@@ -538,38 +597,17 @@ def _run_recently_added_multi_server(
         )
         return counts
 
-    all_items: list = []
-    for server_cfg in candidates:
-        try:
-            processor = get_processor_for(server_cfg.type)
-        except KeyError as exc:
-            logger.warning(
-                "No processor registered for {!r} ({}). Skipping this server.",
-                server_cfg.type,
-                exc,
-            )
-            continue
-        if cancel_check and cancel_check():
-            logger.info("Cancellation requested while enumerating recently-added items.")
-            return counts
-        try:
-            for item in processor.scan_recently_added(
-                server_cfg,
-                lookback_hours=int(max(1, lookback_hours)),
-                library_ids=library_ids,
-            ):
-                all_items.append((server_cfg, item))
-                if cancel_check and cancel_check():
-                    logger.info("Cancellation requested mid-recently-added scan.")
-                    return counts
-        except Exception as exc:
-            logger.warning(
-                "Recently-added scan on {} server {!r} failed ({}: {}). Continuing with the next server.",
-                server_cfg.type.value,
-                server_cfg.name or server_cfg.id,
-                type(exc).__name__,
-                exc,
-            )
+    lookback_int = int(max(1, lookback_hours))
+    all_items = _enumerate_items_for_servers(
+        candidates,
+        enumerate_one=lambda processor, server_cfg: processor.scan_recently_added(
+            server_cfg,
+            lookback_hours=lookback_int,
+            library_ids=library_ids,
+        ),
+        cancel_check=cancel_check,
+        label="recently-added scan",
+    )
 
     if not all_items:
         logger.info(

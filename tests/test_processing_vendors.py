@@ -227,15 +227,10 @@ class TestEmbyishRecentlyAdded:
         with patch("media_preview_generator.processing.emby.EmbyServer") as klass:
             instance = MagicMock()
             klass.return_value = instance
-            response = MagicMock()
-            response.raise_for_status.return_value = None
-            response.json.return_value = {
-                "Items": [
-                    {"Id": "i1", "Name": "Recent", "Path": "/r/recent.mkv", "DateCreated": recent_iso},
-                    {"Id": "i2", "Name": "Old", "Path": "/r/old.mkv", "DateCreated": old_iso},
-                ]
-            }
-            instance._request.return_value = response
+            instance.query_items.return_value = [
+                {"Id": "i1", "Name": "Recent", "Path": "/r/recent.mkv", "DateCreated": recent_iso},
+                {"Id": "i2", "Name": "Old", "Path": "/r/old.mkv", "DateCreated": old_iso},
+            ]
 
             items = list(proc.scan_recently_added(cfg, lookback_hours=24))
 

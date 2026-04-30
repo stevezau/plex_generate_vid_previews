@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 
+from ..plex_client import _build_episode_title, _extract_item_locations, retry_plex_call
 from ..servers.base import MediaServer, ServerConfig, ServerType
 from ..servers.plex import PlexServer
 from ._shared import _MediaServerProcessor
@@ -28,6 +29,7 @@ class PlexProcessor(_MediaServerProcessor):
     vendor_name = "Plex"
 
     def _make_client(self, server_config: ServerConfig) -> MediaServer:
+        """Return a :class:`PlexServer` instance bound to ``server_config``."""
         return PlexServer(server_config)
 
     def scan_recently_added(
@@ -40,14 +42,11 @@ class PlexProcessor(_MediaServerProcessor):
         """Walk Plex sections for items added in the last ``lookback_hours``.
 
         Uses the existing plexapi-flavoured ``section.search(filters=...)``
-        path with the same ``addedAt>>`` filter the legacy
-        :func:`web.recent_added_scanner.scan_recently_added` uses; falls
-        back to a sort-by-addedAt scan + client-side filter when the
-        filter syntax isn't supported (some plexapi/PMS combinations
-        reject it for certain section types).
+        path with the same ``addedAt>>`` filter the historical Plex-only
+        scanner used; falls back to a sort-by-addedAt scan + client-side
+        filter when the filter syntax isn't supported (some plexapi/PMS
+        combinations reject it for certain section types).
         """
-        from ..plex_client import _build_episode_title, _extract_item_locations, retry_plex_call
-
         client = PlexServer(server_config)
         try:
             plex = client._connect()  # noqa: SLF001 — sibling-module access by design

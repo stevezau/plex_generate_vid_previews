@@ -93,6 +93,36 @@ class EmbyApiClient(MediaServer):
             verify=verify,
         )
 
+    # ------------------------------------------------ Public query helpers
+    def query_items(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Run a parameterised ``GET /Items`` query and return the ``Items`` list.
+
+        Public counterpart to the private :meth:`_request` so callers in the
+        :mod:`processing` package don't need to reach across module boundaries
+        for the recently-added scan (``SortBy=DateCreated``) or any other
+        ad-hoc Items-endpoint query both Emby and Jellyfin share.
+
+        Returns the parsed ``Items`` array (empty list on transport failure;
+        the failure is logged so the caller can stay quiet on routine
+        outages without losing diagnostic signal).
+        """
+        try:
+            response = self._request("GET", "/Items", params=params)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001 — protocol contract is "empty list on failure"
+            logger.warning(
+                "Could not query /Items on {} server {!r} ({}: {}). "
+                "Returning empty list — verify the server is reachable and the token is valid.",
+                self.vendor_name,
+                self._config.name or self._config.id,
+                type(exc).__name__,
+                exc,
+            )
+            return []
+        items = payload.get("Items") if isinstance(payload, dict) else None
+        return items if isinstance(items, list) else []
+
     # ------------------------------------------------------------ MediaServer
     def test_connection(self) -> ConnectionResult:
         """Probe ``/System/Info`` for identity and credential validation."""

@@ -18,8 +18,6 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from loguru import logger
-
 from ..servers._embyish import EmbyApiClient
 from ..servers.base import ServerConfig
 from ._shared import _MediaServerProcessor
@@ -59,22 +57,10 @@ class _EmbyishProcessor(_MediaServerProcessor):
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
 
-        try:
-            response = client._request("GET", "/Items", params=params)  # noqa: SLF001 — sibling-module access by design
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not query recently-added items on {} server {!r}: {}. "
-                "This scheduled run will produce no items — verify the URL "
-                "and token, then try the next tick.",
-                self.vendor_name,
-                server_config.name or server_config.id,
-                exc,
-            )
-            return
-
-        for raw in payload.get("Items", []) or []:
+        # Public query helper introduced for this exact use case — no
+        # private-method reach-across required, errors logged at the
+        # client layer.
+        for raw in client.query_items(params):
             if not isinstance(raw, dict):
                 continue
             created_str = str(raw.get("DateCreated") or "")
