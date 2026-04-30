@@ -191,13 +191,21 @@ def _validate_plex_config(
                             has_standard_structure = len(found_standard) >= 1
 
                             if not has_hex_structure and not has_standard_structure:
-                                debug_info = [
-                                    "PLEX_CONFIG_FOLDER/Media/localhost exists but is empty.",
-                                    "Expected at least one hex directory (0-f) or standard Plex folder (Metadata, Cache, etc.).",
-                                    f"Found: {sorted(found_localhost_folders)}",
-                                    "Check that this path points to your Plex Media Server data directory.",
-                                ]
-                                validation_errors.append("\n".join(debug_info))
+                                # Downgraded from error to warning. A legitimately
+                                # fresh Plex install has an empty Media/localhost
+                                # until the first preview lands; the bundle adapter
+                                # creates dirs on demand. Hard-failing here also
+                                # blocked Emby/Jellyfin-only jobs on Plex+E/J
+                                # installs (the validator runs on every load_config
+                                # regardless of which servers the job targets).
+                                logger.warning(
+                                    "PLEX_CONFIG_FOLDER/Media/localhost is empty at {}. "
+                                    "If you actually have a Plex install you've been using, that's "
+                                    "suspicious — verify the path. If this is a fresh Plex (or you "
+                                    "intend to scan Emby/Jellyfin libraries only), this is harmless: "
+                                    "the bundle adapter will create dirs on demand.",
+                                    localhost_path,
+                                )
                         except PermissionError:
                             validation_errors.append(f"Permission denied reading localhost folder: {localhost_path}")
             except PermissionError:

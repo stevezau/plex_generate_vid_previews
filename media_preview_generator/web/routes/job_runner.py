@@ -670,6 +670,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                         if outcome:
                             not_found = outcome.get("skipped_file_not_found", 0)
                             generated = outcome.get("generated", 0)
+                            outcome_failed = outcome.get("failed", 0)
                             total_outcome = sum(outcome.values())
                             if not_found > 0 and generated == 0:
                                 if spawned_retry_id:
@@ -684,6 +685,22 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                         "skipped (file not found locally) — "
                                         "check path mapping configuration"
                                     )
+                                job_manager.add_log(job_id, f"WARNING - {msg}")
+                                error_parts.append(msg)
+                            # Per-item failures (FFmpeg crashes, adapter errors)
+                            # leave the job-level result as "completed" but the
+                            # item outcome counter records them. Surface them
+                            # so the UI badge reflects "all items failed" jobs
+                            # as Failed, not green-Completed.
+                            elif outcome_failed > 0 and generated == 0:
+                                msg = (
+                                    f"{outcome_failed} of {total_outcome} item(s) failed; "
+                                    "no previews were generated. Check the per-item logs above."
+                                )
+                                job_manager.add_log(job_id, f"WARNING - {msg}")
+                                error_parts.append(msg)
+                            elif outcome_failed > 0:
+                                msg = f"{outcome_failed} of {total_outcome} item(s) failed (others succeeded)."
                                 job_manager.add_log(job_id, f"WARNING - {msg}")
                                 error_parts.append(msg)
 
@@ -716,11 +733,19 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                                 and outcome.get("skipped_file_not_found", 0) > 0
                                 and not spawned_retry_id
                             )
+                            # Every processed item failed (FFmpeg crashed,
+                            # adapter errored, etc.) AND nothing was generated:
+                            # treat as hard failure so the UI shows a red badge
+                            # instead of green-Completed.
+                            all_items_failed = (
+                                outcome and outcome.get("generated", 0) == 0 and outcome.get("failed", 0) > 0
+                            )
                             nothing_resolved = total_paths > 0 and resolved_count == 0 and not spawned_retry_id
                             is_hard_failure = (
                                 bool(failures)
                                 or (is_retry and retry_paths and not spawned_retry_id)
                                 or all_not_found
+                                or all_items_failed
                                 or nothing_resolved
                             )
                             if is_hard_failure:

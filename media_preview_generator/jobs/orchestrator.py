@@ -727,20 +727,33 @@ def run_processing(
                 pinned_entry = None
             pinned_type = ((pinned_entry or {}).get("type") or "").lower()
 
-        # Multi-server full-library scan path — fires when:
-        #   * the job is pinned to a non-Plex server AND no webhook paths are
-        #     supplied (webhook-paths jobs always use the per-path dispatcher
-        #     below), OR
-        #   * no Plex is configured at all AND no webhook paths are supplied
-        #     (full-scan request on an Emby/Jellyfin-only install).
-        # Both cases delegate to _run_full_scan_multi_server which uses the
-        # per-vendor VendorProcessor + process_canonical_path. The Plex full-
-        # scan branch below also funnels into process_canonical_path via the
-        # dispatcher's per-vendor registry — no separate worker-pool surface.
+        # Full-library scan (no webhook paths) — choose between the legacy
+        # Plex-only path and the multi-server scan based on what's configured:
+        #
+        # * Pinned to a non-Plex server, OR no Plex at all → multi-server.
+        # * At least one non-Plex server enabled (Plex+Emby/Jellyfin install,
+        #   no pin) → multi-server, so Emby/Jellyfin libraries actually get
+        #   scanned. The legacy Plex-only branch drops non-Plex library IDs.
+        # * Single-Plex install (only Plex enabled) → legacy branch.
         no_webhook_paths = not getattr(config, "webhook_paths", None)
         non_plex_pin = pinned_type and pinned_type != "plex"
         no_plex_at_all = not (config.plex_url and config.plex_token)
-        if no_webhook_paths and (non_plex_pin or no_plex_at_all):
+        has_non_plex_server = False
+        try:
+            from ..web.settings_manager import get_settings_manager
+
+            _raw_for_check = get_settings_manager().get("media_servers") or []
+            has_non_plex_server = any(
+                isinstance(e, dict) and (e.get("type") or "").lower() in ("emby", "jellyfin") and e.get("enabled", True)
+                for e in _raw_for_check
+            )
+        except Exception:
+            has_non_plex_server = False
+
+        use_multi_server_scan = no_webhook_paths and (
+            non_plex_pin or no_plex_at_all or (not sid_filter and has_non_plex_server)
+        )
+        if use_multi_server_scan:
             library_ids = list(getattr(config, "plex_library_ids", None) or [])
             outcome_counts = _run_full_scan_multi_server(
                 config,
