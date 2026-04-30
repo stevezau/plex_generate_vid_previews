@@ -593,8 +593,10 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('step1Next').disabled = false;
         // Brief pause so the success state is visible, then auto-advance —
         // there's nothing else for the user to do on this step once Plex
-        // accepted them.
-        setTimeout(() => goToStep(2), 600);
+        // accepted them. Guard against the rare case where the user (or a
+        // test) clicked Next manually in the meantime — re-stepping back
+        // would snap them backward.
+        setTimeout(() => { if (currentStep === 1) goToStep(2); }, 600);
     }
 
     function onAuthError(error) {
@@ -745,7 +747,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 '<i class="bi bi-check-circle-fill me-1"></i>' +
                 'Connected&nbsp;&mdash;&nbsp;found ' + libraryCount + ' librar' +
                 (libraryCount === 1 ? 'y' : 'ies') + '. Loading libraries…';
-            setTimeout(() => goToStep(2), 600);
+            setTimeout(() => { if (currentStep === 1) goToStep(2); }, 600);
         } catch (err) {
             resultEl.className = 'small mt-2 text-danger';
             resultEl.textContent = 'Connection failed: ' + (err && err.message ? err.message : 'unknown error');
@@ -1148,7 +1150,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     '<div class="alert alert-warning mb-0">No GPUs detected.</div>';
             }
         } catch (error) {
-            alert('GPU rescan failed: ' + error.message);
+            if (typeof showToast === 'function') {
+                showToast('GPU rescan failed', error.message, 'danger');
+            }
         }
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs';
@@ -1178,7 +1182,9 @@ document.addEventListener('DOMContentLoaded', function() {
             goToStep(5);
 
         } catch (error) {
-            alert('Failed to save options: ' + error.message);
+            if (typeof showToast === 'function') {
+                showToast('Failed to save options', error.message, 'danger');
+            }
         }
 
         this.disabled = false;
@@ -1234,11 +1240,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data.success) {
                     window.location.href = '/servers';
                 } else {
-                    alert('Could not skip setup: ' + (data.error || 'Unknown error'));
+                    if (typeof showToast === 'function') {
+                        showToast('Could not skip setup', data.error || 'Unknown error', 'danger');
+                    }
                     this.disabled = false;
                 }
             } catch (err) {
-                alert('Could not skip setup: ' + (err && err.message ? err.message : 'Network error'));
+                if (typeof showToast === 'function') {
+                    showToast(
+                        'Could not skip setup',
+                        err && err.message ? err.message : 'Network error',
+                        'danger',
+                    );
+                }
                 this.disabled = false;
             }
         });

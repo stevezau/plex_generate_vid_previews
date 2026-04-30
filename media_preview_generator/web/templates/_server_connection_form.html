@@ -12,11 +12,13 @@
     <div class="mb-3">
         <label class="form-label">Server URL</label>
         <input type="text" id="serverUrl" class="form-control" placeholder="http://hostname:port" autocomplete="off">
+        <div class="invalid-feedback">Enter the server URL.</div>
         <div class="form-text">Examples: <code>http://emby.local:8096</code>, <code>http://192.168.1.10:32400</code></div>
     </div>
     <div class="mb-3">
         <label class="form-label">Display name</label>
         <input type="text" id="serverName" class="form-control" placeholder="e.g. Home Plex">
+        <div class="invalid-feedback">Give this server a name to recognise it later.</div>
     </div>
 
     <!-- Auth method picker (Emby / Jellyfin only) -->
@@ -36,6 +38,7 @@
         <div class="mb-2">
             <label class="form-label">Username</label>
             <input type="text" id="authUsername" class="form-control" autocomplete="username">
+            <div class="invalid-feedback">Enter the username.</div>
         </div>
         <div class="mb-2">
             <label class="form-label">Password</label>
@@ -47,6 +50,7 @@
         <div class="mb-2">
             <label class="form-label">API key</label>
             <input type="password" id="authApiKey" class="form-control" autocomplete="off">
+            <div class="invalid-feedback">Enter the API key.</div>
         </div>
     </div>
     <div id="auth-fields-quick-connect" class="d-none">
@@ -98,6 +102,7 @@
             <div class="mt-2">
                 <label class="form-label">Plex token</label>
                 <input type="password" id="plexToken" class="form-control" autocomplete="off">
+                <div class="invalid-feedback">Sign in with Plex above, or paste a token here.</div>
                 <div class="form-text">Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>.</div>
             </div>
         </details>
@@ -111,6 +116,12 @@
             </div>
         </div>
     </div>
+
+    {# Form-level error region — shown by servers.js when password/API-key
+       auth fails or any non-field error needs to surface inline (instead
+       of as a popup). Kept outside the auth-method panels so it's visible
+       regardless of which auth method is active. #}
+    <div id="connectFormError" class="alert alert-danger d-none mt-3" role="alert"></div>
 
     <div class="d-flex justify-content-between">
         <button type="button" class="btn btn-link" id="step-connect-back">← Back</button>

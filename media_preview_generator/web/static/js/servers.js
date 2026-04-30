@@ -30,6 +30,42 @@
         return { ok: r.ok, status: r.status, data };
     }
 
+    // ---------- inline form-validation helpers --------------------------------
+    // Centralised so popups never appear for form errors. Marking a field
+    // invalid relies on Bootstrap's `.is-invalid` + adjacent
+    // `.invalid-feedback` div pattern. Helpers also self-clear on input.
+    function markFieldInvalid(input, msg) {
+        if (!input) return;
+        input.classList.add('is-invalid');
+        // Override the static feedback message if one was provided.
+        const fb = input.parentElement && input.parentElement.querySelector('.invalid-feedback');
+        if (fb && msg) fb.textContent = msg;
+        // Re-clear once the user edits the field, so the red doesn't stick.
+        if (!input.dataset.invalidWired) {
+            input.addEventListener('input', () => input.classList.remove('is-invalid'), { once: true });
+            input.dataset.invalidWired = '1';
+        }
+        input.focus();
+    }
+
+    function clearFieldErrors(rootSelector) {
+        $$(`${rootSelector || '#step-connect'} .is-invalid`).forEach(el => el.classList.remove('is-invalid'));
+    }
+
+    function showFormError(msg, region) {
+        const el = $(region || '#connectFormError');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.remove('d-none');
+    }
+
+    function clearFormError(region) {
+        const el = $(region || '#connectFormError');
+        if (!el) return;
+        el.classList.add('d-none');
+        el.textContent = '';
+    }
+
     // ---------- list rendering -------------------------------------------------
     async function loadServers() {
         const list = $('#serverList');
@@ -52,7 +88,7 @@
                 if (!confirm(`Delete media server "${name}"? This does not remove any files on disk.`)) return;
                 const r = await api('DELETE', `/api/servers/${encodeURIComponent(id)}`);
                 if (r.ok) loadServers();
-                else alert(`Failed to delete: ${(r.data && r.data.error) || r.status}`);
+                else showToast('Delete failed', `${(r.data && r.data.error) || r.status}`, 'danger');
             });
         });
         $$('.edit-server-btn').forEach((btn) => {
@@ -73,7 +109,7 @@
                 const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/refresh-libraries`);
                 if (r.ok) loadServers();
                 else {
-                    alert(`Failed to refresh: ${(r.data && r.data.error) || r.status}`);
+                    showToast('Refresh failed', `${(r.data && r.data.error) || r.status}`, 'danger');
                     target.disabled = false;
                     target.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries';
                 }
@@ -99,7 +135,7 @@
                     }, 2000);
                 } else {
                     const msg = (r.data && (r.data.error || JSON.stringify(r.data.results))) || r.status;
-                    alert(`Failed to enable trickplay extraction: ${msg}`);
+                    showToast('Trickplay fix failed', String(msg), 'danger');
                     target.innerHTML = original;
                     target.disabled = false;
                 }
@@ -323,7 +359,7 @@
                 let data = null;
                 try { data = await r.json(); } catch (_) { /* */ }
                 if (!r.ok || !data || !data.servers) {
-                    alert('Could not list Plex servers from plex.tv');
+                    showFormError('Could not list Plex servers from plex.tv. Try the manual token option below.');
                     btn.disabled = false;
                     btn.innerHTML = origLabel;
                     return;
@@ -334,7 +370,7 @@
             },
             onError: (err) => {
                 console.error('Plex OAuth failed', err);
-                alert('Plex OAuth failed: ' + (err.message || err));
+                showFormError('Plex OAuth failed: ' + (err.message || err));
                 btn.disabled = false;
                 btn.innerHTML = origLabel;
             },
@@ -350,7 +386,7 @@
             await auth.pollForToken(pin.id);
         } catch (err) {
             console.error('Plex OAuth flow error', err);
-            alert('Plex OAuth flow error: ' + (err.message || err));
+            showFormError('Plex OAuth flow error: ' + (err.message || err));
             btn.disabled = false;
             btn.innerHTML = origLabel;
         }
@@ -470,8 +506,11 @@
                 loadServers();
             }
         } else {
-            alert(`Saved ${results.length - failed.length}/${results.length}; failures:\n` +
-                  failed.map((f) => `${f.name}: ${f.message || 'unknown error'}`).join('\n'));
+            showToast(
+                `Saved ${results.length - failed.length}/${results.length}`,
+                failed.map((f) => `${f.name}: ${f.message || 'unknown error'}`).join('; '),
+                'warning',
+            );
             if (typeof loadServers === 'function' && document.getElementById('serverList')) {
                 loadServers();
             }
@@ -511,7 +550,7 @@
 
     async function startQuickConnect() {
         const url = $('#serverUrl').value.trim();
-        if (!url) { alert('Enter the Jellyfin URL first.'); return; }
+        if (!url) { markFieldInvalid($('#serverUrl'), 'Enter the Jellyfin URL first.'); return; }
         const r = await api('POST', '/api/servers/auth/jellyfin/quick-connect/initiate', { url });
         if (!r.ok || !r.data || !r.data.ok) {
             $('#quickConnectCode').classList.remove('d-none');
@@ -549,13 +588,21 @@
     }
 
     async function testConnection() {
+        clearFieldErrors('#step-connect');
+        clearFormError();
         wizard.url = $('#serverUrl').value.trim();
         wizard.name = $('#serverName').value.trim();
-        if (!wizard.url || !wizard.name) { alert('Enter a URL and a display name.'); return; }
+        let firstBad = null;
+        if (!wizard.url) { markFieldInvalid($('#serverUrl')); firstBad = $('#serverUrl'); }
+        if (!wizard.name) {
+            markFieldInvalid($('#serverName'));
+            if (!firstBad) firstBad = $('#serverName');
+        }
+        if (firstBad) { firstBad.focus(); return; }
 
         // Build auth based on method.
         const auth = await buildAuth();
-        if (!auth) return;  // helper already alerted
+        if (!auth) return;  // helper already surfaced an inline error
 
         const payload = {
             type: wizard.type,
@@ -626,24 +673,33 @@
         if (wizard.type === 'plex') {
             // Prefer the OAuth-derived token when present; fall back to manual.
             const tok = wizard.plexToken || $('#plexToken').value.trim();
-            if (!tok) { alert('Plex token required (sign in with Plex or paste a token).'); return null; }
+            if (!tok) {
+                markFieldInvalid($('#plexToken'), 'Sign in with Plex or paste a token.');
+                return null;
+            }
             return { method: 'token', token: tok };
         }
         if (wizard.authMethod === 'api_key') {
             const k = $('#authApiKey').value.trim();
-            if (!k) { alert('API key required.'); return null; }
+            if (!k) { markFieldInvalid($('#authApiKey')); return null; }
             return { method: 'api_key', api_key: k };
         }
         if (wizard.authMethod === 'password') {
             const u = $('#authUsername').value.trim();
             const p = $('#authPassword').value;
-            if (!u) { alert('Username required.'); return null; }
+            if (!u) { markFieldInvalid($('#authUsername')); return null; }
             const endpoint = wizard.type === 'jellyfin'
                 ? '/api/servers/auth/jellyfin/password'
                 : '/api/servers/auth/emby/password';
             const r = await api('POST', endpoint, { url: wizard.url, username: u, password: p });
             if (!r.ok || !r.data || !r.data.ok) {
-                alert((r.data && r.data.message) || 'Authentication failed');
+                // Common cause: wrong URL (or URL unreachable from this
+                // container — e.g. user typed `http://localhost:8096` but
+                // Jellyfin is on a docker bridge). The backend message is
+                // usually specific enough; pass it through verbatim.
+                const msg = (r.data && r.data.message)
+                    || `Authentication failed (HTTP ${r.status}). Check the username, password, and that the URL is reachable from this container.`;
+                showFormError(msg);
                 return null;
             }
             return {
@@ -654,7 +710,7 @@
         }
         if (wizard.authMethod === 'quick_connect') {
             if (!wizard.accessToken) {
-                alert('Complete Quick Connect first.');
+                showFormError('Complete Quick Connect first — open Jellyfin and approve the code shown above.');
                 return null;
             }
             return {
@@ -668,7 +724,10 @@
 
     async function saveServer() {
         const payload = wizard._lastTestPayload;
-        if (!payload) { alert('No test payload — go back and run a connection test first.'); return; }
+        if (!payload) {
+            showToast('Run the connection test first', 'Use the Test connection button before saving.', 'warning');
+            return;
+        }
         const r = await api('POST', '/api/servers', payload);
         if (r.ok) {
             // Modal only exists on /servers; /setup inlines the form.
@@ -687,7 +746,8 @@
                 loadServers();
             }
         } else {
-            alert(`Failed to save: ${(r.data && r.data.error) || r.status}`);
+            const msg = (r.data && r.data.error) || `HTTP ${r.status}`;
+            showFormError(`Failed to save server: ${msg}`);
         }
     }
 
@@ -707,7 +767,7 @@
             api('GET', '/api/servers'),
         ]);
         if (!singleR.ok || !singleR.data) {
-            alert(`Failed to load server: ${singleR.status}`);
+            showToast('Failed to load server', `HTTP ${singleR.status}`, 'danger');
             return;
         }
         const server = singleR.data;
@@ -1042,7 +1102,7 @@
         const { server, allServers } = _editState;
         const others = allServers.filter((s) => s.id !== server.id);
         if (!others.length) {
-            alert('No other servers configured — nothing to copy to.');
+            showToast('Nothing to copy', 'No other servers are configured.', 'info');
             return;
         }
         const value = valueProducer();
@@ -1077,7 +1137,7 @@
         try {
             const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/refresh-libraries`);
             if (!r.ok) {
-                alert(`Failed to refresh: ${(r.data && r.data.error) || r.status}`);
+                showToast('Refresh failed', `${(r.data && r.data.error) || r.status}`, 'danger');
                 return;
             }
             // Re-fetch the server payload so the Libraries tab repaints with

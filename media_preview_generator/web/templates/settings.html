@@ -277,6 +277,24 @@
                     <i class="bi bi-arrow-repeat me-1"></i>Regenerate Token
                 </button>
 
+                {# Holds the freshly-regenerated token until the user copies it.
+                   Shown by regenerateToken() instead of an alert() popup —
+                   this stays visible (and selectable) until the explicit
+                   "I've copied it, log me out" button is clicked. #}
+                <div id="newTokenPanel" class="alert alert-success d-none mt-3" role="alert">
+                    <h6 class="alert-heading mb-2"><i class="bi bi-check-circle-fill me-1"></i>New token generated</h6>
+                    <p class="small mb-2">Copy this token now — it&rsquo;s the only time it&rsquo;s shown.</p>
+                    <div class="input-group input-group-sm mb-2">
+                        <input type="text" id="newTokenValue" class="form-control font-monospace" readonly>
+                        <button type="button" class="btn btn-outline-secondary" id="newTokenCopyBtn">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </div>
+                    <button type="button" class="btn btn-danger btn-sm" id="newTokenLogoutBtn">
+                        I&rsquo;ve copied it &mdash; log me out
+                    </button>
+                </div>
+
                 <div class="form-text mt-2">
                     Warning: Either action logs out all current sessions.
                 </div>
@@ -585,13 +603,29 @@ async function regenerateToken() {
         const data = await response.json();
 
         if (data.success) {
-            alert('Token regenerated. New token: ' + data.token + '\n\nYou will now be logged out.');
-            window.location.href = '/login';
+            // Show the new token inline (selectable + with a copy button)
+            // instead of a popup that disappears on dismiss. The user has
+            // to explicitly click "log me out" once they've copied it.
+            const panel = document.getElementById('newTokenPanel');
+            document.getElementById('newTokenValue').value = data.token;
+            panel.classList.remove('d-none');
+            panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            document.getElementById('newTokenCopyBtn').onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(data.token);
+                    showToast('Copied', 'New token copied to clipboard.', 'success');
+                } catch (_) {
+                    document.getElementById('newTokenValue').select();
+                }
+            };
+            document.getElementById('newTokenLogoutBtn').onclick = () => {
+                window.location.href = '/login';
+            };
         } else {
-            showToast('Failed to regenerate token: ' + data.error, 'danger');
+            showToast('Failed to regenerate token', data.error || 'Unknown error', 'danger');
         }
     } catch (error) {
-        showToast('Failed to regenerate token', 'danger');
+        showToast('Failed to regenerate token', 'Network error', 'danger');
     }
 }
 
@@ -635,7 +669,8 @@ async function setCustomToken() {
         });
         const data = await response.json();
         if (data.success) {
-            alert('Token updated. You will now be logged out — log back in with the new token.');
+            // No popup — they entered the new token themselves and the
+            // login screen confirms it worked. Just redirect.
             window.location.href = '/login';
         } else {
             result.classList.add('text-danger');
