@@ -25,13 +25,76 @@ def _get_plex_config_folder() -> str:
     return get_settings_manager().plex_config_folder or "/plex"
 
 
+def _allowed_bif_roots() -> list[str]:
+    """Every directory the BIF viewer is allowed to read .bif files from.
+
+    Multi-server installs put BIFs in two distinct places:
+
+    * Plex bundle BIFs under ``plex_config_folder/Media/localhost/...``.
+    * Emby sidecar BIFs next to the source media file (``<title>-320-5.bif``)
+      — these live under each Emby/Jellyfin server's per-library
+      ``remote_paths``, translated to local-filesystem paths via the
+      server's ``path_mappings``.
+
+    Returns a list of normalised absolute roots; the validator accepts
+    any path that lives under at least one of them.
+    """
+    from ..settings_manager import get_settings_manager
+
+    roots: set[str] = set()
+    plex_root = (get_settings_manager().plex_config_folder or "").strip()
+    if plex_root:
+        roots.add(os.path.normpath(plex_root))
+
+    try:
+        for entry in get_settings_manager().get("media_servers") or []:
+            if not isinstance(entry, dict) or entry.get("enabled") is False:
+                continue
+            mappings = entry.get("path_mappings") or []
+            local_prefixes = {
+                str(m.get("local_prefix") or "").strip()
+                for m in mappings
+                if isinstance(m, dict) and m.get("local_prefix")
+            }
+            for lib in entry.get("libraries") or []:
+                if not isinstance(lib, dict) or lib.get("enabled") is False:
+                    continue
+                for remote in lib.get("remote_paths") or []:
+                    remote = str(remote or "").strip()
+                    if not remote:
+                        continue
+                    # Best-effort: translate via the server's path_mappings
+                    # if any prefix matches; otherwise accept the remote
+                    # path as-is (covers same-host installs).
+                    translated = remote
+                    for m in mappings:
+                        if not isinstance(m, dict):
+                            continue
+                        rp = str(m.get("remote_prefix") or "").strip()
+                        lp = str(m.get("local_prefix") or "").strip()
+                        if rp and lp and (remote == rp or remote.startswith(rp.rstrip("/") + "/")):
+                            translated = lp.rstrip("/") + remote[len(rp.rstrip("/")) :]
+                            break
+                    roots.add(os.path.normpath(translated))
+                    # Also add bare local prefixes so anything under them
+                    # (not just the specific library subdir) is reachable.
+                    for lp in local_prefixes:
+                        roots.add(os.path.normpath(lp))
+    except Exception as exc:
+        logger.debug("BIF viewer: failed to enumerate media_server roots: {}", exc)
+
+    return [r for r in roots if r and r != "."]
+
+
 def _validate_bif_path(user_path: str) -> str | None:
     """Validate a user-provided BIF path without resolving symlinks.
 
     Uses ``os.path.normpath`` (not ``realpath``) so Docker bind-mounts
     and Plex symlink trees are preserved.  Path-traversal is blocked by
     verifying no ``..`` segments remain after normalisation and that the
-    result starts with the configured Plex config folder.
+    result lives under one of the allow-listed roots — the Plex config
+    folder OR any configured media server's library local paths (so
+    Emby sidecar BIFs next to media are inspectable too).
 
     Returns the normalised absolute path when valid, or ``None``.
     """
@@ -50,9 +113,13 @@ def _validate_bif_path(user_path: str) -> str | None:
         logger.debug("BIF path rejected: contains traversal: {}", normalized)
         return None
 
-    allowed_root = os.path.normpath(_get_plex_config_folder())
-    if not (normalized == allowed_root or normalized.startswith(allowed_root + os.sep)):
-        logger.debug("BIF path rejected: not under plex config folder (path={}, root={})", normalized, allowed_root)
+    allowed_roots = _allowed_bif_roots()
+    if not any(normalized == root or normalized.startswith(root + os.sep) for root in allowed_roots):
+        logger.debug(
+            "BIF path rejected: not under any allowed root (path={}, roots={})",
+            normalized,
+            allowed_roots,
+        )
         return None
 
     if not os.path.isfile(normalized):
