@@ -63,15 +63,19 @@
         });
         $$('.refresh-libraries-btn').forEach((btn) => {
             btn.addEventListener('click', async (ev) => {
-                const id = ev.currentTarget.dataset.id;
-                ev.currentTarget.disabled = true;
-                ev.currentTarget.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Refreshing…';
+                // Capture the button before await — `ev.currentTarget` is
+                // nulled once the event handler returns, which happens at
+                // the first await suspension.
+                const target = ev.currentTarget;
+                const id = target.dataset.id;
+                target.disabled = true;
+                target.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Refreshing…';
                 const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/refresh-libraries`);
                 if (r.ok) loadServers();
                 else {
                     alert(`Failed to refresh: ${(r.data && r.data.error) || r.status}`);
-                    ev.currentTarget.disabled = false;
-                    ev.currentTarget.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries';
+                    target.disabled = false;
+                    target.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries';
                 }
             });
         });
@@ -81,22 +85,23 @@
             // actually serves the trickplay sidecars we publish. Idempotent
             // — safe to click twice.
             btn.addEventListener('click', async (ev) => {
-                const id = ev.currentTarget.dataset.id;
-                const original = ev.currentTarget.innerHTML;
-                ev.currentTarget.disabled = true;
-                ev.currentTarget.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
+                const target = ev.currentTarget;
+                const id = target.dataset.id;
+                const original = target.innerHTML;
+                target.disabled = true;
+                target.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
                 const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/jellyfin/fix-trickplay`);
                 if (r.ok && r.data && r.data.ok) {
-                    ev.currentTarget.innerHTML = '<i class="bi bi-check2 me-1"></i>Fixed';
+                    target.innerHTML = '<i class="bi bi-check2 me-1"></i>Fixed';
                     setTimeout(() => {
-                        ev.currentTarget.innerHTML = original;
-                        ev.currentTarget.disabled = false;
+                        target.innerHTML = original;
+                        target.disabled = false;
                     }, 2000);
                 } else {
                     const msg = (r.data && (r.data.error || JSON.stringify(r.data.results))) || r.status;
                     alert(`Failed to enable trickplay extraction: ${msg}`);
-                    ev.currentTarget.innerHTML = original;
-                    ev.currentTarget.disabled = false;
+                    target.innerHTML = original;
+                    target.disabled = false;
                 }
             });
         });

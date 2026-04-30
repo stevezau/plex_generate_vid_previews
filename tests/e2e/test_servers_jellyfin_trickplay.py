@@ -53,11 +53,26 @@ class TestJellyfinTrickplayFix:
 
         # If the JS surfaces a "Fix trickplay" button anywhere on this card,
         # click it. (Different builds bury it under different parents.)
-        fix_btn = authed_page.locator('button:has-text("Fix trickplay")').first
+        # Locate by class — the button text changes to "Fixed" after the
+        # successful POST, and a text-based locator would lose its target.
+        fix_btn = authed_page.locator(".fix-trickplay-btn").first
         if fix_btn.count() == 0:
             pytest.skip("Fix trickplay button not surfaced for this server status shape")
+        # Capture console errors so we catch regressions like the
+        # `Cannot set properties of null (setting 'innerHTML')` crash that
+        # happened when the handler used `ev.currentTarget` after `await`.
+        errors: list[str] = []
+        authed_page.on(
+            "console",
+            lambda msg: errors.append(msg.text) if msg.type == "error" else None,
+        )
         # Handler may pop a confirm dialog before firing the POST.
         authed_page.on("dialog", lambda d: d.accept())
         fix_btn.click()
         authed_page.wait_for_timeout(800)
         assert called, "POST /api/servers/<id>/jellyfin/fix-trickplay never fired"
+        # After the POST, the JS should swap the button copy to "Fixed".
+        # If currentTarget was lost mid-await this assignment would have
+        # thrown and the text would still read "Fix trickplay".
+        expect(fix_btn).to_contain_text("Fixed", timeout=2000)
+        assert not errors, f"console errors during trickplay fix: {errors}"
