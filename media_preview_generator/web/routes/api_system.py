@@ -1573,11 +1573,21 @@ def get_libraries():
         plex_url = request.args.get("url")
         plex_token = request.args.get("token")
         verify_ssl = _param_to_bool(request.args.get("verify_ssl"), settings.plex_verify_ssl)
-        # When no overrides AND no Plex configured, aggregate across all
-        # media servers — this is what the Schedules picker wants when the
-        # user hasn't selected a specific server yet.
-        if not plex_url and not plex_token and not settings.plex_url:
-            return jsonify({"libraries": _libraries_for_all_configured_servers()})
+        # No explicit overrides → aggregate across every configured server
+        # (Plex + Emby + Jellyfin). The dashboard and Start-Job modal both
+        # call /api/libraries with no params and expect the full list. The
+        # old "Plex-only when Plex is configured" path silently dropped
+        # Emby/Jellyfin libraries — see api_system.py:1579.
+        #
+        # The legacy single-Plex install (``plex_url``/``plex_token`` set
+        # but ``media_servers`` empty) falls through to the Plex-only
+        # branch below so existing behaviour is preserved.
+        if not plex_url and not plex_token:
+            raw_servers = settings.get("media_servers") or []
+            if isinstance(raw_servers, list) and raw_servers:
+                return jsonify({"libraries": _libraries_for_all_configured_servers()})
+            if not settings.plex_url:
+                return jsonify({"libraries": _libraries_for_all_configured_servers()})
 
         # Track whether explicit overrides were provided (setup wizard)
         has_overrides = bool(plex_url or plex_token)

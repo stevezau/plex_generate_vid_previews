@@ -3326,7 +3326,13 @@ class TestLibraryCache:
 
     @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
     def test_cache_invalidated_on_plex_url_change(self, mock_fetch, client):
-        """Saving a new plex_url clears the library cache."""
+        """Saving a new plex_url clears the library cache.
+
+        Uses the explicit ``?url=&token=`` path so we exercise the cached
+        Plex HTTP fetch (the no-args path now aggregates across all
+        configured servers — see api_system.py:1579 — so it doesn't go
+        through ``_fetch_libraries_via_http`` at all).
+        """
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
@@ -3334,7 +3340,10 @@ class TestLibraryCache:
         sm.set("plex_token", "test-token")
         mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
 
-        client.get("/api/libraries", headers=_api_headers())
+        client.get(
+            "/api/libraries?url=http://plex:32400&token=test-token",
+            headers=_api_headers(),
+        )
         assert mock_fetch.call_count == 1
 
         # Changing plex_url should invalidate the cache
@@ -3343,7 +3352,10 @@ class TestLibraryCache:
             headers=_api_headers(),
             json={"plex_url": "http://new-plex:32400"},
         )
-        client.get("/api/libraries", headers=_api_headers())
+        client.get(
+            "/api/libraries?url=http://new-plex:32400&token=test-token",
+            headers=_api_headers(),
+        )
         assert mock_fetch.call_count == 2
 
 
