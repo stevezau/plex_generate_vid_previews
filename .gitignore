@@ -60,3 +60,7 @@ servers-add-emby.png
 setup-step1-fixed.png
 setup-step1-full.png
 setup-step1.png
+# Ad-hoc screenshots from Playwright UI verification — keep local only.
+# Real docs screenshots should live under docs/ and be added explicitly.
+*.png
+!docs/**/*.png
