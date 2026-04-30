@@ -843,7 +843,10 @@ def _resolve_plex_paths_from_rating_key(
         return [], None
 
     try:
-        config = load_config()
+        # log_validation_errors=False — the warning below is the
+        # user-facing message; the ❌ Configuration Error preamble
+        # would just duplicate it on every Plex webhook fire.
+        config = load_config(log_validation_errors=False)
     except Exception as exc:
         logger.warning(
             "Plex webhook lookup: could not load the app's saved settings ({}: {}). "
