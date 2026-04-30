@@ -44,8 +44,11 @@ from pathlib import Path
 
 from loguru import logger
 
-_DEFAULT_TTL_SECONDS = 600  # 10 minutes — covers typical webhook-storm window
-_DEFAULT_MAX_ENTRIES = 32
+_DEFAULT_TTL_SECONDS = 3600  # 1 hour — covers cross-vendor webhook arrivals (e.g. Plex
+# fires immediately, Jellyfin fires 15-30 min later for the same file once the user has
+# both servers configured). Tunable via the ``frame_reuse`` block in settings.json.
+_DEFAULT_MAX_ENTRIES = 1024  # generous; the disk cap below is the real backstop
+_DEFAULT_MAX_DISK_MB = 2048  # 2 GB ceiling on the on-disk cache
 
 
 @dataclass(frozen=True)
@@ -77,11 +80,13 @@ class FrameCache:
         *,
         max_entries: int = _DEFAULT_MAX_ENTRIES,
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+        max_disk_mb: int = _DEFAULT_MAX_DISK_MB,
     ) -> None:
         self._base_dir = Path(base_dir)
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._max_entries = int(max_entries)
         self._ttl_seconds = int(ttl_seconds)
+        self._max_disk_bytes = int(max_disk_mb) * 1024 * 1024
         self._lock = threading.RLock()
         # ordered insertion: oldest first; values are CacheEntry.
         self._entries: dict[str, CacheEntry] = {}
@@ -146,12 +151,17 @@ class FrameCache:
 
             now = time.time()
             if now - entry.cached_at > self._ttl_seconds:
-                logger.debug("Frame cache: TTL expired for {}", canonical_path)
+                logger.info(
+                    "Frame cache miss: TTL expired for {} (age {:.0f}s, ttl {}s) — will re-extract",
+                    canonical_path,
+                    now - entry.cached_at,
+                    self._ttl_seconds,
+                )
                 self._evict(key)
                 return None
 
             if not entry.frame_dir.is_dir():
-                logger.debug("Frame cache: dir missing for {}; evicting", canonical_path)
+                logger.info("Frame cache miss: cache dir gone for {}; will re-extract", canonical_path)
                 self._evict(key)
                 return None
 
@@ -159,14 +169,14 @@ class FrameCache:
                 current_mtime = os.path.getmtime(canonical_path)
             except OSError:
                 # Source file disappeared — invalidate the entry.
-                logger.debug("Frame cache: source file missing for {}; evicting", canonical_path)
+                logger.info("Frame cache miss: source file no longer at {}; evicting", canonical_path)
                 self._evict(key)
                 return None
 
             # Tolerate a sub-second mtime drift (some filesystems round).
             if abs(current_mtime - entry.source_mtime) > 1.0:
-                logger.debug(
-                    "Frame cache: mtime changed for {} (cached {} != current {}); evicting",
+                logger.info(
+                    "Frame cache miss: source changed for {} (mtime {} → {}); will re-extract",
                     canonical_path,
                     entry.source_mtime,
                     current_mtime,
@@ -211,7 +221,7 @@ class FrameCache:
         with self._lock:
             self._entries.pop(key, None)
             self._entries[key] = entry
-            self._enforce_max_entries()
+            self._enforce_caps()
         return entry
 
     def invalidate(self, canonical_path: str) -> None:
@@ -245,13 +255,55 @@ class FrameCache:
         except OSError as exc:
             logger.debug("Frame cache: failed to rmtree {}: {}", entry.frame_dir, exc)
 
-    def _enforce_max_entries(self) -> None:
-        """Trim oldest entries until len <= max_entries. Caller holds the lock."""
+    def _enforce_caps(self) -> None:
+        """Trim oldest entries until under both caps. Caller holds the lock.
+
+        Two caps:
+        * ``max_entries`` — hard ceiling on number of in-memory entries.
+        * ``max_disk_bytes`` — total bytes used by cached frame directories.
+          The disk cap is the realistic backstop for long-TTL operation
+          on a large library; without it the cache would grow unbounded
+          when ``ttl_seconds`` is set to multiple hours.
+        """
+        # Entry-count cap.
         while len(self._entries) > self._max_entries:
-            # dict preserves insertion order (Python 3.7+) so the first
-            # key is the oldest.
             oldest_key = next(iter(self._entries))
             self._evict(oldest_key)
+
+        # Disk-size cap. Walk MRU order (insertion-oldest first) and
+        # drop until we're under the limit. Stat failures are skipped
+        # — the entry stays, but the count may be slightly off until
+        # the next put. Cheaper than locking on disk I/O for every
+        # eviction decision.
+        if self._max_disk_bytes <= 0 or not self._entries:
+            return
+
+        def _entry_size(entry: CacheEntry) -> int:
+            try:
+                total = 0
+                for child in entry.frame_dir.iterdir():
+                    try:
+                        total += child.stat().st_size
+                    except OSError:
+                        continue
+                return total
+            except OSError:
+                return 0
+
+        # Iterate in insertion order (oldest first); evict until under cap.
+        # Build the size list once to avoid re-statting after each eviction.
+        # Always keep at least the most recently inserted entry — the user
+        # just paid for that extraction; evicting it on the same put would
+        # leave them with nothing and force a re-extract on the next get.
+        sizes = {key: _entry_size(entry) for key, entry in self._entries.items()}
+        total = sum(sizes.values())
+        keys_in_order = list(self._entries.keys())
+        for key in keys_in_order[:-1]:  # skip the most recent entry
+            if total <= self._max_disk_bytes:
+                break
+            sz = sizes.get(key, 0)
+            self._evict(key)
+            total -= sz
 
 
 # Singleton accessor so the dispatcher and the worker pool share one cache.
@@ -259,19 +311,57 @@ _singleton: FrameCache | None = None
 _singleton_lock = threading.Lock()
 
 
+def _read_frame_reuse_setting() -> tuple[int, int]:
+    """Return ``(ttl_seconds, max_disk_mb)`` from the user's ``frame_reuse`` block.
+
+    Defaults: 1 hour TTL, 2 GB disk cap. When ``enabled`` is False the TTL
+    falls back to the legacy 600s value to preserve pre-v? behaviour for
+    users who explicitly opt out of cross-server reuse. Settings access is
+    best-effort — if the manager isn't reachable (e.g. early-boot test
+    contexts), we return defaults rather than crashing the cache.
+    """
+    try:
+        from ..web.settings_manager import get_settings_manager
+
+        block = get_settings_manager().get("frame_reuse") or {}
+    except Exception:
+        return _DEFAULT_TTL_SECONDS, _DEFAULT_MAX_DISK_MB
+
+    if not isinstance(block, dict):
+        return _DEFAULT_TTL_SECONDS, _DEFAULT_MAX_DISK_MB
+
+    enabled = bool(block.get("enabled", True))
+    if not enabled:
+        # Legacy short-window behaviour for users who opt out of
+        # cross-vendor reuse. Same disk cap regardless so unbounded
+        # disk consumption can't slip through.
+        return 600, int(block.get("max_cache_disk_mb", _DEFAULT_MAX_DISK_MB) or _DEFAULT_MAX_DISK_MB)
+
+    ttl_min = int(block.get("ttl_minutes", 60) or 60)
+    ttl_min = max(1, ttl_min)  # clamp pathological 0
+    max_disk = int(block.get("max_cache_disk_mb", _DEFAULT_MAX_DISK_MB) or _DEFAULT_MAX_DISK_MB)
+    max_disk = max(64, max_disk)  # don't let users shoot themselves in the foot
+    return ttl_min * 60, max_disk
+
+
 def get_frame_cache(
     *,
     base_dir: str | Path | None = None,
     max_entries: int = _DEFAULT_MAX_ENTRIES,
-    ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+    ttl_seconds: int | None = None,
+    max_disk_mb: int | None = None,
 ) -> FrameCache:
     """Return the process-wide :class:`FrameCache` (lazily constructed).
 
-    First call with a non-default arg decides that arg. Subsequent
-    calls with a *different* non-default value raise so the caller
-    notices instead of silently writing into a stale location.
-    Tests reset via :func:`reset_frame_cache` to bypass this guard
-    when they intentionally swap the cache out.
+    On first construction we read the ``frame_reuse`` settings block to
+    seed the TTL + disk cap. Explicit ``ttl_seconds`` / ``max_disk_mb``
+    arguments override the setting (used by tests that need a known
+    value).
+
+    First call with a non-default ``base_dir`` decides that arg.
+    Subsequent calls with a *different* non-default value raise so the
+    caller notices instead of silently writing into a stale location.
+    Tests reset via :func:`reset_frame_cache` to bypass this guard.
     """
     global _singleton
     with _singleton_lock:
@@ -282,10 +372,14 @@ def get_frame_cache(
                 import tempfile
 
                 base_dir = os.path.join(tempfile.gettempdir(), "plex-previews-frame-cache")
+            settings_ttl, settings_disk = _read_frame_reuse_setting()
+            effective_ttl = settings_ttl if ttl_seconds is None else int(ttl_seconds)
+            effective_disk = settings_disk if max_disk_mb is None else int(max_disk_mb)
             _singleton = FrameCache(
                 base_dir=base_dir,
                 max_entries=max_entries,
-                ttl_seconds=ttl_seconds,
+                ttl_seconds=effective_ttl,
+                max_disk_mb=effective_disk,
             )
             return _singleton
 

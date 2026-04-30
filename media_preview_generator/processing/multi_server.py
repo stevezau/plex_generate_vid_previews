@@ -75,7 +75,15 @@ class MultiServerStatus(str, Enum):
 
 @dataclass
 class PublisherResult:
-    """Outcome of a single (server, adapter) publish attempt."""
+    """Outcome of a single (server, adapter) publish attempt.
+
+    ``frame_source`` records where the frames used by this publisher came
+    from — independent of the publish ``status``. The Job UI surfaces this
+    so users can tell whether one webhook was reused across multiple
+    servers ("cache_hit") or whether the publisher's own output was
+    already on disk ("output_existed") or whether FFmpeg actually ran
+    just for this dispatch ("extracted").
+    """
 
     server_id: str
     server_name: str
@@ -83,6 +91,7 @@ class PublisherResult:
     status: PublisherStatus
     output_paths: list[Path] = field(default_factory=list)
     message: str = ""
+    frame_source: str = "extracted"  # one of: "extracted", "cache_hit", "output_existed"
 
 
 @dataclass
@@ -259,6 +268,7 @@ def _publish_one(
     item_id: str | None,
     *,
     skip_if_exists: bool,
+    frame_source: str = "extracted",
 ) -> PublisherResult:
     """Run one publisher; convert *expected* failures into a :class:`PublisherResult`.
 
@@ -267,6 +277,11 @@ def _publish_one(
     (AttributeError, AssertionError, etc.) propagate so genuine bugs
     surface as test failures or 5xx responses instead of silently
     becoming a per-publisher ``FAILED`` row.
+
+    ``frame_source`` records where the frames in ``bundle`` came from and
+    is forwarded onto the result for UI display. The skip-if-exists path
+    overrides this with ``"output_existed"`` because in that branch the
+    publisher didn't need any frames at all.
     """
     try:
         output_paths = adapter.compute_output_paths(bundle, server, item_id)
@@ -277,6 +292,7 @@ def _publish_one(
             adapter_name=adapter.name,
             status=PublisherStatus.SKIPPED_NOT_INDEXED,
             message=str(exc),
+            frame_source=frame_source,
         )
     except (TypeError, ValueError, OSError, RuntimeError, requests.RequestException) as exc:
         logger.warning(
@@ -292,6 +308,7 @@ def _publish_one(
             adapter_name=adapter.name,
             status=PublisherStatus.FAILED,
             message=f"Could not compute output paths: {exc}",
+            frame_source=frame_source,
         )
 
     # Skip when every output exists AND the journal proves the source
@@ -308,6 +325,7 @@ def _publish_one(
             status=PublisherStatus.SKIPPED_OUTPUT_EXISTS,
             output_paths=output_paths,
             message="Output already exists (source unchanged)",
+            frame_source="output_existed",
         )
 
     try:
@@ -328,6 +346,7 @@ def _publish_one(
             status=PublisherStatus.FAILED,
             output_paths=output_paths,
             message=f"Could not write preview file: {exc}",
+            frame_source=frame_source,
         )
 
     # Stamp the journal so the next webhook for an unchanged source can
@@ -347,6 +366,7 @@ def _publish_one(
         status=PublisherStatus.PUBLISHED,
         output_paths=output_paths,
         message="Published",
+        frame_source=frame_source,
     )
 
 
@@ -565,8 +585,8 @@ def process_canonical_path(
             tmp_path = str(cached.frame_dir)
             frame_count = cached.frame_count
             cache_hit = True
-            logger.debug(
-                "Frame cache hit for {} ({} frames)",
+            logger.info(
+                "Frames: REUSED from cache for {} ({} frames, no FFmpeg)",
                 canonical_path,
                 frame_count,
             )
@@ -579,6 +599,7 @@ def process_canonical_path(
             tmp_path = _tmp_path_for(canonical_path, config.working_tmp_folder)
             cleanup_path = tmp_path  # only ad-hoc tmps get auto-cleaned
         os.makedirs(tmp_path, exist_ok=True)
+        logger.info("Frames: EXTRACTING (cache miss) for {}", canonical_path)
 
     try:
         if not cache_hit:
@@ -681,6 +702,13 @@ def process_canonical_path(
             frame_count=frame_count,
         )
 
+        # Tag each publisher's result with where its frames came from so
+        # the Job UI can render a distinct badge ("reused" vs "extracted").
+        # The skip-if-exists branch inside _publish_one overrides this with
+        # "output_existed" because in that case the publisher used no frames
+        # at all.
+        upstream_frame_source = "cache_hit" if cache_hit else "extracted"
+
         results: list[PublisherResult] = []
         for server, adapter, item_id_hint in publishers:
             item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
@@ -690,6 +718,7 @@ def process_canonical_path(
                 bundle,
                 item_id,
                 skip_if_exists=not regenerate,
+                frame_source=upstream_frame_source,
             )
             # One INFO line per publisher so an op debugging "which
             # server got the BIF and which didn't?" can scan the log

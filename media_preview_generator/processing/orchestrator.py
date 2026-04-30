@@ -20,6 +20,7 @@ from enum import Enum
 
 from loguru import logger
 
+from ..config import Config
 from .filter_chain import (
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
@@ -45,6 +46,9 @@ class ProcessingResult(Enum):
 
     GENERATED = "generated"
     SKIPPED_BIF_EXISTS = "skipped_bif_exists"
+    # Deprecated: not produced by the unified pipeline (commit b4c3739) but
+    # kept so legacy serialised job state still parses. Aggregator code
+    # reads them via ``outcome.get(..., 0)`` and harmlessly returns 0.
     SKIPPED_FILE_NOT_FOUND = "skipped_file_not_found"
     SKIPPED_EXCLUDED = "skipped_excluded"
     SKIPPED_INVALID_HASH = "skipped_invalid_hash"
@@ -247,8 +251,6 @@ except Exception as e:
         type(e).__name__,
         e,
     )
-
-from ..config import Config  # noqa: E402
 
 
 class CodecNotSupportedError(Exception):

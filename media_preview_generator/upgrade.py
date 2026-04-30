@@ -17,7 +17,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 10
+_CURRENT_SCHEMA_VERSION = 11
 
 
 class SchemaDowngradeError(RuntimeError):
@@ -204,6 +204,9 @@ def _migrate_schema(sm) -> None:
               has a server to route to.  Legacy ``plex_*`` keys are
               kept (read-path compatibility) and removed in a later
               migration once all callers have been updated.
+        v11 -- Seeds the ``frame_reuse`` block (enabled, ttl_minutes,
+               max_cache_disk_mb) so cross-server webhook reuse is on
+               by default. Tunable under Settings → Performance.
     """
     current = sm.get("_schema_version", 1)
     if current > _CURRENT_SCHEMA_VERSION:
@@ -249,6 +252,9 @@ def _migrate_schema(sm) -> None:
 
     if current < 10:
         all_notes += _migrate_to_v10(sm)
+
+    if current < 11:
+        all_notes += _migrate_to_v11(sm)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -847,6 +853,36 @@ def _migrate_to_v10(sm) -> list:
         notes.append("v10: " + "; ".join(parts))
 
     return notes
+
+
+def _migrate_to_v11(sm) -> list:
+    """Seed the new ``frame_reuse`` settings block with sane defaults.
+
+    Cross-server frame reuse went from a hardcoded 10-min cache TTL to a
+    user-configurable block (``enabled``, ``ttl_minutes``,
+    ``max_cache_disk_mb``). Defaults are tuned for the realistic
+    multi-server adoption pattern: a Plex webhook arrives, then Jellyfin
+    is added later that day, then a Jellyfin webhook for the same file
+    arrives an hour later. The 1-hour TTL plus 2 GB disk cap means that
+    second webhook reuses frames without re-running FFmpeg.
+
+    Idempotent — does nothing if the block already exists.
+    """
+    if sm.get("frame_reuse") is not None:
+        return []
+
+    sm.apply_changes(
+        updates={
+            "frame_reuse": {
+                "enabled": True,
+                "ttl_minutes": 60,
+                "max_cache_disk_mb": 2048,
+            }
+        }
+    )
+    return [
+        "v11: seeded frame_reuse defaults (enabled, ttl=60min, max_disk=2GB) — tunable under Settings → Performance"
+    ]
 
 
 def _migrate_to_v6(sm) -> list:

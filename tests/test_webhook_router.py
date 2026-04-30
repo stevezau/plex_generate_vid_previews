@@ -304,6 +304,82 @@ class TestPerServerFallback:
         )
         assert response.status_code == 404
 
+    def test_per_server_url_pins_dispatch_to_one_server(self, client, auth_headers):
+        """B2: posting to /api/webhooks/server/<id> must scope dispatch to
+        only that server, even when sibling servers also own the path.
+
+        Without ``server_id_filter`` a Plex+Jellyfin install would publish
+        twice for the same webhook — surprising given the URL's intent.
+        """
+        _seed_servers(
+            [
+                {
+                    "id": "plex-A",
+                    "type": "plex",
+                    "name": "Plex A",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin",
+                    "enabled": True,
+                    "url": "http://jelly:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
+            ]
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/server/plex-A",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps({"path": "/data/movies/Foo.mkv"}),
+            )
+
+        assert response.status_code == 200
+        proc.assert_called_once()
+        assert proc.call_args.kwargs["server_id_filter"] == "plex-A"
+
+    def test_universal_url_does_not_pin_dispatch(self, client, auth_headers):
+        """Sanity: the universal /api/webhooks/incoming endpoint should
+        NOT pass a ``server_id_filter`` — that's the per-server URL's job.
+        """
+        _seed_servers(
+            [
+                {
+                    "id": "plex-A",
+                    "type": "plex",
+                    "name": "Plex A",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
+            ]
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps({"path": "/data/movies/Foo.mkv"}),
+            )
+
+        assert response.status_code == 200
+        proc.assert_called_once()
+        assert proc.call_args.kwargs.get("server_id_filter") is None
+
 
 class TestServerIdentityRouting:
     """Verify multi-server-of-same-vendor routing uses the captured

@@ -447,13 +447,21 @@ def webhook_incoming():
 @webhooks_bp.route("/server/<server_id>", methods=["POST"])
 @_authenticate_webhook
 def webhook_per_server(server_id: str):
-    """Per-server fallback URL.
+    """Per-server URL — disambiguates the source AND pins dispatch.
 
-    Used when auto-detection can't disambiguate the source server (e.g.
-    two Plex installs share a machine identifier — rare but real with
-    cloned VMs). The vendor-detection path otherwise mirrors
-    :func:`webhook_incoming`; the explicit ``server_id`` overrides any
-    server-id hint in the payload.
+    Two distinct uses:
+
+    1. **Disambiguation:** auto-detection can't tell two servers apart
+       (e.g. two Plex installs share a machine identifier — rare but real
+       with cloned VMs). The URL's ``server_id`` overrides any server-id
+       hint in the payload during resolution.
+    2. **Dispatch pinning:** when the user explicitly POSTs to this URL
+       they're saying "this webhook is for *this* server". We forward
+       ``server_id`` as a ``server_id_filter`` to ``process_canonical_path``
+       so previews are generated only for that server, even if a sibling
+       server in the registry also owns the canonical path. Without
+       this, the same Plex webhook on a Plex+Jellyfin install would
+       publish to both publishers — surprising given the URL's intent.
     """
     kind, payload, parse_error = _classify_payload(request)
     if payload is None:
@@ -472,7 +480,13 @@ def webhook_per_server(server_id: str):
     if not canonical:
         return jsonify({"status": "ignored", "kind": kind, "reason": error}), 202
 
-    return _dispatch_canonical_path(canonical, registry, item_id_by_server, kind=kind)
+    return _dispatch_canonical_path(
+        canonical,
+        registry,
+        item_id_by_server,
+        kind=kind,
+        server_id_filter=server_id,
+    )
 
 
 def _dispatch_canonical_path(

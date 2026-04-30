@@ -506,9 +506,40 @@ class SettingsManager:
     def is_configured(self) -> bool:
         """Check if the application is fully configured.
 
-        Returns True if at least plex_url and plex_token are set in settings.
+        Returns True when at least one media server is configured well
+        enough to dispatch previews to:
+
+        * Legacy single-Plex install: ``plex_url`` + ``plex_token`` set.
+        * Multi-server install: any enabled entry in ``media_servers``
+          with a non-empty ``url`` and a vendor-appropriate auth shape
+          (Plex needs ``auth.token``; Emby/Jellyfin need ``auth.api_key``).
+
+        The Plex fast-path stays so existing pre-multi-server installs
+        keep passing without touching the new check; the new path
+        unblocks Emby- or Jellyfin-only first-run setups.
         """
-        return bool(self.plex_url and self.plex_token)
+        if self.plex_url and self.plex_token:
+            return True
+
+        servers = self.get("media_servers") or []
+        if not isinstance(servers, list):
+            return False
+
+        for entry in servers:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("enabled") is False:
+                continue
+            url = (entry.get("url") or "").strip()
+            if not url:
+                continue
+            stype = (entry.get("type") or "").lower()
+            auth = entry.get("auth") or {}
+            if stype == "plex" and (auth.get("token") or "").strip():
+                return True
+            if stype in ("emby", "jellyfin") and (auth.get("api_key") or "").strip():
+                return True
+        return False
 
     def is_plex_authenticated(self) -> bool:
         """Check if Plex authentication is configured."""

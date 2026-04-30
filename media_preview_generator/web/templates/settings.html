@@ -167,6 +167,52 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Frame Reuse (cross-server cache) -->
+                <hr>
+                <h6 class="mb-2">Frame reuse across servers</h6>
+                <div class="alert alert-info py-2 small d-none" id="frameReuseMultiServerHint">
+                    <i class="bi bi-info-circle me-1"></i>
+                    You have <span id="frameReuseServerCount"></span> media servers configured.
+                    Keeping frame reuse on means a webhook from one server doesn't force FFmpeg
+                    to re-extract frames when a sibling server fires later for the same file.
+                </div>
+                <div class="row align-items-end">
+                    <div class="col-md-4 mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="frameReuseEnabled" checked>
+                            <label class="form-check-label" for="frameReuseEnabled">
+                                Reuse frames across servers
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            When on, extracted frames are cached so a second webhook for the same
+                            file (from any configured server) reuses them instead of re-running FFmpeg.
+                            When off, the cache window falls back to the legacy 10 minutes.
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="frameReuseTtlMinutes" class="form-label">
+                            Cache TTL (minutes)
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="frameReuseTtlMinutes"
+                               min="1" max="1440" value="60">
+                        <div class="form-text">
+                            How long to keep extracted frames around for reuse. Default 60 min.
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="frameReuseMaxDiskMb" class="form-label">
+                            Max cache disk (MB)
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="frameReuseMaxDiskMb"
+                               min="64" max="65536" step="64" value="2048">
+                        <div class="form-text">
+                            Hard cap on the on-disk frame cache. Oldest entries are evicted when over.
+                            Default 2048 MB (2 GB).
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -466,6 +512,26 @@ async function loadSettings() {
         document.getElementById('logRotationSize').value = parseInt(settings.log_rotation_size) || 10;
         document.getElementById('logRetentionCount').value = settings.log_retention_count || 5;
         document.getElementById('jobHistoryDays').value = settings.job_history_days ?? 30;
+
+        // Frame reuse (cross-server cache) — defaults match the v11 schema migration.
+        const fr = settings.frame_reuse || {};
+        document.getElementById('frameReuseEnabled').checked = fr.enabled !== false;
+        document.getElementById('frameReuseTtlMinutes').value = fr.ttl_minutes ?? 60;
+        document.getElementById('frameReuseMaxDiskMb').value = fr.max_cache_disk_mb ?? 2048;
+
+        // Show the multi-server hint when ≥2 enabled servers exist so users see
+        // the most-relevant context for this setting.
+        try {
+            const servers = (settings.media_servers || []).filter(
+                (s) => s && s.enabled !== false,
+            );
+            if (servers.length >= 2) {
+                document.getElementById('frameReuseServerCount').textContent = servers.length;
+                document.getElementById('frameReuseMultiServerHint').classList.remove('d-none');
+            }
+        } catch (_) {
+            /* hint is best-effort; don't block save on a render glitch */
+        }
     } catch (error) {
         console.error('Failed to load settings:', error);
         showToast('Failed to load settings', 'danger');
@@ -582,6 +648,11 @@ async function saveAllSettings() {
         log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
         log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
         job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
+        frame_reuse: {
+            enabled: document.getElementById('frameReuseEnabled').checked,
+            ttl_minutes: parseInt(document.getElementById('frameReuseTtlMinutes').value, 10) || 60,
+            max_cache_disk_mb: parseInt(document.getElementById('frameReuseMaxDiskMb').value, 10) || 2048,
+        },
     };
 
     const result = await new SettingsManager().save(settings);

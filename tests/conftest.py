@@ -484,8 +484,79 @@ def _sync_start_job_async(request, monkeypatch):
     monkeypatch.setattr(jr_mod, "threading", _ThreadingShim(), raising=True)
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for the unified ProcessableItem dispatch path.
+#
+# Six test modules historically duplicated the same _pi/_pi_list/
+# _pi_list_or_passthrough/_ms helper trio. They now live here and are
+# imported by name from this conftest. Keep the signatures stable —
+# changing them ripples across the whole worker test surface.
+# ---------------------------------------------------------------------------
+
+
+def _pi(key="test_key", title="Test", media_type="movie", canonical_path=None, server_id="plex-1"):
+    """Build a ``ProcessableItem`` matching what the tests used to assemble as a tuple."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id="lib-1",
+    )
+
+
+def _pi_list(triples, *, server_id="plex-1"):
+    """Bulk version: convert ``[(key, title, media_type)]`` tuples to ``ProcessableItem`` instances."""
+    out = []
+    for entry in triples:
+        if not entry:
+            continue
+        key = entry[0]
+        title = entry[1] if len(entry) > 1 else "Test"
+        media_type = entry[2] if len(entry) > 2 else "movie"
+        out.append(_pi(key, title=title, media_type=media_type, server_id=server_id))
+    return out
+
+
+def _pi_list_or_passthrough(items):
+    """Pass through a list of ``ProcessableItem`` instances untouched, or convert tuples on the fly."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    if not items:
+        return []
+    if isinstance(items[0], ProcessableItem):
+        return items
+    return _pi_list(items)
+
+
+def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
+    """Build a ``MultiServerResult`` whose status maps back to a specific ``ProcessingResult``."""
+    from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+    status_map = {
+        "generated": MultiServerStatus.PUBLISHED,
+        "published": MultiServerStatus.PUBLISHED,
+        "skipped_bif_exists": MultiServerStatus.SKIPPED,
+        "skipped": MultiServerStatus.SKIPPED,
+        "no_media_parts": MultiServerStatus.NO_OWNERS,
+        "no_owners": MultiServerStatus.NO_OWNERS,
+        "failed": MultiServerStatus.FAILED,
+    }
+    return MultiServerResult(
+        canonical_path=canonical_path,
+        status=status_map.get(status, MultiServerStatus.PUBLISHED),
+        message=message,
+    )
+
+
 # Export helper functions so tests can use them
 __all__ = [
+    "_ms",
+    "_pi",
+    "_pi_list",
+    "_pi_list_or_passthrough",
     "create_mock_ffmpeg_process",
     "create_mock_mediainfo",
 ]

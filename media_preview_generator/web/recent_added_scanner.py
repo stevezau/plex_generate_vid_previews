@@ -8,11 +8,11 @@ Dispatched as a first-class schedule type — see
 ``scheduler.execute_scheduled_job`` for the dispatch branch, and the
 schedule's ``config`` dict for ``job_type`` and ``lookback_hours``.
 
-**Stateless by design.**  Items that already have valid BIF previews are
-skipped downstream by ``process_item()``'s existence check, so we don't
-need to track a per-library cursor.  Re-submitting the same items every
-tick is cheap and avoids race conditions on first install, restart, and
-clock skew.
+**Stateless by design.**  Items that already have valid previews are
+skipped downstream by each publisher's ``skip_if_exists`` check inside
+``process_canonical_path``, so we don't need to track a per-library
+cursor.  Re-submitting the same items every tick is cheap and avoids
+race conditions on first install, restart, and clock skew.
 """
 
 from __future__ import annotations

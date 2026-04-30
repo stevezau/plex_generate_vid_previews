@@ -214,18 +214,21 @@ class TestLruEviction:
         assert not slot_a.exists(), "evicted entry's frame dir should be deleted from disk"
         assert slot_b.is_dir()
 
-    def test_max_entries_default_is_32(self, tmp_path):
-        """The default cap matches what's documented; defends against
-        accidental tuning regression that would balloon disk usage."""
+    def test_max_entries_default_is_generous(self, tmp_path):
+        """The entry-count cap is generous now (1024); the disk-size cap is
+        the real backstop. Defends against a regression that would balloon
+        disk usage when the TTL is set to many hours."""
         cache = FrameCache(tmp_path / "cache")
-        # Push 40 entries; only the last 32 should remain.
-        for i in range(40):
+        # Push more than the legacy 32 cap to verify entries aren't being
+        # evicted purely by count under the new defaults.
+        for i in range(50):
             media = tmp_path / f"f{i:03d}.mkv"
             media.write_bytes(b"x")
             slot = cache.frame_dir_for(str(media))
             _populate_real_jpgs(slot, count=1)
             cache.put(str(media), frame_dir=slot, frame_count=1)
-        assert len(cache) == 32
+        # All 50 should be retained; the disk-cap is what bounds growth now.
+        assert len(cache) == 50
 
     def test_eviction_at_size_cap_does_not_strand_generation_locks(self, tmp_path):
         """``generation_locks`` are intentionally never evicted (per docstring),
@@ -437,3 +440,106 @@ class TestDispatcherIntegration:
         assert len(cache) == 0
         # The single publisher succeeded.
         assert (tmp_path / "movies" / "Test-320-10.bif").exists()
+
+
+class TestConfigurableFrameReuse:
+    """The user-facing ``frame_reuse`` settings block drives TTL + disk cap."""
+
+    def test_default_ttl_covers_one_hour(self, tmp_path):
+        """Default settings (no frame_reuse block) → 1-hour TTL.
+
+        Covers the user's "added a Jellyfin server 30 min later, fired a
+        webhook, expected reuse" scenario. The legacy 10-min TTL would
+        have missed; the new 1-hour default catches it.
+        """
+        cache = FrameCache(tmp_path / "cache")  # uses _DEFAULT_TTL_SECONDS
+        media = tmp_path / "media.mkv"
+        media.write_bytes(b"x")
+        slot = cache.frame_dir_for(str(media))
+        _populate_real_jpgs(slot, count=2)
+        cache.put(str(media), frame_dir=slot, frame_count=2)
+
+        # Simulate 45 min later: rewind cached_at by 45 min.
+        key = list(cache._entries.keys())[0]
+        old_entry = cache._entries[key]
+        cache._entries[key] = type(old_entry)(
+            canonical_path=old_entry.canonical_path,
+            frame_dir=old_entry.frame_dir,
+            frame_count=old_entry.frame_count,
+            source_mtime=old_entry.source_mtime,
+            cached_at=time.time() - (45 * 60),
+        )
+
+        # 45 min < 60 min default TTL → still a hit.
+        assert cache.get(str(media)) is not None
+
+    def test_legacy_ten_minute_ttl_when_disabled(self):
+        """When the user disables frame_reuse, TTL falls back to legacy 600s."""
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.processing.frame_cache import _read_frame_reuse_setting
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {"enabled": False}
+            ttl, _disk = _read_frame_reuse_setting()
+        assert ttl == 600
+
+    def test_settings_block_drives_ttl(self):
+        """ttl_minutes from settings is honoured when enabled=True."""
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.processing.frame_cache import _read_frame_reuse_setting
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {
+                "enabled": True,
+                "ttl_minutes": 120,
+                "max_cache_disk_mb": 4096,
+            }
+            ttl, disk = _read_frame_reuse_setting()
+        assert ttl == 120 * 60
+        assert disk == 4096
+
+    def test_disk_cap_evicts_when_over(self, tmp_path):
+        """Disk cap LRU-evicts oldest entries when total exceeds the limit.
+
+        Each entry holds N decodable JPGs; we set a tiny disk cap so even
+        one entry blows past it and triggers eviction on the next put.
+        """
+        # 1 MB cap; each entry will be a few KB so cap doesn't bite immediately.
+        cache = FrameCache(tmp_path / "cache", max_disk_mb=1)
+
+        # Each entry is ~3 KB (one tiny JPG); add 5 entries — under cap.
+        for i in range(5):
+            media = tmp_path / f"f{i:03d}.mkv"
+            media.write_bytes(b"x")
+            slot = cache.frame_dir_for(str(media))
+            _populate_real_jpgs(slot, count=1)
+            cache.put(str(media), frame_dir=slot, frame_count=1)
+        assert len(cache) == 5
+
+        # Now drop the cap to ~1 KB and add one more entry; the LRU
+        # eviction should drop the oldest entries until we're under cap.
+        cache._max_disk_bytes = 1024
+        media = tmp_path / "newest.mkv"
+        media.write_bytes(b"x")
+        slot = cache.frame_dir_for(str(media))
+        _populate_real_jpgs(slot, count=1)
+        cache.put(str(media), frame_dir=slot, frame_count=1)
+        # At least some old entries should be gone; the newest survives.
+        assert len(cache) < 6
+        assert cache.get(str(media)) is not None
+
+    def test_get_frame_cache_reads_settings_on_first_construction(self, tmp_path):
+        """The singleton's TTL is seeded from the frame_reuse settings block."""
+        from unittest.mock import patch as _patch
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {
+                "enabled": True,
+                "ttl_minutes": 30,
+                "max_cache_disk_mb": 512,
+            }
+            cache = get_frame_cache(base_dir=str(tmp_path / "cache"))
+        assert cache._ttl_seconds == 30 * 60
+        assert cache._max_disk_bytes == 512 * 1024 * 1024

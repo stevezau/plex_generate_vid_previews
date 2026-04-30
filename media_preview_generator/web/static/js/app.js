@@ -1507,6 +1507,16 @@ const _PUBLISHER_STATUS_BADGES = {
     no_owners:    { label: 'No owner',     cls: 'bg-secondary' },
 };
 
+// Frame-provenance badges so users can see when one webhook's frames
+// were reused across a sibling-server publish (no second FFmpeg) vs
+// when this publisher's output was already on disk vs when FFmpeg
+// just ran for this dispatch.
+const _FRAME_SOURCE_BADGES = {
+    cache_hit:      { label: 'Frames reused', cls: 'bg-info text-dark', tip: 'Frames came from the cache — FFmpeg did not run for this dispatch' },
+    output_existed: { label: 'Already on disk', cls: 'bg-light text-dark border', tip: 'Output was already on disk and unchanged; nothing to re-publish' },
+    extracted:      null, // no badge for "extracted" — it's the boring default
+};
+
 function _renderPublishersBlock(job) {
     const rows = (job && Array.isArray(job.publishers)) ? job.publishers : [];
     if (!rows.length) return '';
@@ -1525,7 +1535,12 @@ function _renderPublishersBlock(job) {
             const logo = _vendorLogo(stype, 12) || '';
             const sname = p.server_name || stype.toUpperCase() || 'Server';
             const tooltip = p.message ? ` title="${escapeHtmlAttr(p.message)}"` : '';
-            return `<span class="badge ${meta.cls} me-1"${tooltip}>${logo}${escapeHtmlText(sname)}: ${escapeHtmlText(meta.label)}</span>`;
+            const statusBadge = `<span class="badge ${meta.cls} me-1"${tooltip}>${logo}${escapeHtmlText(sname)}: ${escapeHtmlText(meta.label)}</span>`;
+            const fs = _FRAME_SOURCE_BADGES[p.frame_source];
+            const frameBadge = fs
+                ? `<span class="badge ${fs.cls} me-1" title="${escapeHtmlAttr(fs.tip)}"><i class="bi bi-arrow-repeat" style="margin-right:3px;"></i>${escapeHtmlText(fs.label)}</span>`
+                : '';
+            return statusBadge + frameBadge;
         }).join('');
         const fname = path.split('/').pop() || path;
         sections.push(

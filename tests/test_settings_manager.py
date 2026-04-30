@@ -343,6 +343,72 @@ class TestSettingsManagerConfigStatus:
         settings_manager.set("plex_token", "test-token")
         assert settings_manager.is_configured() is True
 
+    def test_is_configured_true_for_jellyfin_only_install(self, settings_manager):
+        """B1: a multi-server install with only Jellyfin (no Plex) must pass setup."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "name": "Home Jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {"method": "api_key", "api_key": "abc123"},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is True
+
+    def test_is_configured_true_for_emby_only_install(self, settings_manager):
+        """B1: same for an Emby-only install."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Home Emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {"method": "api_key", "api_key": "xyz"},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is True
+
+    def test_is_configured_false_when_only_disabled_servers(self, settings_manager):
+        """B1: disabled entries don't count — every enabled entry would have to pass."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {"api_key": "x"},
+                    "enabled": False,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_false_when_emby_missing_api_key(self, settings_manager):
+        """B1: an Emby/Jellyfin entry with no api_key isn't enough."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
     def test_is_plex_authenticated_false(self, settings_manager):
         """Test is_plex_authenticated returns False when no token."""
         assert settings_manager.is_plex_authenticated() is False

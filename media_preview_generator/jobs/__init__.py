@@ -8,7 +8,8 @@ Sub-modules:
   drive the persistent dispatch loop and priority scheduling across
   multiple concurrent jobs.
 * :mod:`.worker`       — :class:`Worker` / :class:`WorkerPool` own
-  per-GPU / per-CPU threads and run :func:`process_item` on each.
+  per-GPU / per-CPU threads and dispatch each :class:`ProcessableItem`
+  to :func:`processing.multi_server.process_canonical_path`.
 """
 
 from .dispatcher import (

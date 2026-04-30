@@ -3,9 +3,10 @@ HDR/DV detection, retry orchestration, BIF packing.
 
 Sub-modules:
 
-* :mod:`.orchestrator`   — :func:`generate_images` and
-  :func:`process_item` drive the per-item pipeline, including the
-  4-tier retry cascade, BIF packing, and failure tracking.
+* :mod:`.orchestrator`   — :func:`generate_images` drives the per-item
+  pipeline (4-tier retry cascade, BIF packing, failure tracking).
+  Higher-level dispatch lives in :mod:`.multi_server.process_canonical_path`,
+  which fans out to every owning publisher.
 * :mod:`.filter_chain`   — builders for the ``-vf`` filter string for
   each vendor / content-format combination. The ``path_kind`` string
   is the single source of truth for which pipeline shape runs.

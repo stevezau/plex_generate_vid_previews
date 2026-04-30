@@ -1324,3 +1324,31 @@ class TestLegacyPlexToMediaServer:
         assert entry is not None
         names = [lib["name"] for lib in entry["libraries"]]
         assert names == ["Anime"]
+
+
+class TestMigrateToV11:
+    """v11 seeds the ``frame_reuse`` block so cross-server frame reuse is on
+    by default with sane TTL + disk cap."""
+
+    def test_seeds_defaults_when_missing(self, settings_manager):
+        from media_preview_generator.upgrade import _migrate_to_v11
+
+        notes = _migrate_to_v11(settings_manager)
+        assert any("frame_reuse" in n for n in notes)
+        block = settings_manager.get("frame_reuse")
+        assert block == {
+            "enabled": True,
+            "ttl_minutes": 60,
+            "max_cache_disk_mb": 2048,
+        }
+
+    def test_idempotent_when_block_already_present(self, settings_manager):
+        """User-customised values must survive re-running the migration."""
+        from media_preview_generator.upgrade import _migrate_to_v11
+
+        existing = {"enabled": False, "ttl_minutes": 5, "max_cache_disk_mb": 256}
+        settings_manager.apply_changes(updates={"frame_reuse": existing})
+
+        notes = _migrate_to_v11(settings_manager)
+        assert notes == []
+        assert settings_manager.get("frame_reuse") == existing

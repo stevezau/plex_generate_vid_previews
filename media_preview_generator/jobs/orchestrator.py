@@ -46,6 +46,10 @@ def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
                 "status": status,
                 "message": pub.message or "",
                 "canonical_path": canonical_path,
+                # Frame provenance ("extracted" | "cache_hit" | "output_existed")
+                # so the Job UI can render a distinct badge when frames were
+                # reused across a sibling-server webhook.
+                "frame_source": getattr(pub, "frame_source", "extracted"),
             }
         )
     return rows
