@@ -455,7 +455,13 @@ def webhook_incoming():
         canonical,
         item_id_by_server or "{}",
     )
-    return _dispatch_canonical_path(canonical, registry, item_id_by_server, kind=kind)
+    return _dispatch_canonical_path(
+        canonical,
+        registry,
+        item_id_by_server,
+        kind=kind,
+        regenerate=_extract_regenerate_flag(payload),
+    )
 
 
 @webhooks_bp.route("/server/<server_id>", methods=["POST"])
@@ -500,7 +506,30 @@ def webhook_per_server(server_id: str):
         item_id_by_server,
         kind=kind,
         server_id_filter=server_id,
+        regenerate=_extract_regenerate_flag(payload),
     )
+
+
+def _extract_regenerate_flag(payload: dict | None) -> bool:
+    """Honour an opt-in ``regenerate`` flag from the webhook caller.
+
+    Accepts either a top-level body field (``{"path": "...", "regenerate": true}``)
+    or a URL query string (``?regenerate=true``). Truthy values: ``true``,
+    ``1``, ``yes`` (case-insensitive). Anything else (or absent) → False.
+
+    Both Sonarr-style and our generic webhooks can opt-in to force a
+    fresh extraction without touching settings.
+    """
+    raw = None
+    if isinstance(payload, dict):
+        raw = payload.get("regenerate")
+    if raw is None:
+        raw = request.args.get("regenerate")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes")
 
 
 def _dispatch_canonical_path(
@@ -510,6 +539,7 @@ def _dispatch_canonical_path(
     *,
     kind: str,
     server_id_filter: str | None = None,
+    regenerate: bool = False,
 ):
     """Hand the canonical path to :func:`process_canonical_path` and shape the response."""
     config = _load_config_or_minimal()
@@ -520,6 +550,7 @@ def _dispatch_canonical_path(
         config=config,
         item_id_by_server=item_id_by_server,
         server_id_filter=server_id_filter,
+        regenerate=regenerate,
     )
 
     body = {
