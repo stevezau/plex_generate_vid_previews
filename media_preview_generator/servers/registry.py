@@ -10,9 +10,9 @@ processing pipeline. The dispatcher consumes
 :meth:`ServerRegistry.find_owning_servers` to fan out a single FFmpeg pass
 to every server that owns a canonical path.
 
-In Phase 1 only Plex is wired up; constructing an Emby or Jellyfin entry
-raises :class:`UnsupportedServerTypeError` (which the registry surfaces as
-warnings rather than aborting load).
+Plex, Emby, and Jellyfin are all wired up. Entries with an unrecognised
+``type`` raise :class:`UnsupportedServerTypeError`, which the registry
+surfaces as warnings rather than aborting load.
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ if TYPE_CHECKING:
 
 
 class UnsupportedServerTypeError(RuntimeError):
-    """Raised when ``ServerConfig.type`` has no concrete implementation yet.
+    """Raised when ``ServerConfig.type`` has no concrete implementation.
 
-    Phase 1 only ships the Plex client; Emby and Jellyfin land in Phase 2/3.
-    Until then, settings entries with those types are skipped with a warning
+    Plex, Emby, and Jellyfin are all wired up; this fires only for an unknown
+    or unsupported ``type`` value. Such entries are skipped with a warning
     rather than crashing the whole registry load.
     """
 
