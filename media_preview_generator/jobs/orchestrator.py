@@ -682,6 +682,299 @@ def _run_recently_added_multi_server(
     )
 
 
+def _resolve_pinned_server(sid_filter: str | None) -> tuple[dict | None, str]:
+    """Look up the media_servers entry for ``sid_filter`` and return ``(entry, type)``.
+
+    Returns ``(None, "")`` when ``sid_filter`` is unset, when settings can't
+    be loaded, or when no entry matches. ``type`` is the lowercased server
+    type string ("plex" / "emby" / "jellyfin" / ""). Used by the dispatch-
+    mode selector to detect non-Plex pins.
+    """
+    if not (isinstance(sid_filter, str) and sid_filter):
+        return None, ""
+    try:
+        from ..web.settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("media_servers") or []
+    except Exception:
+        return None, ""
+    pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == sid_filter), None)
+    pinned_type = ((pinned_entry or {}).get("type") or "").lower()
+    return pinned_entry, pinned_type
+
+
+def _should_use_multi_server_full_scan(config, pinned_type: str) -> bool:
+    """Decide whether the full-library scan should go through the multi-server path.
+
+    Use the multi-server scan when ANY of the following holds (and there are
+    no webhook paths — the webhook flow has its own selector):
+
+    * Pinned to a non-Plex server.
+    * No Plex configured at all.
+    * At least one non-Plex server (Emby / Jellyfin) is enabled.
+
+    The legacy Plex-only branch only fires for the pure single-Plex install.
+    Reason: ``_run_full_scan_legacy_plex`` calls ``from_legacy_config`` which
+    has empty per-server path_mappings — on a multi-server install Plex items
+    come back with their remote view paths (``/media/Movies/...``) and every
+    worker fails with "source missing" because the registry doesn't know how
+    to translate those.
+    """
+    no_webhook_paths = not getattr(config, "webhook_paths", None)
+    if not no_webhook_paths:
+        return False
+    non_plex_pin = bool(pinned_type) and pinned_type != "plex"
+    no_plex_at_all = not (config.plex_url and config.plex_token)
+    has_non_plex_server = False
+    try:
+        from ..web.settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("media_servers") or []
+        has_non_plex_server = any(
+            isinstance(e, dict) and (e.get("type") or "").lower() in ("emby", "jellyfin") and e.get("enabled", True)
+            for e in raw
+        )
+    except Exception:
+        has_non_plex_server = False
+    return non_plex_pin or no_plex_at_all or has_non_plex_server
+
+
+def _format_outcome_summary(aggregate_outcome: dict) -> str:
+    """Build the one-line "X generated, Y already existed, Z failed" string for the end-of-job log.
+
+    Pure formatter — only counts that fired appear in the output, in a stable
+    order. Returns the literal string ``"no items processed"`` when every
+    counter is zero so the log line is never empty.
+    """
+    parts = []
+    counters = (
+        ("generated", "{n} generated"),
+        ("skipped_bif_exists", "{n} already existed"),
+        ("skipped_file_not_found", "{n} not found"),
+        ("skipped_excluded", "{n} excluded"),
+        ("skipped_invalid_hash", "{n} invalid hash"),
+        ("failed", "{n} failed"),
+        ("no_media_parts", "{n} no media parts"),
+    )
+    for key, template in counters:
+        n = aggregate_outcome.get(key, 0)
+        if n:
+            parts.append(template.format(n=n))
+    return ", ".join(parts) if parts else "no items processed"
+
+
+def _run_webhook_paths_phase(
+    config,
+    plex,
+    registry,
+    *,
+    dispatch_items,
+    progress_callback,
+    cancel_check,
+    job_id: str | None,
+    totals: dict,
+    aggregate_outcome: dict,
+) -> dict:
+    """Resolve webhook paths via Plex, dispatch the resolved items, and run the K4 fallback.
+
+    Mutates ``totals`` (keys: ``processed``, ``successful``, ``failed``,
+    ``cancelled``) and ``aggregate_outcome`` in place so the caller can
+    keep accumulating across phases. Returns the ``webhook_resolution``
+    dict that becomes part of the job's return_data.
+
+    The K4 fallback dispatches any path Plex couldn't claim through the
+    multi-server registry so Emby/Jellyfin webhooks resolve via their own
+    APIs instead of dying at the Plex resolver. Only fires when at least
+    one non-Plex server is configured AND the server_id pin (if any)
+    isn't a Plex server itself.
+    """
+    if progress_callback:
+        path_count = len(config.webhook_paths)
+        progress_callback(0, 0, f"Looking up {path_count} file path(s) in Plex — this can take a while...")
+    _log_webhook_owning_servers(config, config.webhook_paths)
+    webhook_resolution = get_media_items_by_paths(plex, config, config.webhook_paths)
+    return_payload = {
+        "unresolved_paths": list(webhook_resolution.unresolved_paths),
+        "skipped_paths": list(webhook_resolution.skipped_paths),
+        "resolved_count": len(webhook_resolution.items),
+        "total_paths": len(config.webhook_paths),
+        "path_hints": list(webhook_resolution.path_hints),
+    }
+
+    if not webhook_resolution.items:
+        logger.warning(
+            "Webhook arrived with {} file path(s) but Plex doesn't have any of them indexed yet — "
+            "nothing to process. The retry queue will keep checking; if this persists, verify "
+            "Plex's library scan is finishing and the path mappings under Settings line up between "
+            "the source (e.g. Sonarr/Radarr) and Plex.",
+            len(config.webhook_paths or []),
+        )
+    else:
+        # Convert resolved Plex matches into ProcessableItems with canonical
+        # paths already filled in. process_canonical_path then publishes via
+        # every owning server's adapter (Plex BIF plus any Emby/Jellyfin
+        # sibling that owns the same path).
+        from ..processing.types import ProcessableItem as _PI
+        from ..servers.base import ServerType as _ST
+
+        plex_cfg_for_webhook = next((c for c in registry.configs() if c.type is _ST.PLEX), None)
+        webhook_items: list[_PI] = []
+        for key, locations, title, _media_type in webhook_resolution.items_with_locations:
+            if not locations:
+                continue
+            remote_path = str(locations[0])
+            canonicals: list[str] = []
+            if plex_cfg_for_webhook is not None:
+                canonicals = apply_path_mappings(remote_path, plex_cfg_for_webhook.path_mappings or [])
+            if not canonicals:
+                canonicals = [remote_path]
+            canonical = canonicals[0]
+            webhook_items.append(
+                _PI(
+                    canonical_path=canonical,
+                    server_id=(plex_cfg_for_webhook.id if plex_cfg_for_webhook else ""),
+                    item_id_by_server=({plex_cfg_for_webhook.id: key} if (plex_cfg_for_webhook and key) else {}),
+                    title=title or canonical,
+                    library_id=None,
+                )
+            )
+
+        if not webhook_items:
+            logger.info(
+                "Webhook resolved {} item(s) but no canonical paths were derivable — skipping dispatch.",
+                len(webhook_resolution.items),
+            )
+        else:
+            result = dispatch_items(webhook_items, "Webhook Targets")
+            totals["successful"] += result["completed"]
+            totals["failed"] += result["failed"]
+            totals["processed"] += result["completed"] + result["failed"]
+            totals["cancelled"] = totals["cancelled"] or result["cancelled"]
+            outcome = result.get("outcome") or {}
+            for k, v in outcome.items():
+                aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+
+    # K4 fallback for paths Plex couldn't claim.
+    unresolved = list(webhook_resolution.unresolved_paths or [])
+    if unresolved:
+        try:
+            from ..web.settings_manager import get_settings_manager
+
+            raw = get_settings_manager().get("media_servers") or []
+            has_non_plex = any(
+                isinstance(e, dict) and (e.get("type") or "").lower() in ("emby", "jellyfin") and e.get("enabled", True)
+                for e in raw
+            )
+        except Exception:
+            raw = []
+            has_non_plex = False
+        pinned = getattr(config, "server_id_filter", None)
+        pinned_is_non_plex = False
+        pinned_entry = None
+        if pinned and isinstance(pinned, str):
+            try:
+                pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == pinned), None)
+                pinned_is_non_plex = bool(
+                    pinned_entry and (pinned_entry.get("type") or "").lower() in ("emby", "jellyfin")
+                )
+            except Exception:
+                pinned_is_non_plex = False
+        if has_non_plex and (not pinned or pinned_is_non_plex or pinned_entry):
+            logger.info(
+                "K4 fallback: {} path(s) unresolved by Plex — dispatching through multi-server registry "
+                "for Emby/Jellyfin owners.",
+                len(unresolved),
+            )
+            try:
+                fallback_counts = _dispatch_webhook_paths_multi_server(
+                    config,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    job_id=job_id,
+                    paths=unresolved,
+                )
+                for k, v in (fallback_counts or {}).items():
+                    aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+            except Exception:
+                logger.warning(
+                    "K4 multi-server fallback failed. The unresolved paths will go through the retry queue as usual.",
+                    exc_info=True,
+                )
+
+    return return_payload
+
+
+def _run_plex_full_scan_phase(
+    config,
+    registry,
+    *,
+    dispatch_items,
+    progress_callback,
+    cancel_check,
+    totals: dict,
+    aggregate_outcome: dict,
+) -> bool:
+    """Enumerate the full Plex library and dispatch every item.
+
+    Mutates ``totals`` (keys: ``processed``, ``successful``, ``failed``,
+    ``cancelled``) and ``aggregate_outcome`` in place. Returns ``True`` if
+    enumeration completed (even if no items were found); ``False`` if the
+    enumeration itself raised — the caller should treat that as a fatal
+    job error.
+
+    The dispatch goes through the same unified per-vendor processor →
+    ProcessableItem → process_canonical_path path that Emby and Jellyfin
+    use. The legacy tuple-shape pump is gone — keep this in mind when
+    reading per-item logs (they'll mention the per-vendor adapter).
+    """
+    all_media_items: list = []
+    try:
+        for item in _enumerate_plex_full_scan_items(
+            config,
+            registry,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
+        ):
+            if cancel_check and cancel_check():
+                totals["cancelled"] = True
+                break
+            all_media_items.append(item)
+    except Exception:
+        logger.exception(
+            "Plex full-scan enumeration failed. Verify Plex is reachable and the access token in Settings is valid."
+        )
+        return False
+
+    if cancel_check and cancel_check():
+        logger.info("Cancellation requested before dispatch — skipping processing")
+        totals["cancelled"] = True
+        return True
+
+    if not all_media_items:
+        logger.info("No media items found across selected libraries")
+        return True
+
+    # When sort_by is "random", shuffle the combined cross-library list so
+    # parallel workers statistically pull from multiple physical disks at
+    # once (big win on unraid shfs / mergerfs / JBOD setups).
+    if config.sort_by == "random":
+        random.Random().shuffle(all_media_items)
+        logger.info("Shuffled {} items for random processing order", len(all_media_items))
+
+    total_items = len(all_media_items)
+    logger.info("Processing {} items across selected Plex libraries", total_items)
+
+    result = dispatch_items(all_media_items, "All Libraries")
+    totals["successful"] += result["completed"]
+    totals["failed"] += result["failed"]
+    totals["processed"] += result["completed"] + result["failed"]
+    totals["cancelled"] = totals["cancelled"] or result["cancelled"]
+    outcome = result.get("outcome") or {}
+    for k, v in outcome.items():
+        aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+    return True
+
+
 def run_processing(
     config,
     selected_gpus,
@@ -733,51 +1026,9 @@ def run_processing(
         # of crashing with a Plex connection error.
         sid_filter = getattr(config, "server_id_filter", None)
         sid_filter = sid_filter if isinstance(sid_filter, str) and sid_filter else None
-        pinned_entry = None
-        pinned_type = ""
-        if sid_filter:
-            try:
-                from ..web.settings_manager import get_settings_manager
+        _pinned_entry, pinned_type = _resolve_pinned_server(sid_filter)
 
-                raw = get_settings_manager().get("media_servers") or []
-                pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == sid_filter), None)
-            except Exception:
-                pinned_entry = None
-            pinned_type = ((pinned_entry or {}).get("type") or "").lower()
-
-        # Full-library scan (no webhook paths) — choose between the legacy
-        # Plex-only path and the multi-server scan based on what's configured:
-        #
-        # * Pinned to a non-Plex server, OR no Plex at all → multi-server.
-        # * At least one non-Plex server enabled (Plex+Emby/Jellyfin install,
-        #   no pin) → multi-server, so Emby/Jellyfin libraries actually get
-        #   scanned. The legacy Plex-only branch drops non-Plex library IDs.
-        # * Single-Plex install (only Plex enabled) → legacy branch.
-        no_webhook_paths = not getattr(config, "webhook_paths", None)
-        non_plex_pin = pinned_type and pinned_type != "plex"
-        no_plex_at_all = not (config.plex_url and config.plex_token)
-        has_non_plex_server = False
-        try:
-            from ..web.settings_manager import get_settings_manager
-
-            _raw_for_check = get_settings_manager().get("media_servers") or []
-            has_non_plex_server = any(
-                isinstance(e, dict) and (e.get("type") or "").lower() in ("emby", "jellyfin") and e.get("enabled", True)
-                for e in _raw_for_check
-            )
-        except Exception:
-            has_non_plex_server = False
-
-        # Use multi-server scan whenever any non-Plex server is enabled
-        # (regardless of pin). The legacy Plex full-scan calls
-        # ``from_legacy_config`` which has empty per-server path_mappings,
-        # so on a multi-server install Plex items come back with their
-        # remote view paths (``/media/Movies/...``) and every worker fails
-        # with "source missing". The multi-server scan reads mappings from
-        # the per-server registry entry and works correctly even when
-        # pinned to a Plex server.
-        use_multi_server_scan = no_webhook_paths and (non_plex_pin or no_plex_at_all or has_non_plex_server)
-        if use_multi_server_scan:
+        if _should_use_multi_server_full_scan(config, pinned_type):
             library_ids = list(getattr(config, "plex_library_ids", None) or [])
             outcome_counts = _run_full_scan_multi_server(
                 config,
@@ -829,18 +1080,11 @@ def run_processing(
                 worker_pool_callback(pool)
             return pool
 
-        total_processed = 0
-        total_successful = 0
-        total_failed = 0
-        cancellation_requested = False
+        # Mutable accumulators threaded through the phase helpers. A dict
+        # rather than several `nonlocal` ints because the phase helpers
+        # are module-level functions, not closures.
+        totals = {"processed": 0, "successful": 0, "failed": 0, "cancelled": False}
         aggregate_outcome = {r.value: 0 for r in ProcessingResult}
-
-        def _merge_outcome(result_dict):
-            """Merge outcome counts from a worker pool result into the aggregate."""
-            outcome = result_dict.get("outcome")
-            if outcome:
-                for key, count in outcome.items():
-                    aggregate_outcome[key] = aggregate_outcome.get(key, 0) + count
 
         logger.info("Running in headless mode (no console display)")
 
@@ -919,221 +1163,39 @@ def run_processing(
                 )
 
         if getattr(config, "webhook_paths", None):
-            if progress_callback:
-                path_count = len(config.webhook_paths)
-                progress_callback(
-                    0,
-                    0,
-                    f"Looking up {path_count} file path(s) in Plex — this can take a while...",
-                )
-            _log_webhook_owning_servers(config, config.webhook_paths)
-            webhook_resolution = get_media_items_by_paths(plex, config, config.webhook_paths)
-            return_data = {
-                "webhook_resolution": {
-                    "unresolved_paths": list(webhook_resolution.unresolved_paths),
-                    "skipped_paths": list(webhook_resolution.skipped_paths),
-                    "resolved_count": len(webhook_resolution.items),
-                    "total_paths": len(config.webhook_paths),
-                    "path_hints": list(webhook_resolution.path_hints),
-                }
-            }
-            if not webhook_resolution.items:
-                logger.warning(
-                    "Webhook arrived with {} file path(s) but Plex doesn't have any of them indexed yet — "
-                    "nothing to process. The retry queue will keep checking; if this persists, verify "
-                    "Plex's library scan is finishing and the path mappings under Settings line up between "
-                    "the source (e.g. Sonarr/Radarr) and Plex.",
-                    len(config.webhook_paths or []),
-                )
-            else:
-                # Convert resolved Plex matches into ProcessableItems with
-                # canonical paths already filled in. process_canonical_path
-                # then publishes via every owning server's adapter (Plex BIF
-                # plus any Emby/Jellyfin sibling that owns the same path).
-                from ..processing.types import ProcessableItem as _PI
-                from ..servers.base import ServerType as _ST
-
-                plex_cfg_for_webhook = next(
-                    (c for c in registry.configs() if c.type is _ST.PLEX),
-                    None,
-                )
-                webhook_items: list[_PI] = []
-                for key, locations, title, _media_type in webhook_resolution.items_with_locations:
-                    if not locations:
-                        continue
-                    remote_path = str(locations[0])
-                    canonicals: list[str] = []
-                    if plex_cfg_for_webhook is not None:
-                        canonicals = apply_path_mappings(
-                            remote_path,
-                            plex_cfg_for_webhook.path_mappings or [],
-                        )
-                    if not canonicals:
-                        canonicals = [remote_path]
-                    canonical = canonicals[0]
-                    webhook_items.append(
-                        _PI(
-                            canonical_path=canonical,
-                            server_id=(plex_cfg_for_webhook.id if plex_cfg_for_webhook else ""),
-                            item_id_by_server=(
-                                {plex_cfg_for_webhook.id: key} if (plex_cfg_for_webhook and key) else {}
-                            ),
-                            title=title or canonical,
-                            library_id=None,
-                        )
-                    )
-
-                if not webhook_items:
-                    logger.info(
-                        "Webhook resolved {} item(s) but no canonical paths were derivable — skipping dispatch.",
-                        len(webhook_resolution.items),
-                    )
-                else:
-                    result = _dispatch_items(webhook_items, "Webhook Targets")
-                    total_successful += result["completed"]
-                    total_failed += result["failed"]
-                    total_processed += result["completed"] + result["failed"]
-                    cancellation_requested = cancellation_requested or result["cancelled"]
-                    _merge_outcome(result)
-
-            # K4: route any path Plex couldn't claim through the multi-server
-            # dispatcher so Emby/Jellyfin webhooks resolve via their own APIs
-            # instead of dying at the Plex resolver. Only fires when at least
-            # one non-Plex server is configured AND the server_id pin (if any)
-            # isn't a Plex server itself — otherwise we'd just churn on paths
-            # the user explicitly scoped to Plex.
-            unresolved = list(webhook_resolution.unresolved_paths or [])
-            if unresolved:
-                try:
-                    from ..web.settings_manager import get_settings_manager
-
-                    raw = get_settings_manager().get("media_servers") or []
-                    has_non_plex = any(
-                        isinstance(e, dict)
-                        and (e.get("type") or "").lower() in ("emby", "jellyfin")
-                        and e.get("enabled", True)
-                        for e in raw
-                    )
-                except Exception:
-                    has_non_plex = False
-                pinned = getattr(config, "server_id_filter", None)
-                pinned_is_non_plex = False
-                if pinned and isinstance(pinned, str):
-                    try:
-                        pinned_entry = next(
-                            (e for e in raw if isinstance(e, dict) and e.get("id") == pinned),
-                            None,
-                        )
-                        pinned_is_non_plex = bool(
-                            pinned_entry and (pinned_entry.get("type") or "").lower() in ("emby", "jellyfin")
-                        )
-                    except Exception:
-                        pinned_is_non_plex = False
-                if has_non_plex and (not pinned or pinned_is_non_plex or pinned_entry):
-                    logger.info(
-                        "K4 fallback: {} path(s) unresolved by Plex — dispatching through multi-server registry "
-                        "for Emby/Jellyfin owners.",
-                        len(unresolved),
-                    )
-                    try:
-                        fallback_counts = _dispatch_webhook_paths_multi_server(
-                            config,
-                            progress_callback=progress_callback,
-                            cancel_check=cancel_check,
-                            job_id=job_id,
-                            paths=unresolved,
-                        )
-                        for k, v in (fallback_counts or {}).items():
-                            aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
-                    except Exception as exc:
-                        logger.warning(
-                            "K4 multi-server fallback failed ({}: {}). The unresolved paths will go through the retry queue as usual.",
-                            type(exc).__name__,
-                            exc,
-                        )
+            webhook_resolution_payload = _run_webhook_paths_phase(
+                config,
+                plex,
+                registry,
+                dispatch_items=_dispatch_items,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                job_id=job_id,
+                totals=totals,
+                aggregate_outcome=aggregate_outcome,
+            )
+            return_data = {"webhook_resolution": webhook_resolution_payload}
         else:
-            # Plex full-scan now flows through the unified per-vendor
-            # processor → ProcessableItem → process_canonical_path path,
-            # the same one Emby and Jellyfin already use. The legacy
-            # tuple-shape get_library_sections() pump is gone; this kills
-            # the dual-pipeline situation that lived in run_processing()
-            # while every other entry point already used the new path.
-            all_media_items: list = []
-            try:
-                for item in _enumerate_plex_full_scan_items(
-                    config,
-                    registry,
-                    cancel_check=cancel_check,
-                    progress_callback=progress_callback,
-                ):
-                    if cancel_check and cancel_check():
-                        cancellation_requested = True
-                        break
-                    all_media_items.append(item)
-            except Exception as exc:
-                logger.error(
-                    "Plex full-scan enumeration failed ({}: {}). "
-                    "Verify Plex is reachable and the access token in Settings is valid.",
-                    type(exc).__name__,
-                    exc,
-                )
+            ok = _run_plex_full_scan_phase(
+                config,
+                registry,
+                dispatch_items=_dispatch_items,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                totals=totals,
+                aggregate_outcome=aggregate_outcome,
+            )
+            if not ok:
                 return {"outcome": aggregate_outcome}
 
-            if cancel_check and cancel_check():
-                logger.info("Cancellation requested before dispatch — skipping processing")
-                cancellation_requested = True
-            elif not all_media_items:
-                logger.info("No media items found across selected libraries")
-            else:
-                # When sort_by is "random", shuffle the combined cross-library list
-                # so parallel workers statistically pull from multiple physical disks
-                # at once (big win on unraid shfs / mergerfs / JBOD setups).
-                if config.sort_by == "random":
-                    random.Random().shuffle(all_media_items)
-                    logger.info("Shuffled {} items for random processing order", len(all_media_items))
-
-                total_items = len(all_media_items)
-                logger.info("Processing {} items across selected Plex libraries", total_items)
-
-                result = _dispatch_items(all_media_items, "All Libraries")
-                total_successful += result["completed"]
-                total_failed += result["failed"]
-                total_processed += result["completed"] + result["failed"]
-                cancellation_requested = cancellation_requested or result["cancelled"]
-                _merge_outcome(result)
-
-        generated = aggregate_outcome.get("generated", 0)
-        bif_exists = aggregate_outcome.get("skipped_bif_exists", 0)
-        not_found = aggregate_outcome.get("skipped_file_not_found", 0)
-        excluded = aggregate_outcome.get("skipped_excluded", 0)
-        invalid_hash = aggregate_outcome.get("skipped_invalid_hash", 0)
-        failed_count = aggregate_outcome.get("failed", 0)
-        no_parts = aggregate_outcome.get("no_media_parts", 0)
-
-        parts = []
-        if generated:
-            parts.append(f"{generated} generated")
-        if bif_exists:
-            parts.append(f"{bif_exists} already existed")
-        if not_found:
-            parts.append(f"{not_found} not found")
-        if excluded:
-            parts.append(f"{excluded} excluded")
-        if invalid_hash:
-            parts.append(f"{invalid_hash} invalid hash")
-        if failed_count:
-            parts.append(f"{failed_count} failed")
-        if no_parts:
-            parts.append(f"{no_parts} no media parts")
-
-        summary = ", ".join(parts) if parts else "no items processed"
-
-        if cancellation_requested:
+        summary = _format_outcome_summary(aggregate_outcome)
+        if totals["cancelled"]:
             logger.info("Processing stopped by cancellation: {}", summary)
         else:
             logger.info("Processing complete: {}", summary)
 
-        if total_processed > 0 and not_found > 0 and generated == 0:
+        not_found = aggregate_outcome.get("skipped_file_not_found", 0)
+        if totals["processed"] > 0 and not_found > 0 and aggregate_outcome.get("generated", 0) == 0:
             logger.warning(
                 "All {} item(s) finished with the file not found locally — no previews were generated this run. "
                 "This almost always means your path mappings are wrong: Plex reports the file at one path, but this "
