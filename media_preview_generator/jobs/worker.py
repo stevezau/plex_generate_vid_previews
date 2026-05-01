@@ -156,6 +156,12 @@ class Worker:
         self.completed = 0
         self.failed = 0
         self.outcome_counts = {r.value: 0 for r in ProcessingResult}
+        # D7 — most recent task's publisher list (one entry per (server,
+        # adapter) the file fanned out to). Captured each task; consumed by
+        # the dispatcher's _merge_worker_outcome on completion. Reset every
+        # task so a stale value from the previous item never bleeds into
+        # the next job's publisher chip set.
+        self.last_publishers: list[dict] = []
 
         # In-place GPU→CPU fallback state (set during a retry, cleared on next
         # task assignment). Surfaced to the UI so users see why the switch
@@ -265,6 +271,9 @@ class Worker:
         self._pre_task_completed = self.completed
         self._pre_task_failed = self.failed
         self._pre_task_outcome_counts = dict(self.outcome_counts)
+        # Reset last-task publisher list so a previous task's fan-out
+        # doesn't bleed into this one's chip set on the dispatcher merge.
+        self.last_publishers = []
 
         self.is_busy = True
         self.current_task = item.canonical_path
@@ -377,11 +386,37 @@ class Worker:
             # callback so the Jobs UI can show a per-file row (Files panel
             # under each job). Caller-side cap protects 100k-item scans
             # from bloating the JSONL — see web/jobs.record_file_result.
+            # Passes the per-publisher attribution (D9) so each file row
+            # can show which server(s) it landed on.
             def _persist(outcome: ProcessingResult, reason: str = "") -> None:
-                _notify_file_result(item.canonical_path, outcome, reason, self.display_name)
+                _notify_file_result(
+                    item.canonical_path,
+                    outcome,
+                    reason,
+                    self.display_name,
+                    servers=list(self.last_publishers or []),
+                )
+
+            # Capture this task's publisher fan-out for the dispatcher to
+            # merge into JobTracker.publishers_by_server (D7). Each entry
+            # is a flat dict — not the dataclass — so the dispatcher
+            # doesn't need to import processing.multi_server.
+            def _capture_publishers(ms_result_obj) -> None:
+                self.last_publishers = [
+                    {
+                        "server_id": p.server_id,
+                        "server_name": p.server_name,
+                        "adapter_name": p.adapter_name,
+                        "status": getattr(p.status, "value", str(p.status)),
+                        "message": p.message or "",
+                        "frame_source": p.frame_source or "extracted",
+                    }
+                    for p in (ms_result_obj.publishers or [])
+                ]
 
             try:
                 ms_result = _run_once(self.gpu, self.gpu_device)
+                _capture_publishers(ms_result)
                 result = _record_outcome(ms_result.status)
                 self.outcome_counts[result.value] += 1
                 if result == ProcessingResult.FAILED:
@@ -421,6 +456,7 @@ class Worker:
                         )
                         try:
                             ms_result = _run_once(None, None)
+                            _capture_publishers(ms_result)
                             result = _record_outcome(ms_result.status)
                             self.outcome_counts[result.value] += 1
                             if result == ProcessingResult.FAILED:

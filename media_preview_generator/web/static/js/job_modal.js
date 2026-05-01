@@ -520,7 +520,7 @@ function renderFileResultsTable(files) {
     var countEl = document.getElementById('fileResultsCount');
 
     if (!files || files.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No matching files</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">No matching files</td></tr>';
         countEl.textContent = _fileFilteredCount === 0 && _fileTotal > 0
             ? '0 of ' + _fileTotal + ' files match'
             : '';
@@ -541,16 +541,58 @@ function renderFileResultsTable(files) {
         var shortName = fileName.split('/').pop() || fileName;
         var reason = escapeHtml(f.reason || '');
         var worker = escapeHtml(f.worker || '');
+        // D9 \u2014 per-server pills tell the user which server each file
+        // landed on. For single-server installs it's one pill; for
+        // multi-server fan-out it's one per target.
+        var serversHtml = _renderFileServerPills(f.servers || []);
 
         html += '<tr>'
             + '<td class="text-truncate" style="max-width: 400px;" title="' + escapeHtml(fileName) + '">'
             + '<small>' + escapeHtml(shortName) + '</small></td>'
             + '<td><span class="badge ' + meta.badge + '">' + meta.label + '</span></td>'
+            + '<td>' + serversHtml + '</td>'
             + '<td><small class="text-muted" title="' + reason + '">' + reason + '</small></td>'
             + '<td><small class="text-muted">' + worker + '</small></td>'
             + '</tr>';
     }
     tbody.innerHTML = html;
+}
+
+// D9 \u2014 render the per-server attribution pills for a file row. Each
+// `servers` entry has {id, name, type, status, frame_source?}. Colour
+// matches the row-level _serverBadge palette so chips on the Jobs page
+// and pills on the Files panel feel like the same UI element.
+var _FILE_SERVER_PALETTE = {
+    plex:     'bg-warning text-dark',
+    emby:     'bg-success',
+    jellyfin: 'bg-info text-dark',
+};
+var _FILE_SERVER_STATUS_TIP = {
+    published:    'Published',
+    skipped:      'Skipped (already up to date)',
+    not_indexed:  'Server hasn\'t indexed this file yet',
+    failed:       'Publish failed',
+    no_owners:    'No server owns this path',
+};
+function _renderFileServerPills(servers) {
+    if (!servers || !servers.length) return '<small class="text-muted">&mdash;</small>';
+    var html = '';
+    for (var i = 0; i < servers.length; i++) {
+        var s = servers[i] || {};
+        var t = String(s.type || '').toLowerCase();
+        var cls = _FILE_SERVER_PALETTE[t] || 'bg-secondary';
+        var label = s.name || (t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Server');
+        var status = String(s.status || '').toLowerCase();
+        // Dim the pill (lower opacity) when the publisher didn't actually
+        // publish \u2014 gives the user a one-glance "this server got it" vs
+        // "this server skipped it" signal without needing a second column.
+        var dim = (status && status !== 'published') ? ' style="opacity:.55;"' : '';
+        var tip = _FILE_SERVER_STATUS_TIP[status] || status || '';
+        var title = tip ? (escapeHtmlAttr(label) + ' \u2014 ' + escapeHtmlAttr(tip)) : escapeHtmlAttr(label);
+        html += '<span class="badge me-1 ' + cls + '"' + dim + ' title="' + title + '">'
+            + escapeHtml(label) + '</span>';
+    }
+    return html;
 }
 
 function renderFilePagination() {

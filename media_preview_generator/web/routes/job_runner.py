@@ -412,13 +412,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                 else:
                     clear_failures()
 
-                    def _file_result_cb(file_path, outcome_str, reason, worker):
+                    def _file_result_cb(file_path, outcome_str, reason, worker, servers=None):
                         job_manager.record_file_result(
                             job_id,
                             file_path,
                             outcome_str,
                             reason,
                             worker,
+                            servers=servers,
                         )
 
                     set_file_result_callback(_file_result_cb)
@@ -568,20 +569,16 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         import os as _os
                         from datetime import datetime, timedelta, timezone
 
+                        # Drop the legacy "Sonarr: " / "Radarr: " prefix from the
+                        # parent name — the source chip on the row carries the
+                        # trigger label now, so the prefix is duplicate noise.
+                        # The "Retry:" prefix stays — it tells the user this row
+                        # is a retry, not the original.
                         basenames = [_os.path.basename(p) for p in paths]
-                        parent_lib = current_job.library_name if current_job else ""
-                        if parent_lib.startswith("Retry: "):
-                            parent_lib = parent_lib[len("Retry: ") :]
-                        # Extract source prefix (e.g. "Sonarr") and build
-                        # a name reflecting the actual unresolved count.
-                        colon_pos = parent_lib.find(": ")
-                        source_prefix = parent_lib[:colon_pos] if colon_pos > 0 else parent_lib
                         if len(paths) == 1:
-                            retry_library_name = f"Retry: {source_prefix}: {basenames[0]}"
-                        elif source_prefix:
-                            retry_library_name = f"Retry: {source_prefix}: {len(paths)} files"
-                        else:
                             retry_library_name = f"Retry: {basenames[0]}"
+                        else:
+                            retry_library_name = f"Retry: {len(paths)} files"
                         parent_id = job_config.get("parent_job_id") or job_id
                         backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
                         scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_delay)).isoformat()

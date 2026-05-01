@@ -1107,13 +1107,19 @@ class JobManager:
                 logger.debug("Could not append to job log {}: {}", log_path, e)
 
     def get_logs(self, job_id: str, last_n: int | None = None) -> list[str]:
-        """Get logs for a job (from memory if present, else from file; retention message if cleared)."""
+        """Get logs for a job (file-first; falls back to in-memory deque).
+
+        D10 — pre-fix this short-circuited to the in-memory deque (capped
+        at ``_max_log_lines = 500``) when the job was still in memory,
+        only reading from the file once the deque was gone. For an
+        800-item library scan that meant the FIRST 300+ lines (job start,
+        config load, server connect, library enumeration) silently aged
+        out of the deque and the user saw the log starting mid-dispatch.
+        File is authoritative since add_log writes to both — read it
+        first; deque is the fallback for the rare case the file write
+        failed.
+        """
         with self._lock:
-            if job_id in self._job_logs:
-                logs = list(self._job_logs[job_id])
-                if last_n:
-                    return logs[-last_n:]
-                return logs
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             if os.path.isfile(log_path):
                 try:
@@ -1124,6 +1130,11 @@ class JobManager:
                     return logs
                 except OSError:
                     pass
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                if last_n:
+                    return logs[-last_n:]
+                return logs
             job = self._jobs.get(job_id)
             if job and job.status in (
                 JobStatus.COMPLETED,
@@ -1136,21 +1147,11 @@ class JobManager:
     def get_logs_paginated(self, job_id: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
         """Get a slice of log lines with total count for pagination.
 
-        Args:
-            job_id: The job identifier.
-            offset: 0-based line index to start from.
-            limit: Maximum number of lines to return (None = all from offset).
-
-        Returns:
-            Dict with keys: lines, total_lines, offset.
+        D10 — same file-first preference as :meth:`get_logs` so paged
+        readers can scroll back to the actual start of the job, not the
+        deque-cap-truncated version.
         """
         with self._lock:
-            if job_id in self._job_logs:
-                logs = list(self._job_logs[job_id])
-                total = len(logs)
-                sliced = logs[offset : offset + limit] if limit is not None else logs[offset:]
-                return {"lines": sliced, "total_lines": total, "offset": offset}
-
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
             if os.path.isfile(log_path):
                 try:
@@ -1162,6 +1163,12 @@ class JobManager:
                     return {"lines": sliced, "total_lines": total, "offset": offset}
                 except OSError:
                     pass
+
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                total = len(logs)
+                sliced = logs[offset : offset + limit] if limit is not None else logs[offset:]
+                return {"lines": sliced, "total_lines": total, "offset": offset}
 
             job = self._jobs.get(job_id)
             if job and job.status in (
@@ -1207,6 +1214,7 @@ class JobManager:
         outcome: str,
         reason: str = "",
         worker: str = "",
+        servers: list[dict] | None = None,
     ) -> None:
         """Append a per-file processing result to the job's JSONL file.
 
@@ -1216,6 +1224,12 @@ class JobManager:
             outcome: ProcessingResult value string (e.g. "generated", "failed").
             reason: Human-readable detail (skip/failure reason).
             worker: Worker display name (e.g. "GPU Worker 1 (NVIDIA TITAN RTX)").
+            servers: Per-publisher attribution list (D9). Each entry is the
+                flat dict shape Worker._capture_publishers builds. The Jobs
+                UI uses this to show per-server pills on each file row
+                so the user can see which servers received each preview
+                (single-server installs always get one pill; multi-server
+                fan-out gets one per target).
         """
         path = self._file_results_path(job_id)
 
@@ -1258,13 +1272,48 @@ class JobManager:
                         logger.debug("Could not append truncation marker to {}: {}", path, e)
                 return
 
+        # D8 — when no explicit reason was supplied (the worker's
+        # success/skip path), synthesise one from the publisher messages
+        # so the UI doesn't show a column of "(no reason)" rows. Picks
+        # the first non-empty message; on multi-server fan-out the
+        # full per-server list is in the `servers` field below.
+        derived_reason = reason
+        if not derived_reason and servers:
+            for s in servers:
+                msg = (s or {}).get("message") or ""
+                if msg:
+                    derived_reason = msg
+                    break
+
         record = {
             "file": file_path,
             "outcome": outcome,
-            "reason": reason,
+            "reason": derived_reason,
             "worker": worker,
             "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
         }
+        # Slim per-server attribution — keep the JSONL compact (no
+        # canonical_path duplication, no frame_source unless it differs
+        # from the boring "extracted" default). One entry per
+        # (server, adapter) the file fanned out to.
+        if servers:
+            slim = []
+            for s in servers:
+                if not isinstance(s, dict):
+                    continue
+                entry = {
+                    "id": s.get("server_id") or "",
+                    "name": s.get("server_name") or "",
+                    "type": (s.get("server_type") or "").lower(),
+                    "status": s.get("status") or "",
+                }
+                fs = s.get("frame_source") or ""
+                if fs and fs != "extracted":
+                    entry["frame_source"] = fs
+                slim.append(entry)
+            if slim:
+                record["servers"] = slim
+
         try:
             with open(path, "a") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")

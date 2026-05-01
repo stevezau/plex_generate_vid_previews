@@ -535,12 +535,15 @@ def _execute_webhook_job(debounce_key: str) -> None:
 
         basenames = [os.path.basename(p) for p in webhook_paths]
         first_title = batch_titles[0] if batch_titles else None
+        # Drop the "Sonarr: " / "Radarr: " prefix — the source chip on the
+        # job row carries that label now, so prepending it to library_name
+        # is duplicate text. (D2 follow-up.)
         if len(webhook_paths) == 1 and first_title:
-            library_display = f"{source.title()}: {first_title}"
+            library_display = first_title
         elif len(webhook_paths) == 1:
-            library_display = f"{source.title()}: {basenames[0]}"
+            library_display = basenames[0]
         else:
-            library_display = f"{source.title()}: {len(webhook_paths)} files"
+            library_display = f"{len(webhook_paths)} files"
 
         batch_server_id = batch.get("server_id")
         b_sid, b_sname, b_stype = _resolve_webhook_server_context(batch_server_id)

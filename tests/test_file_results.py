@@ -232,19 +232,35 @@ class TestFileResultCallback:
 
         captured = []
 
-        def cb(file_path, outcome_str, reason, worker):
-            captured.append({"file": file_path, "outcome": outcome_str, "reason": reason})
+        def cb(file_path, outcome_str, reason, worker, servers=None):
+            captured.append(
+                {
+                    "file": file_path,
+                    "outcome": outcome_str,
+                    "reason": reason,
+                    "servers": list(servers or []),
+                }
+            )
 
         set_file_result_callback(cb)
         try:
             _notify_file_result("/a.mkv", ProcessingResult.GENERATED, "", "GPU 1")
-            _notify_file_result("/b.mkv", ProcessingResult.FAILED, "exit 1", "CPU 1")
+            _notify_file_result(
+                "/b.mkv",
+                ProcessingResult.FAILED,
+                "exit 1",
+                "CPU 1",
+                servers=[{"server_id": "plex-default", "server_name": "Plex", "status": "failed"}],
+            )
         finally:
             set_file_result_callback(None)
 
         assert len(captured) == 2
         assert captured[0]["outcome"] == "generated"
         assert captured[1]["outcome"] == "failed"
+        # D9 — per-server attribution flows through the callback so the JSONL
+        # gets a `servers` field per file row.
+        assert captured[1]["servers"] == [{"server_id": "plex-default", "server_name": "Plex", "status": "failed"}]
 
     def test_callback_cleared(self):
         from media_preview_generator.processing import (
@@ -320,6 +336,113 @@ class TestWorkerCallsNotifyFileResult:
             f"fallback-cancelled / fallback-failed, CPU codec error, generic exception). "
             f"Found {persist_calls} — a branch may have been missed when adding new error handling."
         )
+
+
+class TestFileResultServerAttribution:
+    """D8 + D9 — per-file rows carry a `servers` list and a derived reason
+    so the user can see which server got the file and why each row landed
+    where it did.
+    """
+
+    def test_servers_list_is_persisted_slim(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "generated",
+            "",
+            "GPU 1",
+            servers=[
+                {
+                    "server_id": "plex-default",
+                    "server_name": "My Plex",
+                    "server_type": "plex",
+                    "status": "published",
+                    "message": "",
+                    "frame_source": "extracted",
+                },
+                {
+                    "server_id": "emby-1",
+                    "server_name": "Emby",
+                    "server_type": "emby",
+                    "status": "published",
+                    "frame_source": "cache_hit",
+                },
+            ],
+        )
+        results = jm.get_file_results(job.id)
+        assert len(results) == 1
+        assert results[0]["servers"] == [
+            {"id": "plex-default", "name": "My Plex", "type": "plex", "status": "published"},
+            # frame_source kept only when it differs from "extracted"
+            {"id": "emby-1", "name": "Emby", "type": "emby", "status": "published", "frame_source": "cache_hit"},
+        ]
+
+    def test_reason_derived_from_publisher_message_when_blank(self, config_dir):
+        """D8 — when the worker calls _persist with reason='', synthesise from publisher message."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "skipped_bif_exists",
+            "",  # ← worker passes empty reason for skip
+            "GPU 1",
+            servers=[
+                {
+                    "server_id": "plex-default",
+                    "server_name": "Plex",
+                    "server_type": "plex",
+                    "status": "skipped",
+                    "message": "BIF already exists at /plex/Media/.../index-sd.bif",
+                }
+            ],
+        )
+        r = jm.get_file_results(job.id)[0]
+        assert r["reason"] == "BIF already exists at /plex/Media/.../index-sd.bif", (
+            "When the caller doesn't pass an explicit reason, the publisher's message field "
+            "must surface as the row's reason — otherwise the Files panel shows '(no reason)' "
+            "for every skipped row, which was the original D8 user complaint."
+        )
+
+    def test_explicit_reason_wins_over_publisher_message(self, config_dir):
+        """An explicit reason from the caller is never overridden."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "failed",
+            "FFmpeg exit 183 — codec not supported",
+            "GPU 1",
+            servers=[
+                {
+                    "server_id": "plex-default",
+                    "server_name": "Plex",
+                    "status": "failed",
+                    "message": "publisher said different thing",
+                }
+            ],
+        )
+        r = jm.get_file_results(job.id)[0]
+        assert r["reason"] == "FFmpeg exit 183 — codec not supported"
+
+    def test_servers_field_omitted_when_empty(self, config_dir):
+        """No servers list → no servers field in the JSONL (keep records compact)."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(job.id, "/media/foo.mkv", "generated", "", "GPU 1")
+        r = jm.get_file_results(job.id)[0]
+        assert "servers" not in r
 
 
 class TestFileResultsCap:

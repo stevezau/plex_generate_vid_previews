@@ -668,7 +668,10 @@ def test_execute_webhook_job_single_file_uses_title_for_library_display(
 
     mock_job_mgr.return_value.create_job.assert_called_once()
     call_kw = mock_job_mgr.return_value.create_job.call_args[1]
-    assert call_kw["library_name"] == "Sonarr: Murder at the Post Office S01E05"
+    # The "Sonarr: " / "Radarr: " prefix was removed once the Jobs row
+    # picked up a source chip carrying the trigger label (D2 follow-up).
+    # Library name is now just the title.
+    assert call_kw["library_name"] == "Murder at the Post Office S01E05"
 
 
 @patch("media_preview_generator.web.webhooks.get_settings_manager")

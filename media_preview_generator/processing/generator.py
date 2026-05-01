@@ -199,13 +199,26 @@ def set_file_result_callback(callback) -> None:
         _file_result_callback = callback
 
 
-def _notify_file_result(file_path: str, outcome: "ProcessingResult", reason: str = "", worker: str = "") -> None:
-    """Invoke the file-result callback if one is set."""
+def _notify_file_result(
+    file_path: str,
+    outcome: "ProcessingResult",
+    reason: str = "",
+    worker: str = "",
+    servers: list[dict] | None = None,
+) -> None:
+    """Invoke the file-result callback if one is set.
+
+    ``servers`` carries per-publisher attribution for this file (one entry
+    per (server, adapter) the file fanned out to). The Jobs UI uses it to
+    show per-server pills on each file row (D9). Each entry is the flat
+    dict shape Worker._capture_publishers builds — keys: server_id,
+    server_name, server_type, status, message, adapter_name, frame_source.
+    """
     with _file_result_callback_lock:
         cb = _file_result_callback
     if cb is not None:
         try:
-            cb(file_path, outcome.value, reason, worker)
+            cb(file_path, outcome.value, reason, worker, servers or [])
         except Exception:
             logger.debug("File result callback error for {}", file_path, exc_info=True)
 

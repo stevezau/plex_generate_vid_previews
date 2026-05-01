@@ -1145,7 +1145,27 @@ def run_processing(
                     priority=priority if priority is not None else PRIORITY_NORMAL,
                 )
                 tracker.wait()
-                return tracker.get_result()
+                result = tracker.get_result()
+                # D7 — propagate the per-server publisher fan-out captured
+                # by Worker.assign_task → Dispatcher._merge_worker_outcome
+                # → JobTracker.publishers_by_server. The OTHER orchestrator
+                # path (_dispatch_processable_items via ThreadPoolExecutor)
+                # already calls append_publishers per item; THIS path
+                # (the worker-pool dispatcher) accumulates per server and
+                # ships the deduped set in one batch at completion.
+                pub_rows = result.get("publishers") or []
+                if pub_rows:
+                    try:
+                        from ..web.jobs import get_job_manager
+
+                        get_job_manager().append_publishers(job_id, pub_rows)
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not append publisher rows for job {}: {}",
+                            job_id,
+                            exc,
+                        )
+                return result
             else:
                 # Local pool mode (no dispatcher) — emit initial progress
                 # before starting the pool.
