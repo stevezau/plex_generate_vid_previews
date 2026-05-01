@@ -38,6 +38,16 @@ class TestBackoffSchedule:
         """First retry must fire fast — Plex scans usually complete in seconds."""
         assert _BACKOFF[0] <= 60
 
+    def test_public_alias_is_same_object(self):
+        """D15 — BACKOFF_SCHEDULE is the public name; _BACKOFF is the
+        backwards-compat alias. The job_runner spawn-retry path imports
+        the public name so the resolution-step retry cadence stays in
+        lockstep with the publisher-step retry cadence."""
+        from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
+
+        assert BACKOFF_SCHEDULE is _BACKOFF
+        assert BACKOFF_SCHEDULE == (30, 120, 300, 900, 3600)
+
 
 @pytest.mark.slow
 class TestRetrySchedulerSchedule:

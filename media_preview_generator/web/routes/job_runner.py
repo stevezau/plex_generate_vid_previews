@@ -569,6 +569,8 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         import os as _os
                         from datetime import datetime, timedelta, timezone
 
+                        from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
+
                         # Drop the legacy "Sonarr: " / "Radarr: " prefix from the
                         # parent name — the source chip on the row carries the
                         # trigger label now, so the prefix is duplicate noise.
@@ -580,7 +582,18 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         else:
                             retry_library_name = f"Retry: {len(paths)} files"
                         parent_id = job_config.get("parent_job_id") or job_id
-                        backoff_delay = min(300, retry_delay_sec * (2 ** (attempt - 1)))
+                        # D15 — borrow the slow-backoff schedule from the
+                        # publisher-step retry queue (30s, 2m, 5m, 15m, 60m).
+                        # The old formula `30 * 2^(n-1)` capped at 5min spaced
+                        # 3 attempts inside ~3.5 minutes — far too tight for
+                        # "Plex hasn't scanned the file yet", which routinely
+                        # takes minutes. Users would see 4 retry jobs in the
+                        # History, all failing for the same reason. The user-
+                        # tunable webhook_retry_delay (default 30) now scales
+                        # the schedule so manual tuning still works.
+                        scale = max(0.5, retry_delay_sec / 30.0)
+                        slow_idx = min(attempt - 1, len(BACKOFF_SCHEDULE) - 1)
+                        backoff_delay = max(1, int(BACKOFF_SCHEDULE[slow_idx] * scale))
                         scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_delay)).isoformat()
                         parent_priority = current_job.priority if current_job else 2
                         # K1: preserve the originating server triple so retry
@@ -657,7 +670,11 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         if is_retry and retry_attempt < effective_max:
                             next_attempt = retry_attempt + 1
                             spawned_retry_id = _spawn_retry_job(retry_paths, next_attempt)
-                            next_delay = min(300, retry_delay_sec * (2 ** (next_attempt - 1)))
+                            from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
+
+                            scale = max(0.5, retry_delay_sec / 30.0)
+                            slow_idx = min(next_attempt - 1, len(BACKOFF_SCHEDULE) - 1)
+                            next_delay = max(1, int(BACKOFF_SCHEDULE[slow_idx] * scale))
                             reason_parts = []
                             if unresolved_paths:
                                 reason_parts.append(f"{len(unresolved_paths)} unresolved")

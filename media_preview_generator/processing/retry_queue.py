@@ -44,11 +44,17 @@ from typing import Any
 
 from loguru import logger
 
-#: Backoff schedule in seconds for each attempt (1-indexed: ``_BACKOFF[0]``
+#: Backoff schedule in seconds for each attempt (1-indexed: ``BACKOFF_SCHEDULE[0]``
 #: is the delay before attempt #2). Five entries → up to five retries
 #: before giving up. Total wall time is ~82 minutes, deliberately past
 #: typical Plex full-scan duration on a small library.
-_BACKOFF: tuple[int, ...] = (30, 120, 300, 900, 3600)
+#:
+#: Public so the resolution-step retry-job spawner in
+#: ``web/routes/job_runner.py`` can match this cadence (D15) — both code
+#: paths are fundamentally "wait for Plex to finish indexing", so they
+#: should pace identically and not race each other.
+BACKOFF_SCHEDULE: tuple[int, ...] = (30, 120, 300, 900, 3600)
+_BACKOFF = BACKOFF_SCHEDULE  # backwards-compat alias
 
 
 class RetryScheduler:
