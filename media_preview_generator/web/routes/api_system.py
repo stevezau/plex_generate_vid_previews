@@ -2,6 +2,7 @@
 
 import json as _json
 import os
+import re as _re
 import threading
 import time
 
@@ -564,6 +565,12 @@ def get_log_history():
         limit = 500
     min_level = (request.args.get("level") or "").upper()
     before = request.args.get("before", "")
+    # Lexical compare of ISO timestamps works only when `before` actually
+    # looks like one (digits + colon-separated time). A bogus cursor would
+    # otherwise silently filter every entry — confusing for a user who
+    # typo'd the URL. Reject with 400 so the bug is visible.
+    if before and not _re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}", before):
+        return jsonify({"error": f"Invalid 'before' cursor: {before!r} — expected ISO 8601 timestamp"}), 400
 
     if min_level not in LEVEL_ORDER:
         min_level = ""

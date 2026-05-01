@@ -111,15 +111,20 @@ def get_auth_token() -> str:
 
 def regenerate_token() -> str:
     """Regenerate the authentication token."""
-    # Don't regenerate if using environment variable
-    if os.environ.get("WEB_AUTH_TOKEN"):
+    # Don't regenerate if using environment variable.
+    # Read the env var once into a local — between the two reads of
+    # os.environ.get(...) another thread (e.g. a test) could mutate the
+    # environment, leaving the second .get() returning None and the
+    # `-> str` contract violated.
+    env_token = os.environ.get("WEB_AUTH_TOKEN")
+    if env_token:
         logger.warning(
             "Token regeneration was requested but ignored — the token is being set by the "
             "WEB_AUTH_TOKEN environment variable, which always wins. "
             "To regenerate, unset WEB_AUTH_TOKEN (remove it from your docker-compose / docker run "
             "command) and restart the container, then try again."
         )
-        return os.environ.get("WEB_AUTH_TOKEN")
+        return env_token
 
     new_token = generate_token()
     config = load_auth_config()

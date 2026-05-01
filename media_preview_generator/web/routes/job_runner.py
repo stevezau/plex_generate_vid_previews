@@ -543,9 +543,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     # (we can't reverse-map stale Plex paths back to webhook
                     # paths, so resubmit the originals — already-processed
                     # items will be skipped as bif_exists).
+                    #
+                    # webhook_paths lives on the JOB's config dict, not on
+                    # global settings — older code read settings.get(...)
+                    # which would silently inherit stale paths from any
+                    # past job that ever wrote the key globally.
                     retry_paths = list(unresolved_paths)
                     if not_found_on_disk:
-                        for wp in settings.get("webhook_paths") or []:
+                        for wp in job_config.get("webhook_paths") or []:
                             if wp not in retry_paths:
                                 retry_paths.append(wp)
 

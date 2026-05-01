@@ -2935,6 +2935,21 @@ class TestLogHistoryAPI:
         assert len(data["lines"]) == 1
         assert data["lines"][0]["msg"] == "old"
 
+    def test_log_history_rejects_malformed_before_cursor(self, app, authed_client, tmp_path):
+        """A bogus `before` param used to silently filter every entry
+        because the lexical ts compare put real timestamps before junk
+        like "abc". Now returns 400 so the typo is visible to the user.
+        """
+        fake = str(tmp_path / "logs" / "app.log")
+        self._write_log(fake, [{"ts": "2026-03-22 09:10:18.100", "level": "INFO", "msg": "x"}])
+        with patch(
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get("/api/logs/history?before=tomorrow", headers=_api_headers())
+        assert resp.status_code == 400
+        assert "before" in resp.get_json()["error"].lower()
+
     def test_log_history_limit(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "logs" / "app.log")
         entries = [

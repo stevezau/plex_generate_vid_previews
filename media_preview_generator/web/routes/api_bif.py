@@ -766,7 +766,8 @@ def trickplay_info():
         return jsonify({"error": "Invalid manifest path"}), 400
 
     try:
-        manifest = _json.loads(open(resolved, "rb").read().decode("utf-8"))  # noqa: SIM115
+        with open(resolved, encoding="utf-8") as fh:
+            manifest = _json.load(fh)
     except (OSError, ValueError) as exc:
         return jsonify({"error": f"Could not read manifest: {exc}"}), 400
 
@@ -782,8 +783,13 @@ def trickplay_info():
     tile_w = int(info["TileWidth"])
     tile_h = int(info["TileHeight"])
     thumb_count = int(info.get("ThumbnailCount") or 0)
+    if tile_w < 1 or tile_h < 1:
+        # Defensive: a manifest with TileWidth/Height of 0 would later
+        # cause a ZeroDivisionError downstream when /trickplay-frame
+        # divides pos_in_sheet by frames_per_sheet.
+        return jsonify({"error": f"Manifest has invalid TileWidth/TileHeight: {tile_w}x{tile_h}"}), 400
     frames_per_sheet = tile_w * tile_h
-    sheet_count = (thumb_count + frames_per_sheet - 1) // max(frames_per_sheet, 1)
+    sheet_count = (thumb_count + frames_per_sheet - 1) // frames_per_sheet
     sheets_dir = os.path.splitext(resolved)[0]  # strip ``.json``
 
     sheets = []

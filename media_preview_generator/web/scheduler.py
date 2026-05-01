@@ -170,6 +170,12 @@ class ScheduleManager:
         self.schedules_file = os.path.join(config_dir, "schedules.json")
         self.run_job_callback = run_job_callback
         self._schedules: dict[str, dict] = {}
+        # Single RLock guarding ``_schedules`` mutations + reads. Without
+        # this, APScheduler firing _update_last_run on multiple schedules
+        # concurrently with a CRUD call (create/update/delete) could trip
+        # "dictionary changed size during iteration" inside _save_schedules
+        # which serialises the dict for atomic_json_save_with_backup.
+        self._lock = threading.RLock()
 
         # Ensure config directory exists
         os.makedirs(config_dir, exist_ok=True)
@@ -260,11 +266,19 @@ class ScheduleManager:
                 )
 
     def _save_schedules(self) -> None:
-        """Save schedule metadata to persistent storage."""
+        """Save schedule metadata to persistent storage.
+
+        Caller is expected to hold ``self._lock`` (or this is the bootstrap
+        load path before any concurrent firings can happen). Callers from
+        the public CRUD methods all wrap save under the same lock.
+        """
         try:
             from ..utils import atomic_json_save_with_backup
 
-            atomic_json_save_with_backup(self.schedules_file, {"schedules": self._schedules})
+            # Snapshot under the lock so the dict can't mutate mid-serialisation.
+            with self._lock:
+                snapshot = dict(self._schedules)
+            atomic_json_save_with_backup(self.schedules_file, {"schedules": snapshot})
         except OSError as e:
             logger.error(
                 "Could not save schedules to {} ({}: {}). "
@@ -315,9 +329,10 @@ class ScheduleManager:
 
     def _update_last_run(self, schedule_id: str) -> None:
         """Update the last run time for a schedule."""
-        if schedule_id in self._schedules:
-            self._schedules[schedule_id]["last_run"] = datetime.now(timezone.utc).isoformat()
-            self._save_schedules()
+        with self._lock:
+            if schedule_id in self._schedules:
+                self._schedules[schedule_id]["last_run"] = datetime.now(timezone.utc).isoformat()
+                self._save_schedules()
 
     def create_schedule(
         self,
@@ -406,8 +421,9 @@ class ScheduleManager:
             )
             schedule_meta["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
 
-        self._schedules[schedule_id] = schedule_meta
-        self._save_schedules()
+        with self._lock:
+            self._schedules[schedule_id] = schedule_meta
+            self._save_schedules()
 
         logger.info("Created schedule '{}' (ID: {})", name, schedule_id)
         return schedule_meta
@@ -427,10 +443,11 @@ class ScheduleManager:
         library_ids: list[str] | None = None,
     ) -> dict | None:
         """Update an existing schedule."""
-        if schedule_id not in self._schedules:
-            return None
+        with self._lock:
+            if schedule_id not in self._schedules:
+                return None
 
-        schedule = self._schedules[schedule_id]
+            schedule = self._schedules[schedule_id]
 
         # Update fields
         if name is not None:
@@ -502,20 +519,21 @@ class ScheduleManager:
 
     def delete_schedule(self, schedule_id: str) -> bool:
         """Delete a schedule."""
-        if schedule_id not in self._schedules:
-            return False
+        with self._lock:
+            if schedule_id not in self._schedules:
+                return False
 
-        # Remove from scheduler (may not exist if schedule was disabled)
-        try:
-            self.scheduler.remove_job(schedule_id)
-        except Exception:
-            logger.debug("No existing scheduler job to remove for {}", schedule_id)
+            # Remove from scheduler (may not exist if schedule was disabled)
+            try:
+                self.scheduler.remove_job(schedule_id)
+            except Exception:
+                logger.debug("No existing scheduler job to remove for {}", schedule_id)
 
-        del self._schedules[schedule_id]
-        self._save_schedules()
+            del self._schedules[schedule_id]
+            self._save_schedules()
 
-        logger.info("Deleted schedule {}", schedule_id)
-        return True
+            logger.info("Deleted schedule {}", schedule_id)
+            return True
 
     def get_schedule(self, schedule_id: str) -> dict | None:
         """Get a schedule by ID."""
@@ -531,8 +549,10 @@ class ScheduleManager:
 
     def get_all_schedules(self) -> list[dict]:
         """Get all schedules."""
+        with self._lock:
+            entries = list(self._schedules.items())
         schedules = []
-        for schedule_id, schedule in self._schedules.items():
+        for schedule_id, schedule in entries:
             try:
                 job = self.scheduler.get_job(schedule_id)
                 if job and job.next_run_time:

@@ -77,7 +77,14 @@ def _probe_for_identity(entry: dict) -> str | None:
     try:
         live = _instantiate_for_probe(cfg)
     except Exception as exc:
-        logger.debug("Could not instantiate server for identity probe: {}", exc)
+        logger.info(
+            "Could not auto-discover the server identity for {} ({}: {}). "
+            "The server still saves; webhooks coming back with this server's id will fall through to the "
+            "vendor-type fallback (works fine when only one server of this vendor is configured).",
+            cfg.name or cfg.id,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if live is None:
         return None
@@ -85,7 +92,14 @@ def _probe_for_identity(entry: dict) -> str | None:
     try:
         result = live.test_connection()
     except Exception as exc:
-        logger.debug("Identity probe raised: {}", exc)
+        logger.info(
+            "Could not auto-discover the server identity for {} — connection probe failed ({}: {}). "
+            "Webhooks for this server will rely on the vendor-type fallback. "
+            "Verify the URL + credentials in Settings → Media Servers if this matters for your setup.",
+            cfg.name or cfg.id,
+            type(exc).__name__,
+            exc,
+        )
         return None
 
     return result.server_id if result.ok else None
@@ -649,9 +663,37 @@ def delete_server(server_id: str):
     removed; we don't return the auth body since the entry is gone.
     """
     servers = _get_media_servers()
-    new_servers = [s for s in servers if not (isinstance(s, dict) and s.get("id") == server_id)]
-    if len(new_servers) == len(servers):
+    target = next((s for s in servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
+    new_servers = [s for s in servers if not (isinstance(s, dict) and s.get("id") == server_id)]
+
+    # Best-effort: unregister this server's webhook from plex.tv before
+    # we drop the entry. Otherwise Plex keeps POSTing to a URL that's no
+    # longer associated with the deleted server. Failures here don't
+    # block the delete — the user's intent (remove from this app) is
+    # what we honour.
+    if (target.get("type") or "").lower() == "plex":
+        try:
+            from .. import plex_webhook_registration as pwh
+
+            token = ((target.get("auth") or {}).get("token") or "").strip()
+            url = ((target.get("output") or {}).get("webhook_public_url") or "").strip()
+            if token and url:
+                pwh.unregister(token, url)
+                logger.info(
+                    "Removed Plex webhook registration for deleted server {} (url={})",
+                    target.get("name") or server_id,
+                    url,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not unregister the Plex webhook for deleted server {} ({}: {}). "
+                "You may want to remove it manually from plex.tv → Account → Webhooks.",
+                target.get("name") or server_id,
+                type(exc).__name__,
+                exc,
+            )
 
     _save_media_servers(new_servers)
     logger.info("Removed media server id={}", server_id)

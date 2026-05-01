@@ -598,7 +598,10 @@ def update_log_level():
     from ..settings_manager import get_settings_manager
 
     data = request.get_json() or {}
-    level = (data.get("log_level") or "INFO").upper()
+    raw_level = data.get("log_level")
+    if raw_level is not None and not isinstance(raw_level, str):
+        return jsonify({"error": "log_level must be a string"}), 400
+    level = (raw_level or "INFO").upper()
 
     valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     if level not in valid_levels:
