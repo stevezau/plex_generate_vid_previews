@@ -171,8 +171,20 @@ def atomic_json_save(filepath: str, data: Any, *, permissions: int | None = None
 
 
 def _backup_retention() -> int:
-    """How many timestamped backups to keep per file (default 10, env-overridable)."""
-    raw = os.environ.get("CONFIG_BACKUP_KEEP", "10")
+    """How many timestamped backups to keep per file.
+
+    Resolution order: settings.json `config_backup_keep` → env
+    `CONFIG_BACKUP_KEEP` → default 10. Imported lazily to avoid an
+    import cycle (utils → settings_manager → utils via atomic save).
+    """
+    try:
+        from .web.settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("config_backup_keep")
+    except Exception:
+        raw = None
+    if raw in (None, ""):
+        raw = os.environ.get("CONFIG_BACKUP_KEEP", "10")
     try:
         n = int(raw)
     except (TypeError, ValueError):
@@ -180,21 +192,57 @@ def _backup_retention() -> int:
     return max(1, min(n, 100))
 
 
-def _prune_old_backups(filepath: str, keep: int) -> None:
-    """Glob ``{filepath}.*.bak``, sort lex, delete all but the newest ``keep``.
+def _backup_max_age_days() -> int:
+    """Drop backups older than this many days. 0 disables age-based pruning.
+
+    Resolution order: settings.json `config_backup_max_age_days` → env
+    `CONFIG_BACKUP_MAX_AGE_DAYS` → default 0 (disabled).
+    """
+    try:
+        from .web.settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("config_backup_max_age_days")
+    except Exception:
+        raw = None
+    if raw in (None, ""):
+        raw = os.environ.get("CONFIG_BACKUP_MAX_AGE_DAYS", "0")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(n, 365))
+
+
+def _prune_old_backups(filepath: str, keep: int, max_age_days: int = 0) -> None:
+    """Glob ``{filepath}.*.bak``, drop oldest beyond ``keep`` AND anything older than ``max_age_days``.
 
     Best-effort — failures are swallowed (a stale backup never blocks the
     next save). Lex order matches chronological order because the timestamp
-    suffix is fixed-width ``YYYYMMDD-HHMMSS``.
+    suffix is fixed-width ``YYYYMMDD-HHMMSS``. ``max_age_days=0`` disables
+    age-based pruning so existing installs keep behaving exactly as before
+    until the user opts in.
     """
     import glob
+    import time
 
     pattern = filepath + ".*.bak"
     backups = sorted(glob.glob(pattern))
+    to_delete: set[str] = set()
+
     excess = len(backups) - keep
-    if excess <= 0:
-        return
-    for stale in backups[:excess]:
+    if excess > 0:
+        to_delete.update(backups[:excess])
+
+    if max_age_days > 0:
+        cutoff = time.time() - (max_age_days * 86400)
+        for path in backups:
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    to_delete.add(path)
+            except OSError:
+                pass
+
+    for stale in to_delete:
         try:
             os.unlink(stale)
         except OSError:
@@ -234,7 +282,7 @@ def atomic_json_save_with_backup(filepath: str, data: Any, *, permissions: int |
         bak_path = f"{filepath}.{ts}.bak"
         try:
             shutil.copy2(filepath, bak_path)
-            _prune_old_backups(filepath, _backup_retention())
+            _prune_old_backups(filepath, _backup_retention(), _backup_max_age_days())
         except OSError as exc:
             # Don't import loguru at module load — keep this dep-light. Log
             # via stderr so we don't pull in the logging stack just for a

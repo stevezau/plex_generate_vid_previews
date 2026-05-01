@@ -2688,39 +2688,45 @@ async function refreshBackupsPanel() {
             panel.innerHTML = '<div class="text-muted small">No backup-tracked config files found.</div>';
             return;
         }
-        const blocks = files.map((f) => {
+        // D17 — one row per managed file: header + dropdown + Restore button.
+        // Replaces the old vertical-list-of-rows that grew with retention,
+        // making the panel feel cluttered for users on installs that save
+        // settings often (every webhook → webhook_history.json → +1 row).
+        const blocks = files.map((f, idx) => {
             const liveAge = _formatBackupTime(f.live_mtime);
             const headerBadge = f.bak_newer
                 ? '<span class="badge bg-warning text-dark ms-2" title="Most recent backup is newer than the live file">backup is newer</span>'
                 : (f.has_bak ? '' : '<span class="badge bg-secondary ms-2">no backups yet</span>');
 
             const backups = f.backups || [];
-            const backupRows = backups.length
-                ? backups.map((b) => {
-                    const label = escapeHtmlText(_formatBackupLabel(b));
-                    const tag = b.legacy ? '<span class="badge bg-secondary ms-2">legacy</span>' : '';
-                    return `
-                        <div class="d-flex justify-content-between align-items-center py-1 ps-3 border-start border-2">
-                            <div class="small text-muted">${label}${tag}</div>
-                            <button type="button" class="btn btn-sm btn-outline-warning"
-                                    data-restore-file="${escapeHtmlAttr(f.name)}"
-                                    data-restore-backup="${escapeHtmlAttr(b.filename)}">
-                                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
-                            </button>
-                        </div>
-                    `;
-                }).join('')
-                : '<div class="small text-muted ps-3">No backups yet — they appear after the next save.</div>';
+            const selectId = 'backupSelect-' + idx;
+            const selectHtml = backups.length
+                ? `
+                    <div class="d-flex align-items-center gap-2 mt-2">
+                        <select id="${selectId}" class="form-select form-select-sm" style="max-width: 320px;">
+                            ${backups.map((b) => {
+                                const label = escapeHtmlText(_formatBackupLabel(b))
+                                    + (b.legacy ? ' (legacy)' : '');
+                                return `<option value="${escapeHtmlAttr(b.filename)}">${label}</option>`;
+                            }).join('')}
+                        </select>
+                        <button type="button" class="btn btn-sm btn-outline-warning flex-shrink-0"
+                                data-restore-file="${escapeHtmlAttr(f.name)}"
+                                data-restore-select="${selectId}">
+                            <i class="bi bi-arrow-counterclockwise me-1"></i>Restore selected
+                        </button>
+                        <span class="text-muted small flex-shrink-0">${backups.length} snapshot${backups.length === 1 ? '' : 's'}</span>
+                    </div>
+                `
+                : '<div class="small text-muted mt-2">No backups yet — they appear after the next save.</div>';
 
             return `
                 <div class="border-bottom py-2">
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                        <div>
-                            <code>${escapeHtmlText(f.name)}</code>${headerBadge}
-                            <div class="small text-muted">Live saved: ${escapeHtmlText(liveAge)}</div>
-                        </div>
+                    <div>
+                        <code>${escapeHtmlText(f.name)}</code>${headerBadge}
+                        <div class="small text-muted">Live saved: ${escapeHtmlText(liveAge)}</div>
                     </div>
-                    ${backupRows}
+                    ${selectHtml}
                 </div>
             `;
         }).join('');
@@ -2729,9 +2735,12 @@ async function refreshBackupsPanel() {
             btn.addEventListener('click', async (ev) => {
                 const target = ev.currentTarget;
                 const file = target.dataset.restoreFile;
-                const backup = target.dataset.restoreBackup;
+                const select = document.getElementById(target.dataset.restoreSelect);
+                const backup = select ? select.value : '';
+                if (!file || !backup) return;
                 if (!confirm(`Restore ${file} from ${backup}? The current contents will be saved as a fresh backup first, so you can undo this restore.`)) return;
                 target.disabled = true;
+                const origHtml = target.innerHTML;
                 target.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restoring…';
                 try {
                     await apiPost('/api/settings/backups/restore', { file, backup });
@@ -2740,7 +2749,7 @@ async function refreshBackupsPanel() {
                 } catch (e) {
                     showToast('Restore failed', (e && e.message) || 'Unknown error', 'danger');
                     target.disabled = false;
-                    target.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Restore';
+                    target.innerHTML = origHtml;
                 }
             });
         });
@@ -2749,10 +2758,48 @@ async function refreshBackupsPanel() {
     }
 }
 
+// D17 — load + save retention controls. Hooks into the global Settings
+// save flow (the SaveSettings button in the settings sidebar already
+// POSTs every form input that has a known field name, so just keep the
+// inputs in sync with /api/settings on load).
+async function _initBackupRetentionControls() {
+    const keepInput = document.getElementById('configBackupKeep');
+    const ageInput = document.getElementById('configBackupMaxAgeDays');
+    if (!keepInput || !ageInput) return;
+    try {
+        const data = await apiGet('/api/settings');
+        const keep = parseInt(data.config_backup_keep, 10);
+        const age = parseInt(data.config_backup_max_age_days, 10);
+        keepInput.value = Number.isFinite(keep) ? keep : 10;
+        ageInput.value = Number.isFinite(age) ? age : 0;
+    } catch (e) {
+        keepInput.value = 10;
+        ageInput.value = 0;
+    }
+    const persist = async () => {
+        const keep = Math.min(100, Math.max(1, parseInt(keepInput.value, 10) || 10));
+        const age = Math.min(365, Math.max(0, parseInt(ageInput.value, 10) || 0));
+        keepInput.value = keep;
+        ageInput.value = age;
+        try {
+            await apiPost('/api/settings', {
+                config_backup_keep: keep,
+                config_backup_max_age_days: age,
+            });
+            showToast('Backups', 'Retention updated', 'success');
+        } catch (e) {
+            showToast('Save failed', (e && e.message) || 'Unknown error', 'danger');
+        }
+    };
+    keepInput.addEventListener('change', persist);
+    ageInput.addEventListener('change', persist);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('backupRestorePanel')) {
         refreshBackupsPanel();
         const btn = document.getElementById('refreshBackupsBtn');
         if (btn) btn.addEventListener('click', refreshBackupsPanel);
+        _initBackupRetentionControls();
     }
 });

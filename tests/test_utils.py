@@ -342,6 +342,48 @@ class TestAtomicJsonSaveWithBackup:
         assert legacy.exists()
         assert legacy.read_text() == '{"v": "legacy"}'
 
+    def test_prune_drops_anything_older_than_max_age_days(self, tmp_path):
+        """D17 — age-based pruning deletes backups whose mtime is older than
+        ``max_age_days``, independent of the count cap. With ``keep=10`` and
+        ``max_age_days=7``, a 30-day-old backup must still be deleted even
+        though the count cap is nowhere near exceeded."""
+        import time
+
+        from media_preview_generator.utils import _prune_old_backups
+
+        target = tmp_path / "config.json"
+        target.write_text("{}")
+        old_bak = tmp_path / "config.json.20260101-000000.bak"
+        old_bak.write_text("{}")
+        recent_bak = tmp_path / "config.json.20260501-000000.bak"
+        recent_bak.write_text("{}")
+        # Backdate the "old" one to 30 days ago so age-based pruning fires.
+        old_mtime = time.time() - (30 * 86400)
+        os.utime(str(old_bak), (old_mtime, old_mtime))
+
+        _prune_old_backups(str(target), keep=10, max_age_days=7)
+
+        assert not old_bak.exists(), "30-day-old backup should be pruned at max_age_days=7"
+        assert recent_bak.exists(), "recent backup must survive"
+
+    def test_prune_max_age_zero_disables_age_check(self, tmp_path):
+        """D17 — ``max_age_days=0`` keeps everything regardless of age, so
+        existing installs (default 0) keep behaving exactly as before."""
+        import time
+
+        from media_preview_generator.utils import _prune_old_backups
+
+        target = tmp_path / "config.json"
+        target.write_text("{}")
+        ancient = tmp_path / "config.json.20200101-000000.bak"
+        ancient.write_text("{}")
+        old_mtime = time.time() - (1000 * 86400)  # ~3 years
+        os.utime(str(ancient), (old_mtime, old_mtime))
+
+        _prune_old_backups(str(target), keep=10, max_age_days=0)
+
+        assert ancient.exists()
+
     def test_backup_failure_does_not_block_primary_write(self, tmp_path, monkeypatch):
         """If shutil.copy2 raises, the primary write still happens."""
         import json as _json

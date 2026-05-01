@@ -305,6 +305,11 @@ def get_settings():
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
+            # D17 — backup retention (count + max-age days). 0 max_age_days
+            # disables age-based pruning so existing installs keep behaving
+            # exactly as before until the user opts in.
+            "config_backup_keep": settings.get("config_backup_keep", 10),
+            "config_backup_max_age_days": settings.get("config_backup_max_age_days", 0),
             # B0c — frame_reuse block. The Settings → Performance UI
             # populates its toggle/TTL/disk-cap inputs from this field;
             # without it here the panel shows defaults forever and
@@ -346,6 +351,8 @@ _SAVE_SETTINGS_ALLOWED_FIELDS = (
     "auto_requeue_on_restart",
     "requeue_max_age_minutes",
     "frame_reuse",
+    "config_backup_keep",
+    "config_backup_max_age_days",
 )
 
 _SAVE_SETTINGS_INT_FIELDS = (
@@ -360,6 +367,8 @@ _SAVE_SETTINGS_INT_FIELDS = (
     "webhook_retry_count",
     "webhook_retry_delay",
     "requeue_max_age_minutes",
+    "config_backup_keep",
+    "config_backup_max_age_days",
 )
 
 _SAVE_SETTINGS_BOOL_FIELDS = ("plex_verify_ssl", "webhook_enabled", "auto_requeue_on_restart")
@@ -1276,11 +1285,11 @@ def restore_backup():
         try:
             from datetime import datetime, timezone
 
-            from ...utils import _backup_retention, _prune_old_backups
+            from ...utils import _backup_max_age_days, _backup_retention, _prune_old_backups
 
             ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             shutil.copy2(live, f"{live}.{ts}.bak")
-            _prune_old_backups(live, _backup_retention())
+            _prune_old_backups(live, _backup_retention(), _backup_max_age_days())
         except OSError as exc:
             logger.debug("Pre-restore snapshot of {} failed: {}", live, exc)
 

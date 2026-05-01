@@ -362,6 +362,20 @@
                     Job history lives in <code>jobs.db</code> (SQLite) and isn't backed up via this mechanism;
                     rolling that back is a container-revert plus optional volume-snapshot restore.
                 </p>
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label for="configBackupKeep" class="form-label small mb-1">Keep last N backups per file</label>
+                        <input type="number" class="form-control form-control-sm" id="configBackupKeep"
+                               min="1" max="100" placeholder="10">
+                        <div class="form-text small">1&ndash;100. Default 10. Older snapshots are pruned automatically on every save.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="configBackupMaxAgeDays" class="form-label small mb-1">Drop backups older than (days)</label>
+                        <input type="number" class="form-control form-control-sm" id="configBackupMaxAgeDays"
+                               min="0" max="365" placeholder="0">
+                        <div class="form-text small">0 disables age-based pruning. Whichever rule (count or age) cuts more wins.</div>
+                    </div>
+                </div>
                 <div id="backupRestorePanel" class="mb-2">
                     <div class="text-muted small">
                         <span class="spinner-border spinner-border-sm me-1"></span>Checking for backups&hellip;
