@@ -19,7 +19,7 @@ from loguru import logger
 
 from ..plex_client import _build_episode_title, _extract_item_locations, retry_plex_call
 from ..servers.base import MediaServer, ServerConfig, ServerType
-from ..servers.plex import PlexServer
+from ..servers.plex import PlexServer, _plex_item_id
 from ._shared import _MediaServerProcessor
 from .registry import register_processor
 from .types import ProcessableItem
@@ -122,12 +122,19 @@ class PlexProcessor(_MediaServerProcessor):
                 if not locations:
                     continue
                 title = _build_episode_title(item) if libtype == "episode" else str(getattr(item, "title", "") or "")
-                item_key = str(getattr(item, "key", "") or "")
+                # Use the bare ratingKey, not item.key. PlexAPI's m.key is the
+                # URL "/library/metadata/<id>"; passing that downstream would
+                # double the prefix when PlexBundleAdapter builds
+                # /library/metadata/{item_id}/tree, which silently 404s and
+                # marks every recently-added item as SKIPPED_NOT_INDEXED.
+                # See servers/plex.py::_plex_item_id for the same gotcha on
+                # the full-library scan path.
+                item_id = _plex_item_id(item)
                 for canonical in self._canonical_paths_for(str(locations[0]), server_config):
                     yield ProcessableItem(
                         canonical_path=canonical,
                         server_id=server_config.id,
-                        item_id_by_server={server_config.id: item_key} if item_key else {},
+                        item_id_by_server={server_config.id: item_id} if item_id else {},
                         title=title,
                         library_id=section_id or None,
                     )

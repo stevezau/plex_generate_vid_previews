@@ -238,3 +238,55 @@ class TestEmbyishRecentlyAdded:
         assert items[0].canonical_path == "/l/recent.mkv"
         assert items[0].title == "Recent"
         assert items[0].item_id_by_server == {"srv-x": "i1"}
+
+
+class TestPlexProcessorRecentlyAdded:
+    """Plex recently-added scan must store the bare ratingKey, not item.key.
+
+    Regression test: PlexAPI's ``m.key`` is the URL ``/library/metadata/<id>``;
+    storing that as the item_id doubles the prefix when PlexBundleAdapter
+    builds ``/library/metadata/{item_id}/tree``, which silently 404s and
+    marks every recently-added item SKIPPED_NOT_INDEXED. The full-library
+    scan path is already protected by ``_plex_item_id`` in servers/plex.py;
+    this test asserts the recently-added scan path does the same.
+    """
+
+    def test_item_id_is_bare_ratingkey_not_url(self):
+        from datetime import datetime, timezone
+
+        proc = PlexProcessor()
+        cfg = _config(
+            "srv-plex",
+            ServerType.PLEX,
+            mappings=[{"remote_prefix": "/r", "local_prefix": "/l"}],
+        )
+
+        section = MagicMock()
+        section.key = "1"
+        section.title = "Movies"
+        section.METADATA_TYPE = "movie"
+
+        item = MagicMock()
+        item.key = "/library/metadata/54321"
+        item.ratingKey = 54321
+        item.title = "Recent Movie"
+        item.addedAt = datetime.now(timezone.utc).replace(tzinfo=None)
+        item.locations = ["/r/recent.mkv"]
+
+        with patch("media_preview_generator.processing.plex.PlexServer") as klass:
+            instance = MagicMock()
+            klass.return_value = instance
+            plex_obj = MagicMock()
+            plex_obj.library.sections.return_value = [section]
+            instance._connect.return_value = plex_obj
+            section.search.return_value = [item]
+
+            results = list(proc.scan_recently_added(cfg, lookback_hours=1))
+
+        assert len(results) == 1
+        # Must be the bare ratingKey "54321", NOT the URL "/library/metadata/54321".
+        # Storing the URL form would double-prefix the /tree query and silently
+        # 404 every item.
+        assert results[0].item_id_by_server == {"srv-plex": "54321"}
+        assert results[0].canonical_path == "/l/recent.mkv"
+        assert results[0].title == "Recent Movie"
