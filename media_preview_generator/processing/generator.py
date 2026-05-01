@@ -1105,7 +1105,13 @@ def generate_images(
     # Rename images only after all retries and error checks are complete
     if image_count > 0:
         for image in glob.glob(f"{output_folder}/img*.jpg"):
-            frame_no = int(re.search(r"(\d+)", os.path.basename(image)).group(1)) - 1
+            match = re.search(r"(\d+)", os.path.basename(image))
+            if match is None:
+                # Foreign / out-of-band file in the output dir — skip rather
+                # than crash the whole frame-renaming loop.
+                logger.debug("Skipping rename for non-numeric image filename: {}", image)
+                continue
+            frame_no = int(match.group(1)) - 1
             frame_second = frame_no * config.plex_bif_frame_interval
             os.rename(image, os.path.join(output_folder, f"{frame_second:010d}.jpg"))
         image_count = len(glob.glob(os.path.join(output_folder, "*.jpg")))

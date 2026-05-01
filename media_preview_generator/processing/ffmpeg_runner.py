@@ -393,7 +393,11 @@ def create_ffmpeg_runner(
         start_local = time.time()
         hw_label = "GPU" if gpu else "CPU"
         logger.info("Encoding thumbnails for {} ({})", video_file, hw_label)
-        logger.info("FFmpeg command: {}", " ".join(args))
+        # Full argv at DEBUG only — at INFO with 4-tier retries on a 50K-item
+        # library this would be 200K+ lines. Also: the -i path may include
+        # vendor-side credentials in some users' setups; keep it off the
+        # default log surface.
+        logger.debug("FFmpeg command: {}", " ".join(args))
 
         # When the Layer-3 probe retry in gpu_detection succeeded only with
         # VK_DRIVER_FILES set, propagate those env overrides to the real

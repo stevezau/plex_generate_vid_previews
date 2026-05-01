@@ -162,7 +162,12 @@ def reset_retry_scheduler() -> None:
     global _singleton
     with _singleton_lock:
         if _singleton is not None:
-            for path in list(_singleton._timers.keys()):  # noqa: SLF001
+            # Snapshot the timer keys under the singleton's own lock so
+            # an in-flight _fire callback mutating the dict can't trip
+            # "dictionary changed size during iteration" on .keys().
+            with _singleton._lock:  # noqa: SLF001
+                paths = list(_singleton._timers.keys())  # noqa: SLF001
+            for path in paths:
                 _singleton.cancel(path)
         _singleton = None
 

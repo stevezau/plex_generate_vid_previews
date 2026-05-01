@@ -78,7 +78,14 @@ def write_meta(output_paths: list[Path], canonical_path: str, *, publisher: str 
 
     for output in output_paths:
         try:
-            _meta_path_for(output).write_text(body)
+            # Atomic write: a crash mid-write would otherwise leave a
+            # truncated .meta that outputs_fresh_for_source() falls back
+            # on the legacy "no .meta = fresh" branch — which would treat
+            # stale outputs as fresh on the next dispatch.
+            meta_path = _meta_path_for(output)
+            tmp_path = meta_path.with_suffix(meta_path.suffix + ".tmp")
+            tmp_path.write_text(body)
+            os.replace(tmp_path, meta_path)
         except OSError as exc:
             # Don't let a write failure here mask a successful publish.
             logger.debug("Could not write journal meta for {}: {}", output, exc)

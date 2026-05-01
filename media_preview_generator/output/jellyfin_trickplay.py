@@ -160,12 +160,22 @@ class JellyfinTrickplayAdapter(OutputAdapter):
 
             sheet_image = Image.new("RGB", (thumb_w * _TILE_W, thumb_h * _TILE_H), (0, 0, 0))
             for i, frame_name in enumerate(sheet_frames):
-                with Image.open(Path(bundle.frame_dir) / frame_name) as f:
-                    if f.size != (thumb_w, thumb_h):
-                        f = f.resize((thumb_w, thumb_h))
-                    col = i % _TILE_W
-                    row = i // _TILE_W
-                    sheet_image.paste(f, (col * thumb_w, row * thumb_h))
+                with Image.open(Path(bundle.frame_dir) / frame_name) as src:
+                    # PIL.Image.resize() returns a NEW Image whose lifetime
+                    # extends past the `with` block; rebinding `src` would
+                    # leak it. Bind to a separate name and close explicitly.
+                    if src.size != (thumb_w, thumb_h):
+                        tile = src.resize((thumb_w, thumb_h))
+                        try:
+                            col = i % _TILE_W
+                            row = i // _TILE_W
+                            sheet_image.paste(tile, (col * thumb_w, row * thumb_h))
+                        finally:
+                            tile.close()
+                    else:
+                        col = i % _TILE_W
+                        row = i // _TILE_W
+                        sheet_image.paste(src, (col * thumb_w, row * thumb_h))
 
             sheet_path = sheets_dir / f"{sheet_index}.jpg"
             sheet_image.save(sheet_path, "JPEG", quality=self._jpeg_quality)
