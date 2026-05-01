@@ -310,9 +310,8 @@ def list_servers():
 
     Returns the persisted ``media_servers`` array verbatim except that
     auth credentials are masked. The UI uses this to render the per-server
-    cards on the Servers page; the existing single-Plex Settings page
-    keeps reading the legacy ``plex_*`` keys directly during the Phase 1
-    transition.
+    cards on the Servers page; the legacy Settings page still reads the
+    flat ``plex_*`` keys derived from ``media_servers[0]`` for back-compat.
     """
     settings = get_settings_manager()
     raw_servers = settings.get("media_servers") or []
@@ -386,8 +385,8 @@ def get_path_owners():
     """Return which configured servers own a given canonical path.
 
     Useful for diagnostics ("why isn't Foo.mkv going to Plex?") and as the
-    backbone of the future webhook router. Phase 1 only sees the single
-    migrated Plex server.
+    backbone of the universal webhook router. Resolves against every
+    configured server (Plex, Emby, Jellyfin), not just the first one.
 
     Query params:
         path: Absolute local file path to test ownership for. Required.
@@ -435,8 +434,9 @@ def refresh_server_libraries(server_id: str):
     per-library ``enabled`` toggles for libraries that survive the refresh
     are preserved; new libraries default to enabled.
 
-    Phase 1 only supports the Plex client path; for other server types the
-    endpoint returns 501 with a clear message.
+    Supports Plex, Emby, and Jellyfin via :func:`_instantiate_for_probe`.
+    Unrecognised server types raise :class:`UnsupportedServerTypeError` and
+    surface as a 400.
     """
     settings = get_settings_manager()
     raw_servers = settings.get("media_servers") or []

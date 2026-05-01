@@ -108,10 +108,9 @@ def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tup
     The Setup Wizard and the legacy Settings page both POST flat
     ``plex_url`` / ``plex_token`` / ``selected_libraries`` /
     ``path_mappings`` / ``exclude_paths`` / ``plex_config_folder`` keys.
-    Phase 1 of the multi-server refactor stops persisting those at the
-    top level and instead writes them into the first Plex entry of the
-    ``media_servers`` list — that's the single source of truth Phase 0
-    already taught every reader to prefer.
+    The multi-server refactor stops persisting those at the top level and
+    instead writes them into the first Plex entry of the ``media_servers``
+    list — the single source of truth every reader already prefers.
 
     Returns a tuple of:
 
@@ -262,8 +261,8 @@ def get_settings():
 
     Per-server Plex fields (URL, token, libraries, path mappings,
     exclude paths, config folder) are projected from ``media_servers[0]``
-    when present so the legacy Settings UI keeps working through the
-    Phase 1 migration. Legacy global keys remain as a fallback.
+    when present so the legacy Settings UI keeps working. Legacy global
+    keys remain as a fallback for very-old installs.
     """
     from ...config import derive_legacy_plex_view
     from ..settings_manager import get_settings_manager

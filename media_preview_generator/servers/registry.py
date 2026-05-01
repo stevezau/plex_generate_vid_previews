@@ -114,9 +114,10 @@ def server_config_to_dict(config: ServerConfig) -> dict[str, Any]:
 class ServerRegistry:
     """In-memory map of ``server_id`` → live :class:`MediaServer`.
 
-    Constructed from the ``media_servers`` array in settings (or, during the
-    Phase 1 transition, synthesised from a legacy single-Plex :class:`Config`
-    via :meth:`from_legacy_config`).
+    Constructed from the ``media_servers`` array in settings, or synthesised
+    from a legacy single-Plex :class:`Config` via :meth:`from_legacy_config`
+    for the few remaining call sites that haven't been routed through
+    ``media_servers`` yet.
     """
 
     def __init__(self) -> None:
@@ -136,9 +137,9 @@ class ServerRegistry:
         Args:
             media_servers: Raw ``settings.json`` ``media_servers`` list.
             legacy_config: Existing :class:`Config` instance whose ``plex_*``
-                fields the Phase 1 :class:`PlexServer` wrapper still needs.
-                Required while the wrapper accepts ``Config`` rather than
-                ``ServerConfig``; removed once the wrapper is updated.
+                fields the :class:`PlexServer` wrapper still consults when
+                constructed from a duck-typed legacy config. Optional — the
+                modern path passes ``ServerConfig`` directly and ignores it.
         """
         registry = cls()
         for raw in media_servers or []:
@@ -171,8 +172,8 @@ class ServerRegistry:
     def from_legacy_config(cls, config: Config) -> ServerRegistry:
         """Synthesize a single-Plex registry from a legacy :class:`Config`.
 
-        Used during the Phase 1 transition for code paths that haven't yet
-        been routed through the persisted ``media_servers`` array.
+        Used by the few remaining code paths that haven't been routed through
+        the persisted ``media_servers`` array yet.
         """
         from ..upgrade import _legacy_plex_to_media_server
 
