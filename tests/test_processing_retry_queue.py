@@ -346,10 +346,15 @@ class TestScheduleRetryForUnindexed:
             ran.set()
             raise RuntimeError("dispatch broke")
 
+        # _BACKOFF length 1: when boom raises and _callback's except branch
+        # tries to re-schedule with attempt=2, that exceeds the chain so
+        # schedule_retry_for_unindexed returns False without queuing a
+        # follow-up timer. Without this, the leaked timer fires during
+        # the next test and pollutes its schedule_retry_for_unindexed spy.
         with (
             patch(
                 "media_preview_generator.processing.retry_queue._BACKOFF",
-                (0.02,) + tuple([0.5] * (len(_BACKOFF) - 1)),
+                (0.02,),
             ),
             patch(
                 "media_preview_generator.processing.multi_server.process_canonical_path",
@@ -363,6 +368,10 @@ class TestScheduleRetryForUnindexed:
                 attempt=1,
             )
             assert ran.wait(timeout=2)
+            # Give the timer thread a moment to finish its except branch +
+            # reach the give-up log line so the singleton is fully drained
+            # before teardown runs reset_retry_scheduler.
+            time.sleep(0.1)
 
         # Test would crash if the timer thread had propagated the
         # exception up and killed the process; reaching here means we
