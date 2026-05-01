@@ -188,11 +188,13 @@
     <!-- Socket.IO -->
     <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.2/dist/socket.io.min.js" integrity="sha256-g99KvH7slB8dKa4lToC6wLuC05j74ujuTqKn78jnBPE=" crossorigin="anonymous"></script>
     <!-- Custom JS -->
-    <!-- app.js MUST load first: notifications.js depends on its global
-         escapeHtml / sanitizeNotificationHtml / showToast /
-         copyVulkanDiagnosticBundle definitions. -->
+    <!-- app.js MUST load first: notifications.js and job_modal.js depend on
+         its global escapeHtml / sanitizeNotificationHtml / showToast /
+         copyVulkanDiagnosticBundle / apiGet / copyToClipboard / jobs /
+         _renderPublishersBlock definitions. -->
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
     <script src="{{ url_for('static', filename='js/notifications.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/job_modal.js') }}"></script>
     <script src="{{ url_for('static', filename='js/autosave.js') }}"></script>
     <script src="{{ url_for('static', filename='js/folder_picker.js') }}"></script>
     <script src="{{ url_for('static', filename='js/stepper.js') }}"></script>
