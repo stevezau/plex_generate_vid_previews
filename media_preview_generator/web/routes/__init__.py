@@ -16,6 +16,7 @@ api = Blueprint("api", __name__, url_prefix="/api")
 from . import (  # noqa: E402
     api_bif,  # noqa: F401
     api_jobs,  # noqa: F401
+    api_libraries,  # noqa: F401
     api_plex,  # noqa: F401
     api_schedules,  # noqa: F401
     api_server_auth,  # noqa: F401
@@ -36,6 +37,6 @@ from ._helpers import (  # noqa: E402, F401
     clear_gpu_cache,
     limiter,
 )
-from .api_system import _fetch_libraries_via_http, clear_library_cache  # noqa: E402, F401
+from .api_libraries import _fetch_libraries_via_http, clear_library_cache  # noqa: E402, F401
 from .job_runner import _start_job_async  # noqa: E402, F401
 from .socketio_handlers import register_socketio_handlers  # noqa: E402, F401

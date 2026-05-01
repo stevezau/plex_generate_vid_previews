@@ -469,7 +469,7 @@ def save_settings():
         # even though those keys now end up inside media_servers[0].
         plex_fields = {"plex_url", "plex_token", "plex_verify_ssl"}
         if plex_fields & incoming_field_keys:
-            from .api_system import clear_library_cache
+            from .api_libraries import clear_library_cache
 
             clear_library_cache()
 

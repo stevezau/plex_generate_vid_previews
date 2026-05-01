@@ -2856,7 +2856,7 @@ class TestLogHistoryAPI:
 class TestLibrariesAPI:
     """Test /api/libraries endpoint."""
 
-    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
     def test_get_libraries_with_settings(self, mock_fetch, client):
         """Libraries are fetched via HTTP when plex_url/token are set in settings."""
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -3200,7 +3200,7 @@ class TestPlexWebhookLoopbackGuard:
 class TestPlexLibrariesAPI:
     """Test /api/plex/libraries endpoint."""
 
-    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
     def test_get_plex_libraries(self, mock_fetch, client):
         from media_preview_generator.web.settings_manager import get_settings_manager
 
@@ -3224,7 +3224,7 @@ class TestPlexLibrariesAPI:
             resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 400
 
-    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
     def test_get_plex_libraries_ssl_error_returns_specific_message(self, mock_fetch, client):
         """SSLError must surface as an SSL-specific message — it's a subclass
         of ConnectionError, so without an explicit handler it gets reported
@@ -3351,7 +3351,7 @@ class TestParamToBool:
 class TestLibraryCache:
     """Test Plex library caching behaviour."""
 
-    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
     def test_libraries_cached_on_second_call(self, mock_fetch, client):
         """Second call to /api/libraries returns cached data without re-fetching."""
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -3370,7 +3370,7 @@ class TestLibraryCache:
         # Only one fetch — second call served from cache
         assert mock_fetch.call_count == 1
 
-    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
     def test_cache_bypassed_with_explicit_url(self, mock_fetch, client):
         """Explicit url/token query params bypass the library cache."""
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -3389,7 +3389,7 @@ class TestLibraryCache:
         )
         assert mock_fetch.call_count == 2
 
-    @patch("media_preview_generator.web.routes.api_system._fetch_libraries_via_http")
+    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
     def test_cache_invalidated_on_plex_url_change(self, mock_fetch, client):
         """Saving a new plex_url clears the library cache.
 
@@ -3433,43 +3433,43 @@ class TestClassifyLibraryType:
     """Test classify_library_type() library-type derivation."""
 
     def test_movie_section_returns_movie(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("movie", "tv.plex.agents.movie") == "movie"
 
     def test_movie_with_none_agent_returns_other_videos(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("movie", "com.plexapp.agents.none") == "other_videos"
 
     def test_show_section_returns_show(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "tv.plex.agents.series") == "show"
 
     def test_show_with_sportarr_agent_returns_sports(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "dev.sportarr.agents.sports") == "sports"
 
     def test_show_with_sportscanner_agent_returns_sports(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "com.plexapp.agents.sportscanner") == "sports"
 
     def test_show_sports_pattern_is_case_insensitive(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "SportArr.Main") == "sports"
 
     def test_show_with_none_agent_falls_through_to_show(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         # agent=None should not crash and should fall through to plain "show"
         assert classify_library_type("show", None) == "show"
 
     def test_unknown_section_type_passes_through(self):
-        from media_preview_generator.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("photo", "agent.photos") == "photo"
 

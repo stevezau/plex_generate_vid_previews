@@ -208,7 +208,7 @@ def get_plex_libraries():
     import requests
 
     from ..settings_manager import get_settings_manager
-    from .api_system import _fetch_libraries_via_http
+    from .api_libraries import _fetch_libraries_via_http
 
     settings = get_settings_manager()
 
