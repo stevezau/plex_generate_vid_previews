@@ -39,13 +39,10 @@ def create_schedule():
     if not data.get("cron_expression") and not data.get("interval_minutes"):
         return jsonify({"error": "Either cron_expression or interval_minutes is required"}), 400
 
-    # Phase E (multi-server completion): both schedule types now work for
-    # every vendor — full-library scans go through
-    # _run_full_scan_multi_server and recently-added through
+    # Both schedule types work for every vendor: full-library scans go
+    # through _run_full_scan_multi_server and recently-added through
     # _run_recently_added_multi_server, both of which dispatch via the
-    # per-vendor VendorProcessor. The previous Plex-only gates here are
-    # gone; non-Plex schedules save and run.
-
+    # per-vendor VendorProcessor.
     try:
         schedule_manager = get_schedule_manager()
         schedule = schedule_manager.create_schedule(
@@ -89,9 +86,6 @@ def update_schedule(schedule_id):
     """Update a schedule."""
     data = request.get_json() or {}
 
-    # Phase E (multi-server completion): non-Plex schedules now run through
-    # the per-vendor VendorProcessor + multi-server dispatcher, so the
-    # previous Plex-only gates here are gone.
     schedule_manager = get_schedule_manager()
     try:
         schedule = schedule_manager.update_schedule(
