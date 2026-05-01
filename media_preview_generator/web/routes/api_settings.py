@@ -316,49 +316,72 @@ def get_settings():
     )
 
 
-@api.route("/settings", methods=["POST"])
-@setup_or_auth_required
-def save_settings():
-    """Save settings."""
-    from ..settings_manager import get_settings_manager
+_SAVE_SETTINGS_ALLOWED_FIELDS = (
+    "plex_url",
+    "plex_token",
+    "plex_name",
+    "plex_verify_ssl",
+    "plex_config_folder",
+    "selected_libraries",
+    "media_path",
+    "plex_videos_path_mapping",
+    "plex_local_videos_path_mapping",
+    "path_mappings",
+    "exclude_paths",
+    "gpu_config",
+    "gpu_threads",
+    "cpu_threads",
+    "ffmpeg_threads",
+    "thumbnail_interval",
+    "thumbnail_quality",
+    "tonemap_algorithm",
+    "log_level",
+    "log_rotation_size",
+    "log_retention_count",
+    "job_history_days",
+    "webhook_enabled",
+    "webhook_delay",
+    "webhook_retry_count",
+    "webhook_retry_delay",
+    "webhook_secret",
+    "auto_requeue_on_restart",
+    "requeue_max_age_minutes",
+    "frame_reuse",
+)
 
-    settings = get_settings_manager()
-    data = request.get_json() or {}
+_SAVE_SETTINGS_INT_FIELDS = (
+    "cpu_threads",
+    "gpu_threads",
+    "ffmpeg_threads",
+    "thumbnail_interval",
+    "thumbnail_quality",
+    "log_retention_count",
+    "job_history_days",
+    "webhook_delay",
+    "webhook_retry_count",
+    "webhook_retry_delay",
+    "requeue_max_age_minutes",
+)
 
-    allowed_fields = [
-        "plex_url",
-        "plex_token",
-        "plex_name",
-        "plex_verify_ssl",
-        "plex_config_folder",
-        "selected_libraries",
-        "media_path",
-        "plex_videos_path_mapping",
-        "plex_local_videos_path_mapping",
-        "path_mappings",
-        "exclude_paths",
-        "gpu_config",
-        "gpu_threads",
-        "cpu_threads",
-        "ffmpeg_threads",
-        "thumbnail_interval",
-        "thumbnail_quality",
-        "tonemap_algorithm",
-        "log_level",
-        "log_rotation_size",
-        "log_retention_count",
-        "job_history_days",
-        "webhook_enabled",
-        "webhook_delay",
-        "webhook_retry_count",
-        "webhook_retry_delay",
-        "webhook_secret",
-        "auto_requeue_on_restart",
-        "requeue_max_age_minutes",
-        "frame_reuse",
-    ]
+_SAVE_SETTINGS_BOOL_FIELDS = ("plex_verify_ssl", "webhook_enabled", "auto_requeue_on_restart")
 
-    updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+def _validate_and_coerce_settings_updates(data: dict) -> tuple[dict | None, tuple | None]:
+    """Filter, validate, and coerce an incoming settings POST payload.
+
+    Returns ``(updates, error_response)``. Exactly one is non-None:
+    - ``(updates, None)`` on success — ``updates`` is the cleaned dict ready to
+      hand to ``settings.update()``. May be ``{}`` if the caller posted only
+      unknown keys.
+    - ``(None, (jsonify, status))`` on validation failure — bubble up to the
+      route as ``return *error_response``.
+
+    Validation covers: allow-listing, frame_reuse shape, typed-int coercion,
+    typed-bool rejection, masked-secret sentinel handling, and gpu_config
+    sanitisation. Pure function (no settings.json or filesystem touched) so it
+    is independently testable from the post-save side-effects.
+    """
+    updates = {k: v for k, v in data.items() if k in _SAVE_SETTINGS_ALLOWED_FIELDS}
 
     # Validate frame_reuse shape — the UI sends a dict with three keys.
     # Reject malformed payloads early so we don't poison settings.json
@@ -366,41 +389,26 @@ def save_settings():
     if "frame_reuse" in updates:
         fr = updates["frame_reuse"]
         if not isinstance(fr, dict):
-            return jsonify({"error": "frame_reuse must be an object"}), 400
-        cleaned_fr = {
+            return None, (jsonify({"error": "frame_reuse must be an object"}), 400)
+        updates["frame_reuse"] = {
             "enabled": bool(fr.get("enabled", True)),
             "ttl_minutes": max(1, int(fr.get("ttl_minutes", 60) or 60)),
             "max_cache_disk_mb": max(64, int(fr.get("max_cache_disk_mb", 2048) or 2048)),
         }
-        updates["frame_reuse"] = cleaned_fr
 
     # Coerce/reject typed-int fields so a malformed POST can't poison
     # settings.json with a string (e.g. ``cpu_threads: "notanumber"``)
     # that later crashes ``load_config``'s ``int()`` calls.
-    int_fields = (
-        "cpu_threads",
-        "gpu_threads",
-        "ffmpeg_threads",
-        "thumbnail_interval",
-        "thumbnail_quality",
-        "log_retention_count",
-        "job_history_days",
-        "webhook_delay",
-        "webhook_retry_count",
-        "webhook_retry_delay",
-        "requeue_max_age_minutes",
-    )
-    for field in int_fields:
+    for field in _SAVE_SETTINGS_INT_FIELDS:
         if field in updates:
             try:
                 updates[field] = int(updates[field])
             except (TypeError, ValueError):
-                return jsonify({"error": f"{field} must be an integer"}), 400
+                return None, (jsonify({"error": f"{field} must be an integer"}), 400)
 
-    bool_fields = ("plex_verify_ssl", "webhook_enabled", "auto_requeue_on_restart")
-    for field in bool_fields:
+    for field in _SAVE_SETTINGS_BOOL_FIELDS:
         if field in updates and not isinstance(updates[field], bool):
-            return jsonify({"error": f"{field} must be a boolean"}), 400
+            return None, (jsonify({"error": f"{field} must be a boolean"}), 400)
 
     # GET masks ``webhook_secret`` to "****". If a UI/script reads the
     # current settings and POSTs them back wholesale (a common pattern
@@ -420,7 +428,7 @@ def save_settings():
     if "gpu_config" in updates:
         raw = updates["gpu_config"]
         if not isinstance(raw, list):
-            return jsonify({"error": "gpu_config must be a list"}), 400
+            return None, (jsonify({"error": "gpu_config must be a list"}), 400)
         cleaned = []
         for entry in raw:
             if not isinstance(entry, dict) or not entry.get("device"):
@@ -430,6 +438,135 @@ def save_settings():
                 entry["workers"] = 0
             cleaned.append(entry)
         updates["gpu_config"] = cleaned
+
+    return updates, None
+
+
+def _reregister_plex_webhooks_after_secret_rotation(settings) -> None:
+    """Re-register every Plex server's direct webhook so Plex picks up the new token.
+
+    Rotating ``webhook_secret`` invalidates the ``?token=`` query embedded in
+    every previously-registered Plex webhook URL. Without re-registering, Plex
+    Media Server keeps posting with the stale token and we silently start
+    rejecting all of its events.
+
+    Best-effort per server — one failed registration shouldn't block the
+    others or the save itself. Each failure logs a tracback so the operator
+    can re-register manually from Servers → Edit → Webhook & Scanner.
+    """
+    try:
+        from .. import plex_webhook_registration as pwh
+        from .api_plex_webhook import _plex_webhook_auth_token
+
+        for entry in settings.get("media_servers") or []:
+            if not isinstance(entry, dict) or (entry.get("type") or "").lower() != "plex":
+                continue
+            token = (entry.get("auth") or {}).get("token") or entry.get("token") or ""
+            token = str(token).strip()
+            public_url = ((entry.get("output") or {}).get("webhook_public_url") or "").strip()
+            if not token or not public_url:
+                continue
+            new_auth = _plex_webhook_auth_token()
+            if not new_auth:
+                continue
+            try:
+                pwh.register(token, public_url, auth_token=new_auth, server_id=entry.get("id"))
+                logger.info(
+                    "Plex webhook re-registered for {!r} after secret rotation",
+                    entry.get("name") or entry.get("id"),
+                )
+            except Exception:
+                logger.warning(
+                    "Could not re-register Plex webhook for {!r} after secret rotation. "
+                    "Plex will keep posting with the OLD token until you re-register from "
+                    "Servers → Edit → Webhook & Scanner.",
+                    entry.get("name") or entry.get("id"),
+                    exc_info=True,
+                )
+    except Exception:
+        logger.warning(
+            "Webhook secret rotation re-registration failed unexpectedly.",
+            exc_info=True,
+        )
+
+
+def _apply_post_save_hooks(settings, updates: dict, incoming_field_keys: set[str]) -> str:
+    """Run side-effects that fire after settings.update() persists the change.
+
+    Hooks (in apply order):
+
+    1. **GPU worker reconciliation** — if ``gpu_config`` changed, scale the
+       live worker pool to match.
+    2. **Worker-count gate** — if total processing threads dropped to zero,
+       auto-pause; if they rose above zero and we were paused, auto-resume.
+       Returns the warning string for the response.
+    3. **Library cache bust** — if any Plex connection field changed (URL,
+       token, verify_ssl), invalidate the cached library list. Uses
+       ``incoming_field_keys`` rather than ``updates`` so the hook still
+       fires when those fields get re-routed into ``media_servers[0]``.
+    4. **Webhook secret rotation** — if ``webhook_secret`` changed, re-
+       register every Plex server's direct webhook so PMS picks up the
+       new token (otherwise it keeps posting with the stale token).
+    5. **Logging reconfiguration** — if any log_* field changed, rebuild
+       the loguru handlers with the new level/rotation/retention.
+
+    Returns ``thread_warning`` (empty string when worker counts are healthy)
+    so the route can include it in the JSON response.
+    """
+    if "gpu_config" in updates:
+        _reconcile_live_gpu_workers(settings)
+
+    ok, thread_warning = validate_processing_thread_totals(settings.get_all())
+    if not ok:
+        logger.warning(
+            "Worker count check: {}. "
+            "Processing has been auto-paused so no new jobs run until you increase a worker count. "
+            "Open Settings → Workers and set GPU and/or CPU workers > 0, then save.",
+            thread_warning,
+        )
+        _auto_pause_if_needed(settings)
+    elif settings.processing_paused:
+        _auto_resume_if_needed(settings)
+
+    # Invalidate the Plex library cache when connection details change so
+    # the next libraries request fetches fresh data. Use the pre-routing
+    # field keys so the hook still fires when plex_url / plex_token /
+    # plex_verify_ssl get re-routed into media_servers[0].
+    plex_fields = {"plex_url", "plex_token", "plex_verify_ssl"}
+    if plex_fields & incoming_field_keys:
+        from .api_libraries import clear_library_cache
+
+        clear_library_cache()
+
+    if "webhook_secret" in updates:
+        _reregister_plex_webhooks_after_secret_rotation(settings)
+
+    log_fields = {"log_level", "log_rotation_size", "log_retention_count"}
+    if log_fields & updates.keys():
+        from ...logging_config import setup_logging
+
+        setup_logging(
+            log_level=settings.get("log_level", "INFO"),
+            rotation=settings.get("log_rotation_size", "10 MB"),
+            retention=settings.get("log_retention_count", 5),
+        )
+
+    return thread_warning
+
+
+@api.route("/settings", methods=["POST"])
+@setup_or_auth_required
+def save_settings():
+    """Save settings."""
+    from ..settings_manager import get_settings_manager
+
+    settings = get_settings_manager()
+    data = request.get_json() or {}
+
+    updates, error_response = _validate_and_coerce_settings_updates(data)
+    if error_response is not None:
+        body, status = error_response
+        return body, status
 
     # Route Plex-flavoured legacy fields into media_servers[0] instead of
     # writing them as top-level keys. Phase 0 already taught readers to
@@ -446,82 +583,7 @@ def save_settings():
     if updates:
         settings.update(updates)
         logger.info("Settings updated: {}", list(updates.keys()))
-
-        if "gpu_config" in updates:
-            _reconcile_live_gpu_workers(settings)
-
-        ok, thread_warning = validate_processing_thread_totals(settings.get_all())
-        if not ok:
-            logger.warning(
-                "Worker count check: {}. "
-                "Processing has been auto-paused so no new jobs run until you increase a worker count. "
-                "Open Settings → Workers and set GPU and/or CPU workers > 0, then save.",
-                thread_warning,
-            )
-            _auto_pause_if_needed(settings)
-        elif settings.processing_paused:
-            _auto_resume_if_needed(settings)
-
-        # Invalidate the Plex library cache when connection details change
-        # so the next libraries request fetches fresh data.
-        # Use incoming_field_keys (pre-routing) so this hook still fires
-        # when the user changes plex_url / plex_token / plex_verify_ssl —
-        # even though those keys now end up inside media_servers[0].
-        plex_fields = {"plex_url", "plex_token", "plex_verify_ssl"}
-        if plex_fields & incoming_field_keys:
-            from .api_libraries import clear_library_cache
-
-            clear_library_cache()
-
-        # Rotating the webhook secret invalidates the token embedded in any
-        # registered Plex webhook URL. Re-register every Plex server that has
-        # a stored webhook URL so Plex picks up the new auth token. Best-effort
-        # per server — one failure shouldn't block the others or the save.
-        if "webhook_secret" in updates:
-            try:
-                from .. import plex_webhook_registration as pwh
-                from .api_plex_webhook import _plex_webhook_auth_token
-
-                for entry in settings.get("media_servers") or []:
-                    if not isinstance(entry, dict) or (entry.get("type") or "").lower() != "plex":
-                        continue
-                    token = (entry.get("auth") or {}).get("token") or entry.get("token") or ""
-                    token = str(token).strip()
-                    public_url = ((entry.get("output") or {}).get("webhook_public_url") or "").strip()
-                    if not token or not public_url:
-                        continue
-                    new_auth = _plex_webhook_auth_token()
-                    if not new_auth:
-                        continue
-                    try:
-                        pwh.register(token, public_url, auth_token=new_auth, server_id=entry.get("id"))
-                        logger.info(
-                            "Plex webhook re-registered for {!r} after secret rotation",
-                            entry.get("name") or entry.get("id"),
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Could not re-register Plex webhook for {!r} after secret rotation. "
-                            "Plex will keep posting with the OLD token until you re-register from "
-                            "Servers → Edit → Webhook & Scanner.",
-                            entry.get("name") or entry.get("id"),
-                            exc_info=True,
-                        )
-            except Exception:
-                logger.warning(
-                    "Webhook secret rotation re-registration failed unexpectedly.",
-                    exc_info=True,
-                )
-
-        log_fields = {"log_level", "log_rotation_size", "log_retention_count"}
-        if log_fields & updates.keys():
-            from ...logging_config import setup_logging
-
-            setup_logging(
-                log_level=settings.get("log_level", "INFO"),
-                rotation=settings.get("log_rotation_size", "10 MB"),
-                retention=settings.get("log_retention_count", 5),
-            )
+        thread_warning = _apply_post_save_hooks(settings, updates, incoming_field_keys)
 
     result = {"success": True}
     if thread_warning:
