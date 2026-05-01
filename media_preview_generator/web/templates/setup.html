@@ -866,10 +866,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 card.className = 'library-card mb-0';
                 card.dataset.id = lib.id;
                 card.htmlFor = `lib-${lib.id}`;
+                // escapeHtml every interpolation: library name + id come
+                // from Plex but the user picks them, so a name like
+                // "Movies <script>alert(1)</script>" would otherwise
+                // execute in their own browser. lib.id is also stringified
+                // and used both as DOM id and inside the for= attribute.
+                const safeId = escapeHtml(String(lib.id));
                 card.innerHTML = `
-                    <input type="checkbox" id="lib-${lib.id}">
-                    <strong>${lib.name}</strong>
-                    <br><small class="text-muted">${libraryTypeLabel(lib)}</small>
+                    <input type="checkbox" id="lib-${safeId}">
+                    <strong>${escapeHtml(lib.name)}</strong>
+                    <br><small class="text-muted">${escapeHtml(libraryTypeLabel(lib))}</small>
                 `;
                 const checkbox = card.querySelector('input[type="checkbox"]');
                 checkbox.addEventListener('change', () => {
