@@ -408,13 +408,13 @@ class Worker:
                             ctx_logger.info("{} cancelled during CPU fallback for {}", self.display_name, display_name)
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
-                        except Exception as retry_exc:
-                            ctx_logger.error(
-                                "{} also couldn't process {} on CPU after the GPU attempt failed: {}. "
-                                "Marking this file as failed; other items keep processing.",
+                        except Exception:
+                            ctx_logger.exception(
+                                "{} also couldn't process {} on CPU after the GPU attempt failed. "
+                                "Marking this file as failed; other items keep processing. "
+                                "The full traceback is included above.",
                                 self.display_name,
                                 display_name,
-                                retry_exc,
                             )
                             self.outcome_counts["failed"] += 1
                             self.failed += 1

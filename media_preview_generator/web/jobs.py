@@ -1080,7 +1080,7 @@ class JobManager:
         with self._lock:
             if job_id not in self._job_logs:
                 self._job_logs[job_id] = deque(maxlen=self._max_log_lines)
-            timestamp = datetime.utcnow().strftime("%H:%M:%S")
+            timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
             line = f"[{timestamp}] {message}"
             self._job_logs[job_id].append(line)
             log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
