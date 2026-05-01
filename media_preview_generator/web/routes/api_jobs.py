@@ -27,6 +27,31 @@ from ._helpers import (
 from .job_runner import _start_job_async
 
 
+def _parse_worker_request(data: dict) -> tuple[str, int] | tuple[None, tuple]:
+    """Parse worker_type + count from a worker-scaling request body.
+
+    Returns ``(worker_type, count)`` on success, or ``(None, (error_body, status))``
+    on validation failure. Handles non-string/non-numeric inputs without
+    raising — returning a 400 response shape instead so a malformed UI POST
+    doesn't surface as an opaque 500.
+    """
+    raw_type = data.get("worker_type", "CPU")
+    raw_count = data.get("count", 1)
+    try:
+        worker_type = str(raw_type).upper()
+    except Exception:
+        return None, ({"error": "worker_type must be a string"}, 400)
+    try:
+        count = int(raw_count)
+    except (TypeError, ValueError):
+        return None, ({"error": f"count must be an integer (got {raw_count!r})"}, 400)
+    if count <= 0:
+        return None, ({"error": "count must be greater than 0"}, 400)
+    if worker_type not in {"GPU", "CPU"}:
+        return None, ({"error": "Invalid worker_type"}, 400)
+    return worker_type, count
+
+
 def _resolve_server_context(server_id: str | None) -> tuple[str | None, str | None, str | None]:
     """Look up a configured media-server by id and return (id, name, type).
 
@@ -472,12 +497,11 @@ def resume_processing():
 def add_workers_global():
     """Add workers to the shared pool (not scoped to any job)."""
     data = request.get_json(silent=True) or {}
-    worker_type = str(data.get("worker_type", "CPU")).upper()
-    count = int(data.get("count", 1))
-    if count <= 0:
-        return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU"}:
-        return jsonify({"error": "Invalid worker_type"}), 400
+    parsed_type, parsed_count = _parse_worker_request(data)
+    if parsed_type is None:
+        body, status = parsed_count
+        return jsonify(body), status
+    worker_type, count = parsed_type, parsed_count
 
     worker_pool = _get_shared_worker_pool()
     if worker_pool is None:
@@ -503,12 +527,11 @@ def add_workers_global():
 def remove_workers_global():
     """Remove workers from the shared pool (not scoped to any job)."""
     data = request.get_json(silent=True) or {}
-    worker_type = str(data.get("worker_type", "CPU")).upper()
-    count = int(data.get("count", 1))
-    if count <= 0:
-        return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU"}:
-        return jsonify({"error": "Invalid worker_type"}), 400
+    parsed_type, parsed_count = _parse_worker_request(data)
+    if parsed_type is None:
+        body, status = parsed_count
+        return jsonify(body), status
+    worker_type, count = parsed_type, parsed_count
 
     worker_pool = _get_shared_worker_pool()
     if worker_pool is None:
@@ -561,12 +584,11 @@ def add_job_workers(job_id):
         return jsonify({"error": "Job is not running"}), 400
 
     data = request.get_json(silent=True) or {}
-    worker_type = str(data.get("worker_type", "CPU")).upper()
-    count = int(data.get("count", 1))
-    if count <= 0:
-        return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU"}:
-        return jsonify({"error": "Invalid worker_type"}), 400
+    parsed_type, parsed_count = _parse_worker_request(data)
+    if parsed_type is None:
+        body, status = parsed_count
+        return jsonify(body), status
+    worker_type, count = parsed_type, parsed_count
 
     worker_pool = job_manager.get_active_worker_pool()
     if worker_pool is None:
@@ -597,12 +619,11 @@ def remove_job_workers(job_id):
         return jsonify({"error": "Job is not running"}), 400
 
     data = request.get_json(silent=True) or {}
-    worker_type = str(data.get("worker_type", "CPU")).upper()
-    count = int(data.get("count", 1))
-    if count <= 0:
-        return jsonify({"error": "count must be greater than 0"}), 400
-    if worker_type not in {"GPU", "CPU"}:
-        return jsonify({"error": "Invalid worker_type"}), 400
+    parsed_type, parsed_count = _parse_worker_request(data)
+    if parsed_type is None:
+        body, status = parsed_count
+        return jsonify(body), status
+    worker_type, count = parsed_type, parsed_count
 
     worker_pool = job_manager.get_active_worker_pool()
     if worker_pool is None:

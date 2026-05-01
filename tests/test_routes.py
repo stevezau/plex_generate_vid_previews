@@ -2463,6 +2463,31 @@ class TestWorkerScalingValidation:
         )
         assert resp.status_code == 400
 
+    def test_add_workers_non_numeric_count_returns_400(self, client):
+        """Non-numeric count must be rejected with 400, not crash with 500.
+
+        Previously the route did `int(data.get("count", 1))` which raises
+        ValueError for any non-numeric string and bubbled up as a generic
+        500 — opaque error for a malformed UI POST.
+        """
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.set_active_worker_pool(job_id, MagicMock())
+
+        resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": "abc"},
+        )
+        assert resp.status_code == 400, resp.get_data(as_text=True)
+        assert "integer" in resp.get_json()["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Validate Paths - Additional Branches

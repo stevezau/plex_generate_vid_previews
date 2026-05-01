@@ -771,7 +771,16 @@ def get_jellyfin_trickplay_status(server_id: str):
     try:
         statuses = live.check_trickplay_extraction_status()
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 200
+        # Upstream Jellyfin failure — surface as 502 so monitoring/clients
+        # see "bad gateway" rather than a 200 with an error body (the rest
+        # of this file uses 502 for the same shape; was 200 by oversight).
+        logger.warning(
+            "Trickplay status probe failed for Jellyfin server {!r}: {}: {}",
+            cfg.name or server_id,
+            type(exc).__name__,
+            exc,
+        )
+        return jsonify({"error": str(exc)}), 502
 
     return jsonify({"libraries": statuses})
 
@@ -825,7 +834,11 @@ def fix_jellyfin_trickplay(server_id: str):
             type(exc).__name__,
             exc,
         )
-        return jsonify({"ok": False, "error": str(exc)}), 200
+        # Total upstream failure (network/auth) — return 502 so the JS path
+        # `r.ok === false` triggers and the user sees the toast. Per-library
+        # partial failure still returns 200 (handled below) because the
+        # response carries `ok: bool` + per-library results.
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
     all_ok = all(v == "ok" for v in results.values())
     return jsonify({"ok": all_ok, "results": results})
