@@ -187,6 +187,107 @@ class TestListLibraries:
         libs = wrapper.list_libraries()
         assert libs[0].enabled is True
 
+    def test_explicit_per_library_disabled_via_server_config(self, mock_config):
+        """Modern multi-server path: per-library ``enabled=False`` from
+        ``ServerConfig.libraries`` must be respected, even when ALL libraries
+        are unticked.
+
+        Regression: previously the synthesised ``plex_library_ids`` list was
+        the only signal — empty meant "no filter, enable everything", so
+        unticking the user's only library silently re-enabled it. The
+        Plex-pinned scan would then walk every library the user thought
+        they had disabled.
+        """
+        from media_preview_generator.servers.base import Library as LibCfg
+        from media_preview_generator.servers.base import ServerConfig, ServerType
+
+        sc = ServerConfig(
+            id="plex-x",
+            type=ServerType.PLEX,
+            name="Plex X",
+            enabled=True,
+            url="http://plex:32400",
+            auth={"token": "tok"},
+            libraries=[
+                LibCfg(id="1", name="Movies", enabled=False, remote_paths=()),
+                LibCfg(id="2", name="TV Shows", enabled=True, remote_paths=()),
+            ],
+        )
+        wrapper = PlexServer(sc)
+
+        section_movies = MagicMock()
+        section_movies.key = 1
+        section_movies.title = "Movies"
+        section_movies.locations = []
+        section_movies.METADATA_TYPE = "movie"
+        section_tv = MagicMock()
+        section_tv.key = 2
+        section_tv.title = "TV Shows"
+        section_tv.locations = []
+        section_tv.METADATA_TYPE = "episode"
+        section_anime = MagicMock()
+        section_anime.key = 99
+        section_anime.title = "Anime"
+        section_anime.locations = []
+        section_anime.METADATA_TYPE = "episode"
+
+        plex = MagicMock()
+        plex.library.sections.return_value = [section_movies, section_tv, section_anime]
+        wrapper._plex = plex
+
+        libs = wrapper.list_libraries()
+        by_name = {lib.name: lib.enabled for lib in libs}
+        assert by_name["Movies"] is False, "Unticked library must stay disabled"
+        assert by_name["TV Shows"] is True, "Ticked library must stay enabled"
+        # Library not in the snapshot at all → treat as disabled (user hasn't
+        # consciously opted in). Important for the case where the vendor adds
+        # a new library MPG hasn't seen yet.
+        assert by_name["Anime"] is False
+
+    def test_all_libraries_unticked_means_all_disabled(self, mock_config):
+        """If every per-library tick is False, no library is enabled — full stop.
+
+        Sister-regression to the explicit-disabled test: this one ensures the
+        all-unticked case doesn't fall through to the legacy "no filter →
+        all enabled" branch.
+        """
+        from media_preview_generator.servers.base import Library as LibCfg
+        from media_preview_generator.servers.base import ServerConfig, ServerType
+
+        sc = ServerConfig(
+            id="plex-x",
+            type=ServerType.PLEX,
+            name="Plex X",
+            enabled=True,
+            url="http://plex:32400",
+            auth={"token": "tok"},
+            libraries=[
+                LibCfg(id="1", name="Movies", enabled=False, remote_paths=()),
+                LibCfg(id="2", name="TV Shows", enabled=False, remote_paths=()),
+            ],
+        )
+        wrapper = PlexServer(sc)
+
+        section_movies = MagicMock()
+        section_movies.key = 1
+        section_movies.title = "Movies"
+        section_movies.locations = []
+        section_movies.METADATA_TYPE = "movie"
+        section_tv = MagicMock()
+        section_tv.key = 2
+        section_tv.title = "TV Shows"
+        section_tv.locations = []
+        section_tv.METADATA_TYPE = "episode"
+
+        plex = MagicMock()
+        plex.library.sections.return_value = [section_movies, section_tv]
+        wrapper._plex = plex
+
+        libs = wrapper.list_libraries()
+        assert all(not lib.enabled for lib in libs), (
+            f"Every library must be disabled when all are unticked; got: {[(lib.name, lib.enabled) for lib in libs]}"
+        )
+
     def test_returns_empty_list_on_failure(self, plex_wrapper):
         plex = MagicMock()
         plex.library.sections.side_effect = RuntimeError("boom")

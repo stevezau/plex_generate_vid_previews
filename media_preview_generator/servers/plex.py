@@ -200,7 +200,21 @@ class PlexServer(MediaServer):
             return ConnectionResult(ok=False, message=f"Connection test failed: {e}")
 
     def list_libraries(self) -> list[Library]:
-        """Enumerate libraries from Plex, applying the user's enabled-list filter."""
+        """Enumerate libraries from Plex, applying the user's enabled-list filter.
+
+        When constructed from a multi-server ``ServerConfig`` (the modern path),
+        prefer the per-library ``enabled`` flag from that snapshot — this
+        matches the Emby/Jellyfin behaviour and respects the user's UI tick
+        even when ALL libraries are unticked. The legacy
+        ``plex_library_ids`` / ``plex_libraries`` selectors stay as a fallback
+        for the duck-typed legacy ``Config`` (and tests that pass a mock).
+
+        Why: previously this method consulted ONLY the synthesized
+        ``plex_library_ids``, which is empty when the user has unticked
+        every library. Empty list was misread as "no filter" → ``enabled=True``
+        for every section, so a Plex-pinned scan happily walked all
+        libraries the user thought they had disabled.
+        """
         from ..plex_client import retry_plex_call
 
         try:
@@ -215,6 +229,14 @@ class PlexServer(MediaServer):
             )
             return []
 
+        # Modern path: an explicit per-library snapshot exists on ServerConfig.
+        # Honour it directly so unticking ALL libraries means "none enabled".
+        explicit_enabled: dict[str, bool] | None = None
+        sc = self._server_config
+        if sc is not None and sc.libraries:
+            explicit_enabled = {str(lib.id): bool(getattr(lib, "enabled", True)) for lib in sc.libraries}
+
+        # Legacy path (tests + duck-typed Config): fall back to ID/title filters.
         selected_ids = {str(s).strip() for s in (getattr(self._config, "plex_library_ids", None) or [])}
         selected_titles = {
             str(name).strip().lower()
@@ -227,7 +249,12 @@ class PlexServer(MediaServer):
             section_key = str(getattr(section, "key", "") or "")
             section_title = str(getattr(section, "title", "") or "")
             locations = tuple(str(loc) for loc in (getattr(section, "locations", None) or []))
-            if selected_ids:
+            if explicit_enabled is not None:
+                # Library not in the snapshot at all → treat as disabled
+                # (the user hasn't ticked it). Library in the snapshot →
+                # respect its explicit enabled state.
+                enabled = explicit_enabled.get(section_key, False)
+            elif selected_ids:
                 enabled = section_key in selected_ids
             elif selected_titles:
                 enabled = section_title.lower() in selected_titles
