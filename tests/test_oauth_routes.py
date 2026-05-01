@@ -192,6 +192,65 @@ class TestPlexServerRoutes:
         # Should return error since no server is configured
         assert response.status_code in [400, 500]
 
+    def test_check_pin_returns_auth_token(self, client, auth_headers, monkeypatch):
+        """check_plex_pin must return the auth_token to the client.
+
+        Regression test: the multi-server "Add Plex Server" wizard captures
+        the token from this response to populate the per-server entry's
+        auth.token field. Without it, addSelectedPlexServers fans out with
+        auth.token=null and every saved Plex server fails to authenticate.
+
+        The legacy single-Plex setup.html flow also benefits — it ignores
+        the token client-side but the saved settings.plex_token is still
+        set server-side, so back-compat is preserved.
+        """
+        from unittest.mock import MagicMock
+
+        # Stub the upstream plex.tv /api/v2/pins/<id> call.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "id": 12345,
+            "code": "ABCD",
+            "authToken": "secret-plex-token-from-plextv",
+        }
+        # api_plex.py imports `requests` locally inside the route, so patch
+        # the module's `get` method directly.
+        import requests as _requests
+
+        monkeypatch.setattr(_requests, "get", lambda *a, **kw: mock_response)
+
+        response = client.get("/api/plex/auth/pin/12345", headers=auth_headers)
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data["authenticated"] is True
+        assert data["auth_token"] == "secret-plex-token-from-plextv"
+
+    def test_check_pin_pending_returns_null_auth_token(self, client, auth_headers, monkeypatch):
+        """When plex.tv hasn't authenticated the PIN yet, auth_token is None."""
+        from unittest.mock import MagicMock
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "id": 12345,
+            "code": "ABCD",
+            "authToken": None,
+        }
+        # api_plex.py imports `requests` locally inside the route, so patch
+        # the module's `get` method directly.
+        import requests as _requests
+
+        monkeypatch.setattr(_requests, "get", lambda *a, **kw: mock_response)
+
+        response = client.get("/api/plex/auth/pin/12345", headers=auth_headers)
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data["authenticated"] is False
+        assert data["auth_token"] is None
+
 
 class TestAuthRequired:
     """Tests for authentication requirement on API endpoints."""

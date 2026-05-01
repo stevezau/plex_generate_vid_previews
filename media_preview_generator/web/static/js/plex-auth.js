@@ -103,7 +103,15 @@ class PlexAuth {
 
                     if (result.authenticated) {
                         this.cleanup();
-                        resolve(result.authenticated);
+                        // Resolve with the actual auth_token (not the
+                        // boolean) so the multi-server "Add Plex Server"
+                        // wizard can populate the per-server auth.token
+                        // field. The legacy single-Plex setup.html flow
+                        // ignores the resolve value and reads the saved
+                        // settings.plex_token, so it isn't affected.
+                        // Falls back to the boolean for back-compat with
+                        // any consumer that pre-dated the auth_token field.
+                        resolve(result.auth_token || result.authenticated);
                         return;
                     }
                 } catch (error) {

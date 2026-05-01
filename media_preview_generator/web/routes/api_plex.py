@@ -94,9 +94,16 @@ def check_plex_pin(pin_id: int):
             settings.plex_token = auth_token
             logger.info("Plex authentication successful, token saved")
 
+        # Return auth_token alongside the boolean so the multi-server "Add
+        # Plex Server" wizard can populate the per-server entry's auth.token
+        # field. Without it, the wizard's addSelectedPlexServers fan-out
+        # creates servers with auth.token=null and they fail to authenticate.
+        # The endpoint requires setup_or_auth_required so the token never
+        # leaves an authenticated session.
         return jsonify(
             {
                 "authenticated": bool(auth_token),
+                "auth_token": auth_token if auth_token else None,
             }
         )
     except requests.RequestException as e:

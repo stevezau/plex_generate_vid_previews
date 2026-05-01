@@ -405,7 +405,18 @@
         try {
             const pin = await auth.requestPin();
             auth.openAuthWindow(pin.auth_url);
-            await auth.pollForToken(pin.id);
+            // pollForToken resolves with the actual auth_token (not just a
+            // boolean) so we can hand it to the wizard's per-server entry
+            // builder. The onSuccess callback wired into the constructor
+            // above expects the token as its parameter, so invoke it
+            // explicitly — pollForToken intentionally does NOT call
+            // onSuccess itself (PlexAuth.login() is the wrapper that does;
+            // we don't use login() here because we want the in-flight
+            // button-state changes around the discovery fetch).
+            const token = await auth.pollForToken(pin.id);
+            if (token) {
+                await auth.onSuccess(token);
+            }
         } catch (err) {
             console.error('Plex OAuth flow error', err);
             showFormError('Plex OAuth flow error: ' + (err.message || err));
