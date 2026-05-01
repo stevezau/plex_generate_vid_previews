@@ -9,7 +9,7 @@ when the warning body evolves between releases.
 Current sources:
 
 - ``vulkan_software_fallback`` — Dolby Vision Profile 5 green-overlay
-  warning, sourced from ``api_system._get_vulkan_info``.
+  warning, sourced from ``api_vulkan._get_vulkan_info``.
 - ``timezone_misconfigured`` — container is running UTC without an
   explicit TZ env var, sourced from ``api_system._get_timezone_info``.
 
@@ -75,12 +75,12 @@ def _build_vulkan_software_fallback_notification() -> dict[str, Any] | None:
 
     Returns ``None`` when Vulkan is healthy (no warning needed).  When
     the warning fires, reuses the existing GPU-aware HTML body from
-    ``api_system._get_vulkan_info`` so there is a single source of
+    ``api_vulkan._get_vulkan_info`` so there is a single source of
     truth for the remediation text.
     """
-    # Deferred import to avoid circular import (api_system imports from
+    # Deferred import to avoid circular import (api_vulkan imports from
     # gpu_detection which imports loguru which... keep it lazy).
-    from .routes.api_system import _get_vulkan_info
+    from .routes.api_vulkan import _get_vulkan_info
 
     info = _get_vulkan_info()
     warning_html = info.get("warning")

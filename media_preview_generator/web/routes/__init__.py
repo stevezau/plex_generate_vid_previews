@@ -22,6 +22,7 @@ from . import (  # noqa: E402
     api_servers,  # noqa: F401
     api_settings,  # noqa: F401
     api_system,  # noqa: F401
+    api_vulkan,  # noqa: F401
     pages,  # noqa: F401
 )
 
