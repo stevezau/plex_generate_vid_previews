@@ -69,6 +69,12 @@ function sanitizeNotificationHtml(html) {
         'DIV': ['class'],
         'P': ['class'],
         'SMALL': ['class'],
+        // HTML5 disclosure widget — used by the migration card's "What
+        // changed" expander. Without these, the unwrap path below would
+        // collapse the entire <details> subtree (including allowed <ul>
+        // /<li>) into one run-on text node.
+        'DETAILS': ['class', 'open'],
+        'SUMMARY': ['class'],
         'A': ['href', 'class', 'target', 'rel']
     };
     var template = document.createElement('template');
@@ -98,11 +104,16 @@ function sanitizeNotificationHtml(html) {
             }
         }
     }
+    // Unwrap disallowed elements by promoting their children, not by
+    // collapsing to textContent — otherwise an unknown wrapper element
+    // would destroy the structure of every allowed descendant inside it.
     toRemove.forEach(function (el) {
-        // Unwrap: replace the disallowed element with its text content to
-        // avoid silently dropping user-visible text.
-        var text = document.createTextNode(el.textContent || '');
-        el.parentNode.replaceChild(text, el);
+        var parent = el.parentNode;
+        if (!parent) return;
+        while (el.firstChild) {
+            parent.insertBefore(el.firstChild, el);
+        }
+        parent.removeChild(el);
     });
     return template.innerHTML;
 }
@@ -2553,13 +2564,24 @@ async function checkWhatsNew() {
 }
 
 function _renderMarkdownBasic(md) {
-    let html = escapeHtml(md);
-    html = html.replace(/^### (.+)$/gm, '<h6 class="mt-3 mb-1">$1</h6>');
-    html = html.replace(/^## (.+)$/gm, '<h5 class="mt-3 mb-1">$1</h5>');
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // GitHub release bodies arrive with CRLF and frequently use leading
+    // whitespace under top-level headings — handle both before any line-anchored
+    // regex runs, otherwise headings/lists silently fail to match.
+    let html = escapeHtml(md).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // Headings: tolerate up to 4 leading spaces (CommonMark allows 0–3, GitHub
+    // bodies sometimes go further when authors hand-indent under a section).
+    html = html.replace(/^[ \t]{0,4}### (.+)$/gm, '<h6 class="mt-3 mb-1">$1</h6>');
+    html = html.replace(/^[ \t]{0,4}## (.+)$/gm, '<h5 class="mt-3 mb-1">$1</h5>');
+    // Inline code BEFORE bold so a `**foo**` inside `code` doesn't get bolded.
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
-    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Markdown links — extremely common in release notes (PRs, issues, docs).
+    // Restrict the URL to safe schemes so a hand-crafted body can't drop a
+    // javascript:/data: link into the modal.
+    html = html.replace(/\[([^\]]+)\]\(((?:https?:|mailto:)[^)\s]+)\)/g, function (_m, text, url) {
+        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
+    });
+    html = html.replace(/^[ \t]*[*-] (.+)$/gm, '<li>$1</li>');
     html = html.replace(/(<li>.*<\/li>\n?)+/g, function (m) { return '<ul class="mb-2">' + m + '</ul>'; });
     html = html.replace(/\n{2,}/g, '<br><br>');
     html = html.replace(/\n/g, '<br>');

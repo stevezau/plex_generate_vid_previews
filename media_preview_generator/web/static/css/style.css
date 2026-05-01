@@ -50,6 +50,14 @@ html[data-bs-theme="light"] .navbar {
     word-break: break-word;
 }
 
+/* The notification card's "What changed" disclosure uses a <summary> tag.
+   Inline style="cursor:pointer;" gets stripped by sanitizeNotificationHtml
+   (no `style` attribute on the allow-list), so wire the cursor hint via a
+   class that *does* survive sanitization. */
+.notification-bell-wrapper .notification-details summary {
+    cursor: pointer;
+}
+
 .notification-bell-wrapper .notification-list .notification-entry:last-child {
     border-bottom: 0 !important;
 }

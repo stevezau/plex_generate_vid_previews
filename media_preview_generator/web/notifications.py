@@ -140,8 +140,10 @@ def _build_schema_migration_notification() -> dict[str, Any] | None:
     notes = notice.get("notes") or []
     notes_html = ""
     if isinstance(notes, list) and notes:
+        # cursor: pointer is wired via .notification-bell-wrapper .notification-details summary
+        # in style.css — inline style would be stripped by sanitizeNotificationHtml.
         notes_html = (
-            "<details class='mt-2'><summary class='small text-muted' style='cursor:pointer;'>"
+            "<details class='mt-2'><summary class='small text-muted'>"
             "What changed</summary><ul class='small mb-0'>"
             + "".join(f"<li>{n}</li>" for n in notes)
             + "</ul></details>"
