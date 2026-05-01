@@ -243,23 +243,41 @@ function _scheduleFireTime(schedule) {
     return [hour, minute];
 }
 
-// D21 — return a human-friendly tooltip string when ``schedule`` would
-// fire inside the configured quiet-hours window. Returns "" when no
-// overlap. Cached config in window._quietHoursConfig.
+// D26 — return a human-friendly tooltip string when ``schedule`` would
+// fire inside ANY enabled quiet-hours window (day-of-week aware). Returns
+// "" when no overlap. Reads from window._quietHoursConfig (multi-window
+// shape: {enabled, windows: [{start, end, days}]}).
+//
+// Note: this is a TIME-of-day overlap check only. It doesn't try to
+// match the schedule's own day-of-week against the window's days because
+// the orchestrator's gate runs at fire time and reads "is any window
+// active right now" — so a Mon-only schedule firing on a day a Mon-only
+// window is also active will be skipped, but firing on a Tue when no
+// window covers Tue runs fine. The conservative warning here flags any
+// window that overlaps the fire time on any day.
 function _scheduleQuietHoursOverlap(schedule) {
     const qh = window._quietHoursConfig;
     if (!qh || !qh.enabled) return '';
-    const startHM = _parseHHMM(qh.start);
-    const endHM = _parseHHMM(qh.end);
-    if (!startHM || !endHM || (startHM[0] === endHM[0] && startHM[1] === endHM[1])) return '';
+    const windows = Array.isArray(qh.windows) ? qh.windows : [];
+    if (windows.length === 0) return '';
     const fire = _scheduleFireTime(schedule);
     if (!fire) return '';
     const fireMin = fire[0] * 60 + fire[1];
-    const startMin = startHM[0] * 60 + startHM[1];
-    const endMin = endHM[0] * 60 + endHM[1];
-    if (!_isInQuietWindow(fireMin, startMin, endMin)) return '';
-    return 'This schedule fires at ' + String(fire[0]).padStart(2, '0') + ':' + String(fire[1]).padStart(2, '0')
-        + ' which is inside Quiet Hours (' + qh.start + '–' + qh.end + ') — every fire will be skipped.';
+    for (const w of windows) {
+        const startHM = _parseHHMM(w.start);
+        const endHM = _parseHHMM(w.end);
+        if (!startHM || !endHM) continue;
+        if (startHM[0] === endHM[0] && startHM[1] === endHM[1]) continue;
+        const startMin = startHM[0] * 60 + startHM[1];
+        const endMin = endHM[0] * 60 + endHM[1];
+        if (!_isInQuietWindow(fireMin, startMin, endMin)) continue;
+        const dayLabel = (Array.isArray(w.days) && w.days.length && w.days.length < 7)
+            ? ' on ' + w.days.map(d => d.charAt(0).toUpperCase() + d.slice(1)).join('/')
+            : '';
+        return 'This schedule fires at ' + String(fire[0]).padStart(2, '0') + ':' + String(fire[1]).padStart(2, '0')
+            + ' which is inside a Quiet Hours window (' + w.start + '–' + w.end + dayLabel + ') — fires that hit it will be skipped.';
+    }
+    return '';
 }
 window._scheduleQuietHoursOverlap = _scheduleQuietHoursOverlap;
 
@@ -354,8 +372,10 @@ function updateScheduleList() {
 
 
 // ---------------------------------------------------------------------------
-// D21 — Quiet Hours card load / save / sync
+// D21 + D26 — Quiet Hours card load / save / sync (multi-window)
 // ---------------------------------------------------------------------------
+
+const _QH_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 async function loadQuietHours() {
     if (!document.getElementById('quietHoursSaveBtn')) return; // not on this page
@@ -368,7 +388,6 @@ async function loadQuietHours() {
         return;
     }
     _renderQuietHoursCard();
-    // Refresh schedule list so overlap badges reflect the new config.
     if (typeof updateScheduleList === 'function') updateScheduleList();
 }
 window.loadQuietHours = loadQuietHours;
@@ -376,25 +395,71 @@ window.loadQuietHours = loadQuietHours;
 function _renderQuietHoursCard() {
     const qh = window._quietHoursConfig || {};
     const enabledEl = document.getElementById('quietHoursEnabled');
-    const startEl = document.getElementById('quietHoursStart');
-    const endEl = document.getElementById('quietHoursEnd');
-    if (!enabledEl || !startEl || !endEl) return;
+    const wrap = document.getElementById('quietHoursWindows');
+    if (!enabledEl || !wrap) return;
     enabledEl.checked = !!qh.enabled;
-    if (qh.start) startEl.value = qh.start;
-    if (qh.end) endEl.value = qh.end;
+    wrap.innerHTML = '';
+    const windows = Array.isArray(qh.windows) && qh.windows.length
+        ? qh.windows
+        : [{ start: '08:00', end: '01:00', days: _QH_DAYS.slice() }];
+    for (const w of windows) {
+        wrap.appendChild(_buildQuietHoursWindowRow(w));
+    }
     _refreshQuietHoursBadge();
 }
 
-// D21 — public so app.js's processing_paused_changed handler can call it
-// to flip the badge between "on" and "paused now" without a refetch.
+function _buildQuietHoursWindowRow(w) {
+    const tpl = document.getElementById('quietHoursWindowTemplate');
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    const start = node.querySelector('.qh-window-start');
+    const end = node.querySelector('.qh-window-end');
+    if (w && w.start) start.value = w.start;
+    if (w && w.end) end.value = w.end;
+    const days = (w && Array.isArray(w.days) && w.days.length) ? w.days : _QH_DAYS.slice();
+    // Wire each day toggle. btn-check requires unique `id`+`for` so we
+    // generate them per row to keep multiple windows independent.
+    const checks = node.querySelectorAll('.qh-day');
+    const labels = node.querySelectorAll('.qh-day-label');
+    const uid = 'qh-' + Math.random().toString(36).slice(2, 9);
+    checks.forEach((cb, i) => {
+        const id = uid + '-' + cb.value;
+        cb.id = id;
+        labels[i].setAttribute('for', id);
+        cb.checked = days.indexOf(cb.value) !== -1;
+    });
+    node.querySelector('.qh-window-remove').addEventListener('click', () => {
+        node.parentElement.removeChild(node);
+    });
+    return node;
+}
+
+function _readQuietHoursWindowsFromDom() {
+    const wrap = document.getElementById('quietHoursWindows');
+    if (!wrap) return [];
+    const out = [];
+    wrap.querySelectorAll('.qh-window').forEach((row) => {
+        const start = row.querySelector('.qh-window-start').value;
+        const end = row.querySelector('.qh-window-end').value;
+        const days = [];
+        row.querySelectorAll('.qh-day').forEach((cb) => {
+            if (cb.checked) days.push(cb.value);
+        });
+        out.push({ start, end, days });
+    });
+    return out;
+}
+
 function _refreshQuietHoursBadge() {
     const badge = document.getElementById('quietHoursStateBadge');
     if (!badge) return;
     const qh = window._quietHoursConfig || {};
-    if (!qh.enabled) {
+    const windows = Array.isArray(qh.windows) ? qh.windows : [];
+    if (!qh.enabled || windows.length === 0) {
         badge.textContent = 'off';
         badge.className = 'badge bg-secondary';
-        badge.title = 'Quiet hours are disabled';
+        badge.title = qh.enabled
+            ? 'Quiet hours are enabled but no windows are configured'
+            : 'Quiet hours are disabled';
         return;
     }
     const pausedNow = !!(qh.currently_in_quiet_window
@@ -402,29 +467,41 @@ function _refreshQuietHoursBadge() {
     if (pausedNow) {
         badge.textContent = 'paused now';
         badge.className = 'badge bg-warning text-dark';
-        badge.title = 'Quiet hours window is currently active — processing paused';
+        badge.title = 'A quiet-hours window is currently active — processing paused';
     } else {
-        badge.textContent = 'on';
+        badge.textContent = 'on (' + windows.length + ' window' + (windows.length === 1 ? '' : 's') + ')';
         badge.className = 'badge bg-info text-dark';
-        badge.title = 'Quiet hours scheduled — currently outside the paused window';
+        badge.title = 'Quiet hours scheduled — currently outside every paused window';
     }
 }
 window._refreshQuietHoursBadge = _refreshQuietHoursBadge;
 
 async function saveQuietHours() {
     const enabled = document.getElementById('quietHoursEnabled').checked;
-    const start = document.getElementById('quietHoursStart').value;
-    const end = document.getElementById('quietHoursEnd').value;
-    if (!_parseHHMM(start)) {
-        if (typeof showToast === 'function') showToast('Invalid time', 'Pause time must be HH:MM (00:00–23:59)', 'danger');
-        return;
+    const windows = _readQuietHoursWindowsFromDom();
+    for (let i = 0; i < windows.length; i++) {
+        const w = windows[i];
+        if (!_parseHHMM(w.start) || !_parseHHMM(w.end)) {
+            if (typeof showToast === 'function') {
+                showToast('Invalid time', 'Window #' + (i + 1) + ' has an invalid time. Use HH:MM (00:00–23:59).', 'danger');
+            }
+            return;
+        }
+        if (enabled && w.start === w.end) {
+            if (typeof showToast === 'function') {
+                showToast('Quiet hours', 'Window #' + (i + 1) + ': Pause and Resume can\'t be the same time.', 'warning');
+            }
+            return;
+        }
+        if (enabled && w.days.length === 0) {
+            if (typeof showToast === 'function') {
+                showToast('Quiet hours', 'Window #' + (i + 1) + ': pick at least one day of the week.', 'warning');
+            }
+            return;
+        }
     }
-    if (!_parseHHMM(end)) {
-        if (typeof showToast === 'function') showToast('Invalid time', 'Resume time must be HH:MM (00:00–23:59)', 'danger');
-        return;
-    }
-    if (enabled && start === end) {
-        if (typeof showToast === 'function') showToast('Quiet hours', 'Pause and Resume can\'t be the same time. Pick a window.', 'warning');
+    if (enabled && windows.length === 0) {
+        if (typeof showToast === 'function') showToast('Quiet hours', 'Add at least one window or disable quiet hours.', 'warning');
         return;
     }
     const btn = document.getElementById('quietHoursSaveBtn');
@@ -433,7 +510,7 @@ async function saveQuietHours() {
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
     }
     try {
-        await apiPost('/api/quiet-hours', { enabled, start, end });
+        await apiPost('/api/quiet-hours', { enabled, windows });
         await loadQuietHours();
         if (typeof showToast === 'function') showToast('Quiet hours', 'Saved', 'success');
     } catch (e) {
@@ -447,10 +524,18 @@ async function saveQuietHours() {
 }
 window.saveQuietHours = saveQuietHours;
 
+function _addQuietHoursWindowRow() {
+    const wrap = document.getElementById('quietHoursWindows');
+    if (!wrap) return;
+    wrap.appendChild(_buildQuietHoursWindowRow({ start: '22:00', end: '06:00', days: _QH_DAYS.slice() }));
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const btn = document.getElementById('quietHoursSaveBtn');
     if (btn) {
         btn.addEventListener('click', saveQuietHours);
         loadQuietHours();
     }
+    const addBtn = document.getElementById('quietHoursAddWindowBtn');
+    if (addBtn) addBtn.addEventListener('click', _addQuietHoursWindowRow);
 });

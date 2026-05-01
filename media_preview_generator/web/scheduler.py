@@ -44,8 +44,20 @@ def _parse_hhmm(value: str | None) -> tuple[int, int] | None:
     return hour, minute
 
 
-_QUIET_HOURS_PAUSE_JOB_ID = "__quiet_hours_pause"
-_QUIET_HOURS_RESUME_JOB_ID = "__quiet_hours_resume"
+# D21 / D26 — Quiet-hours cron job-id prefixes. With multi-window
+# support each window registers TWO crons (`__qh_pause_{idx}` /
+# `__qh_resume_{idx}`); the legacy single-window IDs are kept here so
+# apply_quiet_hours can clean them up on first multi-window save for
+# installs that ran the D21 single-window code.
+_QUIET_HOURS_PAUSE_JOB_ID = "__quiet_hours_pause"  # legacy D21 single-window id
+_QUIET_HOURS_RESUME_JOB_ID = "__quiet_hours_resume"  # legacy D21 single-window id
+_QUIET_HOURS_PAUSE_PREFIX = "__qh_pause_"
+_QUIET_HOURS_RESUME_PREFIX = "__qh_resume_"
+
+# APScheduler day_of_week names (Mon-first). Order matters for cron
+# strings — keep these literal so a typo in the JS payload can't slip
+# through to a silent no-op.
+_QUIET_HOURS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def is_in_quiet_window(
@@ -53,11 +65,13 @@ def is_in_quiet_window(
     pause_hm: tuple[int, int],
     resume_hm: tuple[int, int],
 ) -> bool:
-    """Return ``True`` when ``now_hm`` falls inside the paused window (D21).
+    """Return ``True`` when ``now_hm`` falls inside the paused window.
 
     Equal pause/resume times disable the window (returns ``False``).
     Cross-midnight windows (pause > resume) are handled — e.g. pause=08:00,
-    resume=01:00 means processing is paused all day until 1 AM.
+    resume=01:00 means processing is paused all day until 1 AM. Day-of-
+    week filtering is the caller's responsibility (see
+    :func:`is_now_in_any_quiet_window`).
     """
     n = now_hm[0] * 60 + now_hm[1]
     p = pause_hm[0] * 60 + pause_hm[1]
@@ -69,44 +83,126 @@ def is_in_quiet_window(
     return n >= p or n < r
 
 
-def _quiet_hours_pause() -> None:
-    """Pause-boundary cron callback (D21). Flips processing_paused on."""
+def normalise_quiet_hours(raw: dict | None) -> dict:
+    """Normalise the persisted quiet_hours shape (D26).
+
+    Accepts the legacy D21 single-window form
+    ``{"enabled": bool, "start": "HH:MM", "end": "HH:MM"}`` and migrates
+    it to the multi-window form
+    ``{"enabled": bool, "windows": [{"start", "end", "days"}]}``.
+    Legacy entries map to one window covering all 7 days.
+
+    Per-window ``days`` defaults to all 7 when missing. Invalid /
+    out-of-range day names are silently dropped — never raises so a
+    bad on-disk shape can't crash the boot path.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    enabled = bool(raw.get("enabled"))
+    raw_windows = raw.get("windows")
+    if isinstance(raw_windows, list) and raw_windows:
+        windows = []
+        for w in raw_windows:
+            if not isinstance(w, dict):
+                continue
+            start = str(w.get("start") or "")
+            end = str(w.get("end") or "")
+            if not start or not end:
+                continue
+            days = w.get("days")
+            if not isinstance(days, list) or not days:
+                days = list(_QUIET_HOURS_DAYS)
+            else:
+                days = [d for d in (str(x).strip().lower() for x in days) if d in _QUIET_HOURS_DAYS]
+                if not days:
+                    days = list(_QUIET_HOURS_DAYS)
+            windows.append({"start": start, "end": end, "days": days})
+        return {"enabled": enabled, "windows": windows}
+    # Legacy single-window migration.
+    start = str(raw.get("start") or "")
+    end = str(raw.get("end") or "")
+    if start and end:
+        return {
+            "enabled": enabled,
+            "windows": [{"start": start, "end": end, "days": list(_QUIET_HOURS_DAYS)}],
+        }
+    return {"enabled": enabled, "windows": []}
+
+
+def is_now_in_any_quiet_window(
+    quiet_hours: dict | None,
+    now: datetime | None = None,
+) -> bool:
+    """Return True if ``now`` falls inside ANY enabled quiet-hours window.
+
+    Considers both the time-of-day (via :func:`is_in_quiet_window`) AND
+    the per-window day-of-week filter. Used by the boot-time gate, the
+    `currently_in_quiet_window` API field, and the pause/resume cron
+    callbacks (which need to recompute state to handle overlapping
+    windows correctly — resume of window A must NOT un-pause when
+    window B is still active).
+    """
+    qh = normalise_quiet_hours(quiet_hours)
+    if not qh.get("enabled"):
+        return False
+    n = now or datetime.now()
+    today = _QUIET_HOURS_DAYS[n.weekday()]
+    now_hm = (n.hour, n.minute)
+    for w in qh.get("windows", []):
+        if today not in (w.get("days") or _QUIET_HOURS_DAYS):
+            continue
+        try:
+            shm = _parse_hhmm(w["start"])
+            ehm = _parse_hhmm(w["end"])
+        except (KeyError, ValueError):
+            continue
+        if shm is None or ehm is None:
+            continue
+        if is_in_quiet_window(now_hm, shm, ehm):
+            return True
+    return False
+
+
+def _quiet_hours_recompute_and_apply() -> None:
+    """Idempotent state flip — set processing_paused to whether ANY window is active.
+
+    Called from BOTH the pause-boundary and resume-boundary crons so
+    overlapping windows don't fight each other (e.g. window A's resume
+    cron firing while window B is still active correctly leaves the
+    queue paused). Also called from the boot-time gate.
+    """
     try:
         from .jobs import get_job_manager
         from .settings_manager import get_settings_manager
 
         sm = get_settings_manager()
-        if sm.processing_paused:
-            logger.debug("Quiet hours pause fired but processing is already paused")
+        target = is_now_in_any_quiet_window(sm.get("quiet_hours"))
+        if sm.processing_paused == target:
             return
-        sm.processing_paused = True
+        sm.processing_paused = target
         try:
-            get_job_manager().emit_processing_paused_changed(True)
+            get_job_manager().emit_processing_paused_changed(target)
         except Exception:
-            logger.debug("Could not emit processing_paused_changed on quiet-hours pause", exc_info=True)
-        logger.info("Quiet hours: processing paused (queue will fill until resume time)")
+            logger.debug(
+                "Could not emit processing_paused_changed on quiet-hours flip",
+                exc_info=True,
+            )
+        if target:
+            logger.info("Quiet hours: processing paused (queue will fill until resume time)")
+        else:
+            logger.info("Quiet hours: processing resumed (queue draining)")
     except Exception:
-        logger.exception("Quiet-hours pause callback hit an unexpected error")
+        logger.exception("Quiet-hours recompute hit an unexpected error")
+
+
+# Module-level callbacks (must be picklable for APScheduler's SQLAlchemy
+# jobstore). Both the pause-edge and resume-edge cron jobs call the
+# same recompute helper — see _quiet_hours_recompute_and_apply.
+def _quiet_hours_pause() -> None:
+    _quiet_hours_recompute_and_apply()
 
 
 def _quiet_hours_resume() -> None:
-    """Resume-boundary cron callback (D21). Flips processing_paused off."""
-    try:
-        from .jobs import get_job_manager
-        from .settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        if not sm.processing_paused:
-            logger.debug("Quiet hours resume fired but processing is not paused")
-            return
-        sm.processing_paused = False
-        try:
-            get_job_manager().emit_processing_paused_changed(False)
-        except Exception:
-            logger.debug("Could not emit processing_paused_changed on quiet-hours resume", exc_info=True)
-        logger.info("Quiet hours: processing resumed (queue draining)")
-    except Exception:
-        logger.exception("Quiet-hours resume callback hit an unexpected error")
+    _quiet_hours_recompute_and_apply()
 
 
 def execute_schedule_stop(schedule_id: str) -> None:
@@ -515,57 +611,85 @@ class ScheduleManager:
             logger.info("Scheduler started")
 
     def apply_quiet_hours(self, settings_dict: dict | None) -> None:
-        """Register / refresh the quiet-hours pause+resume crons (D21).
+        """Register / refresh the per-window quiet-hours crons (D21 + D26).
 
-        ``settings_dict`` is the value of ``settings["quiet_hours"]`` —
-        ``{"enabled": bool, "start": "HH:MM", "end": "HH:MM"}``. Always
-        removes the existing pair first, then adds them back when
-        enabled. Equal start/end times disable the window (same as
-        enabled=False) so the user has two ways to turn it off.
+        ``settings_dict`` is the value of ``settings["quiet_hours"]``.
+        Accepts both the legacy single-window shape
+        ``{"enabled": bool, "start": "HH:MM", "end": "HH:MM"}`` and the
+        new multi-window shape
+        ``{"enabled": bool, "windows": [{"start", "end", "days"}]}`` —
+        normalise_quiet_hours migrates the former. Each window
+        registers TWO crons (pause at start, resume at end) keyed by
+        index. Both callbacks recompute "is any window currently
+        active?" so overlapping windows don't fight each other (e.g. a
+        resume cron firing while another window is still active won't
+        accidentally un-pause the queue).
         """
-        for jid in (_QUIET_HOURS_PAUSE_JOB_ID, _QUIET_HOURS_RESUME_JOB_ID):
-            try:
-                self.scheduler.remove_job(jid)
-            except Exception:
-                pass
+        # Wipe ALL existing quiet-hours crons (legacy single-window IDs
+        # AND any per-window IDs from a prior apply). One full rebuild
+        # is simpler than reconciling adds/removes individually.
+        for job in self.scheduler.get_jobs():
+            if (
+                job.id == _QUIET_HOURS_PAUSE_JOB_ID
+                or job.id == _QUIET_HOURS_RESUME_JOB_ID
+                or job.id.startswith(_QUIET_HOURS_PAUSE_PREFIX)
+                or job.id.startswith(_QUIET_HOURS_RESUME_PREFIX)
+            ):
+                try:
+                    self.scheduler.remove_job(job.id)
+                except Exception:
+                    pass
 
-        if not isinstance(settings_dict, dict) or not settings_dict.get("enabled"):
-            return
-
-        try:
-            start_hm = _parse_hhmm(str(settings_dict.get("start") or ""))
-            end_hm = _parse_hhmm(str(settings_dict.get("end") or ""))
-        except ValueError:
-            logger.warning(
-                "Quiet hours has malformed times {}; skipping cron registration.",
-                settings_dict,
-            )
-            return
-        if start_hm is None or end_hm is None or start_hm == end_hm:
+        qh = normalise_quiet_hours(settings_dict)
+        if not qh.get("enabled") or not qh.get("windows"):
             return
 
         if not self.scheduler.running:
             self.start()
 
-        self.scheduler.add_job(
-            _quiet_hours_pause,
-            trigger=CronTrigger(hour=start_hm[0], minute=start_hm[1]),
-            id=_QUIET_HOURS_PAUSE_JOB_ID,
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            _quiet_hours_resume,
-            trigger=CronTrigger(hour=end_hm[0], minute=end_hm[1]),
-            id=_QUIET_HOURS_RESUME_JOB_ID,
-            replace_existing=True,
-        )
-        logger.info(
-            "Quiet hours: pause at {:02d}:{:02d}, resume at {:02d}:{:02d} (container TZ)",
-            start_hm[0],
-            start_hm[1],
-            end_hm[0],
-            end_hm[1],
-        )
+        registered = 0
+        for idx, w in enumerate(qh["windows"]):
+            try:
+                start_hm = _parse_hhmm(str(w.get("start") or ""))
+                end_hm = _parse_hhmm(str(w.get("end") or ""))
+            except ValueError:
+                logger.warning(
+                    "Quiet-hours window #{} has malformed times {}; skipping.",
+                    idx,
+                    w,
+                )
+                continue
+            if start_hm is None or end_hm is None or start_hm == end_hm:
+                continue
+            days = w.get("days") or list(_QUIET_HOURS_DAYS)
+            day_filter = ",".join(d for d in days if d in _QUIET_HOURS_DAYS)
+            if not day_filter:
+                continue
+            self.scheduler.add_job(
+                _quiet_hours_pause,
+                trigger=CronTrigger(day_of_week=day_filter, hour=start_hm[0], minute=start_hm[1]),
+                id=f"{_QUIET_HOURS_PAUSE_PREFIX}{idx}",
+                replace_existing=True,
+            )
+            self.scheduler.add_job(
+                _quiet_hours_resume,
+                trigger=CronTrigger(day_of_week=day_filter, hour=end_hm[0], minute=end_hm[1]),
+                id=f"{_QUIET_HOURS_RESUME_PREFIX}{idx}",
+                replace_existing=True,
+            )
+            registered += 1
+            logger.info(
+                "Quiet hours window #{}: pause {:02d}:{:02d} → resume {:02d}:{:02d} on {} (container TZ)",
+                idx,
+                start_hm[0],
+                start_hm[1],
+                end_hm[0],
+                end_hm[1],
+                day_filter,
+            )
+
+        if registered == 0:
+            logger.info("Quiet hours enabled but no valid windows found — no crons registered.")
 
     def stop(self) -> None:
         """Stop the scheduler."""

@@ -4,7 +4,13 @@ from flask import jsonify, request
 from loguru import logger
 
 from ..auth import api_token_required
-from ..scheduler import _parse_hhmm, get_schedule_manager, is_in_quiet_window
+from ..scheduler import (
+    _QUIET_HOURS_DAYS,
+    _parse_hhmm,
+    get_schedule_manager,
+    is_now_in_any_quiet_window,
+    normalise_quiet_hours,
+)
 from ..settings_manager import get_settings_manager
 from . import api
 
@@ -170,42 +176,60 @@ def run_schedule_now(schedule_id):
 
 
 # ---------------------------------------------------------------------------
-# Quiet Hours (D21) — global queue pause/resume schedule
+# Quiet Hours (D21 + D26) — global queue pause/resume schedule
+#
+# D26 expanded the single-window D21 model to support multiple windows
+# each with a per-day-of-week filter. Persisted shape:
+#   {"enabled": bool,
+#    "windows": [{"start": "HH:MM", "end": "HH:MM",
+#                 "days": ["mon","tue",...]}]}
+# Legacy single-window payloads {enabled, start, end} are normalised on
+# read in the scheduler module so a settings.json from D21 keeps working.
 # ---------------------------------------------------------------------------
-
-_QUIET_HOURS_DEFAULT = {"enabled": False, "start": "08:00", "end": "01:00"}
 
 
 def _quiet_hours_payload(qh: dict | None) -> dict:
-    """Normalise the persisted shape to a stable JSON response."""
-    qh = qh if isinstance(qh, dict) else {}
-    enabled = bool(qh.get("enabled"))
-    start = str(qh.get("start") or _QUIET_HOURS_DEFAULT["start"])
-    end = str(qh.get("end") or _QUIET_HOURS_DEFAULT["end"])
-    in_window = False
-    if enabled:
-        try:
-            shm = _parse_hhmm(start)
-            ehm = _parse_hhmm(end)
-        except ValueError:
-            shm = ehm = None
-        if shm and ehm and shm != ehm:
-            from datetime import datetime as _dt
-
-            now = _dt.now()
-            in_window = is_in_quiet_window((now.hour, now.minute), shm, ehm)
+    """Return the normalised multi-window shape + the currently-active flag."""
+    normalised = normalise_quiet_hours(qh)
     return {
-        "enabled": enabled,
-        "start": start,
-        "end": end,
-        "currently_in_quiet_window": in_window,
+        "enabled": normalised["enabled"],
+        "windows": normalised["windows"],
+        "currently_in_quiet_window": is_now_in_any_quiet_window(normalised),
     }
+
+
+def _validate_window(raw: object, idx: int) -> dict:
+    """Validate a single window dict, raising ValueError with a 1-indexed label."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"Window #{idx + 1}: must be an object")
+    start = str(raw.get("start") or "").strip()
+    end = str(raw.get("end") or "").strip()
+    if not start or not end:
+        raise ValueError(f"Window #{idx + 1}: start and end are required")
+    try:
+        _parse_hhmm(start)
+        _parse_hhmm(end)
+    except ValueError as exc:
+        raise ValueError(f"Window #{idx + 1}: {exc}") from exc
+    raw_days = raw.get("days")
+    if raw_days is None:
+        days = list(_QUIET_HOURS_DAYS)
+    else:
+        if not isinstance(raw_days, list):
+            raise ValueError(f"Window #{idx + 1}: days must be a list")
+        days = [str(d).strip().lower() for d in raw_days]
+        bad = [d for d in days if d not in _QUIET_HOURS_DAYS]
+        if bad:
+            raise ValueError(f"Window #{idx + 1}: invalid day(s) {bad}")
+        if not days:
+            days = list(_QUIET_HOURS_DAYS)
+    return {"start": start, "end": end, "days": days}
 
 
 @api.route("/quiet-hours")
 @api_token_required
 def get_quiet_hours():
-    """Return the current quiet-hours config (D21)."""
+    """Return the current quiet-hours config (D21 + D26)."""
     sm = get_settings_manager()
     return jsonify(_quiet_hours_payload(sm.get("quiet_hours")))
 
@@ -213,23 +237,39 @@ def get_quiet_hours():
 @api.route("/quiet-hours", methods=["POST"])
 @api_token_required
 def update_quiet_hours():
-    """Update the quiet-hours config and re-register the boundary crons (D21).
+    """Update the quiet-hours config and re-register the boundary crons.
 
-    Body: ``{"enabled": bool, "start": "HH:MM", "end": "HH:MM"}``.
-    Validation rejects malformed times. Equal times disable the window
-    even when ``enabled=True`` (we just don't register the crons).
+    Body (D26 multi-window form):
+        ``{"enabled": bool,
+           "windows": [{"start": "HH:MM", "end": "HH:MM",
+                        "days": ["mon","tue",...]}]}``
+
+    Backwards-compat: a body with top-level ``start``/``end`` is accepted
+    and treated as a single all-week window (so old front-ends keep
+    working through a deploy gap).
     """
     data = request.get_json() or {}
-    try:
-        start = str(data.get("start") or "").strip() or _QUIET_HOURS_DEFAULT["start"]
-        end = str(data.get("end") or "").strip() or _QUIET_HOURS_DEFAULT["end"]
-        # Validate both up front; ValueError → 400.
-        _parse_hhmm(start)
-        _parse_hhmm(end)
-    except ValueError as exc:
-        return jsonify({"error": f"Invalid time: {exc}"}), 400
+    enabled = bool(data.get("enabled"))
 
-    qh = {"enabled": bool(data.get("enabled")), "start": start, "end": end}
+    raw_windows = data.get("windows")
+    if raw_windows is None:
+        # Legacy single-window body — accept and migrate.
+        start = str(data.get("start") or "").strip()
+        end = str(data.get("end") or "").strip()
+        if start and end:
+            raw_windows = [{"start": start, "end": end, "days": list(_QUIET_HOURS_DAYS)}]
+        else:
+            raw_windows = []
+
+    if not isinstance(raw_windows, list):
+        return jsonify({"error": "windows must be a list"}), 400
+
+    try:
+        windows = [_validate_window(w, i) for i, w in enumerate(raw_windows)]
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    qh = {"enabled": enabled, "windows": windows}
     sm = get_settings_manager()
     sm.set("quiet_hours", qh)
 

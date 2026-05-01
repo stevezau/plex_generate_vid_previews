@@ -27,7 +27,7 @@
             </div>
         </div>
 
-        <!-- Quiet Hours (D21) — global queue pause / resume -->
+        <!-- Quiet Hours (D21 + D26) — global queue pause / resume, multi-window with per-day filter -->
         <div class="card section-card" id="section-schedules-quiet-hours">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-moon-stars me-2"></i>Quiet Hours</span>
@@ -36,37 +36,73 @@
             <div class="card-body">
                 <p class="mb-3">
                     Pause the entire processing queue during busy hours. Triggers, schedules, and manual jobs all keep adding to the queue
-                    &mdash; nothing is dropped &mdash; but no FFmpeg work happens until the resume time. Useful when you want to leave the
-                    system free during the day and let everything drain overnight.
+                    &mdash; nothing is dropped &mdash; but no FFmpeg work happens until any window resumes. Add one window for a single
+                    paused band each day, or several to cover different patterns (e.g. <em>weekday daytime + weekend evenings</em>).
                 </p>
-                <div class="row g-3 align-items-end">
+                <div class="row g-3 align-items-center mb-3">
                     <div class="col-auto">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" role="switch" id="quietHoursEnabled">
                             <label class="form-check-label" for="quietHoursEnabled">Enable quiet hours</label>
                         </div>
                     </div>
-                    <div class="col-md-3">
-                        <label for="quietHoursStart" class="form-label small mb-1">Pause at</label>
-                        <input type="time" class="form-control form-control-sm" id="quietHoursStart" value="08:00">
-                    </div>
-                    <div class="col-md-3">
-                        <label for="quietHoursEnd" class="form-label small mb-1">Resume at</label>
-                        <input type="time" class="form-control form-control-sm" id="quietHoursEnd" value="01:00">
-                    </div>
-                    <div class="col-auto">
+                    <div class="col-auto ms-auto d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="quietHoursAddWindowBtn">
+                            <i class="bi bi-plus me-1"></i>Add window
+                        </button>
                         <button type="button" class="btn btn-sm btn-primary" id="quietHoursSaveBtn">
                             <i class="bi bi-check me-1"></i>Save
                         </button>
                     </div>
                 </div>
+                <div id="quietHoursWindows"></div>
                 <div class="form-text mt-2">
-                    Times are container-local. Leave Pause and Resume the same to disable. Manual <strong>Pause All</strong>
-                    overrides still work between boundary times &mdash; quiet hours only flip the state at the configured edges,
-                    not continuously.
+                    Times are container-local. Cross-midnight windows (e.g. 22:00 → 06:00) are supported. Manual <strong>Pause All</strong>
+                    overrides still work between boundary times &mdash; quiet hours only flip the state at each window's edges, not continuously.
                 </div>
             </div>
         </div>
+
+        <!-- D26 — Quiet Hours window row template (cloned by JS) -->
+        <template id="quietHoursWindowTemplate">
+            <div class="border rounded p-3 mb-2 bg-body-tertiary qh-window">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <strong class="qh-window-title text-muted small">Window</strong>
+                    <button type="button" class="btn btn-sm btn-link text-danger p-0 qh-window-remove" title="Remove window">
+                        <i class="bi bi-x-circle"></i>
+                    </button>
+                </div>
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label small mb-1">Pause at</label>
+                        <input type="time" class="form-control form-control-sm qh-window-start" value="08:00">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small mb-1">Resume at</label>
+                        <input type="time" class="form-control form-control-sm qh-window-end" value="01:00">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small mb-1">Days</label>
+                        <div class="btn-group btn-group-sm w-100 qh-window-days" role="group">
+                            <input type="checkbox" class="btn-check qh-day" id="" value="mon" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="mon">Mon</label>
+                            <input type="checkbox" class="btn-check qh-day" id="" value="tue" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="tue">Tue</label>
+                            <input type="checkbox" class="btn-check qh-day" id="" value="wed" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="wed">Wed</label>
+                            <input type="checkbox" class="btn-check qh-day" id="" value="thu" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="thu">Thu</label>
+                            <input type="checkbox" class="btn-check qh-day" id="" value="fri" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="fri">Fri</label>
+                            <input type="checkbox" class="btn-check qh-day" id="" value="sat" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="sat">Sat</label>
+                            <input type="checkbox" class="btn-check qh-day" id="" value="sun" autocomplete="off">
+                            <label class="btn btn-outline-secondary qh-day-label" data-day="sun">Sun</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
 
         <!-- All Schedules -->
         <div class="card section-card" id="section-schedules-list">

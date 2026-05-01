@@ -470,37 +470,26 @@ def create_app(config_dir: str | None = None) -> Flask:
     # Set up scheduled job callback (uses module-level function for pickling)
     schedule_manager.set_run_job_callback(run_scheduled_job)
 
-    # D21 — apply quiet-hours config (registers / refreshes the two
-    # boundary crons that flip processing_paused) and gate startup so a
-    # restart that lands inside the paused window is paused immediately,
-    # not silently active until the next pause-time cron fires.
+    # D21 / D26 — apply multi-window quiet-hours config (registers per-
+    # window pause+resume crons that flip processing_paused) and gate
+    # startup so a restart that lands inside any active window is paused
+    # immediately, not silently active until the next boundary cron fires.
     try:
-        from .scheduler import _parse_hhmm, is_in_quiet_window
+        from .scheduler import is_now_in_any_quiet_window
 
         qh = sm.get("quiet_hours") or {}
         schedule_manager.apply_quiet_hours(qh)
-        if isinstance(qh, dict) and qh.get("enabled"):
+        if is_now_in_any_quiet_window(qh) and not sm.processing_paused:
+            sm.processing_paused = True
+            from .jobs import get_job_manager as _gjm
+
             try:
-                start_hm = _parse_hhmm(str(qh.get("start") or ""))
-                end_hm = _parse_hhmm(str(qh.get("end") or ""))
-            except ValueError:
-                start_hm = end_hm = None
-            if start_hm and end_hm and start_hm != end_hm:
-                from datetime import datetime as _dt
+                _gjm().emit_processing_paused_changed(True)
+            except Exception:
+                pass
+            from loguru import logger as _qh_logger
 
-                now = _dt.now()
-                if is_in_quiet_window((now.hour, now.minute), start_hm, end_hm):
-                    if not sm.processing_paused:
-                        sm.processing_paused = True
-                        from .jobs import get_job_manager as _gjm
-
-                        try:
-                            _gjm().emit_processing_paused_changed(True)
-                        except Exception:
-                            pass
-                        from loguru import logger as _qh_logger
-
-                        _qh_logger.info("Quiet hours: started inside the paused window — processing paused on startup")
+            _qh_logger.info("Quiet hours: started inside an active window — processing paused on startup")
     except Exception:
         from loguru import logger as _qh_logger
 

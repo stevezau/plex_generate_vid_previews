@@ -363,30 +363,35 @@ class TestQuietHours:
         assert is_in_quiet_window((12, 0), (22, 0), (6, 0)) is False
 
     def test_apply_quiet_hours_enabled_registers_both_crons(self, scheduler_manager):
+        # D21 legacy single-window body — accepted via normalise_quiet_hours
+        # and persisted as window #0; registered IDs use the D26 per-window
+        # prefix.
         scheduler_manager.apply_quiet_hours({"enabled": True, "start": "08:00", "end": "01:00"})
         ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
-        assert "__quiet_hours_pause" in ids
-        assert "__quiet_hours_resume" in ids
+        assert "__qh_pause_0" in ids
+        assert "__qh_resume_0" in ids
 
     def test_apply_quiet_hours_disabled_removes_both_crons(self, scheduler_manager):
         scheduler_manager.apply_quiet_hours({"enabled": True, "start": "08:00", "end": "01:00"})
         scheduler_manager.apply_quiet_hours({"enabled": False, "start": "08:00", "end": "01:00"})
         ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert not any(jid.startswith("__qh_pause_") for jid in ids)
+        assert not any(jid.startswith("__qh_resume_") for jid in ids)
         assert "__quiet_hours_pause" not in ids
         assert "__quiet_hours_resume" not in ids
 
     def test_apply_quiet_hours_equal_times_treated_as_disabled(self, scheduler_manager):
         scheduler_manager.apply_quiet_hours({"enabled": True, "start": "08:00", "end": "08:00"})
         ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
-        assert "__quiet_hours_pause" not in ids
-        assert "__quiet_hours_resume" not in ids
+        assert not any(jid.startswith("__qh_pause_") for jid in ids)
+        assert not any(jid.startswith("__qh_resume_") for jid in ids)
 
     def test_apply_quiet_hours_malformed_times_skipped(self, scheduler_manager):
         # Malformed times should NOT raise; just skip cron registration.
         scheduler_manager.apply_quiet_hours({"enabled": True, "start": "25:00", "end": "01:00"})
         ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
-        assert "__quiet_hours_pause" not in ids
-        assert "__quiet_hours_resume" not in ids
+        assert not any(jid.startswith("__qh_pause_") for jid in ids)
+        assert not any(jid.startswith("__qh_resume_") for jid in ids)
 
     def test_execute_scheduled_job_skipped_when_processing_paused(self, scheduler_manager, monkeypatch):
         """D21 — when the global queue is paused (manual or quiet hours),
@@ -419,6 +424,155 @@ class TestQuietHours:
             None,
         )
         assert called == [], "callback fired despite processing_paused=True"
+
+
+class TestQuietHoursMultiWindow:
+    """D26 — multi-window Quiet Hours with per-window day-of-week filter."""
+
+    def test_normalise_legacy_single_window_form(self):
+        from media_preview_generator.web.scheduler import normalise_quiet_hours
+
+        out = normalise_quiet_hours({"enabled": True, "start": "08:00", "end": "01:00"})
+        assert out["enabled"] is True
+        assert len(out["windows"]) == 1
+        assert out["windows"][0]["start"] == "08:00"
+        assert out["windows"][0]["end"] == "01:00"
+        # Legacy form has no day filter — should default to all 7 days.
+        assert set(out["windows"][0]["days"]) == {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+    def test_normalise_multi_window_passes_through(self):
+        from media_preview_generator.web.scheduler import normalise_quiet_hours
+
+        raw = {
+            "enabled": True,
+            "windows": [
+                {"start": "08:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+                {"start": "22:00", "end": "06:00", "days": ["sat", "sun"]},
+            ],
+        }
+        out = normalise_quiet_hours(raw)
+        assert len(out["windows"]) == 2
+        assert out["windows"][0]["days"] == ["mon", "tue", "wed", "thu", "fri"]
+        assert out["windows"][1]["days"] == ["sat", "sun"]
+
+    def test_normalise_strips_unknown_day_names(self):
+        from media_preview_generator.web.scheduler import normalise_quiet_hours
+
+        raw = {"enabled": True, "windows": [{"start": "08:00", "end": "17:00", "days": ["mon", "BOGUS", "fri"]}]}
+        out = normalise_quiet_hours(raw)
+        assert out["windows"][0]["days"] == ["mon", "fri"]
+
+    def test_normalise_empty_days_list_falls_back_to_all_seven(self):
+        from media_preview_generator.web.scheduler import normalise_quiet_hours
+
+        out = normalise_quiet_hours({"enabled": True, "windows": [{"start": "08:00", "end": "17:00", "days": []}]})
+        assert len(out["windows"][0]["days"]) == 7
+
+    def test_normalise_handles_none_input(self):
+        from media_preview_generator.web.scheduler import normalise_quiet_hours
+
+        out = normalise_quiet_hours(None)
+        assert out == {"enabled": False, "windows": []}
+
+    def test_is_now_in_any_quiet_window_respects_day_of_week(self):
+        from datetime import datetime as _dt
+
+        from media_preview_generator.web.scheduler import is_now_in_any_quiet_window
+
+        qh = {"enabled": True, "windows": [{"start": "08:00", "end": "17:00", "days": ["mon"]}]}
+        # 2026-05-04 is a Monday, 2026-05-05 a Tuesday.
+        mon_inside = _dt(2026, 5, 4, 12, 0)
+        tue_inside_clock = _dt(2026, 5, 5, 12, 0)
+        assert is_now_in_any_quiet_window(qh, mon_inside) is True
+        assert is_now_in_any_quiet_window(qh, tue_inside_clock) is False
+
+    def test_is_now_in_any_quiet_window_two_windows_either_active(self):
+        from datetime import datetime as _dt
+
+        from media_preview_generator.web.scheduler import is_now_in_any_quiet_window
+
+        qh = {
+            "enabled": True,
+            "windows": [
+                # Weekday daytime
+                {"start": "08:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+                # Weekend overnight (cross-midnight)
+                {"start": "22:00", "end": "06:00", "days": ["sat", "sun"]},
+            ],
+        }
+        # 2026-05-04 Mon 12:00 → first window active
+        assert is_now_in_any_quiet_window(qh, _dt(2026, 5, 4, 12, 0)) is True
+        # 2026-05-09 Sat 02:00 → second window active (cross-midnight)
+        assert is_now_in_any_quiet_window(qh, _dt(2026, 5, 9, 2, 0)) is True
+        # 2026-05-04 Mon 22:00 → no active window (weekday-night not covered)
+        assert is_now_in_any_quiet_window(qh, _dt(2026, 5, 4, 22, 0)) is False
+
+    def test_is_now_in_any_quiet_window_disabled_returns_false(self):
+        from datetime import datetime as _dt
+
+        from media_preview_generator.web.scheduler import is_now_in_any_quiet_window
+
+        qh = {
+            "enabled": False,
+            "windows": [{"start": "08:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}],
+        }
+        assert is_now_in_any_quiet_window(qh, _dt(2026, 5, 4, 12, 0)) is False
+
+    def test_apply_quiet_hours_two_windows_registers_two_pairs(self, scheduler_manager):
+        scheduler_manager.apply_quiet_hours(
+            {
+                "enabled": True,
+                "windows": [
+                    {"start": "08:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+                    {"start": "22:00", "end": "06:00", "days": ["sat", "sun"]},
+                ],
+            }
+        )
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert "__qh_pause_0" in ids
+        assert "__qh_resume_0" in ids
+        assert "__qh_pause_1" in ids
+        assert "__qh_resume_1" in ids
+
+    def test_apply_quiet_hours_rebuilds_cleanly_on_reapply(self, scheduler_manager):
+        # First apply: 3 windows
+        scheduler_manager.apply_quiet_hours(
+            {
+                "enabled": True,
+                "windows": [
+                    {"start": "08:00", "end": "10:00", "days": ["mon"]},
+                    {"start": "12:00", "end": "13:00", "days": ["tue"]},
+                    {"start": "15:00", "end": "16:00", "days": ["wed"]},
+                ],
+            }
+        )
+        # Reapply with 1 window — the other two pairs should be removed.
+        scheduler_manager.apply_quiet_hours(
+            {
+                "enabled": True,
+                "windows": [{"start": "08:00", "end": "17:00", "days": ["fri"]}],
+            }
+        )
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        qh_ids = {jid for jid in ids if jid.startswith("__qh_")}
+        assert qh_ids == {"__qh_pause_0", "__qh_resume_0"}
+
+    def test_apply_quiet_hours_window_with_no_valid_days_skipped(self, scheduler_manager):
+        scheduler_manager.apply_quiet_hours(
+            {
+                "enabled": True,
+                "windows": [
+                    {"start": "08:00", "end": "10:00", "days": ["BOGUS"]},
+                    {"start": "12:00", "end": "13:00", "days": ["tue"]},
+                ],
+            }
+        )
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        # First window had no valid days → normalise_quiet_hours fell back to
+        # all 7, so it IS registered as window #0; second window is #1.
+        # Both pairs should land.
+        assert "__qh_pause_0" in ids
+        assert "__qh_pause_1" in ids
 
 
 class TestExecuteScheduleStop:

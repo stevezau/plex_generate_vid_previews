@@ -1977,18 +1977,19 @@ class TestSetupWizardAPI:
 
 
 class TestQuietHoursAPI:
-    """D21 — /api/quiet-hours GET + POST."""
+    """D21 + D26 — /api/quiet-hours GET + POST (multi-window)."""
 
     def test_get_returns_default_when_unset(self, client):
         resp = client.get("/api/quiet-hours", headers=_api_headers())
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["enabled"] is False
-        assert body["start"]
-        assert body["end"]
+        assert body["windows"] == []
         assert "currently_in_quiet_window" in body
 
-    def test_post_persists_and_round_trips(self, client):
+    def test_post_legacy_single_window_body_still_accepted(self, client):
+        # Backwards-compat: D21-era front-ends posting {start, end} at the
+        # top level get migrated server-side to a single all-week window.
         resp = client.post(
             "/api/quiet-hours",
             headers=_api_headers(),
@@ -1997,28 +1998,60 @@ class TestQuietHoursAPI:
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["enabled"] is True
-        assert body["start"] == "08:00"
-        assert body["end"] == "01:00"
+        assert len(body["windows"]) == 1
+        assert body["windows"][0]["start"] == "08:00"
+        assert body["windows"][0]["end"] == "01:00"
+        assert len(body["windows"][0]["days"]) == 7
 
         get = client.get("/api/quiet-hours", headers=_api_headers()).get_json()
         assert get["enabled"] is True
-        assert get["start"] == "08:00"
-        assert get["end"] == "01:00"
+        assert len(get["windows"]) == 1
 
-    def test_post_invalid_start_time_returns_400(self, client):
+    def test_post_multi_window_persists_and_round_trips(self, client):
+        body = {
+            "enabled": True,
+            "windows": [
+                {"start": "08:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+                {"start": "22:00", "end": "06:00", "days": ["sat", "sun"]},
+            ],
+        }
+        resp = client.post("/api/quiet-hours", headers=_api_headers(), json=body)
+        assert resp.status_code == 200
+        out = resp.get_json()
+        assert len(out["windows"]) == 2
+        assert out["windows"][0]["days"] == ["mon", "tue", "wed", "thu", "fri"]
+        assert out["windows"][1]["days"] == ["sat", "sun"]
+
+        get = client.get("/api/quiet-hours", headers=_api_headers()).get_json()
+        assert len(get["windows"]) == 2
+        assert get["windows"][1]["start"] == "22:00"
+
+    def test_post_invalid_window_time_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "windows": [{"start": "25:00", "end": "01:00"}]},
+        )
+        assert resp.status_code == 400
+        assert "Window #1" in resp.get_json().get("error", "")
+
+    def test_post_invalid_day_name_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={
+                "enabled": True,
+                "windows": [{"start": "08:00", "end": "17:00", "days": ["mon", "moonday"]}],
+            },
+        )
+        assert resp.status_code == 400
+        assert "moonday" in resp.get_json().get("error", "")
+
+    def test_post_legacy_invalid_start_time_returns_400(self, client):
         resp = client.post(
             "/api/quiet-hours",
             headers=_api_headers(),
             json={"enabled": True, "start": "25:00", "end": "01:00"},
-        )
-        assert resp.status_code == 400
-        assert "Invalid time" in resp.get_json().get("error", "")
-
-    def test_post_invalid_end_time_returns_400(self, client):
-        resp = client.post(
-            "/api/quiet-hours",
-            headers=_api_headers(),
-            json={"enabled": True, "start": "08:00", "end": "ab:cd"},
         )
         assert resp.status_code == 400
 
