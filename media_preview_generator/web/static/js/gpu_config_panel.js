@@ -65,6 +65,15 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
         const workers = saved.workers !== undefined ? saved.workers : 1;
         const ffmpegThreads = saved.ffmpeg_threads !== undefined ? saved.ffmpeg_threads : 2;
 
+        // Escape every interpolation that crosses the HTML boundary. GPU
+        // names + device paths come from nvidia-smi / lspci output, which is
+        // system-controlled but can legitimately contain quotes ("MSI GTX
+        // 1080 Ti 11 \"GAMING X\" 11G") that would otherwise break the
+        // attributes. Mirrors the failed-GPU branch above.
+        const safeName = _gpuPanelEscapeHtml(gpu.name || 'GPU');
+        const safeType = _gpuPanelEscapeHtml(gpu.type || '');
+        const safeDevice = _gpuPanelEscapeHtml(gpu.device || '');
+        const safeDeviceOrNa = _gpuPanelEscapeHtml(gpu.device || 'N/A');
         const card = document.createElement('div');
         card.className = 'card mb-2';
         card.innerHTML = `
@@ -73,15 +82,15 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                     <div class="col-md-4 d-flex flex-column justify-content-center" style="min-height: 3.5rem;">
                         <div class="form-check form-switch mb-0">
                             <input class="form-check-input gpu-enable-toggle" type="checkbox"
-                                   id="gpuEnable_${deviceId}" data-device="${gpu.device}"
-                                   data-gpu-name="${gpu.name}" data-gpu-type="${gpu.type}"
+                                   id="gpuEnable_${deviceId}" data-device="${safeDevice}"
+                                   data-gpu-name="${safeName}" data-gpu-type="${safeType}"
                                    ${enabled ? 'checked' : ''}
                                    onchange="markDirty(); toggleGpuRow('${deviceId}')">
                             <label class="form-check-label fw-semibold" for="gpuEnable_${deviceId}">
-                                ${gpu.name}
+                                ${safeName}
                             </label>
                         </div>
-                        <small class="text-muted">${gpu.type} &mdash; ${gpu.device || 'N/A'}</small>
+                        <small class="text-muted">${safeType} &mdash; ${safeDeviceOrNa}</small>
                     </div>
                     <div class="col-md-4 gpu-settings-${deviceId}" ${enabled ? '' : 'style="opacity:0.5;pointer-events:none"'}>
                         <label class="form-label form-label-sm mb-1">Workers
@@ -90,7 +99,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                                title="How many items this GPU processes at the same time. More workers = faster overall, but each worker uses GPU memory. Start with 1 and increase if your GPU can handle it."></i>
                         </label>
                         <input type="number" class="form-control form-control-sm gpu-workers has-stepper"
-                               data-device="${gpu.device}" min="1" max="16"
+                               data-device="${safeDevice}" min="1" max="16"
                                value="${workers}" onchange="onGpuWorkersChange(this, '${deviceId}')">
                     </div>
                     <div class="col-md-4 gpu-settings-${deviceId}" ${enabled ? '' : 'style="opacity:0.5;pointer-events:none"'}>
@@ -100,7 +109,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                                title="Limits how many CPU cores FFmpeg uses per worker for tasks like decoding and filtering. Lower values free up CPU for other workers. Set to 0 to let FFmpeg decide automatically."></i>
                         </label>
                         <input type="number" class="form-control form-control-sm gpu-ffmpeg-threads has-stepper"
-                               data-device="${gpu.device}" min="0" max="32"
+                               data-device="${safeDevice}" min="0" max="32"
                                value="${ffmpegThreads}" onchange="markDirty()">
                         <small class="text-muted">0 = use all CPU cores &middot; recommended: 2</small>
                     </div>
