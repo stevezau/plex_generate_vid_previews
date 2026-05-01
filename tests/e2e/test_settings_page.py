@@ -129,18 +129,22 @@ class TestSettingsAuth:
 class TestSettingsBackupsPanel:
     def test_panel_renders_three_entries_newest_first(self, settings_page: Page) -> None:
         # Default mock has 2 timestamped + 1 legacy entry for settings.json.
+        # D17 — each file's snapshot list is now rendered as a single
+        # <select> with one <option> per backup (replacing the old per-row
+        # Restore button list). Assert the option count instead of the
+        # button count, and confirm the newest option is selected first.
         expect(settings_page.locator("#backupRestorePanel")).to_contain_text("settings.json", timeout=3000)
-        # Legacy badge present.
         expect(settings_page.locator("#backupRestorePanel")).to_contain_text("legacy")
-        # Restore buttons (one per backup).
-        restore_btns = settings_page.locator("#backupRestorePanel button:has-text('Restore')")
-        assert restore_btns.count() >= 3
+        options = settings_page.locator("#backupRestorePanel select option")
+        assert options.count() >= 3
 
     def test_restore_specific_backup_posts_filename(self, settings_page: Page) -> None:
         captured = capture_settings_backups_restore(settings_page)
         settings_page.on("dialog", lambda d: d.accept())
-        # Click the FIRST restore button (newest backup — the
-        # 20260201-100000 timestamp from the default mock).
+        # D17 — the dropdown defaults to the first <option> (the newest
+        # 20260201-100000 timestamp from the default mock). The lone
+        # "Restore selected" button reads the select's value, so a
+        # plain click on it posts the newest backup filename.
         settings_page.locator("#backupRestorePanel button:has-text('Restore')").first.click()
         settings_page.wait_for_timeout(500)
         assert captured, "POST /api/settings/backups/restore never fired"
