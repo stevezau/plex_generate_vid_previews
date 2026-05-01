@@ -119,9 +119,78 @@
 
                         <details class="mb-3">
                             <summary class="text-muted small">Re-authenticate (only if needed)</summary>
-                            <div class="mt-2">
-                                <p class="small text-muted mb-2">Token / API key is already saved — leave blank to keep it. Paste a new value only to rotate.</p>
-                                <input type="password" id="editServerToken" class="form-control" placeholder="•••••••• (unchanged)" autocomplete="off">
+                            <div class="mt-3" id="editReauthSection">
+                                <p class="small text-muted mb-2">
+                                    Existing credentials are kept until you confirm a new one. Each vendor has its own auth options;
+                                    click <strong>Save changes</strong> at the bottom of the modal once you've chosen one.
+                                </p>
+
+                                <!-- Plex re-auth (token paste). Plex OAuth re-flow lives in the Add Server wizard;
+                                     to switch accounts, delete the server and re-add it. -->
+                                <div id="editReauthPlex" class="d-none">
+                                    <label class="form-label">Plex token</label>
+                                    <input type="password" id="editReauthPlexToken" class="form-control" placeholder="paste a new X-Plex-Token to rotate" autocomplete="off">
+                                    <div class="form-text">
+                                        Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>.
+                                        To switch Plex accounts entirely, delete this server and re-add via the Plex sign-in flow.
+                                    </div>
+                                </div>
+
+                                <!-- Jellyfin re-auth: Quick Connect / Password / API Key -->
+                                <div id="editReauthJellyfin" class="d-none">
+                                    <label class="form-label">Method</label>
+                                    <div class="btn-group w-100 mb-2" role="group">
+                                        <input type="radio" class="btn-check" name="editReauthJfMethod" id="editReauthJfQc" value="quick_connect" autocomplete="off" checked>
+                                        <label class="btn btn-outline-primary" for="editReauthJfQc">Quick Connect</label>
+                                        <input type="radio" class="btn-check" name="editReauthJfMethod" id="editReauthJfPw" value="password" autocomplete="off">
+                                        <label class="btn btn-outline-primary" for="editReauthJfPw">Username + Password</label>
+                                        <input type="radio" class="btn-check" name="editReauthJfMethod" id="editReauthJfKey" value="api_key" autocomplete="off">
+                                        <label class="btn btn-outline-primary" for="editReauthJfKey">API Key</label>
+                                    </div>
+                                    <div id="editReauthJfFieldsQc" class="">
+                                        <button type="button" class="btn btn-primary mb-2" id="editReauthJfQcStart"><i class="bi bi-magic me-1"></i>Start Quick Connect</button>
+                                        <div id="editReauthJfQcStatus" class="alert alert-info d-none"></div>
+                                    </div>
+                                    <div id="editReauthJfFieldsPw" class="d-none">
+                                        <label class="form-label">Username</label>
+                                        <input type="text" id="editReauthJfUsername" class="form-control mb-2" autocomplete="username">
+                                        <label class="form-label">Password</label>
+                                        <input type="password" id="editReauthJfPassword" class="form-control" autocomplete="current-password">
+                                        <button type="button" class="btn btn-outline-primary mt-2" id="editReauthJfPwSubmit">Verify password</button>
+                                        <div id="editReauthJfPwStatus" class="alert alert-info d-none mt-2"></div>
+                                    </div>
+                                    <div id="editReauthJfFieldsKey" class="d-none">
+                                        <label class="form-label">API key</label>
+                                        <input type="password" id="editReauthJfApiKey" class="form-control" autocomplete="off">
+                                    </div>
+                                </div>
+
+                                <!-- Emby re-auth: Password / API Key -->
+                                <div id="editReauthEmby" class="d-none">
+                                    <label class="form-label">Method</label>
+                                    <div class="btn-group w-100 mb-2" role="group">
+                                        <input type="radio" class="btn-check" name="editReauthEmbyMethod" id="editReauthEmbyPw" value="password" autocomplete="off" checked>
+                                        <label class="btn btn-outline-primary" for="editReauthEmbyPw">Username + Password</label>
+                                        <input type="radio" class="btn-check" name="editReauthEmbyMethod" id="editReauthEmbyKey" value="api_key" autocomplete="off">
+                                        <label class="btn btn-outline-primary" for="editReauthEmbyKey">API Key</label>
+                                    </div>
+                                    <div id="editReauthEmbyFieldsPw" class="">
+                                        <label class="form-label">Username</label>
+                                        <input type="text" id="editReauthEmbyUsername" class="form-control mb-2" autocomplete="username">
+                                        <label class="form-label">Password</label>
+                                        <input type="password" id="editReauthEmbyPassword" class="form-control" autocomplete="current-password">
+                                        <button type="button" class="btn btn-outline-primary mt-2" id="editReauthEmbyPwSubmit">Verify password</button>
+                                        <div id="editReauthEmbyPwStatus" class="alert alert-info d-none mt-2"></div>
+                                    </div>
+                                    <div id="editReauthEmbyFieldsKey" class="d-none">
+                                        <label class="form-label">API key</label>
+                                        <input type="password" id="editReauthEmbyApiKey" class="form-control" autocomplete="off">
+                                    </div>
+                                </div>
+
+                                <!-- Hidden state field — JS writes the validated auth payload here (when applicable)
+                                     and saveEditedServer reads it on submit. -->
+                                <input type="hidden" id="editReauthPending" value="">
                             </div>
                         </details>
                     </div>

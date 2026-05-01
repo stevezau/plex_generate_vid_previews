@@ -806,6 +806,185 @@
     // other configured server (one click instead of N).
 
     let _editState = null;  // { server, allServers }
+    // D24 — Quick Connect poll handle for the Edit-modal flow. Distinct
+    // from the wizard's `wizard.quickConnectPoll` so opening Edit while
+    // the Add wizard is mid-flight doesn't stomp the wizard's poll.
+    let _editReauthQcPoll = null;
+    let _editReauthQcSecret = null;
+
+    function _resetEditReauthSection(serverType) {
+        const t = String(serverType || '').toLowerCase();
+        const plex = document.getElementById('editReauthPlex');
+        const jf = document.getElementById('editReauthJellyfin');
+        const emby = document.getElementById('editReauthEmby');
+        if (!plex || !jf || !emby) return;
+        plex.classList.toggle('d-none', t !== 'plex');
+        jf.classList.toggle('d-none', t !== 'jellyfin');
+        emby.classList.toggle('d-none', t !== 'emby');
+
+        // Reset all inputs / pending state so a previous Edit's
+        // values don't leak across.
+        const resetIds = [
+            'editReauthPlexToken', 'editReauthJfUsername', 'editReauthJfPassword',
+            'editReauthJfApiKey', 'editReauthEmbyUsername', 'editReauthEmbyPassword',
+            'editReauthEmbyApiKey', 'editReauthPending',
+        ];
+        resetIds.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        ['editReauthJfQcStatus', 'editReauthJfPwStatus', 'editReauthEmbyPwStatus'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.add('d-none');
+                el.innerHTML = '';
+                el.className = 'alert alert-info d-none mt-2';
+            }
+        });
+        if (_editReauthQcPoll) {
+            clearInterval(_editReauthQcPoll);
+            _editReauthQcPoll = null;
+        }
+        _editReauthQcSecret = null;
+        // Reset method radios to defaults.
+        const jfDefault = document.getElementById('editReauthJfQc');
+        if (jfDefault) jfDefault.checked = true;
+        const embyDefault = document.getElementById('editReauthEmbyPw');
+        if (embyDefault) embyDefault.checked = true;
+        _onEditReauthMethodChange();
+    }
+
+    function _onEditReauthMethodChange() {
+        const jfMethod = (document.querySelector('input[name="editReauthJfMethod"]:checked') || {}).value;
+        const showJf = (m) => (jfMethod === m ? '' : 'd-none');
+        const jfQc = document.getElementById('editReauthJfFieldsQc');
+        const jfPw = document.getElementById('editReauthJfFieldsPw');
+        const jfKey = document.getElementById('editReauthJfFieldsKey');
+        if (jfQc) jfQc.className = showJf('quick_connect');
+        if (jfPw) jfPw.className = showJf('password');
+        if (jfKey) jfKey.className = showJf('api_key');
+
+        const embyMethod = (document.querySelector('input[name="editReauthEmbyMethod"]:checked') || {}).value;
+        const showEmby = (m) => (embyMethod === m ? '' : 'd-none');
+        const embyPw = document.getElementById('editReauthEmbyFieldsPw');
+        const embyKey = document.getElementById('editReauthEmbyFieldsKey');
+        if (embyPw) embyPw.className = showEmby('password');
+        if (embyKey) embyKey.className = showEmby('api_key');
+    }
+
+    function _readEditReauthPayload(server) {
+        const t = String(server && server.type || '').toLowerCase();
+        // Prefer the JS-stashed verified payload (for Quick Connect /
+        // password flows that already round-tripped through the auth
+        // endpoint). Falls through to direct field reads for token /
+        // api_key paste paths that don't need server-side verification.
+        const pendingRaw = (document.getElementById('editReauthPending') || {}).value || '';
+        if (pendingRaw) {
+            try { return JSON.parse(pendingRaw); } catch (_) { /* fall through */ }
+        }
+        if (t === 'plex') {
+            const tok = (document.getElementById('editReauthPlexToken') || {}).value || '';
+            if (!tok.trim()) return null;
+            return { method: 'token', token: tok.trim() };
+        }
+        if (t === 'jellyfin' || t === 'emby') {
+            const radioName = t === 'jellyfin' ? 'editReauthJfMethod' : 'editReauthEmbyMethod';
+            const method = (document.querySelector('input[name="' + radioName + '"]:checked') || {}).value;
+            if (method === 'api_key') {
+                const idPrefix = t === 'jellyfin' ? 'editReauthJf' : 'editReauthEmby';
+                const k = (document.getElementById(idPrefix + 'ApiKey') || {}).value || '';
+                if (!k.trim()) return null;
+                return { method: 'api_key', api_key: k.trim() };
+            }
+            // password and quick_connect flows write the validated
+            // {method, access_token, user_id} payload into
+            // #editReauthPending when their respective Verify / Approve
+            // step succeeds. If pending is empty, nothing to send.
+            return null;
+        }
+        return null;
+    }
+
+    async function _editReauthVerifyPassword(vendor) {
+        const url = ($('#editServerUrl').value || '').trim();
+        if (!url) { showToast('URL required', 'Enter the server URL first.', 'warning'); return; }
+        const idPrefix = vendor === 'jellyfin' ? 'editReauthJf' : 'editReauthEmby';
+        const u = (document.getElementById(idPrefix + 'Username') || {}).value.trim();
+        const p = (document.getElementById(idPrefix + 'Password') || {}).value;
+        const status = document.getElementById(idPrefix + 'PwStatus');
+        if (!u) { showToast('Username required', '', 'warning'); return; }
+        const endpoint = vendor === 'jellyfin'
+            ? '/api/servers/auth/jellyfin/password'
+            : '/api/servers/auth/emby/password';
+        if (status) {
+            status.classList.remove('d-none');
+            status.className = 'alert alert-info mt-2';
+            status.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifying…';
+        }
+        const r = await api('POST', endpoint, { url, username: u, password: p });
+        if (!r.ok || !r.data || !r.data.ok) {
+            if (status) {
+                status.className = 'alert alert-danger mt-2';
+                status.textContent = (r.data && r.data.message) || `Auth failed (HTTP ${r.status})`;
+            }
+            return;
+        }
+        const payload = {
+            method: 'password',
+            access_token: r.data.access_token,
+            user_id: r.data.user_id,
+        };
+        document.getElementById('editReauthPending').value = JSON.stringify(payload);
+        if (status) {
+            status.className = 'alert alert-success mt-2';
+            status.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Verified — click <strong>Save changes</strong> to apply.';
+        }
+    }
+
+    async function _editReauthStartQuickConnect() {
+        const url = ($('#editServerUrl').value || '').trim();
+        if (!url) { showToast('URL required', 'Enter the Jellyfin URL first.', 'warning'); return; }
+        const status = document.getElementById('editReauthJfQcStatus');
+        const r = await api('POST', '/api/servers/auth/jellyfin/quick-connect/initiate', { url });
+        if (!r.ok || !r.data || !r.data.ok) {
+            status.classList.remove('d-none');
+            status.className = 'alert alert-danger';
+            status.textContent = (r.data && r.data.message) || 'Quick Connect failed';
+            return;
+        }
+        _editReauthQcSecret = r.data.secret;
+        const baseUrl = url.replace(/\/+$/, '');
+        const qcUrl = baseUrl + '/web/#/quickconnect';
+        try { window.open(qcUrl, '_blank', 'noopener,noreferrer'); } catch (_) { /* blocked */ }
+        status.classList.remove('d-none');
+        status.className = 'alert alert-info';
+        status.innerHTML =
+            `Opened <a href="${escapeHtml(qcUrl)}" target="_blank" rel="noopener" class="alert-link">Jellyfin Quick Connect</a> in a new tab — paste this code: <strong class="fs-3">${escapeHtml(r.data.code)}</strong>. Waiting for approval…`;
+
+        if (_editReauthQcPoll) clearInterval(_editReauthQcPoll);
+        _editReauthQcPoll = setInterval(async () => {
+            const p = await api('POST', '/api/servers/auth/jellyfin/quick-connect/poll',
+                { url, secret: _editReauthQcSecret });
+            if (p.ok && p.data && p.data.authenticated) {
+                clearInterval(_editReauthQcPoll);
+                _editReauthQcPoll = null;
+                const e = await api('POST', '/api/servers/auth/jellyfin/quick-connect/exchange',
+                    { url, secret: _editReauthQcSecret });
+                if (e.ok && e.data && e.data.ok) {
+                    document.getElementById('editReauthPending').value = JSON.stringify({
+                        method: 'quick_connect',
+                        access_token: e.data.access_token,
+                        user_id: e.data.user_id,
+                    });
+                    status.className = 'alert alert-success';
+                    status.innerHTML = `<i class="bi bi-check2-circle me-1"></i>Approved as ${escapeHtml(e.data.server_name || 'Jellyfin user')} — click <strong>Save changes</strong> to apply.`;
+                } else {
+                    status.className = 'alert alert-danger';
+                    status.textContent = (e.data && e.data.message) || 'Token exchange failed';
+                }
+            }
+        }, 2000);
+    }
 
     async function openEditModal(serverId) {
         // Fetch the target server + the full server list (needed for the
@@ -829,7 +1008,10 @@
         $('#editServerUrl').value = server.url || '';
         $('#editServerVerifySsl').checked = server.verify_ssl !== false;
         $('#editServerEnabled').checked = server.enabled !== false;
-        $('#editServerToken').value = '';
+        // D24 — vendor-aware re-auth UI: show ONE block matching the
+        // server's type, hide the others, and reset all input state so
+        // an old value from a previous Edit doesn't leak across.
+        _resetEditReauthSection(server.type || '');
 
         // Plex-only: show the config folder field + wire its inline validator,
         // and reveal the "Webhook & Scanner" tab (Phase H4).
@@ -1098,15 +1280,13 @@
             exclude_paths: readExcludePathsFromForm(),
         };
 
-        // Token: only send when the user typed something. Empty preserves
-        // the existing one (matches the api_servers.py PUT redaction rules).
-        const newToken = $('#editServerToken').value.trim();
-        if (newToken) {
-            payload.auth = { ...(server.auth || {}) };
-            const method = (server.auth && server.auth.method) || 'token';
-            if (method === 'api_key') payload.auth.api_key = newToken;
-            else payload.auth.token = newToken;
-            payload.auth.method = method;
+        // D24 — vendor-aware re-auth: build payload.auth from whichever
+        // section is visible AND has new content. Empty section means
+        // "leave existing auth alone" (matches api_servers.py PUT
+        // redaction rules — omitting auth preserves the on-disk value).
+        const newAuth = _readEditReauthPayload(server);
+        if (newAuth) {
+            payload.auth = newAuth;
         }
 
         // Per-library enabled toggles (preserve other library fields).
@@ -1246,6 +1426,18 @@
         );
         const refreshBtn = document.getElementById('editRefreshLibrariesBtn');
         if (refreshBtn) refreshBtn.addEventListener('click', (ev) => refreshLibrariesFromModal(ev.currentTarget));
+
+        // D24 — vendor-aware re-auth wiring inside the Edit modal.
+        document.querySelectorAll('input[name="editReauthJfMethod"]').forEach((r) =>
+            r.addEventListener('change', _onEditReauthMethodChange));
+        document.querySelectorAll('input[name="editReauthEmbyMethod"]').forEach((r) =>
+            r.addEventListener('change', _onEditReauthMethodChange));
+        const jfQcBtn = document.getElementById('editReauthJfQcStart');
+        if (jfQcBtn) jfQcBtn.addEventListener('click', _editReauthStartQuickConnect);
+        const jfPwBtn = document.getElementById('editReauthJfPwSubmit');
+        if (jfPwBtn) jfPwBtn.addEventListener('click', () => _editReauthVerifyPassword('jellyfin'));
+        const embyPwBtn = document.getElementById('editReauthEmbyPwSubmit');
+        if (embyPwBtn) embyPwBtn.addEventListener('click', () => _editReauthVerifyPassword('emby'));
 
         const plexBrowseBtn = document.getElementById('editPlexConfigBrowseBtn');
         if (plexBrowseBtn) {
