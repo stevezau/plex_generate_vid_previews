@@ -1110,12 +1110,25 @@
         }
 
         // Per-library enabled toggles (preserve other library fields).
+        // D23 — build the payload from the DOM toggle inputs as the
+        // source of truth (they're what the user actually clicked),
+        // then merge any non-toggle fields (paths, kind, etc.) from
+        // the cached server.libraries by id. The previous design
+        // built ONLY from cached server.libraries, which silently
+        // wrote libraries=[] when the user clicked Refresh-libraries
+        // mid-modal: the DOM had the freshly-fetched checkboxes but
+        // the cache still held the empty list captured at modal open.
         const toggles = readEnabledLibraryIds();
-        const toggleMap = new Map(toggles.map((t) => [t.id, t.enabled]));
-        payload.libraries = (server.libraries || []).map((lib) => ({
-            ...lib,
-            enabled: toggleMap.has(lib.id) ? toggleMap.get(lib.id) : !!lib.enabled,
-        }));
+        const cachedById = new Map((server.libraries || []).map((lib) => [String(lib.id), lib]));
+        payload.libraries = toggles.map((t) => {
+            const cached = cachedById.get(String(t.id)) || {};
+            return {
+                ...cached,
+                id: t.id,
+                name: t.name || cached.name || t.id,
+                enabled: !!t.enabled,
+            };
+        });
 
         // Plex config folder lives under output.
         if ((server.type || '').toLowerCase() === 'plex') {
@@ -1196,6 +1209,14 @@
             const fresh = await api('GET', `/api/servers/${encodeURIComponent(id)}`);
             if (fresh.ok && fresh.data) {
                 renderEditLibraries(fresh.data.libraries || []);
+                // D23 — sync the cached server payload so saveEditedServer
+                // sees the freshly-fetched libraries, not the stale [] it
+                // captured at modal open. Without this, ticking checkboxes
+                // and clicking Save would write libraries=[] to the
+                // server (because (server.libraries || []).map(...) is []).
+                if (_editState && _editState.server) {
+                    _editState.server.libraries = fresh.data.libraries || [];
+                }
             }
             // Also refresh the cards on the page (counts changed).
             loadServers();
