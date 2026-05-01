@@ -558,18 +558,20 @@ def _execute_webhook_job(debounce_key: str) -> None:
             server_type=b_stype,
         )
         settings = get_settings_manager()
-        # Prefer the per-server library list from media_servers[0] (Plex)
-        # over the legacy global selected_libraries key. The webhook
-        # dispatch path filters Plex jobs by enabled-library; without
-        # this projection a settings.json that only stores libraries
-        # under media_servers[0] would scan every library.
+        # ``selected_libraries`` is a Plex-only filter (the dispatch path
+        # uses it to scope a Plex full-scan to specific Section IDs).
+        # Only attach it when the webhook is unpinned OR pinned to Plex —
+        # for an Emby/Jellyfin-pinned webhook, pushing the Plex library
+        # list as an override is wrong on its face and could mis-filter
+        # if the dispatch path ever consumes it for non-Plex jobs.
         from ..config import derive_legacy_plex_view
 
         plex_view = derive_legacy_plex_view(settings.get("media_servers") or [])
-        selected_libraries = plex_view.get("selected_libraries") or settings.get("selected_libraries", [])
-        if not isinstance(selected_libraries, list):
-            selected_libraries = []
-        selected_libraries = [str(name).strip() for name in selected_libraries if str(name).strip()]
+        selected_libraries: list[str] = []
+        if not b_stype or b_stype == "plex":
+            raw_libs = plex_view.get("selected_libraries") or settings.get("selected_libraries", [])
+            if isinstance(raw_libs, list):
+                selected_libraries = [str(name).strip() for name in raw_libs if str(name).strip()]
         retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
         retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
@@ -579,12 +581,13 @@ def _execute_webhook_job(debounce_key: str) -> None:
                 _recent_dispatches[(source, batch_server_id or "", p)] = dispatch_ts
 
         overrides = {
-            "selected_libraries": selected_libraries,
             "sort_by": "newest",
             "webhook_paths": webhook_paths,
             "webhook_retry_count": retry_count,
             "webhook_retry_delay": retry_delay,
         }
+        if selected_libraries:
+            overrides["selected_libraries"] = selected_libraries
         if b_sid:
             overrides["server_id"] = b_sid
         _start_job_async(job.id, overrides)
