@@ -1,5 +1,5 @@
 """
-Static guards on web/static/js/app.js.
+Static guards on the JS files loaded by the dashboard.
 
 These regressions exist because SocketIO `connect`/`disconnect` events
 fire on every page (settings, servers, automation, logs, bif-viewer),
@@ -12,18 +12,34 @@ stack trace in the console.
 Pure string-match guards rather than a JS test runner because the
 project has no JS test infra yet — fast, and the bug shape (null deref
 on a known element ID) is exactly what these tests catch.
+
+Guards run against the concatenated text of every JS file under
+``web/static/js/`` so a future split (e.g. notifications.js, logs_modal.js)
+keeps the protected functions reachable regardless of which module owns
+them. Adding a new module to this directory automatically extends the
+search; no test edit needed.
 """
 
 from pathlib import Path
 
 import pytest
 
-APP_JS = Path(__file__).resolve().parent.parent / "media_preview_generator" / "web" / "static" / "js" / "app.js"
+JS_DIR = Path(__file__).resolve().parent.parent / "media_preview_generator" / "web" / "static" / "js"
 
 
 @pytest.fixture(scope="module")
 def app_js() -> str:
-    return APP_JS.read_text(encoding="utf-8")
+    """Concatenated text of every JS file under web/static/js/.
+
+    The fixture name stays ``app_js`` for backwards-compatibility with the
+    earlier single-file world; new tests that don't need the catch-all
+    behaviour can read individual files directly.
+    """
+    parts = []
+    for path in sorted(JS_DIR.glob("*.js")):
+        parts.append(f"// === {path.name} ===")
+        parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 class TestSocketReconnectNullGuards:
