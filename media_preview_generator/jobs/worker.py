@@ -162,6 +162,11 @@ class Worker:
         # task so a stale value from the previous item never bleeds into
         # the next job's publisher chip set.
         self.last_publishers: list[dict] = []
+        # D8 — aggregate MultiServerResult message (set on FAILED /
+        # NO_FRAMES when no publisher even ran). Used as a fallback
+        # reason in record_file_result so the Files panel never shows
+        # an empty Details cell on a failed file.
+        self.last_ms_message: str = ""
 
         # In-place GPU→CPU fallback state (set during a retry, cleared on next
         # task assignment). Surfaced to the UI so users see why the switch
@@ -271,9 +276,11 @@ class Worker:
         self._pre_task_completed = self.completed
         self._pre_task_failed = self.failed
         self._pre_task_outcome_counts = dict(self.outcome_counts)
-        # Reset last-task publisher list so a previous task's fan-out
-        # doesn't bleed into this one's chip set on the dispatcher merge.
+        # Reset last-task publisher list AND the aggregate message so a
+        # previous task's fan-out / failure reason doesn't bleed into
+        # this one's chip set or Details cell.
         self.last_publishers = []
+        self.last_ms_message = ""
 
         self.is_busy = True
         self.current_task = item.canonical_path
@@ -387,12 +394,19 @@ class Worker:
             # under each job). Caller-side cap protects 100k-item scans
             # from bloating the JSONL — see web/jobs.record_file_result.
             # Passes the per-publisher attribution (D9) so each file row
-            # can show which server(s) it landed on.
+            # can show which server(s) it landed on. ``last_ms_message``
+            # captures the aggregate MultiServerResult.message — used as
+            # a fallback reason when there are no publishers (FFmpeg
+            # failed before any publish ran, so reason='' would otherwise
+            # show as a blank Details column).
+            self.last_ms_message: str = ""
+
             def _persist(outcome: ProcessingResult, reason: str = "") -> None:
+                effective_reason = reason or self.last_ms_message or ""
                 _notify_file_result(
                     item.canonical_path,
                     outcome,
-                    reason,
+                    effective_reason,
                     self.display_name,
                     servers=list(self.last_publishers or []),
                 )
@@ -400,19 +414,38 @@ class Worker:
             # Capture this task's publisher fan-out for the dispatcher to
             # merge into JobTracker.publishers_by_server (D7). Each entry
             # is a flat dict — not the dataclass — so the dispatcher
-            # doesn't need to import processing.multi_server.
+            # doesn't need to import processing.multi_server. server_type
+            # is looked up from the registry by id so the Files-panel
+            # pills get the right colour palette (PublisherResult itself
+            # doesn't carry the vendor type).
             def _capture_publishers(ms_result_obj) -> None:
-                self.last_publishers = [
-                    {
-                        "server_id": p.server_id,
-                        "server_name": p.server_name,
-                        "adapter_name": p.adapter_name,
-                        "status": getattr(p.status, "value", str(p.status)),
-                        "message": p.message or "",
-                        "frame_source": p.frame_source or "extracted",
-                    }
-                    for p in (ms_result_obj.publishers or [])
-                ]
+                # Aggregate-level message (set by process_canonical_path on
+                # FAILED / NO_FRAMES when no publisher even ran). Surfaced
+                # via _persist when no caller-supplied reason exists.
+                self.last_ms_message = (ms_result_obj.message or "").strip()
+                rows = []
+                for p in ms_result_obj.publishers or []:
+                    server_type = ""
+                    try:
+                        cfg = registry.get_config(p.server_id)
+                        if cfg is not None:
+                            server_type = (
+                                cfg.type.value if hasattr(cfg.type, "value") else str(cfg.type or "")
+                            ).lower()
+                    except Exception:
+                        pass
+                    rows.append(
+                        {
+                            "server_id": p.server_id,
+                            "server_name": p.server_name,
+                            "server_type": server_type,
+                            "adapter_name": p.adapter_name,
+                            "status": getattr(p.status, "value", str(p.status)),
+                            "message": p.message or "",
+                            "frame_source": p.frame_source or "extracted",
+                        }
+                    )
+                self.last_publishers = rows
 
             try:
                 ms_result = _run_once(self.gpu, self.gpu_device)

@@ -567,12 +567,20 @@ var _FILE_SERVER_PALETTE = {
     emby:     'bg-success',
     jellyfin: 'bg-info text-dark',
 };
+// Maps every PublisherStatus + MultiServerStatus enum value the backend
+// can emit to a user-friendly tooltip phrase. Without this, the raw
+// enum value (e.g. "skipped_output_exists") leaks straight into the
+// pill tooltip and the Outcome column. Add new entries here whenever
+// processing/multi_server.py grows another status.
 var _FILE_SERVER_STATUS_TIP = {
-    published:    'Published',
-    skipped:      'Skipped (already up to date)',
-    not_indexed:  'Server hasn\'t indexed this file yet',
-    failed:       'Publish failed',
-    no_owners:    'No server owns this path',
+    published:              'Published',
+    skipped:                'Skipped (already up to date)',
+    skipped_output_exists:  'Already up to date (output exists, source unchanged)',
+    skipped_not_indexed:    'Server hasn\'t indexed this file yet',
+    not_indexed:            'Server hasn\'t indexed this file yet',
+    failed:                 'Publish failed',
+    no_owners:              'No server owns this path',
+    no_frames:              'FFmpeg produced no frames (file may be unreadable)',
 };
 function _renderFileServerPills(servers) {
     if (!servers || !servers.length) return '<small class="text-muted">&mdash;</small>';
