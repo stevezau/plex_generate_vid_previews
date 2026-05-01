@@ -327,6 +327,68 @@ def test_resolve_plex_paths_from_rating_key_walks_media_parts():
     assert display_title == "Movie A (2023)"
 
 
+def test_resolve_plex_paths_from_rating_key_walks_show_to_episodes():
+    """GitHub #227 — when Plex's library.new fires for a Show (whole-
+    series add), item.media is empty because media parts live on child
+    Episodes. The webhook resolver must walk Show → Episodes so TV
+    triggers don't silently drop with 'had no file paths'."""
+    from media_preview_generator.web.webhooks import _resolve_plex_paths_from_rating_key
+
+    ep1_part = MagicMock(file="/data/tv/Show/S01E01.mkv")
+    ep2_part = MagicMock(file="/data/tv/Show/S01E02.mkv")
+    ep1 = MagicMock(media=[MagicMock(parts=[ep1_part])], type="episode")
+    ep2 = MagicMock(media=[MagicMock(parts=[ep2_part])], type="episode")
+    show = MagicMock(
+        media=[],  # Shows have no media, only episodes do
+        type="show",
+        title="Show",
+        year=2024,
+    )
+    show.episodes.return_value = [ep1, ep2]
+
+    fake_plex = MagicMock()
+    fake_plex.fetchItem.return_value = show
+
+    with (
+        patch("media_preview_generator.config.load_config", return_value=MagicMock()),
+        patch("media_preview_generator.plex_client.plex_server", return_value=fake_plex),
+        patch(
+            "media_preview_generator.plex_client.retry_plex_call",
+            side_effect=lambda fn, *a, **kw: fn(*a, **kw),
+        ),
+    ):
+        paths, _ = _resolve_plex_paths_from_rating_key("21752")
+
+    assert paths == ["/data/tv/Show/S01E01.mkv", "/data/tv/Show/S01E02.mkv"]
+
+
+def test_resolve_plex_paths_from_rating_key_walks_season_to_episodes():
+    """GitHub #227 — same fix for Season (e.g. when a new whole season
+    is added to an existing show). Plex sends library.new for the
+    Season; item.media is empty; episodes hold the parts."""
+    from media_preview_generator.web.webhooks import _resolve_plex_paths_from_rating_key
+
+    ep_part = MagicMock(file="/data/tv/Show/S02/E01.mkv")
+    ep = MagicMock(media=[MagicMock(parts=[ep_part])], type="episode")
+    season = MagicMock(media=[], type="season", title="Season 2", parentTitle="Show")
+    season.episodes.return_value = [ep]
+
+    fake_plex = MagicMock()
+    fake_plex.fetchItem.return_value = season
+
+    with (
+        patch("media_preview_generator.config.load_config", return_value=MagicMock()),
+        patch("media_preview_generator.plex_client.plex_server", return_value=fake_plex),
+        patch(
+            "media_preview_generator.plex_client.retry_plex_call",
+            side_effect=lambda fn, *a, **kw: fn(*a, **kw),
+        ),
+    ):
+        paths, _ = _resolve_plex_paths_from_rating_key("99")
+
+    assert paths == ["/data/tv/Show/S02/E01.mkv"]
+
+
 # ---------------------------------------------------------------------------
 # Title formatter unit tests
 # ---------------------------------------------------------------------------

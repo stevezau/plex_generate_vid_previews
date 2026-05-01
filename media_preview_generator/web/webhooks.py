@@ -889,16 +889,62 @@ def _resolve_plex_paths_from_rating_key(
         )
         return [], None
 
+    # GitHub #227 — when Plex's library.new fires for a Show or Season
+    # (which happens whenever a whole series or season is added at
+    # once, not just per-episode), the item itself has no media/parts
+    # — those live on the child Episodes. Walk down to the leaf items
+    # so the webhook actually finds files for TV instead of silently
+    # logging "had no file paths" and dropping the trigger.
+    leaf_items = _walk_to_leaf_items(item)
     paths: list[str] = []
-    media_list = getattr(item, "media", None) or []
-    for media in media_list:
-        for part in getattr(media, "parts", None) or []:
-            file_path = getattr(part, "file", None)
-            if file_path:
-                paths.append(str(file_path))
+    for leaf in leaf_items:
+        for media in getattr(leaf, "media", None) or []:
+            for part in getattr(media, "parts", None) or []:
+                file_path = getattr(part, "file", None)
+                if file_path:
+                    paths.append(str(file_path))
 
     display_title = _format_plex_title_from_item(item)
     return paths, display_title
+
+
+def _walk_to_leaf_items(item) -> list:
+    """Return the playable leaf items under ``item``.
+
+    Movies / Episodes / Tracks are already leaves. Shows yield every
+    episode across all seasons; Seasons yield their episodes. Anything
+    else (Album, Artist, etc.) gets best-effort treatment via
+    ``.episodes()`` / ``.tracks()`` if present, otherwise the item
+    itself is returned and the caller's media-walk handles the
+    "no parts" case.
+
+    Wrapped in retry_plex_call so transient API hiccups don't drop the
+    webhook silently — the lazy ``.episodes()`` call hits the Plex
+    server, and a network blip would otherwise propagate as an empty
+    paths list.
+    """
+    from ..plex_client import retry_plex_call
+
+    item_type = (getattr(item, "type", "") or "").lower()
+    if item_type in {"movie", "episode", "track", "clip"}:
+        return [item]
+    try:
+        if item_type == "show":
+            return list(retry_plex_call(item.episodes) or [])
+        if item_type == "season":
+            return list(retry_plex_call(item.episodes) or [])
+        if hasattr(item, "episodes"):
+            return list(retry_plex_call(item.episodes) or [])
+    except Exception as exc:
+        logger.warning(
+            "Plex webhook: could not enumerate child items for {!r} (type={}, ratingKey={}): {}. "
+            "Falling back to the parent item — file paths may be missing.",
+            getattr(item, "title", "?"),
+            item_type or "?",
+            getattr(item, "ratingKey", "?"),
+            exc,
+        )
+    return [item]
 
 
 def _classify_plex_event(data: dict) -> tuple[str, tuple | None]:
