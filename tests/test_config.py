@@ -208,6 +208,38 @@ class TestSplitLibrarySelectors:
         assert ids == ["1", "2"]
         assert names == ["movies", "tv shows"]
 
+    def test_split_library_selectors_jellyfin_uuid_is_id(self):
+        """Jellyfin library IDs are 32-char hex UUIDs and must be recognised as IDs.
+
+        Regression: previously, ``_is_library_id_value`` accepted only digit
+        strings (the Plex-section-ID convention). Jellyfin UUIDs like
+        ``"f137a2dd21bbc1b99aa5c0f6bf02a805"`` were silently bucketed as
+        library *titles*. The downstream multi-server scan path doesn't
+        apply the title filter, so the user's library selection was
+        discarded and MPG fell back to scanning ALL libraries on the
+        server — a "successful" job that processed the wrong items.
+        """
+        # Hyphenated UUID
+        ids, names = split_library_selectors(["f137a2dd-21bb-c1b9-9aa5-c0f6bf02a805"])
+        assert ids == ["f137a2dd-21bb-c1b9-9aa5-c0f6bf02a805"]
+        assert names == []
+
+        # Bare hex (no dashes) — Jellyfin's actual /Library/MediaFolders shape
+        ids, names = split_library_selectors(["f137a2dd21bbc1b99aa5c0f6bf02a805"])
+        assert ids == ["f137a2dd21bbc1b99aa5c0f6bf02a805"]
+        assert names == []
+
+        # Mixed: Plex digit + Emby digit + JF UUID + a real title
+        ids, names = split_library_selectors(["1", "3", "f137a2dd21bbc1b99aa5c0f6bf02a805", "Movies"])
+        assert ids == ["1", "3", "f137a2dd21bbc1b99aa5c0f6bf02a805"]
+        assert names == ["movies"]
+
+    def test_split_library_selectors_non_uuid_non_digit_stays_title(self):
+        """Strings that aren't digit-only AND aren't 32-char hex stay as titles."""
+        ids, names = split_library_selectors(["completely-fake-id-12345", "TV Shows"])
+        assert ids == []
+        assert names == ["completely-fake-id-12345", "tv shows"]
+
 
 class TestExpandPathMappingCandidates:
     """Test multi-row path candidate fan-out across mapping rows."""

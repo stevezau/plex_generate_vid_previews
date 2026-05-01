@@ -183,6 +183,59 @@ class TestMultiServerFullScan:
         assert counts.get("published", 0) == 1
         assert counts.get("failed", 0) == 1
 
+    def test_zero_items_logs_warning_not_info(self, tmp_path):
+        """When the scan walks the server but enumerates zero items, the user
+        must see a WARN-level message — silent INFO leaves them puzzled why
+        a "successful" job did no work.
+
+        Regression: the previous behaviour was a single INFO line that didn't
+        survive the user's typical log filter (which sits at WARN by default).
+        Real causes (bad library_ids, scoped auth, vendor mid-index) all
+        ended up looking like a green job that did nothing — exactly the
+        symptom the user reported.
+
+        Project uses loguru — sink-attach to capture, not pytest's caplog.
+        """
+        from loguru import logger as _logger
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter([])  # 0 items
+
+        captured: list[tuple[str, str]] = []
+
+        sink_id = _logger.add(lambda m: captured.append((m.record["level"].name, m.record["message"])), level="WARNING")
+        try:
+            with (
+                patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+                patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+                patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            ):
+                mock_sm.return_value.get.return_value = [
+                    {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                ]
+                mock_registry.from_settings.return_value = registry_mock
+
+                counts = _run_full_scan_multi_server(
+                    _config(),
+                    selected_gpus=[],
+                    library_ids=["bogus-library-id"],
+                )
+        finally:
+            _logger.remove(sink_id)
+
+        # Counts still all zero (no items to process)
+        assert all(v == 0 for v in counts.values())
+        # The warning must mention the library_ids the caller passed so the
+        # user can match it to what they ticked in the UI.
+        warns = [(lvl, msg) for lvl, msg in captured if lvl in ("WARNING", "ERROR", "CRITICAL")]
+        assert any("bogus-library-id" in msg for _, msg in warns), (
+            f"Expected WARN mentioning 'bogus-library-id'; got: {warns}"
+        )
+
 
 class TestMultiPlexDeduping:
     """Phase P4: when the same canonical_path appears on more than one

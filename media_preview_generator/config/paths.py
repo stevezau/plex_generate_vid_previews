@@ -345,8 +345,30 @@ def local_path_to_webhook_aliases(path: str, path_mappings: list[dict[str, Any]]
 
 
 def _is_library_id_value(value: str) -> bool:
-    """Return True when a library selector value looks like a Plex section ID."""
-    return bool(value) and value.isdigit()
+    """Return True when a library selector value looks like a vendor library ID.
+
+    Accepts the three shapes vendors actually use:
+    - Plex section IDs: pure digits, e.g. ``"1"``, ``"42"``
+    - Emby library IDs: pure digits, e.g. ``"3"``
+    - Jellyfin library IDs: 32-char hex UUIDs (with or without dashes),
+      e.g. ``"f137a2dd21bbc1b99aa5c0f6bf02a805"`` or
+      ``"f137a2dd-21bb-c1b9-9aa5-c0f6bf02a805"``
+
+    Why: previously this function only recognised digit-strings (the Plex
+    convention), so Jellyfin UUIDs were silently bucketed as library
+    *titles* by :func:`split_library_selectors`. Downstream the title
+    filter doesn't apply on the multi-server scan path, so MPG fell back
+    to enumerating ALL libraries on the server — a Jellyfin user picking
+    "Movies" from the UI would actually scan everything, with no warning.
+    """
+    if not value:
+        return False
+    if value.isdigit():
+        return True
+    stripped = value.replace("-", "")
+    if len(stripped) == 32 and all(c in "0123456789abcdefABCDEF" for c in stripped):
+        return True
+    return False
 
 
 def split_library_selectors(values: Any) -> tuple[list[str], list[str]]:

@@ -582,9 +582,22 @@ def _run_full_scan_multi_server(
     )
 
     if not all_items:
-        logger.info(
-            "Multi-server scan walked {} server(s) but found no items to process.",
+        # Was INFO. WARN it: a "successful" scan that processed nothing is
+        # the worst-of-both — the job UI shows green, but the user wonders why
+        # no previews appeared. Common real causes: a stale library_id (vendor
+        # renamed/recreated the library), an auth token scoped away from the
+        # library, vendor's background indexer still catching up, or a
+        # library type that filters to no Movies/Episodes. Surface it loudly.
+        logger.warning(
+            "Multi-server scan walked {} server(s) for library_ids={!r} but found "
+            "ZERO items to process. Common causes: (a) the library_ids you passed "
+            "no longer match a library on the server (try Refresh libraries on the "
+            "Servers page), (b) the auth token can't see this library, (c) the "
+            "vendor hasn't finished its own library scan yet, or (d) the library "
+            "contains no Movie/Episode items. The job will report success but no "
+            "work happened.",
             len(candidates),
+            library_ids,
         )
         return counts
 
