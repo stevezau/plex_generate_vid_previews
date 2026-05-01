@@ -673,6 +673,15 @@ def process_canonical_path(
             gen_result = None
 
         if frame_count == 0:
+            # Bake the diagnostic guidance into the message itself, not just
+            # the log line. The Files panel's Details cell surfaces this
+            # via record_file_result so the user can self-triage without
+            # tailing the log.
+            ms_message = (
+                "FFmpeg produced 0 frames — file may be corrupt, codec not "
+                "supported by FFmpeg, or video stream is empty. Try playing "
+                "it in a media player to confirm it's intact."
+            )
             logger.warning(
                 "FFmpeg ran but produced no preview frames for {}. "
                 "Most likely the file is corrupt, the codec is not supported by your FFmpeg build, "
@@ -683,7 +692,7 @@ def process_canonical_path(
             return MultiServerResult(
                 canonical_path=canonical_path,
                 status=MultiServerStatus.NO_FRAMES,
-                message="FFmpeg produced 0 frames",
+                message=ms_message,
             )
 
         # Store in cache only on a fresh generation; cache hits already

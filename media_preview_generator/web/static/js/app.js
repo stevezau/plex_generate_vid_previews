@@ -1330,12 +1330,21 @@ function _serverBadge(item) {
 
 // Phase H5: render the per-publisher outcome list captured by the
 // multi-server dispatcher. Empty for legacy jobs (no publishers field).
+//
+// Maps every PublisherStatus + MultiServerStatus enum value the backend
+// can emit to a friendly badge label. Without this, raw values like
+// "skipped_output_exists" and "skipped_not_indexed" leak straight into
+// the Job-Details modal — keep this in sync with the same map in
+// job_modal.js (_FILE_SERVER_STATUS_TIP) when adding new statuses.
 const _PUBLISHER_STATUS_BADGES = {
-    published:    { label: 'Published',    cls: 'bg-success' },
-    skipped:      { label: 'Skipped',      cls: 'bg-secondary' },
-    not_indexed:  { label: 'Not indexed',  cls: 'bg-warning text-dark' },
-    failed:       { label: 'Failed',       cls: 'bg-danger' },
-    no_owners:    { label: 'No owner',     cls: 'bg-secondary' },
+    published:              { label: 'Published',     cls: 'bg-success' },
+    skipped:                { label: 'Skipped',       cls: 'bg-secondary' },
+    skipped_output_exists:  { label: 'Up to date',    cls: 'bg-secondary' },
+    skipped_not_indexed:    { label: 'Not indexed',   cls: 'bg-warning text-dark' },
+    not_indexed:            { label: 'Not indexed',   cls: 'bg-warning text-dark' },
+    failed:                 { label: 'Failed',        cls: 'bg-danger' },
+    no_owners:              { label: 'No owner',      cls: 'bg-secondary' },
+    no_frames:              { label: 'No frames',     cls: 'bg-danger' },
 };
 
 // Frame-provenance badges so users can see when one webhook's frames
