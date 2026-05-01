@@ -685,9 +685,15 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
     width = int(output_cfg.get("width") or 320)
     interval = int(output_cfg.get("frame_interval") or 10)
 
+    # Episode-vs-movie classification: the MediaItem dataclass has no
+    # explicit ``kind`` field, so fall back to a title-shape check. Match on
+    # the actual SxxEyy/SxxEyyy pattern rather than "any S and E in the
+    # title", which previously misclassified e.g. "Star Wars Episode IV"
+    # as an episode.
+    looks_like_episode = bool(_SEASON_EP_RE.search(item.title or ""))
     base = {
         "title": item.title,
-        "type": "episode" if "S" in (item.title or "") and "E" in (item.title or "") else "movie",
+        "type": "episode" if looks_like_episode else "movie",
         "year": None,
         "media_file": canonical_local,
         "item_id": item.id,

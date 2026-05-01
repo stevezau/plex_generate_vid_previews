@@ -348,8 +348,16 @@ def _test_hwaccel_functionality(
                 device_path,
             )
         return False
-    except Exception as e:
-        logger.debug("✗ {} functionality test failed with exception: {}", hwaccel, e)
+    except Exception:
+        logger.warning(
+            "{} hardware-decode test failed with an unexpected error on {}. "
+            "This GPU will be skipped; CPU fallback still works for affected jobs. "
+            "The traceback is included above — paste it into a GitHub issue if you can't tell "
+            "what went wrong, since this catch-all path catches genuinely unexpected failures.",
+            hwaccel,
+            device_path or "default device",
+            exc_info=True,
+        )
         return False
 
 
