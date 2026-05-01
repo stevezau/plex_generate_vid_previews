@@ -677,9 +677,12 @@ def load_config(*, log_validation_errors: bool = True) -> Config:
         ffmpeg_path=ffmpeg_path,
         log_level=log_level,
         plex_library_ids=plex_library_ids,
-        # K2: pass the per-server display name so log emitters can prefix
-        # lines as "[<name>] ...". Set by derive_legacy_plex_view above.
-        server_display_name=ui_settings.get("server_display_name") or None,
+        # server_display_name intentionally NOT set here — load_config()
+        # always projects from media_servers[0] (no server_id param), so
+        # surfacing that name on the returned Config would be misleading
+        # for any job pinned to a non-first Plex server. job_runner sets
+        # this field explicitly per-job after looking up the right entry.
+        server_display_name=None,
     )
 
     # Set the timeout envvar for https://github.com/pkkid/python-plexapi
