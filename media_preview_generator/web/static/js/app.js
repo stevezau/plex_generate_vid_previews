@@ -1288,16 +1288,44 @@ async function setJobPriority(jobId, priority) {
 function _serverBadge(item) {
     const stype = (item && (item.server_type || (item.server && item.server.type) || '')).toLowerCase();
     const sname = item && (item.server_name || (item.server && item.server.name) || '');
-    if (!stype && !sname) return '';
-    const palette = { plex: 'bg-warning text-dark', emby: 'bg-success', jellyfin: 'bg-info text-dark' };
-    const cls = palette[stype] || 'bg-secondary';
-    const label = sname || stype.toUpperCase() || 'Server';
-    const tooltip = stype ? `${stype.toUpperCase()}` : '';
-    // Prepend a tiny vendor logo when we have a known type (12px, fits a badge);
-    // colour palette stays as the colour-blind-friendly fallback.
-    const logoTag = _vendorLogo(stype, 12);
-    const logo = logoTag ? logoTag.replace('margin-right: 4px;', 'margin-right: 3px; vertical-align: -2px;') : '';
-    return ` <span class="badge ${cls} ms-1" title="${escapeHtmlAttr(tooltip)}">${logo}${escapeHtmlText(label)}</span>`;
+    if (stype || sname) {
+        const palette = { plex: 'bg-warning text-dark', emby: 'bg-success', jellyfin: 'bg-info text-dark' };
+        const cls = palette[stype] || 'bg-secondary';
+        const label = sname || stype.toUpperCase() || 'Server';
+        const tooltip = stype ? `${stype.toUpperCase()}` : '';
+        // Prepend a tiny vendor logo when we have a known type (12px, fits a badge);
+        // colour palette stays as the colour-blind-friendly fallback.
+        const logoTag = _vendorLogo(stype, 12);
+        const logo = logoTag ? logoTag.replace('margin-right: 4px;', 'margin-right: 3px; vertical-align: -2px;') : '';
+        return ` <span class="badge ${cls} ms-1" title="${escapeHtmlAttr(tooltip)}">${logo}${escapeHtmlText(label)}</span>`;
+    }
+    // Fallback for non-server-pinned jobs: surface the trigger source (Sonarr,
+    // Radarr, manual scan, schedule etc.) so the user can tell "what server it
+    // ran on" / "where the work came from" — D2. Without this, every webhook
+    // job and every "All Servers" scan was an unlabelled row.
+    const cfg = (item && item.config) || {};
+    const src = String(cfg.source || '').trim().toLowerCase();
+    const triggerPalette = {
+        radarr:      { cls: 'bg-warning text-dark', label: 'Radarr' },
+        sonarr:      { cls: 'bg-info text-dark',    label: 'Sonarr' },
+        sportarr:    { cls: 'bg-info text-dark',    label: 'Sportarr' },
+        tdarr:       { cls: 'bg-secondary',         label: 'Tdarr' },
+        plex:        { cls: 'bg-warning text-dark', label: 'Plex Direct' },
+        emby:        { cls: 'bg-success',           label: 'Emby Webhook' },
+        jellyfin:    { cls: 'bg-info text-dark',    label: 'Jellyfin Webhook' },
+        custom:      { cls: 'bg-secondary',         label: 'Custom Webhook' },
+        scheduled:   { cls: 'bg-secondary',         label: 'Scheduled' },
+        recently_added: { cls: 'bg-secondary',      label: 'Recently Added' },
+    };
+    if (src && triggerPalette[src]) {
+        const t = triggerPalette[src];
+        return ` <span class="badge ${t.cls} ms-1" title="Triggered by ${escapeHtmlAttr(t.label)}">${escapeHtmlText(t.label)}</span>`;
+    }
+    if (src) {
+        // Unknown source — render as-is so the user still sees something
+        return ` <span class="badge bg-secondary ms-1" title="Trigger: ${escapeHtmlAttr(src)}">${escapeHtmlText(src)}</span>`;
+    }
+    return '';
 }
 
 // Phase H5: render the per-publisher outcome list captured by the

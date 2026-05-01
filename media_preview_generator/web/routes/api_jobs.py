@@ -79,6 +79,39 @@ def _resolve_server_context(server_id: str | None) -> tuple[str | None, str | No
     )
 
 
+def _infer_server_from_library_id(library_id: str) -> tuple[str | None, str | None, str | None]:
+    """Find the configured media server that owns ``library_id``.
+
+    Returns (server_id, server_name, server_type) or (None, None, None)
+    when the id matches no configured library. Used by the manual job
+    creation path to attribute single-library jobs to their server even
+    when the caller didn't pass server_id (D2 — older /Start New Job
+    submissions and any external API caller that sends only library_ids).
+    """
+    if not library_id:
+        return None, None, None
+    needle = str(library_id)
+    try:
+        from ..settings_manager import get_settings_manager
+
+        raw = get_settings_manager().get("media_servers") or []
+    except Exception:
+        return None, None, None
+    if not isinstance(raw, list):
+        return None, None, None
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        for lib in entry.get("libraries") or []:
+            if isinstance(lib, dict) and str(lib.get("id") or "") == needle:
+                return (
+                    entry.get("id"),
+                    entry.get("name") or entry.get("id"),
+                    (entry.get("type") or "").lower() or None,
+                )
+    return None, None, None
+
+
 @api.route("/auth/status")
 def auth_status():
     """Check authentication status and auth method."""
@@ -278,6 +311,15 @@ def create_job():
 
     priority = data.get("priority", PRIORITY_NORMAL)
     server_id, server_name, server_type = _resolve_server_context(data.get("server_id"))
+
+    # D2 — when the caller didn't pass server_id but did pick exactly one
+    # library, infer the server from that library so the Jobs row gets a
+    # server chip (otherwise every "I just want TV Shows" manual scan
+    # shows up as an unlabelled "All Servers" entry the user can't tell
+    # apart from any other). Multi-library or all-libraries jobs stay
+    # unpinned because the dispatcher legitimately fans across servers.
+    if not server_id and len(library_ids) == 1:
+        server_id, server_name, server_type = _infer_server_from_library_id(library_ids[0])
 
     # Job.library_id is a display field — keep it for the single-library case
     # so the existing UI shows the ID, otherwise leave it None and let

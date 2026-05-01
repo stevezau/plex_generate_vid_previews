@@ -543,6 +543,118 @@ class TestJobsAPI:
         assert resp.status_code == 201
         assert resp.get_json()["library_id"] == "42"
 
+    def test_create_job_infers_server_from_single_library_id(self, client):
+        """D2 — when caller picks one library but no server, infer from library."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "name": "My Plex",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "42", "name": "Movies", "enabled": True}],
+                    }
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={"library_ids": ["42"], "library_name": "Movies"},
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] == "plex-default"
+            assert body["server_name"] == "My Plex"
+            assert body["server_type"] == "plex"
+            # Inferred server_id also propagates into the dispatcher overrides
+            # so the dispatcher pins to that server (no fan-out leak).
+            overrides = mock_start.call_args[0][1]
+            assert overrides.get("server_id") == "plex-default"
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
+    def test_create_job_does_not_infer_for_multi_library_picks(self, client):
+        """Multi-library jobs stay unpinned — dispatcher legitimately fans across servers."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "name": "My Plex",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [
+                            {"id": "1", "name": "Movies", "enabled": True},
+                            {"id": "2", "name": "TV", "enabled": True},
+                        ],
+                    }
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={"library_ids": ["1", "2"], "library_name": "2 Libraries"},
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] is None
+            assert body["server_type"] is None
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
+    def test_create_job_explicit_server_id_overrides_inference(self, client):
+        """When the caller passes server_id explicitly, never re-infer it."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-A",
+                        "name": "Plex A",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "100", "name": "Movies", "enabled": True}],
+                    },
+                    {
+                        "id": "plex-B",
+                        "name": "Plex B",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "200", "name": "Movies", "enabled": True}],
+                    },
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+                # Library 100 belongs to Plex-A but caller pinned to Plex-B
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={
+                        "library_ids": ["100"],
+                        "library_name": "Movies",
+                        "server_id": "plex-B",
+                    },
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] == "plex-B", "Explicit server_id from caller must win over the library inference."
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
     def test_create_job_ignores_credential_overrides(self, client):
         """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
