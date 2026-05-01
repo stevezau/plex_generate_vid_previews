@@ -294,12 +294,21 @@ class JobStorage:
     @staticmethod
     def _row_to_job(row) -> "Job":
         def _safe_json(blob, fallback):
+            """Parse JSON blob, falling back to ``fallback`` on parse error
+            OR when the parsed value's type doesn't match the fallback's
+            type. Without the type guard a row with e.g. progress_json='[]'
+            (list) would deserialize to a list and trip Job.to_dict() later
+            because JobProgress.to_dict() only works on dicts.
+            """
             if not blob:
                 return fallback
             try:
-                return json.loads(blob)
+                parsed = json.loads(blob)
             except (json.JSONDecodeError, TypeError):
                 return fallback
+            if not isinstance(parsed, type(fallback)):
+                return fallback
+            return parsed
 
         return Job(
             id=row["id"],
