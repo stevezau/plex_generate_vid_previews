@@ -498,6 +498,31 @@ def _migrate_to_v5(sm) -> list:
     return notes
 
 
+def _migrate_to_v6(sm) -> list:
+    """Strip stale generic ``"cuda"`` gpu_config entries (issue #221).
+
+    Prior to the per-device NVIDIA enumeration rewrite, NVIDIA GPUs were
+    registered with a generic ``device: "cuda"`` string.  Multi-GPU
+    hosts silently collapsed onto that single entry.  NVIDIA GPUs are
+    now keyed by their nvidia-smi index (``cuda:0``, ``cuda:1``, ...),
+    so any legacy ``"cuda"`` entry no longer matches a detected GPU and
+    should be dropped so the UI repopulates cleanly on next re-scan.
+    """
+    notes: list[str] = []
+    raw = sm.get("gpu_config")
+    if not isinstance(raw, list):
+        return notes
+
+    kept = [e for e in raw if not (isinstance(e, dict) and e.get("device") == "cuda")]
+    removed = len(raw) - len(kept)
+    if removed == 0:
+        return notes
+
+    sm.set("gpu_config", kept)
+    notes.append(f"v6: removed {removed} stale generic 'cuda' gpu_config entry(ies)")
+    return notes
+
+
 def _legacy_plex_to_media_server(sm) -> dict[str, Any] | None:
     """Build a single ``media_servers`` entry from legacy ``plex_*`` keys.
 
@@ -618,9 +643,10 @@ def _migrate_to_v8(sm) -> list:
       Even without that guard, the two ``del`` semantics are safe to
       repeat.
     * **Schema bump rollback** — ``_migrate_schema`` bumps the version
-      key only AFTER all migrations succeed (line 224); if v8 raises
-      mid-migration, schema_version stays at 7 and the next startup
-      retries.
+      key only AFTER every per-version helper returns successfully (see
+      the ``sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)`` call at
+      the end of the chain); if v8 raises mid-migration, schema_version
+      stays at 7 and the next startup retries from v8.
     """
     notes: list[str] = []
     global_path_mappings = sm.get("path_mappings") or []
@@ -883,31 +909,6 @@ def _migrate_to_v11(sm) -> list:
     return [
         "v11: seeded frame_reuse defaults (enabled, ttl=60min, max_disk=2GB) — tunable under Settings → Performance"
     ]
-
-
-def _migrate_to_v6(sm) -> list:
-    """Strip stale generic ``"cuda"`` gpu_config entries (issue #221).
-
-    Prior to the per-device NVIDIA enumeration rewrite, NVIDIA GPUs were
-    registered with a generic ``device: "cuda"`` string.  Multi-GPU
-    hosts silently collapsed onto that single entry.  NVIDIA GPUs are
-    now keyed by their nvidia-smi index (``cuda:0``, ``cuda:1``, ...),
-    so any legacy ``"cuda"`` entry no longer matches a detected GPU and
-    should be dropped so the UI repopulates cleanly on next re-scan.
-    """
-    notes: list[str] = []
-    raw = sm.get("gpu_config")
-    if not isinstance(raw, list):
-        return notes
-
-    kept = [e for e in raw if not (isinstance(e, dict) and e.get("device") == "cuda")]
-    removed = len(raw) - len(kept)
-    if removed == 0:
-        return notes
-
-    sm.set("gpu_config", kept)
-    notes.append(f"v6: removed {removed} stale generic 'cuda' gpu_config entry(ies)")
-    return notes
 
 
 # =========================================================================

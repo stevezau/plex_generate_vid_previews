@@ -551,7 +551,7 @@ def _execute_webhook_job(debounce_key: str) -> None:
             config={
                 "source": source,
                 "path_count": len(webhook_paths),
-                "webhook_basenames": basenames[:20],
+                "webhook_basenames": basenames[:_HISTORY_FILES_PREVIEW_CAP],
             },
             server_id=b_sid,
             server_name=b_sname,
