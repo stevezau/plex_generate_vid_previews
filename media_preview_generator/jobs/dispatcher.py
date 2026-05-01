@@ -315,7 +315,7 @@ class JobDispatcher:
                 self._log_progress()
                 last_progress_log = now
 
-            # 8. Clean up completed trackers and check if loop can idle
+            # 7. Clean up completed trackers and check if loop can idle
             self._cleanup_done_trackers()
             if self._all_idle():
                 self._has_work.clear()
