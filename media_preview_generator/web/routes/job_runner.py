@@ -739,6 +739,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                     + outcome.get("published", 0)
                                     + outcome.get("skipped_output_exists", 0)
                                     + outcome.get("skipped_bif_exists", 0)
+                                    + outcome.get("skipped_not_indexed", 0)
                                 )
                                 if published_total == 0:
                                     msg = (

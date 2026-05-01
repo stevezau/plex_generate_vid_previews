@@ -751,6 +751,7 @@ def _format_outcome_summary(aggregate_outcome: dict) -> str:
     counters = (
         ("generated", "{n} generated"),
         ("skipped_bif_exists", "{n} already existed"),
+        ("skipped_not_indexed", "{n} not indexed yet"),
         ("skipped_file_not_found", "{n} not found"),
         ("skipped_excluded", "{n} excluded"),
         ("skipped_invalid_hash", "{n} invalid hash"),

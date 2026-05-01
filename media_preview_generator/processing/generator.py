@@ -63,6 +63,11 @@ class ProcessingResult(Enum):
 
     GENERATED = "generated"
     SKIPPED_BIF_EXISTS = "skipped_bif_exists"
+    # D13 — distinct from SKIPPED_BIF_EXISTS so the per-file outcome
+    # matches the per-server chip when the file was deferred (server
+    # hasn't indexed it yet) rather than truly already-on-disk. The
+    # retry queue eventually re-runs these.
+    SKIPPED_NOT_INDEXED = "skipped_not_indexed"
     # Deprecated: not produced by the unified pipeline (commit b4c3739) but
     # kept so legacy serialised job state still parses. Aggregator code
     # reads them via ``outcome.get(..., 0)`` and harmlessly returns 0.

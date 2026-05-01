@@ -65,7 +65,8 @@ class MultiServerStatus(str, Enum):
     """Aggregate outcome for a single canonical-path processing call."""
 
     PUBLISHED = "published"  # at least one publisher actually wrote new output
-    SKIPPED = "skipped"  # owners exist but every one was skipped (output already there or not yet indexed)
+    SKIPPED = "skipped"  # owners exist but every one was skipped (output already on disk)
+    SKIPPED_NOT_INDEXED = "skipped_not_indexed"  # owners exist but every one was waiting on the server's index
     NO_OWNERS = "no_owners"  # no enabled library covers the path
     FAILED = "failed"  # generation or every publisher failed
     NO_FRAMES = "no_frames"  # FFmpeg produced 0 frames (unrecoverable)
@@ -257,6 +258,37 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
             exc,
         )
         return None
+
+
+def _summarise_results(results: list[PublisherResult], status: MultiServerStatus) -> str:
+    """Build a user-facing one-liner describing what happened across servers (D16).
+
+    Replaces the old "N of M publisher(s) succeeded" wording, which (a)
+    leaked the internal "publisher" term into UIs that talk about
+    "servers" everywhere else, and (b) read as failure for skipped
+    outcomes (a file already on disk would render as "0 of 1 succeeded"
+    in the file's Details column, which users mistook for an error).
+    """
+    if not results:
+        return ""
+    n = len(results)
+    word = "server" if n == 1 else "servers"
+    if status is MultiServerStatus.PUBLISHED:
+        published = sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)
+        if published == n:
+            return f"Published to {n} {word}"
+        return f"Published to {published} of {n} {word}"
+    if status is MultiServerStatus.SKIPPED:
+        return f"Already up to date on {n} {word}"
+    if status is MultiServerStatus.SKIPPED_NOT_INDEXED:
+        return f"Waiting for {n} {word} to finish indexing"
+    if status is MultiServerStatus.FAILED:
+        return f"Failed on {n} {word}"
+    if status is MultiServerStatus.NO_FRAMES:
+        return "FFmpeg produced no frames"
+    if status is MultiServerStatus.NO_OWNERS:
+        return "No server owns this path"
+    return ""
 
 
 def _publish_one(
@@ -452,7 +484,7 @@ def process_canonical_path(
         )
 
     logger.info(
-        "Owners resolved: {} publisher(s) for {} → [{}]",
+        "Owners resolved: {} server(s) for {} → [{}]",
         len(publishers),
         canonical_path,
         ", ".join(f"{srv.name}/{adp.name}" for srv, adp, _ in publishers),
@@ -760,11 +792,18 @@ def process_canonical_path(
             status = MultiServerStatus.PUBLISHED
         elif all_failed:
             status = MultiServerStatus.FAILED
+        elif results and all(r.status is PublisherStatus.SKIPPED_NOT_INDEXED for r in results):
+            # D13 — distinct from SKIPPED so the file outcome and the
+            # per-server chip render the same thing. Otherwise the row
+            # shows "Already Existed" while the chip says "Not indexed",
+            # confusing users into thinking the BIF is on disk when in
+            # fact the server just hasn't scanned the file yet.
+            status = MultiServerStatus.SKIPPED_NOT_INDEXED
         else:
             # No publisher actually wrote, but at least one wasn't a
             # hard failure — every publisher was skipped (output exists /
-            # not yet indexed). Reserve PUBLISHED for "≥1 wrote" so
-            # callers don't conflate the two.
+            # mixed not-indexed + output-exists). Reserve PUBLISHED for
+            # "≥1 wrote" so callers don't conflate the two.
             status = MultiServerStatus.SKIPPED
 
         published_count = sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)
@@ -810,7 +849,7 @@ def process_canonical_path(
             status=status,
             publishers=results,
             frame_count=frame_count,
-            message=f"{sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)} of {len(results)} publisher(s) succeeded",
+            message=_summarise_results(results, status),
         )
     finally:
         # Only clean up tmp dirs that are *not* in the cache. Cache

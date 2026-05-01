@@ -418,11 +418,22 @@ class TestNotYetIndexedRoutesToSkip:
                     item_id_by_server={"plex-1": "42"},
                 )
 
-        # Single skipped publisher — overall status is still PUBLISHED
-        # because the design treats "skipped not indexed" as a no-op
-        # (slow-backoff retry queue handles it).
+        # Single skipped publisher — overall status is the dedicated
+        # SKIPPED_NOT_INDEXED (D13). Distinct from generic SKIPPED so
+        # the worker can map to ProcessingResult.SKIPPED_NOT_INDEXED and
+        # the file outcome chip matches the per-server pill ("Not
+        # Indexed Yet" everywhere) instead of falsely reading "Already
+        # Existed" — which used to confuse users into thinking the BIF
+        # was on disk when in fact the server was still scanning.
         assert len(result.publishers) == 1
         assert result.publishers[0].status is PublisherStatus.SKIPPED_NOT_INDEXED
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        assert result.status is MultiServerStatus.SKIPPED_NOT_INDEXED
+        # D16 — friendly user-facing message; no "publisher" jargon, no
+        # misleading "0 of 1 succeeded" wording.
+        assert "Waiting for 1 server" in result.message
+        assert "publisher" not in result.message.lower()
 
 
 class TestSkipIfExists:
@@ -710,3 +721,61 @@ class TestAdapterFactory:
             output={"adapter": "plex_bundle"},  # missing plex_config_folder
         )
         assert _adapter_for_server(cfg) is None
+
+
+class TestSummariseResults:
+    """D16 — friendly per-result message text used as the file's Details column."""
+
+    def _result(self, status, msg=""):
+        from media_preview_generator.processing.multi_server import PublisherResult
+
+        return PublisherResult(server_id="s", server_name="S", adapter_name="a", status=status, message=msg)
+
+    def test_published_one_server_says_published_to_1(self):
+        from media_preview_generator.processing.multi_server import _summarise_results
+
+        results = [self._result(PublisherStatus.PUBLISHED)]
+        assert _summarise_results(results, MultiServerStatus.PUBLISHED) == "Published to 1 server"
+
+    def test_published_two_servers_uses_plural(self):
+        from media_preview_generator.processing.multi_server import _summarise_results
+
+        results = [self._result(PublisherStatus.PUBLISHED), self._result(PublisherStatus.PUBLISHED)]
+        assert _summarise_results(results, MultiServerStatus.PUBLISHED) == "Published to 2 servers"
+
+    def test_partial_published_shows_n_of_m(self):
+        from media_preview_generator.processing.multi_server import _summarise_results
+
+        results = [self._result(PublisherStatus.PUBLISHED), self._result(PublisherStatus.FAILED)]
+        assert _summarise_results(results, MultiServerStatus.PUBLISHED) == "Published to 1 of 2 servers"
+
+    def test_skipped_outputs_existed_uses_friendly_phrase(self):
+        from media_preview_generator.processing.multi_server import _summarise_results
+
+        results = [self._result(PublisherStatus.SKIPPED_OUTPUT_EXISTS)]
+        # The old wording was "0 of 1 publisher(s) succeeded" which read
+        # as failure to users — they wanted the message to match the
+        # outcome chip instead.
+        assert _summarise_results(results, MultiServerStatus.SKIPPED) == "Already up to date on 1 server"
+
+    def test_skipped_not_indexed_phrasing(self):
+        from media_preview_generator.processing.multi_server import _summarise_results
+
+        results = [self._result(PublisherStatus.SKIPPED_NOT_INDEXED)]
+        assert (
+            _summarise_results(results, MultiServerStatus.SKIPPED_NOT_INDEXED)
+            == "Waiting for 1 server to finish indexing"
+        )
+
+    def test_no_publisher_jargon_in_any_branch(self):
+        """User-facing message must never use the internal 'publisher' term."""
+        from media_preview_generator.processing.multi_server import _summarise_results
+
+        for ms_status, pub_status in [
+            (MultiServerStatus.PUBLISHED, PublisherStatus.PUBLISHED),
+            (MultiServerStatus.SKIPPED, PublisherStatus.SKIPPED_OUTPUT_EXISTS),
+            (MultiServerStatus.SKIPPED_NOT_INDEXED, PublisherStatus.SKIPPED_NOT_INDEXED),
+            (MultiServerStatus.FAILED, PublisherStatus.FAILED),
+        ]:
+            msg = _summarise_results([self._result(pub_status)], ms_status)
+            assert "publisher" not in msg.lower(), f"jargon leaked for {ms_status}: {msg!r}"

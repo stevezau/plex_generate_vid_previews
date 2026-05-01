@@ -1328,24 +1328,55 @@ function _serverBadge(item) {
     return '';
 }
 
-// Phase H5: render the per-publisher outcome list captured by the
-// multi-server dispatcher. Empty for legacy jobs (no publishers field).
+// D14 — single source of truth for status chip label + color, shared
+// across every UI surface that renders an outcome:
+//   * file-outcome chips in the Files panel  (job_modal.js → STATUS_META)
+//   * file-outcome summary buttons           (job_modal.js → STATUS_META)
+//   * per-server aggregate badges            (this file → _renderPublishersBlock)
+//   * per-server pills inside file rows      (job_modal.js → _renderFileServerPills)
 //
-// Maps every PublisherStatus + MultiServerStatus enum value the backend
-// can emit to a friendly badge label. Without this, raw values like
-// "skipped_output_exists" and "skipped_not_indexed" leak straight into
-// the Job-Details modal — keep this in sync with the same map in
-// job_modal.js (_FILE_SERVER_STATUS_TIP) when adding new statuses.
-const _PUBLISHER_STATUS_BADGES = {
-    published:              { label: 'Published',     cls: 'bg-success' },
-    skipped:                { label: 'Skipped',       cls: 'bg-secondary' },
-    skipped_output_exists:  { label: 'Up to date',    cls: 'bg-secondary' },
-    skipped_not_indexed:    { label: 'Not indexed',   cls: 'bg-warning text-dark' },
-    not_indexed:            { label: 'Not indexed',   cls: 'bg-warning text-dark' },
-    failed:                 { label: 'Failed',        cls: 'bg-danger' },
-    no_owners:              { label: 'No owner',      cls: 'bg-secondary' },
-    no_frames:              { label: 'No frames',     cls: 'bg-danger' },
+// Both ProcessingResult AND PublisherStatus / MultiServerStatus enums
+// resolve through this map so that semantically-equivalent statuses
+// (e.g. file `skipped_bif_exists` ≡ publisher `skipped_output_exists`)
+// always render the same label and color. Equivalences below.
+const STATUS_META = {
+    // Success — file generated this run OR successfully published to a server.
+    generated:              { label: 'Generated',     cls: 'bg-success', tip: 'Preview was generated' },
+    published:              { label: 'Generated',     cls: 'bg-success', tip: 'Preview was published to this server' },
+
+    // Output already on disk; source unchanged — nothing to redo.
+    skipped_bif_exists:     { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk and source unchanged' },
+    skipped_output_exists:  { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk on this server and source unchanged' },
+    skipped:                { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk' },
+
+    // Server hasn't indexed the file yet; retry queue will try again later.
+    skipped_not_indexed:    { label: 'Not Indexed Yet', cls: 'bg-warning text-dark', tip: 'Server hasn\'t indexed this file yet — will retry' },
+    not_indexed:            { label: 'Not Indexed Yet', cls: 'bg-warning text-dark', tip: 'Server hasn\'t indexed this file yet — will retry' },
+
+    // Hard failures.
+    failed:                 { label: 'Failed',        cls: 'bg-danger', tip: 'Processing failed' },
+    no_frames:              { label: 'No Frames',     cls: 'bg-danger', tip: 'FFmpeg produced no frames (file may be unreadable)' },
+
+    // No server owns this file path.
+    no_media_parts:         { label: 'No Server Owner', cls: 'bg-light text-dark border', tip: 'No configured server claims this file path' },
+    no_owners:              { label: 'No Server Owner', cls: 'bg-light text-dark border', tip: 'No configured server claims this file path' },
+
+    // Legacy / pipeline-specific outcomes.
+    skipped_file_not_found: { label: 'Not Found',     cls: 'bg-warning text-dark', tip: 'File not found on disk' },
+    skipped_excluded:       { label: 'Excluded',      cls: 'bg-secondary', tip: 'Path matched an exclusion rule' },
+    skipped_invalid_hash:   { label: 'Invalid Hash',  cls: 'bg-warning text-dark', tip: 'Could not compute the path hash' },
+    unresolved_plex:        { label: 'Not In Plex',   cls: 'bg-danger', tip: 'Could not find this item in Plex after lookup' },
 };
+window.STATUS_META = STATUS_META;
+
+function _statusMeta(key) {
+    return STATUS_META[key] || { label: key || '?', cls: 'bg-secondary', tip: '' };
+}
+window._statusMeta = _statusMeta;
+
+// Back-compat alias retained while older call sites still reference the
+// old name. New code should call _statusMeta() directly.
+const _PUBLISHER_STATUS_BADGES = STATUS_META;
 
 // Frame-provenance badges so users can see when one webhook's frames
 // were reused across a sibling-server publish (no second FFmpeg) vs
@@ -1377,8 +1408,9 @@ function _renderPublishersBlock(job) {
             .concat(Object.keys(counts).filter(function (k) { return !seen.has(k) && counts[k] > 0; }));
         if (!ordered.length) return '';
         const badges = ordered.map(function (status) {
-            const meta = _PUBLISHER_STATUS_BADGES[status] || { label: status || '?', cls: 'bg-secondary' };
-            return `<span class="badge ${meta.cls} me-1">${counts[status]} ${escapeHtmlText(meta.label.toLowerCase())}</span>`;
+            const meta = _statusMeta(status);
+            const tip = meta.tip ? ` title="${escapeHtmlAttr(meta.tip)}"` : '';
+            return `<span class="badge ${meta.cls} me-1"${tip}>${counts[status]} ${escapeHtmlText(meta.label.toLowerCase())}</span>`;
         }).join('');
         return `<div class="mt-1"><span class="badge bg-light text-dark border me-2">${logo}${escapeHtmlText(sname)}</span>${badges}</div>`;
     }).filter(Boolean).join('');
@@ -2425,22 +2457,16 @@ async function clearJobsByStatus() {
 // Helper Functions
 function _buildOutcomeTooltip(outcome) {
     if (!outcome || typeof outcome !== 'object') return '';
-    var labels = {
-        'generated': 'Generated',
-        'skipped_bif_exists': 'Already existed',
-        'skipped_file_not_found': 'File not found',
-        'skipped_excluded': 'Excluded',
-        'skipped_invalid_hash': 'Invalid hash',
-        'failed': 'Failed',
-        'no_media_parts': 'No media parts'
-    };
+    // D14 — pull labels from the unified STATUS_META so the tooltip
+    // matches the file-outcome chip and the per-server pill.
+    var keys = ['generated', 'skipped_bif_exists', 'skipped_not_indexed',
+                'skipped_file_not_found', 'skipped_excluded',
+                'skipped_invalid_hash', 'failed', 'no_media_parts'];
     var lines = [];
-    var keys = ['generated', 'skipped_bif_exists', 'skipped_file_not_found',
-                'skipped_excluded', 'skipped_invalid_hash', 'failed', 'no_media_parts'];
     for (var i = 0; i < keys.length; i++) {
         var count = outcome[keys[i]];
         if (count && count > 0) {
-            lines.push(labels[keys[i]] + ': ' + count.toLocaleString());
+            lines.push(_statusMeta(keys[i]).label + ': ' + count.toLocaleString());
         }
     }
     return lines.length > 0 ? lines.join('&#10;') : 'No items processed';

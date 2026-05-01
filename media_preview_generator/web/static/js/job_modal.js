@@ -444,16 +444,16 @@ var _fileTotal = 0;
 var _fileSummary = {};
 var _fileSearchDebounce = null;
 
-var FILE_OUTCOME_META = {
-    'generated':              { label: 'Generated',     badge: 'bg-success' },
-    'skipped_bif_exists':     { label: 'Already Existed', badge: 'bg-info text-dark' },
-    'failed':                 { label: 'Failed',        badge: 'bg-danger' },
-    'skipped_file_not_found': { label: 'Not Found',     badge: 'bg-warning text-dark' },
-    'skipped_excluded':       { label: 'Excluded',      badge: 'bg-secondary' },
-    'skipped_invalid_hash':   { label: 'Invalid Hash',  badge: 'bg-warning text-dark' },
-    'no_media_parts':         { label: 'No Media Parts', badge: 'bg-light text-dark' },
-    'unresolved_plex':        { label: 'Not In Plex',    badge: 'bg-danger' },
-};
+// D14 — every status chip reads from the unified STATUS_META map in
+// app.js so file-outcome chips, summary buttons, per-server pills, and
+// aggregate badges all render the same label + color for the same
+// status. Update STATUS_META, not this shim.
+function _fileOutcomeMeta(key) {
+    var m = (typeof window !== 'undefined' && window._statusMeta)
+        ? window._statusMeta(key)
+        : { label: key, cls: 'bg-secondary' };
+    return { label: m.label, badge: m.cls };
+}
 
 function onFilesTabActivated() {
     if (!_fileResultsLoaded) {
@@ -496,7 +496,7 @@ function renderFileResultsSummary(summary, total) {
     var html = '';
 
     var ordered = [
-        'generated', 'skipped_bif_exists', 'failed',
+        'generated', 'skipped_bif_exists', 'skipped_not_indexed', 'failed',
         'skipped_file_not_found', 'skipped_excluded',
         'skipped_invalid_hash', 'no_media_parts',
         'unresolved_plex'
@@ -505,10 +505,10 @@ function renderFileResultsSummary(summary, total) {
         var key = ordered[i];
         var count = summary[key];
         if (!count) continue;
-        var meta = FILE_OUTCOME_META[key] || { label: key, badge: 'bg-secondary' };
+        var meta = _fileOutcomeMeta(key);
         var btnClass = (_fileResultsActiveFilter === key)
-            ? meta.badge.replace('bg-', 'btn-outline-').replace(' text-dark', '')
-            : meta.badge.replace('bg-', 'btn-').replace(' text-dark', '');
+            ? meta.badge.replace('bg-', 'btn-outline-').replace(' text-dark', '').replace(' border', '')
+            : meta.badge.replace('bg-', 'btn-').replace(' text-dark', '').replace(' border', '');
         html += '<button class="btn btn-sm ' + btnClass + '" onclick="toggleFileOutcomeFilter(\'' + key + '\')">'
             + meta.label + ': ' + count + '</button>';
     }
@@ -536,7 +536,7 @@ function renderFileResultsTable(files) {
     var html = '';
     for (var i = 0; i < files.length; i++) {
         var f = files[i];
-        var meta = FILE_OUTCOME_META[f.outcome] || { label: f.outcome, badge: 'bg-secondary' };
+        var meta = _fileOutcomeMeta(f.outcome);
         var fileName = f.file || '';
         var shortName = fileName.split('/').pop() || fileName;
         var reason = escapeHtml(f.reason || '');
@@ -550,7 +550,7 @@ function renderFileResultsTable(files) {
         // with this file. Skipped/failed-with-no-output files don't get
         // the shortcut \u2014 there'd be nothing to preview.
         var inspectorBtn = '';
-        if (fileName && (f.outcome === 'generated' || f.outcome === 'skipped_bif_exists')) {
+        if (fileName && (f.outcome === 'generated' || f.outcome === 'skipped_bif_exists' || f.outcome === 'skipped_output_exists' || f.outcome === 'published')) {
             var encodedFile = encodeURIComponent(fileName);
             inspectorBtn = ' <a href="/bif-viewer?file=' + encodedFile
                 + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"'
@@ -570,28 +570,14 @@ function renderFileResultsTable(files) {
 }
 
 // D9 \u2014 render the per-server attribution pills for a file row. Each
-// `servers` entry has {id, name, type, status, frame_source?}. Colour
-// matches the row-level _serverBadge palette so chips on the Jobs page
-// and pills on the Files panel feel like the same UI element.
+// `servers` entry has {id, name, type, status, frame_source?}. The
+// vendor palette colours the pill (so users can spot Plex vs Emby at a
+// glance), and STATUS_META in app.js drives the tooltip text so the
+// per-server pill says exactly what the file-outcome chip says.
 var _FILE_SERVER_PALETTE = {
     plex:     'bg-warning text-dark',
     emby:     'bg-success',
     jellyfin: 'bg-info text-dark',
-};
-// Maps every PublisherStatus + MultiServerStatus enum value the backend
-// can emit to a user-friendly tooltip phrase. Without this, the raw
-// enum value (e.g. "skipped_output_exists") leaks straight into the
-// pill tooltip and the Outcome column. Add new entries here whenever
-// processing/multi_server.py grows another status.
-var _FILE_SERVER_STATUS_TIP = {
-    published:              'Published',
-    skipped:                'Skipped (already up to date)',
-    skipped_output_exists:  'Already up to date (output exists, source unchanged)',
-    skipped_not_indexed:    'Server hasn\'t indexed this file yet',
-    not_indexed:            'Server hasn\'t indexed this file yet',
-    failed:                 'Publish failed',
-    no_owners:              'No server owns this path',
-    no_frames:              'FFmpeg produced no frames (file may be unreadable)',
 };
 function _renderFileServerPills(servers) {
     if (!servers || !servers.length) return '<small class="text-muted">&mdash;</small>';
@@ -606,7 +592,8 @@ function _renderFileServerPills(servers) {
         // publish \u2014 gives the user a one-glance "this server got it" vs
         // "this server skipped it" signal without needing a second column.
         var dim = (status && status !== 'published') ? ' style="opacity:.55;"' : '';
-        var tip = _FILE_SERVER_STATUS_TIP[status] || status || '';
+        var meta = _fileOutcomeMeta(status);
+        var tip = meta.label || status || '';
         var title = tip ? (escapeHtmlAttr(label) + ' \u2014 ' + escapeHtmlAttr(tip)) : escapeHtmlAttr(label);
         html += '<span class="badge me-1 ' + cls + '"' + dim + ' title="' + title + '">'
             + escapeHtml(label) + '</span>';

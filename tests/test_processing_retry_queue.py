@@ -483,7 +483,9 @@ class TestProcessCanonicalPathIntegration:
                 use_frame_cache=False,
             )
 
-        assert result.status is MultiServerStatus.SKIPPED
+        # D13 — when every publisher is SKIPPED_NOT_INDEXED the aggregate
+        # status is the dedicated SKIPPED_NOT_INDEXED, not generic SKIPPED.
+        assert result.status is MultiServerStatus.SKIPPED_NOT_INDEXED
         # The dispatcher made exactly ONE schedule_retry_for_unindexed call
         # (corresponding to our SKIPPED_NOT_INDEXED publisher).
         assert len(schedule_calls) == 1, schedule_calls

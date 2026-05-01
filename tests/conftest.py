@@ -569,6 +569,7 @@ def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
         "published": MultiServerStatus.PUBLISHED,
         "skipped_bif_exists": MultiServerStatus.SKIPPED,
         "skipped": MultiServerStatus.SKIPPED,
+        "skipped_not_indexed": MultiServerStatus.SKIPPED_NOT_INDEXED,
         "no_media_parts": MultiServerStatus.NO_OWNERS,
         "no_owners": MultiServerStatus.NO_OWNERS,
         "failed": MultiServerStatus.FAILED,

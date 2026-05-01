@@ -373,6 +373,8 @@ class Worker:
                     return ProcessingResult.GENERATED
                 if status is MultiServerStatus.SKIPPED:
                     return ProcessingResult.SKIPPED_BIF_EXISTS
+                if status is MultiServerStatus.SKIPPED_NOT_INDEXED:
+                    return ProcessingResult.SKIPPED_NOT_INDEXED
                 if status is MultiServerStatus.NO_OWNERS:
                     return ProcessingResult.NO_MEDIA_PARTS
                 return ProcessingResult.FAILED

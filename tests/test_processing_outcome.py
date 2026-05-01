@@ -26,6 +26,7 @@ class TestProcessingResultEnum:
         expected = {
             "generated",
             "skipped_bif_exists",
+            "skipped_not_indexed",
             "skipped_file_not_found",
             "skipped_excluded",
             "skipped_invalid_hash",
@@ -90,6 +91,24 @@ class TestWorkerOutcomeCounts:
         assert worker.outcome_counts["failed"] == 1
         assert worker.failed == 1
         assert worker.completed == 0
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_not_indexed_result_counts_under_dedicated_bucket(self, mock_process):
+        """D13 — MS.SKIPPED_NOT_INDEXED → PR.SKIPPED_NOT_INDEXED, distinct from
+        SKIPPED_BIF_EXISTS so the per-file outcome chip ('Not Indexed Yet')
+        matches the per-server pill instead of mis-rendering as
+        'Already Existed'."""
+        mock_process.return_value = _ms("skipped_not_indexed")
+        worker = Worker(0, "CPU")
+        config = MagicMock()
+        registry = MagicMock()
+        worker.assign_task(_pi("k", title="T", media_type="movie"), config, registry)
+        worker.current_thread.join(timeout=2)
+
+        assert worker.outcome_counts["skipped_not_indexed"] == 1
+        assert worker.outcome_counts["skipped_bif_exists"] == 0
+        assert worker.completed == 1
+        assert worker.failed == 0
 
 
 class TestJobProgressOutcome:
