@@ -486,21 +486,29 @@ def process_canonical_path(
     # later. ``compute_output_paths`` may need to call the server (Plex
     # bundle hash); we tolerate failures here and fall back to the full
     # pipeline rather than spuriously refusing to publish.
+    # ``compute_output_paths`` only needs the canonical_path and frame_interval
+    # from a BifBundle; the frame_dir/bif_path/dimensions are placeholders for
+    # the probe path. Build one helper so the three call-sites below stay in
+    # sync (a divergence here previously hid behind copy-pasted dataclass kwargs).
+    probe_frame_interval = int(getattr(config, "thumbnail_interval", 10) or 10)
+
+    def _probe_bundle() -> BifBundle:
+        return BifBundle(
+            canonical_path=canonical_path,
+            frame_dir=Path(os.devnull),  # unused by compute_output_paths
+            bif_path=None,
+            frame_interval=probe_frame_interval,
+            width=320,
+            height=180,
+            frame_count=0,
+        )
+
     if not regenerate:
         all_fresh = True
         for server, adapter, item_id_hint in publishers:
             try:
                 item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-                probe_bundle = BifBundle(
-                    canonical_path=canonical_path,
-                    frame_dir=Path(os.devnull),  # unused by compute_output_paths
-                    bif_path=None,
-                    frame_interval=int(getattr(config, "thumbnail_interval", 10) or 10),
-                    width=320,
-                    height=180,
-                    frame_count=0,
-                )
-                paths = adapter.compute_output_paths(probe_bundle, server, item_id)
+                paths = adapter.compute_output_paths(_probe_bundle(), server, item_id)
             except Exception:
                 all_fresh = False
                 break
@@ -515,16 +523,7 @@ def process_canonical_path(
             results = []
             for server, adapter, item_id_hint in publishers:
                 item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-                probe_bundle = BifBundle(
-                    canonical_path=canonical_path,
-                    frame_dir=Path(os.devnull),
-                    bif_path=None,
-                    frame_interval=int(getattr(config, "thumbnail_interval", 10) or 10),
-                    width=320,
-                    height=180,
-                    frame_count=0,
-                )
-                paths = adapter.compute_output_paths(probe_bundle, server, item_id)
+                paths = adapter.compute_output_paths(_probe_bundle(), server, item_id)
                 results.append(
                     PublisherResult(
                         server_id=server.id,
@@ -550,16 +549,7 @@ def process_canonical_path(
         for server, adapter, item_id_hint in publishers:
             try:
                 item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-                probe_bundle = BifBundle(
-                    canonical_path=canonical_path,
-                    frame_dir=Path(os.devnull),
-                    bif_path=None,
-                    frame_interval=int(getattr(config, "thumbnail_interval", 10) or 10),
-                    width=320,
-                    height=180,
-                    frame_count=0,
-                )
-                clear_meta(adapter.compute_output_paths(probe_bundle, server, item_id))
+                clear_meta(adapter.compute_output_paths(_probe_bundle(), server, item_id))
             except Exception:
                 continue
 
