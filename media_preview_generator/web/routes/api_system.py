@@ -309,9 +309,19 @@ def get_media_servers_status():
             return jsonify({"servers": cached, "cached": True, "ttl": _MEDIA_SERVER_STATUS_TTL})
 
     raw = get_settings_manager().get("media_servers") or []
-    entries = list(raw) if isinstance(raw, list) else []
+    entries = [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
 
-    summaries = [_probe_media_server_entry(e) for e in entries if isinstance(e, dict)]
+    # Probe servers in parallel so N offline servers don't each consume
+    # the full timeout serially (cold-cache 3-server probe was 90s with
+    # the default 30s timeout). Cap concurrency so a busy install with
+    # many servers doesn't burst-spawn worker threads.
+    summaries: list[dict] = []
+    if entries:
+        from concurrent.futures import ThreadPoolExecutor
+
+        max_workers = min(8, max(1, len(entries)))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="media-probe") as pool:
+            summaries = list(pool.map(_probe_media_server_entry, entries))
 
     with _media_server_status_lock:
         _media_server_status_cache["result"] = summaries
@@ -707,6 +717,12 @@ _BROWSE_DENYLIST = (
     "/var/run",
     "/var/log",
     "/boot",
+    # Sensitive container-host dirs the picker should never surface:
+    # the picker is for media + config folders, not credential discovery.
+    # /home is intentionally allowed — many users mount their library
+    # under /home/<user>/Media or similar.
+    "/etc",
+    "/root",
 )
 
 

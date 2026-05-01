@@ -4143,12 +4143,16 @@ class TestFolderBrowse:
         assert "absolute" in resp.get_json()["error"].lower()
 
     def test_browse_rejects_denylisted_paths(self, client):
-        for path in ("/proc", "/sys", "/dev"):
+        # /etc and /root added defence-in-depth — even with a valid
+        # auth token, the folder picker shouldn't surface credential or
+        # host-config dirs. /home is intentionally allowed (legitimate
+        # mount target on many setups).
+        for path in ("/proc", "/sys", "/dev", "/etc", "/root"):
             resp = client.get(
                 f"/api/system/browse?path={path}",
                 headers=_api_headers(),
             )
-            assert resp.status_code == 403
+            assert resp.status_code == 403, f"{path} returned {resp.status_code}"
 
     def test_browse_404_on_missing_path(self, client):
         resp = client.get(
