@@ -41,6 +41,97 @@ class TestRunMigrations:
         assert settings_manager.get("plex_url") == "http://plex:32400"
 
 
+class TestSeedLastSeenVersionForUpgraders:
+    """B1 — make the 'What's New' modal fire for users coming from a build
+    that pre-dates ``last_seen_version`` tracking (added in 3.5.0).
+
+    The api_system whats-new endpoint silently sets the key to current on
+    first call when missing — fine for a fresh install, broken for an
+    upgrader (they get no changelog despite a real version jump). This
+    upgrade-time hook seeds ``"0.0.0"`` for upgraders so the modal fires.
+    """
+
+    def test_upgrader_with_plex_url_gets_sentinel(self, settings_manager):
+        """Pre-3.5.0 install with plex_url + no last_seen_version → seeded '0.0.0'."""
+        from media_preview_generator.upgrade import run_migrations
+
+        settings_manager.set("plex_url", "http://plex:32400")
+        settings_manager.set("plex_token", "tok")
+        # Crucially: last_seen_version is NOT set (the bug trigger).
+        assert settings_manager.get("last_seen_version") is None
+
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("last_seen_version") == "0.0.0"
+
+    def test_upgrader_with_only_setup_complete_gets_sentinel(self, settings_manager):
+        """setup_complete on its own is enough signal — wizard finished at some point."""
+        from media_preview_generator.upgrade import run_migrations
+
+        settings_manager.set("setup_complete", True)
+        # No plex_url, no media_servers — but the wizard ran.
+        assert settings_manager.get("last_seen_version") is None
+
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("last_seen_version") == "0.0.0"
+
+    def test_existing_last_seen_version_preserved(self, settings_manager):
+        """A user already on 3.5.0+ keeps their tracked value untouched."""
+        from media_preview_generator.upgrade import run_migrations
+
+        settings_manager.set("plex_url", "http://plex:32400")
+        settings_manager.set("last_seen_version", "3.7.4")
+
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("last_seen_version") == "3.7.4"
+
+    def test_fresh_install_not_seeded(self, settings_manager):
+        """Empty settings (no user data) → leave last_seen_version unset.
+
+        The api_system whats-new endpoint handles fresh installs correctly by
+        silently writing the current version on first dashboard load. Seeding
+        the sentinel here would cause a fresh install to get a 'What's New'
+        modal showing every release ever — wrong UX.
+        """
+        from media_preview_generator.upgrade import run_migrations
+
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("last_seen_version") is None
+
+    def test_idempotent_across_repeat_runs(self, settings_manager):
+        """A second run_migrations call doesn't re-seed or overwrite."""
+        from media_preview_generator.upgrade import run_migrations
+
+        settings_manager.set("plex_url", "http://plex:32400")
+        run_migrations(settings_manager)
+        assert settings_manager.get("last_seen_version") == "0.0.0"
+
+        # Simulate the user dismissing the modal — last_seen_version moves forward.
+        settings_manager.set("last_seen_version", "4.0.0")
+        run_migrations(settings_manager)
+
+        # The hook does NOT clobber a present value, even if it's been moved on.
+        assert settings_manager.get("last_seen_version") == "4.0.0"
+
+    def test_upgrader_with_media_servers_only_gets_sentinel(self, settings_manager):
+        """Multi-server fixture (no legacy plex_*) but missing last_seen_version →
+        still detected as upgrader. Covers users on a v7+ build that somehow
+        lost the key (e.g. hand-edited settings.json, wiped notification flag)."""
+        from media_preview_generator.upgrade import run_migrations
+
+        settings_manager.set(
+            "media_servers",
+            [{"id": "plex-default", "type": "plex", "name": "Plex", "enabled": True}],
+        )
+
+        run_migrations(settings_manager)
+
+        assert settings_manager.get("last_seen_version") == "0.0.0"
+
+
 class TestEnvVarMigration:
     """Tests for environment variable migration."""
 

@@ -81,6 +81,40 @@ def run_migrations(settings_manager) -> None:
     """
     _migrate_env_vars(settings_manager)
     _migrate_schema(settings_manager)
+    _seed_last_seen_version_for_upgraders(settings_manager)
+
+
+def _seed_last_seen_version_for_upgraders(sm) -> None:
+    """Make the 'What's New' modal fire for users who upgraded from a build
+    that pre-dates ``last_seen_version`` tracking (added in 3.5.0).
+
+    The api_system whats-new endpoint silently sets ``last_seen_version`` to
+    the current version on first call when the key is missing — correct for a
+    *fresh* install, but wrong for a long-running deployment that just got
+    upgraded over the top: the user gets no changelog despite a real version
+    jump. Detect that case here (existing settings + missing key) and seed the
+    sentinel ``"0.0.0"`` so the modal fires on next dashboard load.
+
+    Idempotent: subsequent runs find ``last_seen_version`` set and no-op.
+    """
+    if sm.get("last_seen_version") is not None:
+        return
+
+    looks_like_upgrade = (
+        sm.get("plex_url") is not None
+        or sm.get("plex_token") is not None
+        or bool(sm.get("media_servers"))
+        or bool(sm.get("setup_complete"))
+    )
+    if not looks_like_upgrade:
+        return
+
+    sm.set("last_seen_version", "0.0.0")
+    logger.info(
+        "Detected upgrade from a pre-3.5.0 build (no last_seen_version recorded). "
+        "Seeded sentinel '0.0.0' so the 'What's New' modal shows the full release "
+        "history on next dashboard load."
+    )
 
 
 # =========================================================================
