@@ -337,6 +337,15 @@ def _dispatch_processable_items(
         total,
         parallelism,
     )
+    # Surface "Dispatching N items…" up-front so the progress widget gets
+    # a real total + denominator the moment enumeration finishes — without
+    # this the bar sits at 0/0 with the stale "Querying…" label until the
+    # first item completes (can be 30s+ on the first FFmpeg pass).
+    if progress_callback:
+        try:
+            progress_callback(0, total, f"Dispatching {total} item(s) across {parallelism} worker(s)…")
+        except Exception as exc:
+            logger.debug("progress_callback raised on dispatch banner: {}", exc)
 
     def _gpu_for(index: int):
         if not gpu_devices:
@@ -430,6 +439,7 @@ def _enumerate_items_for_servers(
     enumerate_one,
     cancel_check=None,
     label: str,
+    progress_callback=None,
 ):
     """Walk every server in ``candidates`` and collect the items each yields.
 
@@ -465,6 +475,17 @@ def _enumerate_items_for_servers(
         if cancel_check and cancel_check():
             logger.info("Cancellation requested while enumerating items — aborting {}.", label)
             return all_items
+        # Surface a "Querying…" status BEFORE the per-server walk so the UI
+        # progress bar shows the system is alive during the slow library
+        # enumeration phase (Emby/Jellyfin TV libraries can take 10–60s
+        # before the first item is yielded). Without this, the job sits at
+        # "0/0" with no message and users assume it's stuck.
+        if progress_callback:
+            try:
+                _server_label = server_cfg.name or server_cfg.id or server_cfg.type.value
+                progress_callback(0, 0, f"Querying {_server_label} library…")
+            except Exception as exc:
+                logger.debug("progress_callback raised during enumeration banner: {}", exc)
         try:
             for item in enumerate_one(processor, server_cfg):
                 if cancel_check and cancel_check():
@@ -596,6 +617,7 @@ def _run_full_scan_multi_server(
         ),
         cancel_check=cancel_check,
         label="full scan",
+        progress_callback=progress_callback,
     )
 
     if not all_items:
@@ -677,6 +699,7 @@ def _run_recently_added_multi_server(
         ),
         cancel_check=cancel_check,
         label="recently-added scan",
+        progress_callback=progress_callback,
     )
 
     if not all_items:

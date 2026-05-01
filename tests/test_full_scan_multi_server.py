@@ -237,6 +237,93 @@ class TestMultiServerFullScan:
         )
 
 
+class TestEnumerationStatusBanner:
+    """D28 — surface a "Querying {server} library…" status BEFORE each
+    server's enumeration walk and a "Dispatching N item(s)…" status the
+    moment enumeration finishes. Without these the progress bar sits at
+    0/0 with no message for the 10–60s the Emby/Jellyfin library walk
+    takes; users assume the job is stuck and cancel."""
+
+    def test_querying_banner_emitted_per_server_before_enumeration(self, tmp_path):
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+        cfg_b = _server_config("srv-b", ServerType.EMBY)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a, cfg_b]
+
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter([])
+        proc_b = MagicMock()
+        proc_b.list_canonical_paths.return_value = iter([])
+
+        def _get_proc(stype):
+            return {ServerType.JELLYFIN: proc_a, ServerType.EMBY: proc_b}[stype]
+
+        progress_calls: list[tuple[int, int, str]] = []
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", side_effect=_get_proc),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                {"id": "srv-b", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                progress_callback=lambda p, t, m: progress_calls.append((p, t, m)),
+            )
+
+        querying_messages = [m for _, _, m in progress_calls if m.startswith("Querying ")]
+        assert any("Test jellyfin" in m for m in querying_messages), (
+            f"missing per-server Querying banner; got {querying_messages!r}"
+        )
+        assert any("Test emby" in m for m in querying_messages), (
+            f"missing per-server Querying banner; got {querying_messages!r}"
+        )
+
+    def test_dispatch_banner_emitted_with_total_after_enumeration(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path=f"/data/m{i}.mkv",
+                    server_id="srv-a",
+                    item_id_by_server={"srv-a": str(i)},
+                ),
+            )
+            for i in range(4)
+        ]
+
+        progress_calls: list[tuple[int, int, str]] = []
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(publishers=[], canonical_path="/x"),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                progress_callback=lambda p, t, m: progress_calls.append((p, t, m)),
+                label="full scan",
+            )
+
+        # First emit must be the up-front Dispatching banner with (0, total).
+        assert progress_calls, "no progress messages emitted"
+        first = progress_calls[0]
+        assert first[0] == 0
+        assert first[1] == 4
+        assert "Dispatching" in first[2]
+
+
 class TestPerJobLogCapture:
     """D27 — every executor-pool worker thread MUST register itself
     under the active job's id so the per-job log handler captures the
