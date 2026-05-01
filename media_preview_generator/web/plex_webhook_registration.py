@@ -70,6 +70,33 @@ def _account(token: str):
         raise PlexWebhookError(f"Could not reach plex.tv: {exc}", reason="network_error") from exc
 
 
+def _looks_like_plex_pass_required(exc: BaseException) -> bool:
+    """Return True when ``exc`` plausibly indicates a missing Plex Pass.
+
+    plex.tv returns 401/403 for both "no Plex Pass on this account" and
+    "token rejected". The plexapi-typed exceptions (Unauthorized,
+    BadRequest) reach us deterministically; for transport-level errors
+    we fall back to a substring check against the formatted message.
+    The substring set is conservative — we'd rather raise the generic
+    "unknown" error than mis-classify a quota/bad-payload failure as
+    Plex Pass missing.
+    """
+    try:
+        from plexapi.exceptions import BadRequest, Unauthorized
+
+        if isinstance(exc, Unauthorized) or isinstance(exc, BadRequest):
+            return True
+    except ImportError:
+        pass
+    message = str(exc).lower()
+    # Look for status codes only when bracketed by non-digit context so we
+    # don't false-positive on bodies like "Quota exceeded; HTTP 401 will be
+    # returned tomorrow" — the plexapi error format is "(401) ...".
+    if "(401)" in message or "(403)" in message:
+        return True
+    return "unauthorized" in message or "forbidden" in message
+
+
 def _normalize_url(url: str) -> str:
     """Trim whitespace and a trailing slash so URL comparisons are stable."""
     if not url:
@@ -175,8 +202,7 @@ def list_webhooks(token: str) -> list[str]:
     try:
         urls = account.webhooks()
     except Exception as exc:
-        message = str(exc).lower()
-        if "401" in message or "unauthor" in message or "forbidden" in message:
+        if _looks_like_plex_pass_required(exc):
             raise PlexWebhookError(
                 "Webhooks require an active Plex Pass subscription on the server-owner account.",
                 reason="plex_pass_required",
@@ -239,8 +265,7 @@ def register(token: str, url: str, auth_token: str | None = None, *, server_id: 
     try:
         current = [_normalize_url(u) for u in (account.webhooks() or []) if u]
     except Exception as exc:
-        message = str(exc).lower()
-        if "401" in message or "unauthor" in message or "forbidden" in message:
+        if _looks_like_plex_pass_required(exc):
             raise PlexWebhookError(
                 "Webhooks require an active Plex Pass subscription on the server-owner account.",
                 reason="plex_pass_required",
@@ -290,8 +315,7 @@ def register(token: str, url: str, auth_token: str | None = None, *, server_id: 
     try:
         account.addWebhook(target_with_auth)
     except Exception as exc:
-        message = str(exc).lower()
-        if "401" in message or "unauthor" in message or "forbidden" in message:
+        if _looks_like_plex_pass_required(exc):
             raise PlexWebhookError(
                 "Webhooks require an active Plex Pass subscription on the server-owner account.",
                 reason="plex_pass_required",

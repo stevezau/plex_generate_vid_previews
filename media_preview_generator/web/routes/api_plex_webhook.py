@@ -370,16 +370,18 @@ def plex_webhook_test_reachability():
     payload = {"event": "test.ping", "source": "plex-previews-self-test"}
     multipart = {"payload": (None, _json.dumps(payload), "application/json")}
 
+    # Default verify=False: home-lab users commonly front the app with
+    # self-signed TLS, so strict verification would fail the test for
+    # exactly the valid deployments it's meant to check. Caller can pass
+    # ``verify_ssl: true`` to opt into strict verification when they have
+    # a real cert and want to validate the chain.
+    verify_tls = bool(data.get("verify_ssl", False))
     try:
-        # verify=False: this is a webhook self-test POST back to the user's
-        # own public_url. Home-lab users commonly front the app with
-        # self-signed TLS, so strict verification would fail the test for
-        # exactly the valid deployments it's meant to check.
         response = requests.post(
             test_url,
             files=multipart,
             timeout=10,
-            verify=False,  # nosec B501
+            verify=verify_tls,  # nosec B501 — opt-in via verify_ssl param
         )
     except requests.exceptions.RequestException as exc:
         return (

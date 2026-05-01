@@ -571,5 +571,7 @@ def _dispatch_canonical_path(
         ],
         "message": result.message,
     }
-    # 202 Accepted for async-style responses; 200 for completed.
+    # All dispatch outcomes complete synchronously here (the dispatcher
+    # blocks until publishers finish), so 200 is the right status. The
+    # earlier "202 for async" comment was aspirational — never shipped.
     return jsonify(body), 200
