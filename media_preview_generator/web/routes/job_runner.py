@@ -815,14 +815,12 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                     logger.debug("Working temp folder already absent, skipping cleanup: {}", config.working_tmp_folder)
 
         except Exception as e:
-            logger.error(
-                "Job {} failed with an unexpected error ({}: {}). "
+            logger.exception(
+                "Job {} failed with an unexpected error. "
                 "The job is marked failed in the Jobs page; you can re-run it from there once the cause "
-                "is fixed. Check the recent log lines above for the underlying cause; "
-                "if it's not obvious, please open a GitHub issue with these lines.",
+                "is fixed. The full traceback is included above; if the cause isn't obvious, please open "
+                "a GitHub issue with these lines.",
                 job_id,
-                type(e).__name__,
-                e,
             )
             if job_manager is None:
                 job_manager = get_job_manager()
