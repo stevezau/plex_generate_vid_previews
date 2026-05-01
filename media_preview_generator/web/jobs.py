@@ -133,6 +133,13 @@ class Job:
     config: dict[str, Any] = field(default_factory=dict)
     paused: bool = False
     priority: int = PRIORITY_NORMAL
+    # D20 — id of the schedule that spawned this job, or "" for manual /
+    # webhook jobs. Used by execute_schedule_stop() to find which jobs
+    # to pause when a schedule's stop_time fires, and by
+    # execute_scheduled_job() to detect "is there an existing paused
+    # job from this schedule that should be resumed instead of spawning
+    # a new one?" so library scans can naturally span multiple nights.
+    parent_schedule_id: str = ""
 
     def __post_init__(self):
         if not self.created_at:
@@ -165,6 +172,7 @@ class Job:
             "config": self.config,
             "paused": self.paused,
             "priority": self.priority,
+            "parent_schedule_id": self.parent_schedule_id,
         }
 
 
@@ -185,22 +193,23 @@ class JobStorage:
     _SCHEMA_SQL = (
         """
         CREATE TABLE IF NOT EXISTS jobs (
-            id              TEXT PRIMARY KEY,
-            status          TEXT NOT NULL,
-            created_at      TEXT NOT NULL,
-            started_at      TEXT,
-            completed_at    TEXT,
-            library_id      TEXT,
-            library_name    TEXT,
-            server_id       TEXT,
-            server_name     TEXT,
-            server_type     TEXT,
-            priority        INTEGER NOT NULL DEFAULT 2,
-            paused          INTEGER NOT NULL DEFAULT 0,
-            error           TEXT,
-            progress_json   TEXT NOT NULL DEFAULT '{}',
-            config_json     TEXT NOT NULL DEFAULT '{}',
-            publishers_json TEXT NOT NULL DEFAULT '[]'
+            id                  TEXT PRIMARY KEY,
+            status              TEXT NOT NULL,
+            created_at          TEXT NOT NULL,
+            started_at          TEXT,
+            completed_at        TEXT,
+            library_id          TEXT,
+            library_name        TEXT,
+            server_id           TEXT,
+            server_name         TEXT,
+            server_type         TEXT,
+            priority            INTEGER NOT NULL DEFAULT 2,
+            paused              INTEGER NOT NULL DEFAULT 0,
+            error               TEXT,
+            progress_json       TEXT NOT NULL DEFAULT '{}',
+            config_json         TEXT NOT NULL DEFAULT '{}',
+            publishers_json     TEXT NOT NULL DEFAULT '[]',
+            parent_schedule_id  TEXT NOT NULL DEFAULT ''
         );
         """,
         "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
@@ -223,6 +232,26 @@ class JobStorage:
         self._lock = threading.RLock()
         for stmt in self._SCHEMA_SQL:
             self._conn.execute(stmt)
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """One-shot ALTER TABLE migrations for columns added after launch.
+
+        SQLite's ALTER TABLE ADD COLUMN is idempotent only via try/except
+        (no IF NOT EXISTS). Each statement is independently best-effort —
+        a duplicate-column OperationalError on ALTER just means the
+        column is already there from a prior run, and the index creation
+        is IF NOT EXISTS so it's safe to run on every startup.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN parent_schedule_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_parent_schedule_id ON jobs(parent_schedule_id)")
+            except sqlite3.OperationalError:
+                pass
 
     def upsert(self, job: "Job") -> None:
         d = job.to_dict()
@@ -232,8 +261,9 @@ class JobStorage:
                 INSERT INTO jobs (id, status, created_at, started_at, completed_at,
                                   library_id, library_name, server_id, server_name, server_type,
                                   priority, paused, error,
-                                  progress_json, config_json, publishers_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                  progress_json, config_json, publishers_json,
+                                  parent_schedule_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     status=excluded.status,
                     started_at=excluded.started_at,
@@ -248,7 +278,8 @@ class JobStorage:
                     error=excluded.error,
                     progress_json=excluded.progress_json,
                     config_json=excluded.config_json,
-                    publishers_json=excluded.publishers_json
+                    publishers_json=excluded.publishers_json,
+                    parent_schedule_id=excluded.parent_schedule_id
                 """,
                 (
                     d["id"],
@@ -267,6 +298,7 @@ class JobStorage:
                     json.dumps(d["progress"]),
                     json.dumps(d["config"]),
                     json.dumps(d["publishers"]),
+                    d.get("parent_schedule_id") or "",
                 ),
             )
 
@@ -310,6 +342,14 @@ class JobStorage:
                 return fallback
             return parsed
 
+        # parent_schedule_id was added post-launch via _migrate_schema;
+        # row.keys() may not include it on a fresh-built dataclass row
+        # in tests, so guard the access.
+        _psi = ""
+        try:
+            _psi = row["parent_schedule_id"] or ""
+        except (IndexError, KeyError):
+            pass
         return Job(
             id=row["id"],
             status=row["status"],
@@ -327,6 +367,7 @@ class JobStorage:
             progress=_safe_json(row["progress_json"], {}),
             config=_safe_json(row["config_json"], {}),
             publishers=_safe_json(row["publishers_json"], []),
+            parent_schedule_id=_psi,
         )
 
 
@@ -689,6 +730,7 @@ class JobManager:
         server_id: str | None = None,
         server_name: str | None = None,
         server_type: str | None = None,
+        parent_schedule_id: str = "",
     ) -> Job:
         """Create a new job.
 
@@ -700,6 +742,9 @@ class JobManager:
             server_id: Configured media-server id this job targets (optional).
             server_name: Display name of the targeted server (optional).
             server_type: Vendor type — "plex" / "emby" / "jellyfin".
+            parent_schedule_id: id of the schedule that spawned this job
+                (D20). Empty for manual / webhook-triggered jobs. Used
+                for pause-on-stop-time and resume-on-next-start lookups.
         """
         with self._lock:
             job = Job(
@@ -711,6 +756,7 @@ class JobManager:
                 server_type=server_type,
                 config=config or {},
                 priority=parse_priority(priority),
+                parent_schedule_id=parent_schedule_id or "",
             )
             self._jobs[job.id] = job
             self._persist_job(job)

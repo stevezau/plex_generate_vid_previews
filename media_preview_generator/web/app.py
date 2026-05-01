@@ -30,7 +30,14 @@ socketio = SocketIO()
 csrf = CSRFProtect()
 
 
-def run_scheduled_job(library_id=None, library_name="", config=None, priority=None, server_id=None):
+def run_scheduled_job(
+    library_id=None,
+    library_name="",
+    config=None,
+    priority=None,
+    server_id=None,
+    parent_schedule_id="",
+):
     """Callback for running scheduled jobs.
 
     Must be at module level (not inside create_app) so APScheduler
@@ -42,6 +49,10 @@ def run_scheduled_job(library_id=None, library_name="", config=None, priority=No
         config: Job configuration dict
         priority: Dispatch priority (1=high, 2=normal, 3=low)
         server_id: Optional configured-server id to pin the job to.
+        parent_schedule_id: id of the schedule that spawned this job
+            (D20). Threaded onto the Job so the schedule's stop_time
+            cron can later find this job to pause it, and the next
+            start tick can find it to resume it.
 
     """
     from .jobs import PRIORITY_NORMAL
@@ -71,6 +82,7 @@ def run_scheduled_job(library_id=None, library_name="", config=None, priority=No
         server_id=server_id,
         server_name=server_name,
         server_type=server_type,
+        parent_schedule_id=parent_schedule_id or "",
     )
 
     job_config = dict(config) if config else {}

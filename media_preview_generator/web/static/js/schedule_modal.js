@@ -24,6 +24,13 @@ function onScheduleTypeChange() {
     document.getElementById('scheduleFieldsTime').classList.toggle('d-none', selected !== 'specific-time');
     document.getElementById('scheduleFieldsInterval').classList.toggle('d-none', selected !== 'interval');
     document.getElementById('scheduleFieldsCron').classList.toggle('d-none', selected !== 'cron');
+    // D20 — stop_time only makes sense for time-of-day triggers.
+    // Hide the field for interval triggers so users aren't confused
+    // (and so the value gets cleared in saveSchedule).
+    const stopGroup = document.getElementById('scheduleStopTimeGroup');
+    if (stopGroup) {
+        stopGroup.classList.toggle('d-none', selected === 'interval');
+    }
 }
 
 function onScanModeChange() {
@@ -90,6 +97,10 @@ function _resetScheduleForm() {
 
     // Reset Cron Expression field
     document.getElementById('scheduleCronInput').value = '';
+
+    // D20 — clear the optional stop time
+    const stopInput = document.getElementById('scheduleStopTime');
+    if (stopInput) stopInput.value = '';
 }
 
 function showNewScheduleModal() {
@@ -119,6 +130,9 @@ function showEditScheduleModal(scheduleId) {
     document.getElementById('scheduleName').value = schedule.name || '';
     document.getElementById('scheduleEnabled').checked = schedule.enabled !== false;
     document.getElementById('schedulePriority').value = String(schedule.priority || 2);
+    // D20 — pre-fill optional stop time
+    const stopInput = document.getElementById('scheduleStopTime');
+    if (stopInput) stopInput.value = schedule.stop_time || '';
 
     // Phase H7: pre-select the multi-select library checkboxes from
     // schedule.library_ids (with single-element fallback for legacy entries).
@@ -272,6 +286,14 @@ async function saveSchedule() {
     const serverSelect = document.getElementById('scheduleServer');
     const serverId = serverSelect ? serverSelect.value : '';
 
+    // D20 — stop_time only applies to time-of-day triggers; for
+    // interval triggers we always send an empty string so the backend
+    // clears any pre-existing stop cron.
+    const stopInputEl = document.getElementById('scheduleStopTime');
+    const stopTimeValue = (scheduleType === 'interval')
+        ? ''
+        : (stopInputEl ? (stopInputEl.value || '') : '');
+
     const payload = {
         name: name,
         library_id: selectedLibraryIds.length === 1 ? selectedLibraryIds[0] : null,
@@ -281,6 +303,7 @@ async function saveSchedule() {
         enabled: document.getElementById('scheduleEnabled').checked,
         priority: parseInt(document.getElementById('schedulePriority').value, 10) || 2,
         config: scheduleConfig,
+        stop_time: stopTimeValue,
     };
 
     if (scheduleType === 'specific-time') {

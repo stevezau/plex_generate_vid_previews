@@ -18,6 +18,77 @@ from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
 
+def _parse_hhmm(value: str | None) -> tuple[int, int] | None:
+    """Parse an "HH:MM" string into ``(hour, minute)``.
+
+    Returns ``None`` when ``value`` is empty / None (caller treats this
+    as "no stop time configured"). Raises ``ValueError`` on a non-empty
+    but malformed input so the API layer can surface a 400 rather than
+    silently dropping a misconfiguration.
+    """
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    parts = raw.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"stop_time must be HH:MM, got {value!r}")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"stop_time must be HH:MM, got {value!r}") from exc
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        raise ValueError(f"stop_time out of range, got {value!r}")
+    return hour, minute
+
+
+def execute_schedule_stop(schedule_id: str) -> None:
+    """Module-level stop handler — pauses every running job spawned by ``schedule_id``.
+
+    Pickled by APScheduler's SQLAlchemy jobstore alongside the start
+    cron, so it must live at module scope. Looks up the JobManager
+    singleton, finds RUNNING jobs whose ``parent_schedule_id`` matches,
+    and calls ``request_pause`` on each. Cooperative — in-flight
+    FFmpeg processes finish their current task naturally.
+    """
+    from .jobs import JobStatus, get_job_manager
+
+    manager = get_schedule_manager()
+    schedule = manager.get_schedule(schedule_id) if manager else None
+    name = (schedule or {}).get("name", schedule_id)
+    stop_time = (schedule or {}).get("stop_time", "")
+
+    job_manager = get_job_manager()
+    paused_count = 0
+    for job in job_manager.get_all_jobs():
+        if job.parent_schedule_id != schedule_id:
+            continue
+        if job.status is not JobStatus.RUNNING or job.paused:
+            continue
+        if job_manager.request_pause(job.id):
+            job_manager.add_log(
+                job.id,
+                f"INFO - Paused by schedule {name!r} stop time ({stop_time})",
+            )
+            paused_count += 1
+
+    if paused_count:
+        logger.info(
+            "Schedule {!r} ({}): stop-time fired, paused {} running job(s)",
+            name,
+            schedule_id,
+            paused_count,
+        )
+    else:
+        logger.info(
+            "Schedule {!r} ({}): stop-time fired, no running jobs from this schedule to pause",
+            name,
+            schedule_id,
+        )
+
+
 # Module-level function for APScheduler to call
 # Must be at module level to be picklable
 def execute_scheduled_job(
@@ -78,6 +149,40 @@ def execute_scheduled_job(
     job_type = str(cfg.get("job_type", "full_library"))
     manager = get_schedule_manager()
 
+    # D20 — auto-resume an existing paused job from this same schedule
+    # instead of spawning a fresh one. Lets a multi-night library scan
+    # span across stop_time pauses with the same Job ID and progress.
+    # Only applies to full_library jobs; recently_added is a fast,
+    # idempotent scan that can re-run cheaply.
+    if job_type != "recently_added":
+        try:
+            from .jobs import JobStatus, get_job_manager
+
+            job_manager = get_job_manager()
+            for job in job_manager.get_all_jobs():
+                if job.parent_schedule_id != schedule_id:
+                    continue
+                if not job.paused or job.status is not JobStatus.RUNNING:
+                    continue
+                if job_manager.request_resume(job.id):
+                    job_manager.add_log(
+                        job.id,
+                        f"INFO - Resumed by schedule {schedule_id!r} start tick",
+                    )
+                    logger.info(
+                        "Schedule {}: resumed paused job {} instead of spawning a new one",
+                        schedule_id,
+                        job.id[:8],
+                    )
+                    manager._update_last_run(schedule_id)
+                    return
+        except Exception:
+            logger.exception(
+                "Could not check for resumable paused jobs for schedule {} — falling back "
+                "to spawning a new job (the previous paused one will need a manual resume).",
+                schedule_id,
+            )
+
     if job_type == "recently_added":
         try:
             lookback = float(cfg.get("lookback_hours", 1) or 1)
@@ -134,6 +239,7 @@ def execute_scheduled_job(
                 "library_id": primary_library_id,
                 "library_name": library_name,
                 "config": cfg,
+                "parent_schedule_id": schedule_id,
             }
             if priority is not None:
                 kwargs["priority"] = priority
@@ -346,6 +452,7 @@ class ScheduleManager:
         priority: int | None = None,
         server_id: str | None = None,
         library_ids: list[str] | None = None,
+        stop_time: str = "",
     ) -> dict:
         """Create a new schedule.
 
@@ -362,12 +469,21 @@ class ScheduleManager:
                 When set, jobs created by this schedule are pinned to that
                 server only — important when multiple servers share a
                 library name (e.g. both Plex and Emby have "Movies").
+            stop_time: Optional "HH:MM" container-local time (D20). When
+                set, registers a daily stop cron that pauses any RUNNING
+                job spawned by this schedule. The next start tick
+                resumes the paused job instead of spawning a new one,
+                so a multi-night library scan can span pauses with the
+                same Job ID. Empty / unset = no stop behaviour.
 
         Returns:
             Schedule metadata dict
 
         """
         schedule_id = str(uuid.uuid4())
+        # Validate stop_time up front so callers see the ValueError
+        # before any partial side-effects (jobstore add, json save).
+        stop_hm = _parse_hhmm(stop_time)
 
         # Create trigger
         if cron_expression:
@@ -378,6 +494,9 @@ class ScheduleManager:
             trigger = IntervalTrigger(minutes=interval_minutes)
             trigger_type = "interval"
             trigger_value = str(interval_minutes)
+            # stop_time only makes sense for time-of-day triggers.
+            stop_hm = None
+            stop_time = ""
         else:
             raise ValueError("Either cron_expression or interval_minutes must be provided")
 
@@ -404,6 +523,7 @@ class ScheduleManager:
             "last_run": None,
             "next_run": None,
             "priority": priority,
+            "stop_time": stop_time or "",
         }
 
         # Ensure scheduler is running
@@ -420,6 +540,8 @@ class ScheduleManager:
                 replace_existing=True,
             )
             schedule_meta["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
+            if stop_hm is not None:
+                self._register_stop_job(schedule_id, stop_hm)
 
         with self._lock:
             self._schedules[schedule_id] = schedule_meta
@@ -427,6 +549,28 @@ class ScheduleManager:
 
         logger.info("Created schedule '{}' (ID: {})", name, schedule_id)
         return schedule_meta
+
+    def _stop_job_id(self, schedule_id: str) -> str:
+        """APScheduler job id for the per-schedule stop-cron (D20)."""
+        return f"{schedule_id}__stop"
+
+    def _register_stop_job(self, schedule_id: str, stop_hm: tuple[int, int]) -> None:
+        """Add the daily stop-cron for ``schedule_id`` (D20)."""
+        hour, minute = stop_hm
+        self.scheduler.add_job(
+            execute_schedule_stop,
+            trigger=CronTrigger(hour=hour, minute=minute),
+            id=self._stop_job_id(schedule_id),
+            args=[schedule_id],
+            replace_existing=True,
+        )
+
+    def _remove_stop_job(self, schedule_id: str) -> None:
+        """Best-effort removal of the per-schedule stop-cron (D20)."""
+        try:
+            self.scheduler.remove_job(self._stop_job_id(schedule_id))
+        except Exception:
+            logger.debug("No stop-cron to remove for schedule {}", schedule_id)
 
     def update_schedule(
         self,
@@ -441,8 +585,13 @@ class ScheduleManager:
         priority: int | None = None,
         server_id: str | None = None,
         library_ids: list[str] | None = None,
+        stop_time: str | None = None,
     ) -> dict | None:
-        """Update an existing schedule."""
+        """Update an existing schedule.
+
+        ``stop_time``: pass an "HH:MM" string to set, "" to clear, or
+        ``None`` to leave unchanged. D20.
+        """
         with self._lock:
             if schedule_id not in self._schedules:
                 return None
@@ -473,6 +622,10 @@ class ScheduleManager:
         if server_id is not None:
             # Empty string means "clear the pin", null means "leave alone".
             schedule["server_id"] = server_id or None
+        if stop_time is not None:
+            # Validate before persisting; ValueError surfaces as a 400 in API.
+            _ = _parse_hhmm(stop_time)  # may raise
+            schedule["stop_time"] = stop_time or ""
 
         # Update trigger if changed
         if cron_expression is not None:
@@ -481,12 +634,19 @@ class ScheduleManager:
         elif interval_minutes is not None:
             schedule["trigger_type"] = "interval"
             schedule["trigger_value"] = str(interval_minutes)
+            # stop_time is meaningless for interval triggers — clear it
+            # automatically so a user changing trigger type doesn't end
+            # up with an orphan stop cron firing daily.
+            schedule["stop_time"] = ""
 
         # Remove existing job (may not exist if schedule was disabled)
         try:
             self.scheduler.remove_job(schedule_id)
         except Exception:
             logger.debug("No existing scheduler job to remove for {}", schedule_id)
+        # Always remove the stop-cron too; we'll re-register it below if
+        # the (possibly updated) stop_time still applies.
+        self._remove_stop_job(schedule_id)
 
         # Re-add job if enabled
         if schedule["enabled"]:
@@ -510,6 +670,9 @@ class ScheduleManager:
                 replace_existing=True,
             )
             schedule["next_run"] = job.next_run_time.isoformat() if job.next_run_time else None
+            stop_hm = _parse_hhmm(schedule.get("stop_time") or "")
+            if stop_hm is not None and schedule["trigger_type"] == "cron":
+                self._register_stop_job(schedule_id, stop_hm)
         else:
             schedule["next_run"] = None
 
@@ -528,6 +691,7 @@ class ScheduleManager:
                 self.scheduler.remove_job(schedule_id)
             except Exception:
                 logger.debug("No existing scheduler job to remove for {}", schedule_id)
+            self._remove_stop_job(schedule_id)
 
             del self._schedules[schedule_id]
             self._save_schedules()

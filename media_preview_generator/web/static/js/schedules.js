@@ -243,11 +243,18 @@ function updateScheduleList() {
             ? ' <span class="badge bg-primary bg-opacity-25 text-primary" title="Scans items added in the last ' + (cfg.lookback_hours || 1) + 'h"><i class="bi bi-arrow-repeat me-1"></i>Recently Added</span>'
             : '';
 
+        // D20 — show the optional stop-time inline next to the cron
+        // summary so users can see at a glance which schedules pause
+        // at a specific time of day.
+        const stopBadge = schedule.stop_time
+            ? ' <span class="badge bg-info text-dark" title="Pauses any running job from this schedule daily; resumes on next start">stops at ' + escapeHtml(schedule.stop_time) + '</span>'
+            : '';
+
         html += `
             <tr>
                 <td>${escapeHtml(schedule.name)}${typeBadge}</td>
                 <td>${escapeHtml(schedule.library_name) || 'All Libraries'}${_serverBadge(schedule)}</td>
-                <td><code>${escapeHtml(cronDisplay)}</code></td>
+                <td><code>${escapeHtml(cronDisplay)}</code>${stopBadge}</td>
                 <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
                 <td>${nextRun}</td>
                 <td>${statusBadge}</td>

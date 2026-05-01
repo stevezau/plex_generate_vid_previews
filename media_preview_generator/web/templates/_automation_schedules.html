@@ -211,6 +211,14 @@
                             </div>
                         </div>
                     </div>
+                    <div class="mb-3" id="scheduleStopTimeGroup">
+                        <label for="scheduleStopTime" class="form-label">Stop time (optional)</label>
+                        <input type="time" class="form-control" id="scheduleStopTime" value="">
+                        <div class="form-text">
+                            Pauses any running job from this schedule at this time of day. The next start tick resumes from where it stopped &mdash; no progress lost.
+                            Uses the container's local timezone. Leave blank to disable.
+                        </div>
+                    </div>
                     <div class="mb-3">
                         <label for="schedulePriority" class="form-label">Job Priority</label>
                         <select class="form-select" id="schedulePriority">

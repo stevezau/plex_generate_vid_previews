@@ -56,6 +56,7 @@ def create_schedule():
             enabled=data.get("enabled", True),
             priority=data.get("priority"),
             server_id=data.get("server_id") or None,
+            stop_time=str(data.get("stop_time") or "").strip(),
         )
         return jsonify(schedule), 201
     except ValueError as e:
@@ -88,7 +89,9 @@ def update_schedule(schedule_id):
 
     schedule_manager = get_schedule_manager()
     try:
-        schedule = schedule_manager.update_schedule(
+        # stop_time: pass through only when the client included the
+        # field (None = leave alone; "" = clear; "HH:MM" = set).
+        update_kwargs = dict(
             schedule_id=schedule_id,
             name=data.get("name"),
             cron_expression=data.get("cron_expression"),
@@ -101,6 +104,9 @@ def update_schedule(schedule_id):
             priority=data.get("priority"),
             server_id=data.get("server_id"),
         )
+        if "stop_time" in data:
+            update_kwargs["stop_time"] = str(data.get("stop_time") or "").strip()
+        schedule = schedule_manager.update_schedule(**update_kwargs)
     except ValueError as e:
         # APScheduler's CronTrigger.from_crontab raises ValueError on malformed
         # input. Surface a friendly 400 instead of the generic 500 the

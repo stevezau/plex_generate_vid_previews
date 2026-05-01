@@ -209,6 +209,180 @@ class TestScheduleCRUD:
 
 
 # ========================================================================
+# Per-schedule stop_time (D20)
+# ========================================================================
+
+
+class TestScheduleStopTime:
+    """D20 — optional stop_time pauses jobs at a daily time-of-day."""
+
+    def test_create_with_stop_time_registers_stop_cron(self, scheduler_manager):
+        """create_schedule with stop_time MUST register both the start and
+        the {id}__stop APScheduler jobs so the daily pause actually fires."""
+        schedule = scheduler_manager.create_schedule(
+            name="Overnight",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 1 * * *",
+            stop_time="06:00",
+        )
+        sid = schedule["id"]
+        assert schedule["stop_time"] == "06:00"
+
+        all_ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert sid in all_ids
+        assert f"{sid}__stop" in all_ids
+
+    def test_create_without_stop_time_only_registers_start_cron(self, scheduler_manager):
+        schedule = scheduler_manager.create_schedule(
+            name="Plain",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 1 * * *",
+        )
+        sid = schedule["id"]
+        all_ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert sid in all_ids
+        assert f"{sid}__stop" not in all_ids
+        assert schedule.get("stop_time", "") == ""
+
+    def test_update_clearing_stop_time_removes_stop_cron(self, scheduler_manager):
+        schedule = scheduler_manager.create_schedule(
+            name="Overnight",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 1 * * *",
+            stop_time="06:00",
+        )
+        sid = schedule["id"]
+        assert f"{sid}__stop" in {j.id for j in scheduler_manager.scheduler.get_jobs()}
+
+        scheduler_manager.update_schedule(schedule_id=sid, stop_time="")
+        ids_after = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert f"{sid}__stop" not in ids_after
+        assert scheduler_manager.get_schedule(sid)["stop_time"] == ""
+
+    def test_update_setting_stop_time_adds_stop_cron(self, scheduler_manager):
+        schedule = scheduler_manager.create_schedule(
+            name="Overnight",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 1 * * *",
+        )
+        sid = schedule["id"]
+        scheduler_manager.update_schedule(schedule_id=sid, stop_time="06:00")
+        all_ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert f"{sid}__stop" in all_ids
+        assert scheduler_manager.get_schedule(sid)["stop_time"] == "06:00"
+
+    def test_delete_removes_stop_cron(self, scheduler_manager):
+        schedule = scheduler_manager.create_schedule(
+            name="Overnight",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 1 * * *",
+            stop_time="06:00",
+        )
+        sid = schedule["id"]
+        scheduler_manager.delete_schedule(sid)
+        ids_after = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert sid not in ids_after
+        assert f"{sid}__stop" not in ids_after
+
+    def test_interval_trigger_silently_drops_stop_time(self, scheduler_manager):
+        """stop_time is meaningless for interval triggers (every X minutes
+        has no time-of-day to stop at). create_schedule clears it
+        automatically rather than rejecting the request."""
+        schedule = scheduler_manager.create_schedule(
+            name="Periodic",
+            library_id="1",
+            library_name="Movies",
+            interval_minutes=30,
+            stop_time="06:00",
+        )
+        assert schedule.get("stop_time", "") == ""
+        sid = schedule["id"]
+        assert f"{sid}__stop" not in {j.id for j in scheduler_manager.scheduler.get_jobs()}
+
+    def test_invalid_stop_time_raises(self, scheduler_manager):
+        with pytest.raises(ValueError):
+            scheduler_manager.create_schedule(
+                name="Bad",
+                library_id="1",
+                library_name="Movies",
+                cron_expression="0 1 * * *",
+                stop_time="25:99",
+            )
+
+    def test_parse_hhmm_helper_edge_cases(self):
+        from media_preview_generator.web.scheduler import _parse_hhmm
+
+        assert _parse_hhmm("") is None
+        assert _parse_hhmm(None) is None
+        assert _parse_hhmm("06:00") == (6, 0)
+        assert _parse_hhmm("23:59") == (23, 59)
+        assert _parse_hhmm("0:0") == (0, 0)
+        with pytest.raises(ValueError):
+            _parse_hhmm("24:00")
+        with pytest.raises(ValueError):
+            _parse_hhmm("12:60")
+        with pytest.raises(ValueError):
+            _parse_hhmm("abc")
+        with pytest.raises(ValueError):
+            _parse_hhmm("12")
+
+
+class TestExecuteScheduleStop:
+    """D20 — the stop handler pauses the right jobs and ignores others."""
+
+    def test_pauses_only_jobs_from_this_schedule(self, scheduler_manager, monkeypatch):
+        from media_preview_generator.web import scheduler as sched_mod
+        from media_preview_generator.web.jobs import JobStatus
+
+        # Build a fake JobManager whose get_all_jobs returns three jobs:
+        # one running from this schedule, one running from a sibling
+        # schedule, one already paused. Only the first should be paused.
+        sid = "sched-A"
+        other_sid = "sched-B"
+
+        target_job = MagicMock(
+            id="job-1",
+            parent_schedule_id=sid,
+            status=JobStatus.RUNNING,
+            paused=False,
+        )
+        sibling_job = MagicMock(
+            id="job-2",
+            parent_schedule_id=other_sid,
+            status=JobStatus.RUNNING,
+            paused=False,
+        )
+        already_paused = MagicMock(
+            id="job-3",
+            parent_schedule_id=sid,
+            status=JobStatus.RUNNING,
+            paused=True,
+        )
+
+        fake_jm = MagicMock()
+        fake_jm.get_all_jobs.return_value = [target_job, sibling_job, already_paused]
+        fake_jm.request_pause.return_value = True
+        monkeypatch.setattr(
+            "media_preview_generator.web.jobs.get_job_manager",
+            lambda: fake_jm,
+        )
+        scheduler_manager._schedules[sid] = {"id": sid, "name": "Overnight", "stop_time": "06:00"}
+        monkeypatch.setattr(sched_mod, "_schedule_manager", scheduler_manager)
+
+        sched_mod.execute_schedule_stop(sid)
+
+        fake_jm.request_pause.assert_called_once_with("job-1")
+        # Sibling-schedule and already-paused jobs MUST NOT be touched.
+        assert all(call.args[0] != "job-2" for call in fake_jm.request_pause.call_args_list)
+        assert all(call.args[0] != "job-3" for call in fake_jm.request_pause.call_args_list)
+
+
+# ========================================================================
 # Enable / Disable
 # ========================================================================
 
@@ -278,7 +452,15 @@ class TestScheduleRunNow:
         result = scheduler_manager.run_now(schedule["id"])
 
         assert result is True
-        mock_callback.assert_called_once_with(library_id="123", library_name="Movies", config={})
+        # D20 — every scheduled callback now carries parent_schedule_id so
+        # the spawned Job can later be paused by the schedule's stop_time
+        # cron and resumed by the next start tick.
+        mock_callback.assert_called_once_with(
+            library_id="123",
+            library_name="Movies",
+            config={},
+            parent_schedule_id=schedule["id"],
+        )
 
     def test_run_now_nonexistent(self, scheduler_manager):
         """Test that run_now on a nonexistent schedule returns False."""

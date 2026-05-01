@@ -585,6 +585,30 @@ class TestPublishersAttribution:
         assert names == {"Plex Home", "Emby"}
 
 
+class TestParentScheduleId:
+    """D20 — Jobs spawned by a schedule carry parent_schedule_id so the
+    schedule's stop cron can later find them to pause, and the next
+    start tick can resume them instead of spawning a fresh job."""
+
+    def test_create_job_persists_parent_schedule_id(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Movies", parent_schedule_id="sched-xyz")
+        assert job.parent_schedule_id == "sched-xyz"
+        # Disk round-trip via fresh manager
+        jm2 = JobManager(config_dir=config_dir)
+        revived = jm2.get_job(job.id)
+        assert revived is not None
+        assert revived.parent_schedule_id == "sched-xyz"
+
+    def test_create_job_defaults_parent_schedule_id_to_empty(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Movies")
+        assert job.parent_schedule_id == ""
+        assert job.to_dict()["parent_schedule_id"] == ""
+
+
 class TestJobUnknownFieldTolerance:
     """Phase H Fix-5: jobs.json with future / removed fields must still load.
 
