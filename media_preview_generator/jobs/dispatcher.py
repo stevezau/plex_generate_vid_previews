@@ -76,14 +76,6 @@ class JobTracker:
         self.failed = 0
         self.cancelled = False
         self.outcome_counts: dict[str, int] = {r.value: 0 for r in ProcessingResult}
-        # D7 — accumulate publisher results across this job's items so the
-        # dashboard "where did it land?" chips show the full target-server
-        # set (e.g. [Plex] [Emby] for a fan-out job). Keyed by server_id;
-        # latest status per server wins (so a final PUBLISHED supersedes an
-        # earlier SKIPPED on the same server). Each entry is the dict shape
-        # JobManager.set_job_publishers expects, NOT the dataclass — keeps
-        # the dispatcher decoupled from the persistence layer.
-        self.publishers_by_server: dict[str, dict] = {}
         self.done_event = threading.Event()
 
         cbs = callbacks or {}
@@ -178,9 +170,6 @@ class JobTracker:
             "total": self.total_items,
             "cancelled": self.cancelled,
             "outcome": dict(self.outcome_counts),
-            # D7 — list shape so callers can iterate and pass straight to
-            # JobManager.set_job_publishers without reshaping.
-            "publishers": list(self.publishers_by_server.values()),
         }
 
 
@@ -405,17 +394,23 @@ class JobDispatcher:
         for key, count in delta.items():
             if count > 0 and key in tracker.outcome_counts:
                 tracker.outcome_counts[key] += count
-        # D7 — accumulate the per-server publisher set so the dashboard's
-        # source/target chip story shows a per-server result for each
-        # configured server the file fanned out to. Latest status per
-        # server_id wins (a successful PUBLISHED on attempt N supersedes a
-        # SKIPPED on attempt N-1) so the chip set converges on the final
-        # truth as the job runs.
-        for entry in worker.last_publishers or []:
-            sid = entry.get("server_id") or ""
-            if not sid:
-                continue
-            tracker.publishers_by_server[sid] = entry
+        # D7 — record per-file publisher rows directly so the Job-Details
+        # modal can group by canonical_path (each file gets its own
+        # section). The original D7 attempt deduped by server_id at the
+        # tracker level, which gave the dashboard chip the right set but
+        # collapsed every file's result into one row per server — losing
+        # the per-file granularity the modal needs.
+        if worker.last_publishers:
+            try:
+                from ..web.jobs import get_job_manager
+
+                get_job_manager().append_publishers(tracker.job_id, list(worker.last_publishers))
+            except Exception as exc:
+                logger.debug(
+                    "Could not append publisher rows for job {}: {}",
+                    tracker.job_id,
+                    exc,
+                )
 
     def _assign_tasks(self) -> None:
         """Assign items from active jobs to available workers."""

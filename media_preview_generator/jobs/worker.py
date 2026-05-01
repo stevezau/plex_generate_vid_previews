@@ -443,6 +443,11 @@ class Worker:
                             "status": getattr(p.status, "value", str(p.status)),
                             "message": p.message or "",
                             "frame_source": p.frame_source or "extracted",
+                            # canonical_path lets the Job-Details Publishers
+                            # block group rows by file (each file gets its
+                            # own section). Without it the modal renders
+                            # every server entry under "(unknown path)".
+                            "canonical_path": item.canonical_path,
                         }
                     )
                 self.last_publishers = rows

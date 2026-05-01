@@ -488,6 +488,49 @@
         if (e.key === 'Enter') $('loadPathBtn').click();
     });
 
+    // D11 — preload from a deep-link query param. The Files panel on
+    // the dashboard adds a shortcut button per row that links here as
+    // /bif-viewer?file=<media_path>. We pre-fill the search box with
+    // the file's basename and trigger the search so the user lands one
+    // click away from "view this file's BIF".
+    (function _preloadFromDeepLink() {
+        try {
+            const params = new URLSearchParams(window.location.search);
+            const file = (params.get('file') || '').trim();
+            if (!file) return;
+            // Strip directory and extension — Plex's /hubs/search matches
+            // by display title, not on-disk filename, and a full path or
+            // ".mkv" suffix tanks the match rate.
+            const basename = file.split('/').pop() || file;
+            const stem = basename.replace(/\.[a-z0-9]{1,5}$/i, '');
+            // Drop release-tag noise (Bluray-2160p, WEBDL-1080p, codec
+            // brackets, group suffix) so the title-search has a fighting
+            // chance against Plex's title-only index.
+            const cleaned = stem
+                .replace(/\s*\[[^\]]*\]/g, '')                  // [imdb-tt..], [Bluray-2160p], etc.
+                .replace(/\s+-\s+(WEBDL|HDTV|Bluray|BluRay|REMUX|DVDRip)[^-\s]*/i, '') // - WEBDL-1080p
+                .replace(/\s+-\s+[A-Z][a-z]*\d+/g, '')          // - GroupName123
+                .trim();
+            const search = cleaned || stem || basename;
+            const input = $('searchInput');
+            if (!input) return;
+            input.value = search;
+            // Wait until loadServers populates the dropdown (one tick is
+            // usually enough; the search button is disabled until the
+            // dropdown has a value).
+            const tryFire = () => {
+                if ($('searchBtn').disabled) {
+                    setTimeout(tryFire, 100);
+                    return;
+                }
+                doSearch();
+            };
+            setTimeout(tryFire, 100);
+        } catch (e) {
+            console.debug('Preview Inspector deep-link preload skipped:', e);
+        }
+    })();
+
     $('frameSlider').addEventListener('input', e => {
         setFrame(parseInt(e.target.value));
     });

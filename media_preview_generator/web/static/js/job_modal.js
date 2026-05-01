@@ -545,10 +545,21 @@ function renderFileResultsTable(files) {
         // landed on. For single-server installs it's one pill; for
         // multi-server fan-out it's one per target.
         var serversHtml = _renderFileServerPills(f.servers || []);
+        // D11 \u2014 for files that have a BIF on disk (generated this run
+        // OR already existed), show a shortcut to /bif-viewer pre-loaded
+        // with this file. Skipped/failed-with-no-output files don't get
+        // the shortcut \u2014 there'd be nothing to preview.
+        var inspectorBtn = '';
+        if (fileName && (f.outcome === 'generated' || f.outcome === 'skipped_bif_exists')) {
+            var encodedFile = encodeURIComponent(fileName);
+            inspectorBtn = ' <a href="/bif-viewer?file=' + encodedFile
+                + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"'
+                + ' title="Open in Preview Inspector"><i class="bi bi-eye"></i></a>';
+        }
 
         html += '<tr>'
             + '<td class="text-truncate" style="max-width: 400px;" title="' + escapeHtml(fileName) + '">'
-            + '<small>' + escapeHtml(shortName) + '</small></td>'
+            + '<small>' + escapeHtml(shortName) + '</small>' + inspectorBtn + '</td>'
             + '<td><span class="badge ' + meta.badge + '">' + meta.label + '</span></td>'
             + '<td>' + serversHtml + '</td>'
             + '<td><small class="text-muted" title="' + reason + '">' + reason + '</small></td>'
