@@ -683,8 +683,6 @@ def get_job_file_results(job_id):
         page: 1-based page number (default 1).
         per_page: Results per page (default 100, max 500).
     """
-    import math
-
     job_manager = get_job_manager()
     job = job_manager.get_job(job_id)
     if not job:

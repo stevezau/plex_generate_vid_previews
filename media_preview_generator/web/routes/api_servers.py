@@ -392,8 +392,6 @@ def get_path_owners():
     Query params:
         path: Absolute local file path to test ownership for. Required.
     """
-    from flask import request
-
     from ...utils import sanitize_path
 
     raw_path = (request.args.get("path") or "").strip()
