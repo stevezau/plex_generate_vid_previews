@@ -1298,10 +1298,18 @@ class WorkerPool:
                 actual_processed = actual_completed + actual_failed
 
                 if actual_processed >= total_items:
+                    # Drain in-flight workers before declaring the run
+                    # complete. The original cap (20 × 1ms = 20ms total)
+                    # was too tight for even sub-second cache-hit tasks
+                    # — the last-task-assigned-on-empty-tick boundary
+                    # could under-report by the in-flight tasks. Bump
+                    # to 2s of polling at 5ms intervals (400 iterations)
+                    # which is still fast on cache hits and actually
+                    # gives FFmpeg-heavy tasks time to finish.
                     busy_retries = 0
-                    max_busy_retries = 20
+                    max_busy_retries = 400
                     while self.has_busy_workers() and busy_retries < max_busy_retries:
-                        time.sleep(0.001)
+                        time.sleep(0.005)
                         _handle_completions(self._snapshot_workers())
                         self._apply_deferred_removals()
                         busy_retries += 1

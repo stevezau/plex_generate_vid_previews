@@ -400,9 +400,10 @@ def webhook_incoming():
     source.
     """
     kind, payload, parse_error = _classify_payload(request)
-    # Single line capturing the classification — useful for "what came
-    # in?" debugging without enabling DEBUG-level logs in production.
-    logger.info(
+    # Per-request classification at DEBUG only — the routing-decision line
+    # below at INFO is the actionable one. A high-volume Plex install
+    # would otherwise emit one INFO per webhook fire just for arrival.
+    logger.debug(
         "Webhook arrived: kind={} remote={} content_type={} content_length={}",
         kind,
         request.remote_addr,
