@@ -156,22 +156,54 @@ media_preview_generator/
 ├── config/               # Config dataclass, paths, validation
 ├── gpu/                  # GPU discovery + FFmpeg capability probing
 ├── jobs/                 # Orchestrator, dispatcher, worker pool
-├── processing/           # FFmpeg runner, HDR detection, retry cascade
-├── plex_client.py        # Plex API client
+├── processing/           # Multi-server dispatcher, FFmpeg runner, HDR
+│   ├── multi_server.py     # Path → publishers fan-out (one FFmpeg pass)
+│   ├── frame_cache.py      # Cross-server frame reuse cache
+│   ├── retry_queue.py      # Slow-backoff retry for not-yet-indexed items
+│   ├── plex.py / emby.py / jellyfin.py  # Per-vendor enumeration
+│   └── generator.py / ffmpeg_runner.py  # FFmpeg invocation
+├── servers/              # Per-vendor server clients
+│   ├── plex.py / emby.py / jellyfin.py  # Live MediaServer adapters
+│   ├── ownership.py        # Path → owning servers/libraries
+│   └── registry.py         # ServerRegistry (loads media_servers[] from settings)
+├── output/               # Per-vendor preview format publishers
+│   ├── plex_bundle.py      # Plex bundle BIF
+│   ├── emby_sidecar.py     # Emby -WIDTH-INTERVAL.bif sidecar
+│   ├── jellyfin_trickplay.py  # Jellyfin tile sheets + manifest
+│   └── journal.py          # .meta sidecar — fingerprints last publish
+├── plex_client.py        # Legacy Plex API client (still used by Plex enum)
 ├── bif_reader.py         # BIF parsing (used by the viewer)
-├── upgrade.py            # Settings migrations / schema upgrades
-├── utils.py              # Path sanitization, Docker detection
+├── upgrade.py            # Settings migrations / schema upgrades (v1 → v11)
+├── utils.py              # Path sanitization, Docker detection, atomic save
 ├── logging_config.py     # Loguru + Rich console setup
 ├── version_check.py      # GitHub release version check
 └── web/
     ├── wsgi.py              # Gunicorn entry point
     ├── app.py               # App factory, SocketIO init
     ├── auth.py              # Token authentication
-    ├── jobs.py              # Job state + SocketIO events
+    ├── jobs.py              # Job state + SQLite persistence + SocketIO
     ├── settings_manager.py  # Persistent settings (settings.json)
     ├── scheduler.py         # APScheduler cron/interval jobs
-    ├── webhooks.py          # Radarr/Sonarr/Tdarr/Plex webhook handlers
-    └── routes/              # Modular HTTP + REST API routes
+    ├── webhooks.py          # Radarr/Sonarr/Plex/custom webhook handlers
+    ├── webhook_router.py    # Universal /api/webhooks/incoming dispatcher
+    ├── plex_webhook_registration.py  # plex.tv webhook register/unregister
+    ├── recent_added_scanner.py  # Periodic recently-added scan helper
+    ├── notifications.py     # In-app notification surface
+    └── routes/              # Modular HTTP + REST API blueprints
+        ├── api_settings.py     # Settings GET/POST + path validators
+        ├── api_servers.py      # media_servers CRUD + per-vendor probes
+        ├── api_server_auth.py  # Emby/Jellyfin password + Quick Connect
+        ├── api_jobs.py         # Job CRUD + worker scaling
+        ├── api_schedules.py    # Schedule CRUD
+        ├── api_system.py       # /system/status, browse, log history
+        ├── api_libraries.py    # Aggregated library list across servers
+        ├── api_plex.py         # Plex OAuth PIN flow
+        ├── api_plex_webhook.py # Plex Direct webhook register/test
+        ├── api_bif.py          # BIF + Jellyfin trickplay viewer
+        ├── api_vulkan.py       # Vulkan ICD probing diagnostics
+        ├── job_runner.py       # Background job execution thread
+        ├── pages.py            # HTML page routes
+        └── socketio_handlers.py  # Socket.IO connect/disconnect
 ```
 
 ---
