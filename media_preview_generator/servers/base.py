@@ -160,6 +160,35 @@ class MediaServer(ABC):
         Implementations may stream results; callers are expected to iterate.
         """
 
+    def search_items(self, query: str, limit: int = 50) -> list[MediaItem]:
+        """Return up to ``limit`` items whose title contains ``query``.
+
+        The default implementation walks every library and every item via
+        :meth:`list_items`, filtering client-side. That's correct but
+        catastrophically slow for large libraries (D4 — Preview Inspector
+        search took 13 seconds against a 119k-item Plex install).
+        Concrete subclasses MUST override to use the vendor's native
+        search API:
+
+          * Plex: ``/hubs/search?query=…``
+          * Emby/Jellyfin: ``/Items?searchTerm=…&Recursive=true``
+
+        The default is kept as a safety net so the API endpoint never
+        crashes on a vendor that hasn't been overridden yet — but the
+        per-vendor override is the actual correctness fix.
+        """
+        results: list[MediaItem] = []
+        needle = (query or "").strip().lower()
+        if not needle:
+            return results
+        for library in self.list_libraries():
+            for item in self.list_items(library.id):
+                if needle in (item.title or "").lower():
+                    results.append(item)
+                    if len(results) >= limit:
+                        return results
+        return results
+
     @abstractmethod
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         """Return the server-side absolute path for ``item_id`` or ``None``.

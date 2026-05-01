@@ -260,6 +260,47 @@ class EmbyApiClient(MediaServer):
                 remote_path=path,
             )
 
+    def search_items(self, query: str, limit: int = 50) -> list[MediaItem]:
+        """Search via ``/Items?searchTerm=…&Recursive=true`` (server-side index).
+
+        Both Emby and Jellyfin expose ``searchTerm`` on the ``/Items``
+        endpoint; the server filters and returns only matches in one
+        round-trip. The base-class default would walk every library and
+        every item — D4 fix on Plex side; same brute-force walk hits
+        Emby/Jellyfin equally hard on big installs.
+        """
+        needle = (query or "").strip()
+        if not needle:
+            return []
+        params = {
+            "searchTerm": needle,
+            "IncludeItemTypes": "Movie,Episode",
+            "Recursive": "true",
+            "Fields": "Path",
+            "Limit": str(int(limit)),
+        }
+        raw_items = self.query_items(params)
+        results: list[MediaItem] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            path = str(raw.get("Path") or "")
+            if not path:
+                # Series/season-level matches don't carry a file path; skip
+                # so the inspector list never shows un-clickable rows.
+                continue
+            results.append(
+                MediaItem(
+                    id=str(raw.get("Id") or ""),
+                    library_id=str(raw.get("ParentId") or ""),
+                    title=_format_emby_title(raw),
+                    remote_path=path,
+                )
+            )
+            if len(results) >= limit:
+                break
+        return results
+
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         """Return ``MediaSources[0].Path`` (or top-level ``Path``) for ``item_id``.
 

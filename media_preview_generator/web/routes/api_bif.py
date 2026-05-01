@@ -631,21 +631,17 @@ def bif_servers_search(server_id: str):
 
     results: list[dict] = []
     try:
-        # Per-vendor item enumeration. For all three the MediaServer
-        # interface offers list_items per library; we walk each enabled
-        # library and apply the search filter ourselves. This is uniform
-        # across vendors without needing per-vendor search endpoints.
-        for library in server.list_libraries():
-            if not library.enabled and not any(lib.id == library.id for lib in (server_cfg.libraries or [])):
-                continue
-            for item in server.list_items(library.id):
-                if len(results) >= _MAX_SEARCH_RESULTS:
-                    break
-                if query.lower() not in (item.title or "").lower():
-                    continue
-                results.append(_resolve_preview_for_item(item, server_cfg))
+        # Use the vendor's native search API via MediaServer.search_items.
+        # Pre-fix this loop walked every library and every item client-side
+        # (D4 — 13.6s for a single-word query against a 119k-item Plex
+        # install). Each vendor adapter overrides search_items to use its
+        # own server-side index — Plex /hubs/search via library.search(),
+        # Emby/Jellyfin /Items?searchTerm=…
+        items = server.search_items(query, limit=_MAX_SEARCH_RESULTS)
+        for item in items:
             if len(results) >= _MAX_SEARCH_RESULTS:
                 break
+            results.append(_resolve_preview_for_item(item, server_cfg))
     except Exception as exc:
         logger.warning(
             "BIF Viewer: search on media server {!r} failed ({}: {}). "

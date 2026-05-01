@@ -151,6 +151,58 @@ class TestMediaServerABC:
         s.trigger_refresh(item_id=None, remote_path="/m/foo.mkv")  # no-op
 
 
+class TestSearchItemsDefault:
+    """D4 — base class search_items default falls back to a brute-force walk.
+
+    The override on each vendor (Plex via library.search(), Emby/Jellyfin
+    via /Items?searchTerm=) is what's actually used in production; the
+    default is only the safety net for any vendor adapter that hasn't
+    been overridden yet.
+    """
+
+    def test_empty_query_returns_empty(self):
+        s = _FakeServer()
+        assert s.search_items("") == []
+        assert s.search_items("   ") == []
+
+    def test_walks_libraries_and_items_filtering_substring(self):
+        class _MultiItem(_FakeServer):
+            def list_libraries(self) -> list[Library]:
+                return [Library(id="1", name="Movies", remote_paths=("/m",))]
+
+            def list_items(self, library_id: str) -> Iterator[MediaItem]:
+                titles = ["Inception", "The Matrix", "Interstellar"]
+                for i, t in enumerate(titles):
+                    yield MediaItem(id=str(i), library_id=library_id, title=t, remote_path=f"/m/{t}.mkv")
+
+        s = _MultiItem()
+        results = s.search_items("inter")
+        assert len(results) == 1 and results[0].title == "Interstellar"
+
+    def test_respects_limit(self):
+        class _ManyItems(_FakeServer):
+            def list_libraries(self) -> list[Library]:
+                return [Library(id="1", name="Movies", remote_paths=("/m",))]
+
+            def list_items(self, library_id: str) -> Iterator[MediaItem]:
+                for i in range(20):
+                    yield MediaItem(id=str(i), library_id=library_id, title=f"Movie {i}", remote_path=f"/m/{i}.mkv")
+
+        s = _ManyItems()
+        assert len(s.search_items("Movie", limit=5)) == 5
+
+    def test_case_insensitive(self):
+        class _Mixed(_FakeServer):
+            def list_libraries(self) -> list[Library]:
+                return [Library(id="1", name="Movies", remote_paths=("/m",))]
+
+            def list_items(self, library_id: str) -> Iterator[MediaItem]:
+                yield MediaItem(id="1", library_id=library_id, title="The MATRIX", remote_path="/m/m.mkv")
+
+        s = _Mixed()
+        assert len(s.search_items("matrix")) == 1
+
+
 class _FakeAdapter(OutputAdapter):
     @property
     def name(self) -> str:

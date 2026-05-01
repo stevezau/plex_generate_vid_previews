@@ -348,6 +348,67 @@ class PlexServer(MediaServer):
                 exc,
             )
 
+    def search_items(self, query: str, limit: int = 50) -> list[MediaItem]:
+        """Search Plex via ``library.search()`` (server-side index lookup).
+
+        Plex's native search API returns matches across all sections in a
+        single round-trip. The base-class default would walk every item in
+        every library — D4 measured 13.6s for a single-word query against
+        a 119k-item Plex; this override drops that to <1s by letting Plex
+        do the filtering itself.
+        """
+        from ..plex_client import _build_episode_title, _extract_item_locations, retry_plex_call
+
+        needle = (query or "").strip()
+        if not needle:
+            return []
+        plex = self._connect()
+        try:
+            raw_results = retry_plex_call(plex.library.search, title=needle, limit=limit)
+        except Exception as exc:
+            logger.warning(
+                "Plex search for {!r} failed ({}: {}). Verify Plex is reachable; falling back to "
+                "no-results so the inspector page renders an empty list rather than spinning.",
+                needle,
+                type(exc).__name__,
+                exc,
+            )
+            return []
+
+        items: list[MediaItem] = []
+        for m in raw_results or []:
+            if len(items) >= limit:
+                break
+            try:
+                locations = _extract_item_locations(m)
+            except Exception:
+                locations = []
+            if not locations:
+                # Plex may return parent-level matches (a Show row whose
+                # individual Episodes carry the file paths) — skip those
+                # since the inspector needs an actual media file to load
+                # the BIF.
+                continue
+            try:
+                metadata_type = getattr(m, "METADATA_TYPE", "") or getattr(m, "type", "")
+                if metadata_type == "episode":
+                    title = _build_episode_title(m)
+                else:
+                    title = getattr(m, "title", "") or ""
+                items.append(
+                    MediaItem(
+                        id=_plex_item_id(m),
+                        title=title,
+                        type=metadata_type or "",
+                        remote_path=locations[0] if locations else "",
+                        library_id=str(getattr(m, "librarySectionID", "") or ""),
+                    )
+                )
+            except Exception as exc:
+                logger.debug("Skipping Plex search hit due to projection error: {}", exc)
+                continue
+        return items
+
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         """Return ``item.media[0].parts[0].file`` for ``item_id``, else ``None``.
 
