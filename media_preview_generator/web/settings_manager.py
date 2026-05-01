@@ -244,8 +244,8 @@ class SettingsManager:
 
     def apply_changes(
         self,
-        updates: dict[str, Any] = None,
-        deletes: list[str] = None,
+        updates: dict[str, Any] | None = None,
+        deletes: list[str] | None = None,
     ) -> None:
         """Apply a batch of updates and deletions atomically.
 
