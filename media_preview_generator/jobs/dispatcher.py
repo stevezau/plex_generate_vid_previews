@@ -76,6 +76,12 @@ class JobTracker:
         self.failed = 0
         self.cancelled = False
         self.outcome_counts: dict[str, int] = {r.value: 0 for r in ProcessingResult}
+        # D12 — per-server aggregate (one entry per server_id) so the Job
+        # views render a fixed-size summary regardless of file count.
+        # Per-file × per-server detail lives in the Files-panel JSONL via
+        # record_file_result; duplicating it on the Job row caused the
+        # Active Jobs and History sections to grow unbounded on big runs.
+        self.publishers_aggregate: dict[str, dict] = {}
         self.done_event = threading.Event()
 
         cbs = callbacks or {}
@@ -394,20 +400,45 @@ class JobDispatcher:
         for key, count in delta.items():
             if count > 0 and key in tracker.outcome_counts:
                 tracker.outcome_counts[key] += count
-        # D7 — record per-file publisher rows directly so the Job-Details
-        # modal can group by canonical_path (each file gets its own
-        # section). The original D7 attempt deduped by server_id at the
-        # tracker level, which gave the dashboard chip the right set but
-        # collapsed every file's result into one row per server — losing
-        # the per-file granularity the modal needs.
+        # D12 — fold this task's per-server publisher rows into the
+        # tracker's per-server aggregate (server_id → status counts) and
+        # mirror that fixed-size summary onto the Job. The earlier D7
+        # design appended one publisher row per (file × server), which
+        # made job.publishers grow O(files × servers) — a 500-file
+        # library run blew up the Active Jobs and History sections to
+        # hundreds of rows. The per-file × per-server detail still lives
+        # in the Files-panel JSONL (record_file_result `servers` field).
         if worker.last_publishers:
+            for row in worker.last_publishers:
+                server_id = row.get("server_id") or ""
+                if not server_id:
+                    continue
+                entry = tracker.publishers_aggregate.get(server_id)
+                if entry is None:
+                    entry = {
+                        "server_id": server_id,
+                        "server_name": row.get("server_name") or "",
+                        "server_type": (row.get("server_type") or "").lower(),
+                        "counts": {},
+                    }
+                    tracker.publishers_aggregate[server_id] = entry
+                else:
+                    if not entry.get("server_name") and row.get("server_name"):
+                        entry["server_name"] = row["server_name"]
+                    if not entry.get("server_type") and row.get("server_type"):
+                        entry["server_type"] = row["server_type"].lower()
+                status = row.get("status") or "unknown"
+                entry["counts"][status] = entry["counts"].get(status, 0) + 1
             try:
                 from ..web.jobs import get_job_manager
 
-                get_job_manager().append_publishers(tracker.job_id, list(worker.last_publishers))
+                get_job_manager().set_publishers(
+                    tracker.job_id,
+                    list(tracker.publishers_aggregate.values()),
+                )
             except Exception as exc:
                 logger.debug(
-                    "Could not append publisher rows for job {}: {}",
+                    "Could not set publisher aggregate for job {}: {}",
                     tracker.job_id,
                     exc,
                 )

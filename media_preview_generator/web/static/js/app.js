@@ -1358,36 +1358,32 @@ const _FRAME_SOURCE_BADGES = {
 };
 
 function _renderPublishersBlock(job) {
+    // D12 — per-server aggregate (one row per registered server with
+    // status counts), NOT per-file. Per-file × per-server attribution
+    // lives in the Files panel; rendering it here on jobs with hundreds
+    // of files would stack hundreds of rows in the Active Jobs and
+    // History sections. Each entry: {server_id, server_name, server_type,
+    // counts: {published: N, failed: M, ...}}.
     const rows = (job && Array.isArray(job.publishers)) ? job.publishers : [];
     if (!rows.length) return '';
-    // Group by canonical_path so each file gets its own server row.
-    const byPath = new Map();
-    for (const p of rows) {
-        const key = p.canonical_path || '(unknown path)';
-        if (!byPath.has(key)) byPath.set(key, []);
-        byPath.get(key).push(p);
-    }
-    const sections = [];
-    for (const [path, pubs] of byPath.entries()) {
-        const badges = pubs.map(function (p) {
-            const meta = _PUBLISHER_STATUS_BADGES[p.status] || { label: p.status || '?', cls: 'bg-secondary' };
-            const stype = (p.server_type || '').toLowerCase();
-            const logo = _vendorLogo(stype, 12) || '';
-            const sname = p.server_name || stype.toUpperCase() || 'Server';
-            const tooltip = p.message ? ` title="${escapeHtmlAttr(p.message)}"` : '';
-            const statusBadge = `<span class="badge ${meta.cls} me-1"${tooltip}>${logo}${escapeHtmlText(sname)}: ${escapeHtmlText(meta.label)}</span>`;
-            const fs = _FRAME_SOURCE_BADGES[p.frame_source];
-            const frameBadge = fs
-                ? `<span class="badge ${fs.cls} me-1" title="${escapeHtmlAttr(fs.tip)}"><i class="bi bi-arrow-repeat" style="margin-right:3px;"></i>${escapeHtmlText(fs.label)}</span>`
-                : '';
-            return statusBadge + frameBadge;
+    const lines = rows.map(function (entry) {
+        const stype = (entry.server_type || '').toLowerCase();
+        const logo = _vendorLogo(stype, 12) || '';
+        const sname = entry.server_name || stype.toUpperCase() || 'Server';
+        const counts = (entry && typeof entry.counts === 'object' && entry.counts) ? entry.counts : {};
+        const statusOrder = ['published', 'skipped_output_exists', 'skipped_not_indexed', 'not_indexed', 'skipped', 'no_owners', 'no_frames', 'failed'];
+        const seen = new Set();
+        const ordered = statusOrder.filter(function (k) { seen.add(k); return counts[k] > 0; })
+            .concat(Object.keys(counts).filter(function (k) { return !seen.has(k) && counts[k] > 0; }));
+        if (!ordered.length) return '';
+        const badges = ordered.map(function (status) {
+            const meta = _PUBLISHER_STATUS_BADGES[status] || { label: status || '?', cls: 'bg-secondary' };
+            return `<span class="badge ${meta.cls} me-1">${counts[status]} ${escapeHtmlText(meta.label.toLowerCase())}</span>`;
         }).join('');
-        const fname = path.split('/').pop() || path;
-        sections.push(
-            `<div class="mt-2"><span class="text-muted">${escapeHtml(fname)}</span><br>${badges}</div>`,
-        );
-    }
-    return `<div class="mt-3 pt-2 border-top"><strong>Publishers:</strong>${sections.join('')}</div>`;
+        return `<div class="mt-1"><span class="badge bg-light text-dark border me-2">${logo}${escapeHtmlText(sname)}</span>${badges}</div>`;
+    }).filter(Boolean).join('');
+    if (!lines) return '';
+    return `<div class="mt-3 pt-2 border-top"><strong>Publishers:</strong>${lines}</div>`;
 }
 
 let _jobQueueUpdatePending = false;

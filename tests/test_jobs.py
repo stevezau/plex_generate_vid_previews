@@ -517,6 +517,73 @@ class TestPublishersAttribution:
         jm.append_publishers(job.id, [])
         assert jm.get_job(job.id).publishers == []
 
+    def test_set_publishers_replaces_existing_rows(self, config_dir):
+        """D12 — set_publishers overwrites (replace), not appends. The
+        dispatcher rebuilds a per-server aggregate every task and
+        mirrors it onto the job; append semantics would re-introduce
+        the unbounded-row bug this method exists to fix."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+        jm.set_publishers(
+            job.id,
+            [
+                {
+                    "server_id": "p1",
+                    "server_name": "Plex Home",
+                    "server_type": "plex",
+                    "counts": {"published": 10},
+                }
+            ],
+        )
+        jm.set_publishers(
+            job.id,
+            [
+                {
+                    "server_id": "p1",
+                    "server_name": "Plex Home",
+                    "server_type": "plex",
+                    "counts": {"published": 50, "failed": 2},
+                }
+            ],
+        )
+        revived = jm.get_job(job.id)
+        assert len(revived.publishers) == 1
+        assert revived.publishers[0]["counts"] == {"published": 50, "failed": 2}
+
+    def test_set_publishers_noop_when_unknown_job(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        jm.set_publishers("missing-id", [{"server_id": "x", "counts": {}}])  # no raise
+
+    def test_set_publishers_persists_through_restart(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+        jm.set_publishers(
+            job.id,
+            [
+                {
+                    "server_id": "p1",
+                    "server_name": "Plex Home",
+                    "server_type": "plex",
+                    "counts": {"published": 200, "skipped_output_exists": 50},
+                },
+                {
+                    "server_id": "e1",
+                    "server_name": "Emby",
+                    "server_type": "emby",
+                    "counts": {"published": 200},
+                },
+            ],
+        )
+        jm2 = JobManager(config_dir=config_dir)
+        revived = jm2.get_job(job.id)
+        assert revived is not None
+        assert len(revived.publishers) == 2
+        names = {p["server_name"] for p in revived.publishers}
+        assert names == {"Plex Home", "Emby"}
+
 
 class TestJobUnknownFieldTolerance:
     """Phase H Fix-5: jobs.json with future / removed fields must still load.

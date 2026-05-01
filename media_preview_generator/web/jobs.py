@@ -896,6 +896,23 @@ class JobManager:
             self._persist_job(job)
             self._emit_event("job_updated", job.to_dict())
 
+    def set_publishers(self, job_id: str, publisher_rows: list[dict]) -> None:
+        """Replace the per-server publisher aggregate on a job (D12).
+
+        Distinct from :meth:`append_publishers` — the dispatcher rebuilds
+        a fixed-size per-server summary (one entry per server_id) on
+        every task and overwrites the field, so this needs replace
+        semantics rather than append. Keeps job.publishers bounded by
+        the number of registered media servers, not by file count.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            job.publishers = list(publisher_rows or [])
+            self._persist_job(job)
+            self._emit_event("job_updated", job.to_dict())
+
     def update_progress(
         self,
         job_id: str,

@@ -498,6 +498,52 @@ class TestJobDispatcher:
         assert result["outcome"].get("generated", 0) == 2
         dispatcher.shutdown()
 
+    def test_merge_worker_outcome_aggregates_publishers_per_server(self):
+        """D12 — _merge_worker_outcome folds per-task publisher rows into
+        a per-server aggregate (server_id → status counts) on the
+        tracker. The earlier per-task append path made job.publishers
+        grow O(files × servers); the aggregate keeps it bounded by the
+        number of registered media servers, regardless of file count."""
+        pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+        try:
+            tracker = JobTracker(
+                job_id="job-agg",
+                items=[],
+                config=_make_config(),
+                registry=MagicMock(),
+            )
+            with patch.object(
+                __import__("media_preview_generator.web.jobs", fromlist=["get_job_manager"]),
+                "get_job_manager",
+                return_value=MagicMock(),
+            ):
+                # Two files × two servers — what bloated the row before.
+                worker_a = MagicMock()
+                worker_a.last_task_outcome_delta.return_value = {"generated": 1}
+                worker_a.last_publishers = [
+                    {"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"},
+                    {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "published"},
+                ]
+                dispatcher._merge_worker_outcome(worker_a, tracker)
+
+                worker_b = MagicMock()
+                worker_b.last_task_outcome_delta.return_value = {"generated": 1}
+                worker_b.last_publishers = [
+                    {"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"},
+                    {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+                ]
+                dispatcher._merge_worker_outcome(worker_b, tracker)
+
+            agg = tracker.publishers_aggregate
+            assert set(agg.keys()) == {"p1", "e1"}
+            assert agg["p1"]["counts"] == {"published": 2}
+            assert agg["e1"]["counts"] == {"published": 1, "failed": 1}
+            assert agg["p1"]["server_type"] == "plex"
+            assert agg["e1"]["server_name"] == "Emby"
+        finally:
+            dispatcher.shutdown()
+
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_drain_orphaned_fallback_routes_to_tracker(self, mock_process):
         """Draining orphan fallback items attributes failures to the correct tracker."""

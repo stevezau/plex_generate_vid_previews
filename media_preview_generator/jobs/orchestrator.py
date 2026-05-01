@@ -1145,11 +1145,11 @@ def run_processing(
                     priority=priority if priority is not None else PRIORITY_NORMAL,
                 )
                 tracker.wait()
-                # D7 — publisher rows are now appended per-task by
-                # Dispatcher._merge_worker_outcome (each row carries
-                # canonical_path so the Job-Details modal can group by
-                # file). The original tracker-side dedupe lost per-file
-                # granularity — see commit message for context.
+                # D12 — Dispatcher._merge_worker_outcome maintains a
+                # per-server publisher aggregate on the tracker and
+                # mirrors it onto the Job (set_publishers) every task.
+                # Per-file × per-server detail lives in the Files panel
+                # JSONL via record_file_result; nothing to drain here.
                 return tracker.get_result()
             else:
                 # Local pool mode (no dispatcher) — emit initial progress
