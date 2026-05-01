@@ -968,6 +968,13 @@ def clear_jobs():
     job_manager = get_job_manager()
     data = request.get_json(silent=True) or {}
     statuses = data.get("statuses")
+    if statuses is not None:
+        if not isinstance(statuses, list):
+            return jsonify({"error": "statuses must be a list"}), 400
+        valid = {s.value for s in JobStatus}
+        bad = [s for s in statuses if not isinstance(s, str) or s not in valid]
+        if bad:
+            return jsonify({"error": f"unknown status(es): {bad}. Valid statuses: {sorted(valid)}"}), 400
     count = job_manager.clear_completed_jobs(statuses=statuses)
     return jsonify({"success": True, "cleared": count})
 

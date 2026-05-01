@@ -565,39 +565,51 @@ def process_canonical_path(
     # "FrameCache singleton already initialised with base_dir=..."
     # errors on the second job in a process.
     _cache_root = getattr(config, "tmp_folder", None) or getattr(config, "working_tmp_folder", "")
+    # Don't let an empty _cache_root collapse to a relative path — would
+    # materialise the cache in CWD (often `/` under gunicorn).
+    if not _cache_root:
+        import tempfile as _tempfile
+
+        _cache_root = _tempfile.gettempdir()
     cache = get_frame_cache(base_dir=os.path.join(_cache_root, "frame_cache"))
     cache_hit: bool = False
     cleanup_path: str | None = None
     generation_lock = None
 
+    # Acquire the per-path lock first (when caching is on) so the
+    # subsequent cache.get / frame_dir_for / os.makedirs can't raise
+    # without releasing it — every non-trivial step lives in the try
+    # below whose finally always releases.
     if use_frame_cache and not regenerate:
-        # Acquire per-path lock so simultaneous webhook fires for the
-        # same canonical path serialise. The first thread generates;
-        # the rest wait, then re-check cache and hit it.
         generation_lock = cache.generation_lock(canonical_path)
         generation_lock.acquire()
-        cached = cache.get(canonical_path)
-        if cached is not None:
-            tmp_path = str(cached.frame_dir)
-            frame_count = cached.frame_count
-            cache_hit = True
-            logger.info(
-                "Frames: REUSED from cache for {} ({} frames, no FFmpeg)",
-                canonical_path,
-                frame_count,
-            )
-
-    if not cache_hit:
-        # Generate into the cache slot (if cache enabled) or an ad-hoc tmp.
-        if use_frame_cache:
-            tmp_path = str(cache.frame_dir_for(canonical_path))
-        else:
-            tmp_path = _tmp_path_for(canonical_path, config.working_tmp_folder)
-            cleanup_path = tmp_path  # only ad-hoc tmps get auto-cleaned
-        os.makedirs(tmp_path, exist_ok=True)
-        logger.info("Frames: EXTRACTING (cache miss) for {}", canonical_path)
 
     try:
+        if generation_lock is not None:
+            # Per-path lock so simultaneous webhook fires for the same
+            # canonical path serialise. The first thread generates; the
+            # rest wait, then re-check the cache and hit it.
+            cached = cache.get(canonical_path)
+            if cached is not None:
+                tmp_path = str(cached.frame_dir)
+                frame_count = cached.frame_count
+                cache_hit = True
+                logger.info(
+                    "Frames: REUSED from cache for {} ({} frames, no FFmpeg)",
+                    canonical_path,
+                    frame_count,
+                )
+
+        if not cache_hit:
+            # Generate into the cache slot (if cache enabled) or an ad-hoc tmp.
+            if use_frame_cache:
+                tmp_path = str(cache.frame_dir_for(canonical_path))
+            else:
+                tmp_path = _tmp_path_for(canonical_path, config.working_tmp_folder)
+                cleanup_path = tmp_path  # only ad-hoc tmps get auto-cleaned
+            os.makedirs(tmp_path, exist_ok=True)
+            logger.info("Frames: EXTRACTING (cache miss) for {}", canonical_path)
+
         if not cache_hit:
             # K2: include server context. The dispatcher routes one canonical
             # path through one shared FFmpeg invocation that may serve multiple
