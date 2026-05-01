@@ -86,10 +86,12 @@ function showLogsModal(jobId) {
     if (isRunning) {
         logsRefreshInterval = setInterval(function() {
             pollNewLogs();
-            var filesPane = document.getElementById('filesTabPane');
-            if (filesPane && filesPane.classList.contains('active')) {
-                refreshFileResults();
-            }
+            // D27 — always refresh files (not just when the Files tab is
+            // active) so switching to the tab mid-run shows current
+            // data instantly, not a 5s-stale snapshot. Loading the
+            // file list when invisible is cheap; the JSONL parser is
+            // O(filtered+page) thanks to the cap + pagination work.
+            if (_fileResultsLoaded) refreshFileResults();
         }, 5000);
     }
 
