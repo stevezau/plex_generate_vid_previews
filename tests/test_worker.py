@@ -5,6 +5,7 @@ Tests Worker class, WorkerPool, threading, task assignment,
 progress tracking, and error handling.
 """
 
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -342,6 +343,126 @@ class TestWorker:
         # CPU worker should treat this as failure (unexpected on CPU)
         assert worker.failed == 1
         assert worker.completed == 0
+
+
+class TestPerJobThreadScoping:
+    """D5 — concurrent jobs must not see each other's worker logs.
+
+    Pre-fix, ``_job_thread_ids`` was a flat global set: every per-job log
+    handler used membership-only test ``is_job_thread(thread_id)``, so a
+    worker thread for Job A would also be "true" for Job B's handler and
+    its log lines would leak into Job B's per-job log buffer. The user
+    saw this as: cancel a slow scan, the next webhook job's log view is
+    full of the cancelled scan's tail.
+    """
+
+    def _reset_thread_table(self):
+        from media_preview_generator.jobs import worker as worker_mod
+
+        with worker_mod._job_thread_ids_lock:
+            worker_mod._job_thread_to_job_id.clear()
+
+    def test_thread_registered_to_one_job_isnt_thread_for_another(self):
+        from media_preview_generator.jobs.worker import is_job_thread_for, register_job_thread
+
+        self._reset_thread_table()
+        register_job_thread("job-A")
+        try:
+            tid = threading.get_ident()
+            assert is_job_thread_for(tid, "job-A") is True
+            assert is_job_thread_for(tid, "job-B") is False, (
+                "Sibling job's filter must not match this thread — that's the leak. "
+                "Job B's per-job log handler would otherwise capture Job A's worker logs."
+            )
+        finally:
+            self._reset_thread_table()
+
+    def test_unregister_clears_only_calling_thread(self):
+        from media_preview_generator.jobs.worker import (
+            is_job_thread_for,
+            register_job_thread,
+            unregister_job_thread,
+        )
+
+        self._reset_thread_table()
+        register_job_thread("job-A")
+        try:
+            unregister_job_thread()
+            tid = threading.get_ident()
+            assert is_job_thread_for(tid, "job-A") is False
+        finally:
+            self._reset_thread_table()
+
+    def test_concurrent_workers_each_scoped_to_own_job(self):
+        """Two threads, each registered to a different job, see only their own."""
+        from media_preview_generator.jobs.worker import (
+            is_job_thread_for,
+            register_job_thread,
+            unregister_job_thread,
+        )
+
+        self._reset_thread_table()
+        captured: dict = {}
+        ready = threading.Event()
+        proceed = threading.Event()
+
+        def thread_for_job(job_id: str, slot: str) -> None:
+            register_job_thread(job_id)
+            try:
+                captured[f"{slot}_tid"] = threading.get_ident()
+                ready.wait(timeout=2)
+                # While both threads are registered, each is filtered by
+                # job_id — the cross-checks below should be False.
+                captured[f"{slot}_self"] = is_job_thread_for(captured[f"{slot}_tid"], job_id)
+                cross_id = "job-B" if job_id == "job-A" else "job-A"
+                captured[f"{slot}_cross"] = is_job_thread_for(captured[f"{slot}_tid"], cross_id)
+                proceed.set()
+            finally:
+                unregister_job_thread()
+
+        ta = threading.Thread(target=thread_for_job, args=("job-A", "a"))
+        tb = threading.Thread(target=thread_for_job, args=("job-B", "b"))
+        try:
+            ta.start()
+            tb.start()
+            # Wait until both threads have published their tid into the dict.
+            for _ in range(50):
+                if "a_tid" in captured and "b_tid" in captured:
+                    break
+                time.sleep(0.01)
+            ready.set()
+            proceed.wait(timeout=2)
+            ta.join(timeout=2)
+            tb.join(timeout=2)
+        finally:
+            self._reset_thread_table()
+
+        assert captured.get("a_self") is True and captured.get("b_self") is True, (
+            "each thread must match its own job's filter."
+        )
+        assert captured.get("a_cross") is False and captured.get("b_cross") is False, (
+            "neither thread may match the OTHER job's filter — that's the D5 leak."
+        )
+
+    def test_unowned_registration_doesnt_match_any_real_job(self):
+        """register_job_thread('') (back-compat path) yields no match for any job_id.
+
+        Without this, a stale registration from a back-compat caller could
+        masquerade as belonging to whichever job's filter checked first.
+        """
+        from media_preview_generator.jobs.worker import is_job_thread_for, register_job_thread
+
+        self._reset_thread_table()
+        register_job_thread("")
+        try:
+            tid = threading.get_ident()
+            assert is_job_thread_for(tid, "any-real-job-id") is False
+            # And the empty-string job_id itself must never be a match —
+            # otherwise a real job that briefly defaulted job_id="" would
+            # also leak into this slot.
+            assert is_job_thread_for(tid, "") is False
+        finally:
+            self._reset_thread_table()
 
 
 class TestWorkerPool:

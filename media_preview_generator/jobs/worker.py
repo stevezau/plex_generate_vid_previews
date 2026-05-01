@@ -18,42 +18,54 @@ from ..processing.generator import (
     CancellationError,
     CodecNotSupportedError,
     ProcessingResult,
+    _notify_file_result,
     failure_scope,
 )
 from ..utils import format_display_title
 
-_job_thread_ids: set = set()
+# Map thread_id -> job_id. The previous implementation stored a flat set
+# of "is a job thread" booleans; that broke as soon as multiple jobs ran
+# concurrently because each job's per-job log handler used the global
+# membership check and so picked up sibling jobs' worker logs (D5 — the
+# user saw a webhook job's log filled with a cancelled scan's tail). The
+# dict-with-job-id lookup gives each handler its own scoped filter.
+_job_thread_to_job_id: dict[int, str] = {}
 _job_thread_ids_lock = threading.Lock()
 
 
-def register_job_thread():
-    """Register the current thread as belonging to the active job."""
-    with _job_thread_ids_lock:
-        _job_thread_ids.add(threading.current_thread().ident)
+def register_job_thread(job_id: str = "") -> None:
+    """Register the current thread as belonging to ``job_id``.
 
-
-def clear_job_threads():
-    """Clear all registered job thread IDs (call when job finishes)."""
-    with _job_thread_ids_lock:
-        _job_thread_ids.clear()
-
-
-def unregister_job_thread():
-    """Remove only the current thread from job tracking.
-
-    Unlike ``clear_job_threads`` which wipes the entire set, this removes
-    only the calling thread's ID.  Use this in job ``finally`` blocks so
-    that concurrently-running retry jobs keep their thread registered for
-    log capture.
+    ``job_id`` defaults to "" for back-compat with callers that pre-date the
+    multi-job dispatcher; in that mode the thread is registered with no
+    owner and ``is_job_thread_for`` will treat it as belonging to no job
+    (so a stale registration cannot leak into a real job's log handler).
     """
     with _job_thread_ids_lock:
-        _job_thread_ids.discard(threading.current_thread().ident)
+        _job_thread_to_job_id[threading.current_thread().ident] = job_id
 
 
-def is_job_thread(thread_id: int) -> bool:
-    """Check if a thread ID belongs to the active job."""
+def unregister_job_thread() -> None:
+    """Remove only the current thread from job tracking.
+
+    Use this in job ``finally`` blocks so that concurrently-running retry
+    jobs keep their own threads registered for log capture.
+    """
     with _job_thread_ids_lock:
-        return thread_id in _job_thread_ids
+        _job_thread_to_job_id.pop(threading.current_thread().ident, None)
+
+
+def is_job_thread_for(thread_id: int, job_id: str) -> bool:
+    """Check whether ``thread_id`` belongs to the specific ``job_id``.
+
+    Returns False when the thread isn't registered at all OR is registered
+    to a different job — the caller (a per-job log handler) should NEVER
+    capture another concurrent job's worker logs.
+    """
+    if not job_id:
+        return False
+    with _job_thread_ids_lock:
+        return _job_thread_to_job_id.get(thread_id) == job_id
 
 
 class Worker:
@@ -320,7 +332,10 @@ class Worker:
             process_canonical_path,
         )
 
-        register_job_thread()
+        # Register THIS worker thread under THIS job's id so the per-job
+        # log handler captures only its own messages — not a sibling job
+        # running concurrently (D5).
+        register_job_thread(self.current_job_id or "")
 
         with failure_scope(self.current_job_id):
             display_name = self.media_file or self.media_title or item.canonical_path
@@ -358,6 +373,13 @@ class Worker:
                     cancel_check=self.cancel_check,
                 )
 
+            # Persist the per-file outcome via the job-runner-installed
+            # callback so the Jobs UI can show a per-file row (Files panel
+            # under each job). Caller-side cap protects 100k-item scans
+            # from bloating the JSONL — see web/jobs.record_file_result.
+            def _persist(outcome: ProcessingResult, reason: str = "") -> None:
+                _notify_file_result(item.canonical_path, outcome, reason, self.display_name)
+
             try:
                 ms_result = _run_once(self.gpu, self.gpu_device)
                 result = _record_outcome(ms_result.status)
@@ -366,10 +388,12 @@ class Worker:
                     self.failed += 1
                 else:
                     self.completed += 1
+                _persist(result)
             except CancellationError:
                 ctx_logger.info("{} cancelled while processing {}", self.display_name, display_name)
                 self.outcome_counts["failed"] += 1
                 self.failed += 1
+                _persist(ProcessingResult.FAILED, "cancelled by user")
             except CodecNotSupportedError as e:
                 if self.worker_type == "GPU":
                     # In-place GPU→CPU fallback: the GPU path couldn't
@@ -382,6 +406,7 @@ class Worker:
                         ctx_logger.info("{} cancelled before CPU fallback for {}", self.display_name, display_name)
                         self.outcome_counts["failed"] += 1
                         self.failed += 1
+                        _persist(ProcessingResult.FAILED, "cancelled before CPU fallback")
                     else:
                         self.fallback_active = True
                         self.fallback_reason = reason
@@ -408,11 +433,13 @@ class Worker:
                                 display_name,
                                 result.value,
                             )
+                            _persist(result, f"CPU fallback after GPU error: {reason}")
                         except CancellationError:
                             ctx_logger.info("{} cancelled during CPU fallback for {}", self.display_name, display_name)
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
-                        except Exception:
+                            _persist(ProcessingResult.FAILED, "cancelled during CPU fallback")
+                        except Exception as fallback_exc:
                             ctx_logger.exception(
                                 "{} also couldn't process {} on CPU after the GPU attempt failed. "
                                 "Marking this file as failed; other items keep processing. "
@@ -422,6 +449,7 @@ class Worker:
                             )
                             self.outcome_counts["failed"] += 1
                             self.failed += 1
+                            _persist(ProcessingResult.FAILED, f"CPU fallback failed: {fallback_exc}")
                 else:
                     # CPU worker received codec error — unexpected, treat as failure.
                     ctx_logger.error(
@@ -434,7 +462,8 @@ class Worker:
                     )
                     self.outcome_counts["failed"] += 1
                     self.failed += 1
-            except Exception:
+                    _persist(ProcessingResult.FAILED, f"CPU codec error: {e}")
+            except Exception as exc:
                 ctx_logger.exception(
                     "{} failed to generate a preview for {}. "
                     "Marking this file as failed; other items keep processing. "
@@ -444,6 +473,7 @@ class Worker:
                 )
                 self.outcome_counts["failed"] += 1
                 self.failed += 1
+                _persist(ProcessingResult.FAILED, str(exc) or type(exc).__name__)
             finally:
                 if self._done_event is not None:
                     self._done_event.set()

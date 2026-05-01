@@ -1087,7 +1087,10 @@ def run_processing(
         totals = {"processed": 0, "successful": 0, "failed": 0, "cancelled": False}
         aggregate_outcome = {r.value: 0 for r in ProcessingResult}
 
-        logger.info("Running in headless mode (no console display)")
+        # (Headless is the only mode this app runs in — the legacy CLI
+        # console-display path was removed when the web UI became the only
+        # interface. The "headless mode" wording in worker.process_items_headless
+        # remains as a load-bearing API name.)
 
         _dispatch_started = False
 

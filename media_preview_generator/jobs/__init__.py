@@ -23,8 +23,7 @@ from .orchestrator import run_processing
 from .worker import (
     Worker,
     WorkerPool,
-    clear_job_threads,
-    is_job_thread,
+    is_job_thread_for,
     register_job_thread,
     unregister_job_thread,
 )
@@ -34,9 +33,8 @@ __all__ = [
     "JobTracker",
     "Worker",
     "WorkerPool",
-    "clear_job_threads",
     "get_dispatcher",
-    "is_job_thread",
+    "is_job_thread_for",
     "register_job_thread",
     "reset_dispatcher",
     "run_processing",

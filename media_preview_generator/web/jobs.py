@@ -1184,6 +1184,15 @@ class JobManager:
         """Return the JSONL file path for per-file results of a job."""
         return os.path.join(self._job_file_results_dir, f"{job_id}.jsonl")
 
+    # Per-job soft cap on the JSONL file. A full-library scan can iterate
+    # 100k+ items; persisting every one would bloat the config volume and
+    # kill the GET /api/jobs/<id>/files endpoint's response time. The cap
+    # is applied at append time — once reached, further calls are dropped
+    # silently (a one-shot truncation marker is written so the UI can
+    # surface "+N more not shown"). 5000 is generous for any single job
+    # while keeping the JSONL well under a few MB.
+    _FILE_RESULTS_PER_JOB_CAP = 5000
+
     def record_file_result(
         self,
         job_id: str,
@@ -1201,6 +1210,39 @@ class JobManager:
             reason: Human-readable detail (skip/failure reason).
             worker: Worker display name (e.g. "GPU Worker 1 (NVIDIA TITAN RTX)").
         """
+        path = self._file_results_path(job_id)
+        # Soft cap — reading the file size each call is cheap and avoids
+        # carrying a per-job counter through the orchestrator just for this.
+        # The truncation marker line itself counts toward the cap so a
+        # full file is still parseable JSONL.
+        try:
+            existing_lines = 0
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    existing_lines = sum(1 for _ in f)
+            if existing_lines >= self._FILE_RESULTS_PER_JOB_CAP:
+                # One-shot truncation marker on the boundary record only.
+                if existing_lines == self._FILE_RESULTS_PER_JOB_CAP:
+                    marker = {
+                        "file": "",
+                        "outcome": "truncated",
+                        "reason": (
+                            f"per-job file-results cap reached ({self._FILE_RESULTS_PER_JOB_CAP} entries) — "
+                            "later items processed normally but not listed here. Aggregate counts "
+                            "in the job summary remain accurate."
+                        ),
+                        "worker": "",
+                        "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                    }
+                    try:
+                        with open(path, "a") as f:
+                            f.write(json.dumps(marker, separators=(",", ":")) + "\n")
+                    except OSError as e:
+                        logger.debug("Could not append truncation marker to {}: {}", path, e)
+                return
+        except OSError as e:
+            logger.debug("Could not stat file results at {}: {}", path, e)
+
         record = {
             "file": file_path,
             "outcome": outcome,
@@ -1208,7 +1250,6 @@ class JobManager:
             "worker": worker,
             "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
         }
-        path = self._file_results_path(job_id)
         try:
             with open(path, "a") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")

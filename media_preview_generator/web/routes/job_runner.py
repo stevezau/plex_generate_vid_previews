@@ -96,7 +96,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
 
             from ...config import ConfigValidationError, load_config
             from ...jobs.orchestrator import run_processing
-            from ...jobs.worker import is_job_thread, register_job_thread
+            from ...jobs.worker import is_job_thread_for, register_job_thread
             from ...processing.generator import (
                 _verify_tmp_folder_health,
                 clear_failures,
@@ -107,7 +107,10 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
             from ...utils import setup_working_directory as create_working_directory
             from ..settings_manager import get_settings_manager
 
-            register_job_thread()
+            # Register THIS job's main thread under THIS job's id so the
+            # per-job log handler captures only this job's messages, not a
+            # concurrently-running sibling job's (D5).
+            register_job_thread(job_id)
 
             job_manager = get_job_manager()
             job = job_manager.get_job(job_id)
@@ -132,8 +135,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                 job_manager.add_log(job_id, log_text)
 
             def job_thread_filter(record: dict) -> bool:
-                """Capture messages from the job thread and its worker threads."""
-                return is_job_thread(record["thread"].id)
+                """Capture only THIS job's thread messages.
+
+                The thread→job_id mapping in worker.py is keyed per job, so
+                a sibling job's worker threads (e.g. a Radarr webhook
+                completing while a manual library scan is winding down)
+                won't leak into this job's log buffer (D5).
+                """
+                return is_job_thread_for(record["thread"].id, job_id)
 
             sm = get_settings_manager()
             job_log_level = sm.get("log_level", "INFO").upper()
