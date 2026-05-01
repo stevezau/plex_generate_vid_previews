@@ -868,9 +868,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 card.htmlFor = `lib-${lib.id}`;
                 // escapeHtml every interpolation: library name + id come
                 // from Plex but the user picks them, so a name like
-                // "Movies <script>alert(1)</script>" would otherwise
-                // execute in their own browser. lib.id is also stringified
-                // and used both as DOM id and inside the for= attribute.
+                // 'Movies <scr'+'ipt>alert(1)</scr'+'ipt>' would otherwise
+                // execute in their own browser (the literal tokens are
+                // split across string concatenation here so the surrounding
+                // template's HTML parser doesn't terminate this script
+                // tag at the embedded </scr+ipt>).
+                // lib.id is also stringified and used both as DOM id and
+                // inside the for= attribute.
                 const safeId = escapeHtml(String(lib.id));
                 card.innerHTML = `
                     <input type="checkbox" id="lib-${safeId}">

@@ -1191,9 +1191,17 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        // The Edit Server modal lives only on /servers. servers.js is also
+        // loaded on /setup (for MPGShared exports the wizard depends on),
+        // so bail when the modal-specific elements aren't on this page —
+        // otherwise the very first .addEventListener throws TypeError on
+        // null and halts every JS handler that runs after this script,
+        // including the wizard's vendor-button click bindings.
+        const editServerSaveBtn = document.getElementById('editServerSave');
+        if (!editServerSaveBtn) return;
         $('#editAddPathMapping').addEventListener('click', () => addPathMappingRow());
         $('#editAddExcludePath').addEventListener('click', () => addExcludePathRow());
-        $('#editServerSave').addEventListener('click', saveEditedServer);
+        editServerSaveBtn.addEventListener('click', saveEditedServer);
         $('#editApplyPathMappingsAll').addEventListener('click', (ev) =>
             applyListToAllServers('path_mappings', readPathMappingsFromForm, ev.currentTarget)
         );

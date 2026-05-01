@@ -69,6 +69,94 @@ class TestSocketReconnectNullGuards:
         )
 
 
+class TestNoLiteralScriptTagsInsideTemplateInlineScripts:
+    """A literal `<script>` or `</script>` token inside an inline JS string
+    or comment terminates the surrounding <script> tag at the embedded
+    `</script>` (the HTML parser doesn't know about JS comments) and the
+    rest of the script gets parsed as HTML. Browsers report this as
+    'Unexpected end of input'.
+
+    Real bug from CI: setup.html had `// "Movies <script>alert(1)</script>"`
+    inside a JS comment explaining XSS escaping. The HTML parser closed
+    the wizard's <script> at that embedded </script>, the wizard's
+    handlers never attached, and the e2e folder_picker test (and every
+    wizard test downstream) timed out waiting for #manualPlexUrl to
+    become visible after a vendor button click.
+
+    Only checks templates with INLINE <script> blocks (excludes
+    src=-only loaders).
+    """
+
+    def test_no_literal_script_close_inside_template_inline_scripts(self):
+        import re
+        from pathlib import Path
+
+        TEMPLATES = Path(__file__).resolve().parent.parent / "media_preview_generator" / "web" / "templates"
+        offending = []
+        # Capture text between <script ...> and </script> when the tag has
+        # no src= attribute (i.e. inline script body).
+        inline_re = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+        for tpl in sorted(TEMPLATES.rglob("*.html")):
+            text = tpl.read_text(encoding="utf-8")
+            for m in inline_re.finditer(text):
+                body = m.group(1)
+                # Look for either `<script` or `</script` literally inside
+                # the inline body (case-insensitive — same as how the
+                # HTML parser tokenizes).
+                if re.search(r"<\s*/?\s*script", body, re.IGNORECASE):
+                    # Pull a snippet for the failure message.
+                    bad = re.search(r".{0,40}<\s*/?\s*script.{0,40}", body, re.IGNORECASE)
+                    offending.append(
+                        f"{tpl.relative_to(TEMPLATES.parent)} contains literal <script> token in inline JS: {bad.group(0).strip()!r}"
+                    )
+
+        assert not offending, (
+            "Inline <script> blocks must not contain a literal `<script>` or `</script>` token, "
+            "even inside a JS string or comment — the HTML parser doesn't know about JS comments "
+            "and will terminate the script tag at the embedded </script>, breaking every handler "
+            "downstream. Split the literal: 'foo</scr' + 'ipt>bar', or describe it without the "
+            "literal token. Offenders:\n  " + "\n  ".join(offending)
+        )
+
+
+class TestServersJsBailsOnNonServersPages:
+    """servers.js is loaded on /setup too (for MPGShared exports the wizard
+    depends on), so its DOMContentLoaded handler must not unconditionally
+    addEventListener on Edit-Server-modal elements that only exist on
+    /servers — otherwise the first null-deref throws TypeError and halts
+    every later script on the page, including the wizard's vendor-button
+    bindings. CI caught this as a folder_picker e2e timeout (the wizard
+    couldn't reveal #plexSignInPanel).
+    """
+
+    def test_dom_content_loaded_short_circuits_when_modal_absent(self):
+        from pathlib import Path
+
+        servers_js = (
+            Path(__file__).resolve().parent.parent / "media_preview_generator" / "web" / "static" / "js" / "servers.js"
+        ).read_text(encoding="utf-8")
+        # servers.js has multiple DOMContentLoaded handlers; check that the
+        # ONE that touches Edit-Server-modal anchors (#editAddPathMapping etc.)
+        # also has the early-return guard. Search by the modal-specific anchor.
+        idx = servers_js.find("$('#editAddPathMapping').addEventListener")
+        assert idx >= 0, "servers.js no longer wires #editAddPathMapping — test selector needs updating."
+        # Look back from the anchor to the enclosing DOMContentLoaded.
+        block_start = servers_js.rfind("document.addEventListener('DOMContentLoaded'", 0, idx)
+        assert block_start >= 0, "Couldn't find the DOMContentLoaded enclosing the Edit-Server-modal wiring."
+        # Look forward to the closing `});` of that handler.
+        block_end = servers_js.find("    });\n", idx)
+        block = servers_js[block_start:block_end]
+        assert "getElementById('editServerSave')" in block, (
+            "servers.js Edit-Server-modal DOMContentLoaded handler must guard with a "
+            "getElementById lookup so loading on /setup is a no-op."
+        )
+        assert "if (!editServerSaveBtn) return" in block or "if (!editServerSave) return" in block, (
+            "servers.js Edit-Server-modal DOMContentLoaded handler must early-return when the modal "
+            "anchor is null. Without the return, the next $('#editAddPathMapping').addEventListener "
+            "throws TypeError on null and halts every later script on the /setup page."
+        )
+
+
 class TestNotificationSanitizerAllowsDisclosure:
     """B5 — sanitizeNotificationHtml must keep <details>/<summary> intact and
     must unwrap unknown tags by promoting children rather than collapsing to
