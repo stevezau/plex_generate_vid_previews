@@ -71,14 +71,39 @@ class TestWorker:
             worker.current_thread.join(timeout=2)
 
     def test_worker_assign_task_when_busy(self):
-        """Test that assigning task to busy worker raises error."""
+        """Test that assigning task to a worker mid-task raises.
+
+        "Busy" with no current_task set (the pre-claimed state used by
+        _find_available_worker(claim=True)) is allowed — that's how the
+        atomic-claim path threads find/assign through the pool. Only an
+        in-flight task should reject a second assign_task.
+        """
         worker = Worker(0, "CPU")
         worker.is_busy = True
+        worker.current_task = "/data/already-running.mkv"  # mid-task
 
         config = MagicMock()
         registry = MagicMock()
         with pytest.raises(RuntimeError):
             worker.assign_task(_pi("test_key", title="", media_type="movie"), config, registry)
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_worker_assign_task_accepts_pre_claimed_state(self, mock_process):
+        """Pre-claim path: a worker with is_busy=True but current_task=None
+        (just reserved by _find_available_worker(claim=True)) must accept
+        the immediately-following assign_task without raising. Otherwise
+        the atomic-claim race fix would self-trip its own busy check.
+        """
+        mock_process.return_value = _ms("generated")
+        worker = Worker(0, "CPU")
+        worker.is_busy = True  # pre-claimed
+        worker.current_task = None  # not yet assigned
+
+        config = MagicMock()
+        registry = MagicMock()
+        # Must not raise.
+        worker.assign_task(_pi("k", title="T", media_type="movie"), config, registry)
+        assert worker.current_task is not None  # task now assigned
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_check_completion(self, mock_process):

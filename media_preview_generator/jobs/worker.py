@@ -243,7 +243,11 @@ class Worker:
             cancel_check: Optional callable returning True when job is
                 cancelled.
         """
-        if self.is_busy:
+        # Pre-claimed workers (is_busy=True but no current_task yet) are
+        # acceptable — _find_available_worker(claim=True) atomically reserves
+        # the worker before this call to close the race between dispatcher
+        # and per-job consumer threads. Only raise if the worker is mid-task.
+        if self.is_busy and self.current_task is not None:
             raise RuntimeError(f"{self.display_name} is already busy")
 
         self._pre_task_completed = self.completed
@@ -810,24 +814,28 @@ class WorkerPool:
             logger.info("GPU reconciliation: added={}, removed={}, deferred={}", added, removed, deferred)
         return {"added": added, "removed": removed, "deferred": deferred}
 
-    def _find_available_worker(self, cpu_only: bool = False) -> Optional["Worker"]:
+    def _find_available_worker(self, cpu_only: bool = False, *, claim: bool = False) -> Optional["Worker"]:
         """Find an available worker.
 
         Args:
             cpu_only: If True, only look for CPU workers
+            claim: If True, atomically mark the returned worker as busy
+                under the pool lock so a concurrent caller (the dispatcher
+                thread vs. the worker-pool's own consumer loop) can't
+                find-and-assign the same worker. The caller is responsible
+                for either calling ``worker.assign_task(...)`` or unsetting
+                ``worker.is_busy = False`` if it backs out.
 
         Returns:
             First available worker matching criteria, or None
-
         """
         with self._workers_lock:
-            if cpu_only:
-                for worker in self.workers:
-                    if worker.worker_type == "CPU" and worker.is_available():
-                        return worker
-                return None
             for worker in self.workers:
+                if cpu_only and worker.worker_type != "CPU":
+                    continue
                 if worker.is_available():
+                    if claim:
+                        worker.is_busy = True
                     return worker
             return None
 
@@ -1249,12 +1257,20 @@ class WorkerPool:
             # Assign new tasks to available workers
             while True:
                 self._apply_deferred_removals()
-                available_worker = self._find_available_worker()
-                if not available_worker or not media_queue:
+                if not media_queue:
                     logger.debug(
-                        "{}Dispatch: nothing to assign (worker={}, queue={})",
+                        "{}Dispatch: nothing to assign (queue empty)",
                         library_prefix,
-                        bool(available_worker),
+                    )
+                    break
+                # Atomic claim closes the race vs. JobDispatcher's own
+                # _assign_tasks consumer thread — both used to find the
+                # same idle worker and the loser tripped "already busy".
+                available_worker = self._find_available_worker(claim=True)
+                if not available_worker:
+                    logger.debug(
+                        "{}Dispatch: no idle workers right now (queue={})",
+                        library_prefix,
                         len(media_queue),
                     )
                     break
@@ -1267,6 +1283,9 @@ class WorkerPool:
                     title_max_width,
                     cancel_check=cancel_check,
                 ):
+                    # Race lost (queue drained between check and pop) —
+                    # release the pre-claim so the worker stays available.
+                    available_worker.is_busy = False
                     break
 
             # Check exit condition

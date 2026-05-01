@@ -400,19 +400,27 @@ class JobDispatcher:
         self.worker_pool._apply_deferred_removals()
 
         while True:
-            worker = self.worker_pool._find_available_worker()
+            # Atomic claim closes the race vs. _process_items_loop
+            # (the worker pool's own consumer) — both used to find the
+            # same idle worker and the loser tripped "already busy".
+            worker = self.worker_pool._find_available_worker(claim=True)
             if not worker:
                 break
 
             # Pull next item (highest priority, then oldest submission).
             picked = self._get_next_item()
             if not picked:
+                # Nothing to do — release the pre-claim.
+                worker.is_busy = False
                 break
 
             job_id, item, library_name = picked
             with self._trackers_lock:
                 tracker = self._trackers.get(job_id)
             if not tracker:
+                # Tracker disappeared between pick and lookup — release the
+                # pre-claim and try again with the next available worker.
+                worker.is_busy = False
                 continue
 
             progress_callback = partial(self.worker_pool._update_worker_progress, worker)
