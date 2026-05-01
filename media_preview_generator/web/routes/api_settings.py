@@ -882,6 +882,127 @@ def set_setup_token():
     return jsonify(result)
 
 
+def _validate_plex_data_path(plex_data_path: str, result: dict) -> None:
+    """Validate the Plex data folder: existence, Media/localhost structure, write perms.
+
+    Mutates ``result`` in place — appends to ``errors``/``warnings``/``info``
+    and flips ``valid=False`` on any blocking issue. Returns nothing; the
+    setup-wizard validate-paths endpoint expects the result-dict pattern so
+    multiple validators can co-write into the same response.
+    """
+    if not plex_data_path:
+        result["errors"].append("Plex Data Path is required")
+        result["valid"] = False
+        return
+
+    if "\x00" in plex_data_path:
+        result["errors"].append("Invalid Plex Data Path")
+        result["valid"] = False
+        return
+
+    resolved = _safe_resolve_within(plex_data_path, PLEX_DATA_ROOT)
+    if resolved is None:
+        canonical_root = os.path.realpath(PLEX_DATA_ROOT)
+        result["errors"].append(f"Plex Data Path must be within the configured root: {canonical_root}")
+        result["valid"] = False
+        return
+
+    if not os.path.exists(resolved):
+        result["errors"].append(f"Plex data folder not found: {resolved}")
+        result["valid"] = False
+        return
+
+    media_path = os.path.join(resolved, "Media")
+    localhost_path = os.path.join(media_path, "localhost")
+
+    if not os.path.exists(media_path):
+        result["errors"].append(f'Plex data folder ({resolved}): missing "Media" subfolder')
+        result["valid"] = False
+    elif not os.path.exists(localhost_path):
+        result["errors"].append(f'Plex data folder ({resolved}): missing "Media/localhost" subfolder')
+        result["valid"] = False
+    else:
+        try:
+            contents = os.listdir(localhost_path)
+            hex_dirs = [d for d in contents if len(d) == 1 and d in "0123456789abcdef"]
+            if len(hex_dirs) >= 10:
+                result["info"].append(
+                    f"✓ Plex data folder ({resolved}): valid structure ({len(hex_dirs)} hash directories)"
+                )
+            else:
+                result["warnings"].append(
+                    f"Plex data folder ({resolved}): structure looks incomplete ({len(hex_dirs)}/16 hash directories)"
+                )
+        except Exception:
+            logger.warning(
+                "Setup Wizard: could not verify the Plex data folder's internal structure. "
+                "The wizard will continue with a 'structure unverified' note instead of blocking. "
+                "Check the folder is the correct Plex 'Media' parent (it should contain a 'localhost' "
+                "subfolder with single-character hex directories like 0/1/2/.../f).",
+                exc_info=True,
+            )
+            result["warnings"].append(f"Plex data folder ({resolved}): could not verify structure")
+
+    if os.access(resolved, os.W_OK):
+        result["info"].append(f"✓ Plex data folder ({resolved}): write permissions OK")
+    else:
+        result["errors"].append(f"Plex data folder ({resolved}): no write permission — check PUID/PGID")
+        result["valid"] = False
+
+
+def _validate_local_media_folder(
+    local_path: str,
+    result: dict,
+    *,
+    label: str,
+    log_context: str,
+    warn_on_empty: bool = False,
+) -> None:
+    """Validate that a local media folder exists, sits inside MEDIA_ROOT, and is readable.
+
+    Shared by the path_mappings row loop AND the legacy ``plex_local_videos_path_mapping``
+    branch — both check identical things (sandbox containment, existence, readability)
+    and previously inlined the same 12-line error-handling cascade twice. ``label`` is
+    the user-facing prefix for messages (e.g. "Row 1 (path → local)" or "Local media
+    path (/data/Movies)"); ``log_context`` is the slot in the loguru error template
+    that names which validator failed.
+    """
+    if "\x00" in local_path:
+        result["errors"].append(f"{label}: invalid path")
+        result["valid"] = False
+        return
+
+    resolved = _safe_resolve_within(local_path, MEDIA_ROOT)
+    if resolved is None:
+        result["errors"].append(f"{label}: path must be inside the allowed media folder")
+        result["valid"] = False
+        return
+
+    if not os.path.exists(resolved):
+        result["errors"].append(f"{label}: folder not found")
+        result["valid"] = False
+        return
+
+    try:
+        contents = os.listdir(resolved)
+    except Exception:
+        logger.error(
+            "Setup Wizard: cannot read {}. The wizard's validation will flag this in the UI. "
+            "Check the folder exists, is readable by the app's user (Docker: PUID/PGID), "
+            "and is inside the configured media root.",
+            log_context,
+            exc_info=True,
+        )
+        result["errors"].append(f"{label}: cannot read folder")
+        result["valid"] = False
+        return
+
+    if warn_on_empty and len(contents) == 0:
+        result["warnings"].append(f"{label}: folder is empty")
+    else:
+        result["info"].append(f"✓ {label}: accessible ({len(contents)} items)")
+
+
 @api.route("/setup/validate-paths", methods=["POST"])
 @setup_or_auth_required
 def validate_paths():
@@ -896,107 +1017,24 @@ def validate_paths():
 
     result = {"valid": True, "errors": [], "warnings": [], "info": []}
 
-    # Validate Plex Data Path
-    if not plex_data_path:
-        result["errors"].append("Plex Data Path is required")
-        result["valid"] = False
-    else:
-        if "\x00" in plex_data_path:
-            result["errors"].append("Invalid Plex Data Path")
-            result["valid"] = False
-            return jsonify(result)
-
-        resolved_plex_data_path = _safe_resolve_within(plex_data_path, PLEX_DATA_ROOT)
-
-        if resolved_plex_data_path is None:
-            canonical_root = os.path.realpath(PLEX_DATA_ROOT)
-            result["errors"].append(f"Plex Data Path must be within the configured root: {canonical_root}")
-            result["valid"] = False
-            return jsonify(result)
-
-        if not os.path.exists(resolved_plex_data_path):
-            result["errors"].append(f"Plex data folder not found: {resolved_plex_data_path}")
-            result["valid"] = False
-        else:
-            media_path = os.path.join(resolved_plex_data_path, "Media")
-            localhost_path = os.path.join(media_path, "localhost")
-
-            if not os.path.exists(media_path):
-                result["errors"].append(f'Plex data folder ({resolved_plex_data_path}): missing "Media" subfolder')
-                result["valid"] = False
-            elif not os.path.exists(localhost_path):
-                result["errors"].append(
-                    f'Plex data folder ({resolved_plex_data_path}): missing "Media/localhost" subfolder'
-                )
-                result["valid"] = False
-            else:
-                try:
-                    contents = os.listdir(localhost_path)
-                    hex_dirs = [d for d in contents if len(d) == 1 and d in "0123456789abcdef"]
-                    if len(hex_dirs) >= 10:
-                        result["info"].append(
-                            f"✓ Plex data folder ({resolved_plex_data_path}): valid structure ({len(hex_dirs)} hash directories)"
-                        )
-                    else:
-                        result["warnings"].append(
-                            f"Plex data folder ({resolved_plex_data_path}): structure looks incomplete ({len(hex_dirs)}/16 hash directories)"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Setup Wizard: could not verify the Plex data folder's internal structure ({}: {}). "
-                        "The wizard will continue with a 'structure unverified' note instead of blocking. "
-                        "Check the folder is the correct Plex 'Media' parent (it should contain a 'localhost' "
-                        "subfolder with single-character hex directories like 0/1/2/.../f).",
-                        type(e).__name__,
-                        e,
-                    )
-                    result["warnings"].append(
-                        f"Plex data folder ({resolved_plex_data_path}): could not verify structure"
-                    )
-
-            if os.access(resolved_plex_data_path, os.W_OK):
-                result["info"].append(f"✓ Plex data folder ({resolved_plex_data_path}): write permissions OK")
-            else:
-                result["errors"].append(
-                    f"Plex data folder ({resolved_plex_data_path}): no write permission — check PUID/PGID"
-                )
-                result["valid"] = False
+    _validate_plex_data_path(plex_data_path, result)
 
     # Validate Path Mapping (path_mappings rows or legacy pair)
     if path_mappings:
         for i, row in enumerate(path_mappings):
             plex_prefix = (row.get("plex_prefix") or "").strip()
             local_prefix = (row.get("local_prefix") or "").strip()
-            row_label = f"Row {i + 1}"
-            path_desc = f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
-            if "\x00" in local_prefix:
-                result["errors"].append(f"{row_label} ({path_desc}): invalid path")
-                result["valid"] = False
-                continue
             if not local_prefix:
                 continue
-            resolved = _safe_resolve_within(local_prefix, MEDIA_ROOT)
-            if resolved is None:
-                result["errors"].append(f"{row_label} ({path_desc}): path must be inside the allowed media folder")
-                result["valid"] = False
-            elif not os.path.exists(resolved):
-                result["errors"].append(f"{row_label} ({path_desc}): folder not found")
-                result["valid"] = False
-            else:
-                try:
-                    contents = os.listdir(resolved)
-                    result["info"].append(f"✓ {row_label} ({path_desc}): accessible ({len(contents)} items)")
-                except Exception as e:
-                    logger.error(
-                        "Setup Wizard: cannot read the local path for one of the path-mapping rows ({}: {}). "
-                        "The wizard's validation will flag this row in the UI. "
-                        "Check the folder exists, is readable by the app's user (Docker: PUID/PGID), "
-                        "and is inside the configured media root.",
-                        type(e).__name__,
-                        e,
-                    )
-                    result["errors"].append(f"{row_label} ({path_desc}): cannot read folder")
-                    result["valid"] = False
+            row_label = f"Row {i + 1}"
+            path_desc = f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
+            label = f"{row_label} ({path_desc})"
+            _validate_local_media_folder(
+                local_prefix,
+                result,
+                label=label,
+                log_context="the local path for one of the path-mapping rows",
+            )
     elif plex_media_path or local_media_path:
         if plex_media_path and not local_media_path:
             result["errors"].append("Local Media Path is required when Plex Media Path is set")
@@ -1005,38 +1043,19 @@ def validate_paths():
             result["errors"].append("Plex Media Path is required when Local Media Path is set")
             result["valid"] = False
         elif local_media_path:
-            if "\x00" in local_media_path:
-                result["errors"].append("Invalid Local Media Path")
-                result["valid"] = False
-                return jsonify(result)
-            resolved_local_media = _safe_resolve_within(local_media_path, MEDIA_ROOT)
-            if resolved_local_media is None:
-                result["errors"].append("Invalid Local Media Path (must be within the configured media root)")
-                result["valid"] = False
-                return jsonify(result)
-            if not os.path.exists(resolved_local_media):
-                result["errors"].append(f"Local media path ({resolved_local_media}): folder not found")
-                result["valid"] = False
-            else:
-                try:
-                    contents = os.listdir(resolved_local_media)
-                    if len(contents) == 0:
-                        result["warnings"].append(f"Local media path ({resolved_local_media}): folder is empty")
-                    else:
-                        result["info"].append(
-                            f"✓ Local media path ({resolved_local_media}): accessible ({len(contents)} items)"
-                        )
-                except Exception as e:
-                    logger.error(
-                        "Setup Wizard: cannot read the configured Local Media Path ({}: {}). "
-                        "The wizard's validation will flag this in the UI. "
-                        "Check the folder exists, is readable by the app's user (Docker: PUID/PGID), "
-                        "and is inside the configured media root.",
-                        type(e).__name__,
-                        e,
-                    )
-                    result["errors"].append(f"Local media path ({resolved_local_media}): cannot read folder")
-                    result["valid"] = False
+            # Legacy single-pair branch — same per-folder checks as the new path_mappings
+            # rows above, but with a "local media path" label and a warn-on-empty flag
+            # (the legacy single-folder mount is more likely to be misconfigured than
+            # one row of a multi-row mapping).
+            resolved_preview = _safe_resolve_within(local_media_path, MEDIA_ROOT)
+            label = f"Local media path ({resolved_preview or local_media_path})"
+            _validate_local_media_folder(
+                local_media_path,
+                result,
+                label=label,
+                log_context="the configured Local Media Path",
+                warn_on_empty=True,
+            )
     else:
         result["info"].append("No path mapping configured (media mounted at same path as Plex)")
 
