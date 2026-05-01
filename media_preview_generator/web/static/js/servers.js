@@ -592,10 +592,25 @@
             return;
         }
         wizard.quickConnectSecret = r.data.secret;
+        // D22 — auto-open the Jellyfin Quick Connect entry page in a
+        // new tab so the user doesn't have to navigate manually. Best-
+        // effort: popup blockers may refuse, in which case the inline
+        // instruction below still tells them where to go. Strip any
+        // trailing slash on the base URL so we don't end up with
+        // /web//#/quickconnect.
+        const baseUrl = url.replace(/\/+$/, '');
+        const qcUrl = baseUrl + '/web/#/quickconnect';
+        try { window.open(qcUrl, '_blank', 'noopener,noreferrer'); } catch (_) { /* blocked */ }
         $('#quickConnectCode').classList.remove('d-none');
         $('#quickConnectCode').className = 'alert alert-info';
         $('#quickConnectCode').innerHTML =
-            `Open Jellyfin → your profile → Quick Connect, then enter <strong class="fs-3">${escapeHtml(r.data.code)}</strong>. Waiting for approval…`;
+            `Opened <a href="${escapeHtml(qcUrl)}" target="_blank" rel="noopener" class="alert-link">Jellyfin Quick Connect</a> in a new tab — log in if needed,
+             then paste this code: <strong class="fs-3">${escapeHtml(r.data.code)}</strong>.
+             Waiting for approval…
+             <div class="small text-muted mt-2">
+               <i class="bi bi-info-circle me-1"></i>After you log in: Jellyfin needs <em>Trickplay image extraction</em> enabled per library —
+               the Servers page has a one-click <strong>Fix trickplay</strong> button on each Jellyfin server card.
+             </div>`;
 
         // Poll every 2 seconds.
         if (wizard.quickConnectPoll) clearInterval(wizard.quickConnectPoll);
