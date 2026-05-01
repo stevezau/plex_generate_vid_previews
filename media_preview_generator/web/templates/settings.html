@@ -535,7 +535,7 @@ async function loadSettings() {
         }
     } catch (error) {
         console.error('Failed to load settings:', error);
-        showToast('Failed to load settings', 'danger');
+        showToast('Error', 'Failed to load settings', 'danger');
     }
 }
 
@@ -661,7 +661,7 @@ async function saveAllSettings() {
     if (result && result.warning) {
         // Surface non-fatal clamps/validation notes as a toast in addition
         // to the Saved indicator.
-        showToast(result.warning, 'warning');
+        showToast('Warning', result.warning, 'warning');
     }
 }
 
@@ -764,12 +764,12 @@ async function applyLogLevel() {
         });
         const data = await response.json();
         if (data.success) {
-            showToast(`Log level set to ${data.log_level}`, 'success');
+            showToast('Log level updated', `Log level set to ${data.log_level}`, 'success');
         } else {
-            showToast('Failed: ' + (data.error || 'Unknown error'), 'danger');
+            showToast('Error', 'Failed to update log level: ' + (data.error || 'Unknown error'), 'danger');
         }
     } catch (error) {
-        showToast('Failed to update log level: ' + error.message, 'danger');
+        showToast('Error', 'Failed to update log level: ' + error.message, 'danger');
     }
 }
 
