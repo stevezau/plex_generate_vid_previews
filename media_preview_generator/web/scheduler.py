@@ -44,6 +44,71 @@ def _parse_hhmm(value: str | None) -> tuple[int, int] | None:
     return hour, minute
 
 
+_QUIET_HOURS_PAUSE_JOB_ID = "__quiet_hours_pause"
+_QUIET_HOURS_RESUME_JOB_ID = "__quiet_hours_resume"
+
+
+def is_in_quiet_window(
+    now_hm: tuple[int, int],
+    pause_hm: tuple[int, int],
+    resume_hm: tuple[int, int],
+) -> bool:
+    """Return ``True`` when ``now_hm`` falls inside the paused window (D21).
+
+    Equal pause/resume times disable the window (returns ``False``).
+    Cross-midnight windows (pause > resume) are handled — e.g. pause=08:00,
+    resume=01:00 means processing is paused all day until 1 AM.
+    """
+    n = now_hm[0] * 60 + now_hm[1]
+    p = pause_hm[0] * 60 + pause_hm[1]
+    r = resume_hm[0] * 60 + resume_hm[1]
+    if p == r:
+        return False
+    if p < r:
+        return p <= n < r
+    return n >= p or n < r
+
+
+def _quiet_hours_pause() -> None:
+    """Pause-boundary cron callback (D21). Flips processing_paused on."""
+    try:
+        from .jobs import get_job_manager
+        from .settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        if sm.processing_paused:
+            logger.debug("Quiet hours pause fired but processing is already paused")
+            return
+        sm.processing_paused = True
+        try:
+            get_job_manager().emit_processing_paused_changed(True)
+        except Exception:
+            logger.debug("Could not emit processing_paused_changed on quiet-hours pause", exc_info=True)
+        logger.info("Quiet hours: processing paused (queue will fill until resume time)")
+    except Exception:
+        logger.exception("Quiet-hours pause callback hit an unexpected error")
+
+
+def _quiet_hours_resume() -> None:
+    """Resume-boundary cron callback (D21). Flips processing_paused off."""
+    try:
+        from .jobs import get_job_manager
+        from .settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        if not sm.processing_paused:
+            logger.debug("Quiet hours resume fired but processing is not paused")
+            return
+        sm.processing_paused = False
+        try:
+            get_job_manager().emit_processing_paused_changed(False)
+        except Exception:
+            logger.debug("Could not emit processing_paused_changed on quiet-hours resume", exc_info=True)
+        logger.info("Quiet hours: processing resumed (queue draining)")
+    except Exception:
+        logger.exception("Quiet-hours resume callback hit an unexpected error")
+
+
 def execute_schedule_stop(schedule_id: str) -> None:
     """Module-level stop handler — pauses every running job spawned by ``schedule_id``.
 
@@ -148,6 +213,32 @@ def execute_scheduled_job(
         cfg["server_id"] = server_id
     job_type = str(cfg.get("job_type", "full_library"))
     manager = get_schedule_manager()
+
+    # D21 — global processing-paused gate. When the queue is paused
+    # (manual Pause All button OR quiet hours window), we DO NOT spawn
+    # a new Job from this scheduled tick — that would pile up redundant
+    # work (e.g. a "every 15 min recently_added" schedule firing all
+    # day during quiet hours would balloon the queue). The schedule
+    # re-fires on its next normal tick; the first one to land outside
+    # the paused window will spawn the Job. Manual jobs and webhook
+    # triggers still queue up — those go through different code paths
+    # and are what the user explicitly wanted "to pile up".
+    try:
+        from .settings_manager import get_settings_manager
+
+        if get_settings_manager().processing_paused:
+            logger.info(
+                "Schedule {} skipped — processing is currently paused (quiet hours / manual pause). "
+                "It will fire again on its next normal tick.",
+                schedule_id,
+            )
+            return
+    except Exception:
+        logger.debug(
+            "Could not check processing_paused gate for schedule {}; allowing dispatch",
+            schedule_id,
+            exc_info=True,
+        )
 
     # D20 — auto-resume an existing paused job from this same schedule
     # instead of spawning a fresh one. Lets a multi-night library scan
@@ -422,6 +513,59 @@ class ScheduleManager:
         if not self.scheduler.running:
             self.scheduler.start()
             logger.info("Scheduler started")
+
+    def apply_quiet_hours(self, settings_dict: dict | None) -> None:
+        """Register / refresh the quiet-hours pause+resume crons (D21).
+
+        ``settings_dict`` is the value of ``settings["quiet_hours"]`` —
+        ``{"enabled": bool, "start": "HH:MM", "end": "HH:MM"}``. Always
+        removes the existing pair first, then adds them back when
+        enabled. Equal start/end times disable the window (same as
+        enabled=False) so the user has two ways to turn it off.
+        """
+        for jid in (_QUIET_HOURS_PAUSE_JOB_ID, _QUIET_HOURS_RESUME_JOB_ID):
+            try:
+                self.scheduler.remove_job(jid)
+            except Exception:
+                pass
+
+        if not isinstance(settings_dict, dict) or not settings_dict.get("enabled"):
+            return
+
+        try:
+            start_hm = _parse_hhmm(str(settings_dict.get("start") or ""))
+            end_hm = _parse_hhmm(str(settings_dict.get("end") or ""))
+        except ValueError:
+            logger.warning(
+                "Quiet hours has malformed times {}; skipping cron registration.",
+                settings_dict,
+            )
+            return
+        if start_hm is None or end_hm is None or start_hm == end_hm:
+            return
+
+        if not self.scheduler.running:
+            self.start()
+
+        self.scheduler.add_job(
+            _quiet_hours_pause,
+            trigger=CronTrigger(hour=start_hm[0], minute=start_hm[1]),
+            id=_QUIET_HOURS_PAUSE_JOB_ID,
+            replace_existing=True,
+        )
+        self.scheduler.add_job(
+            _quiet_hours_resume,
+            trigger=CronTrigger(hour=end_hm[0], minute=end_hm[1]),
+            id=_QUIET_HOURS_RESUME_JOB_ID,
+            replace_existing=True,
+        )
+        logger.info(
+            "Quiet hours: pause at {:02d}:{:02d}, resume at {:02d}:{:02d} (container TZ)",
+            start_hm[0],
+            start_hm[1],
+            end_hm[0],
+            end_hm[1],
+        )
 
     def stop(self) -> None:
         """Stop the scheduler."""

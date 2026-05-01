@@ -343,6 +343,22 @@ async function saveSchedule() {
         payload.cron_expression = cronInput;
     }
 
+    // D21 — warn the user when this schedule's fire time falls inside
+    // the active Quiet Hours window. The processing_paused gate in
+    // execute_scheduled_job will silently skip every fire from this
+    // schedule until quiet hours ends — better to flag it now than
+    // have the user think the schedule is broken.
+    if (typeof window._scheduleQuietHoursOverlap === 'function') {
+        const synthetic = {
+            trigger_type: payload.cron_expression ? 'cron' : 'interval',
+            trigger_value: payload.cron_expression || String(payload.interval_minutes || ''),
+        };
+        const overlap = window._scheduleQuietHoursOverlap(synthetic);
+        if (overlap && !window.confirm(overlap + '\n\nSave anyway?')) {
+            return;
+        }
+    }
+
     try {
         if (editId) {
             await apiPut(`/api/schedules/${editId}`, payload);

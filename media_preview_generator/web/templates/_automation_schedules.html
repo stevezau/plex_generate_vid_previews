@@ -27,6 +27,47 @@
             </div>
         </div>
 
+        <!-- Quiet Hours (D21) — global queue pause / resume -->
+        <div class="card section-card" id="section-schedules-quiet-hours">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-moon-stars me-2"></i>Quiet Hours</span>
+                <span class="badge bg-secondary" id="quietHoursStateBadge" title="Whether the queue is currently paused by quiet hours">off</span>
+            </div>
+            <div class="card-body">
+                <p class="mb-3">
+                    Pause the entire processing queue during busy hours. Triggers, schedules, and manual jobs all keep adding to the queue
+                    &mdash; nothing is dropped &mdash; but no FFmpeg work happens until the resume time. Useful when you want to leave the
+                    system free during the day and let everything drain overnight.
+                </p>
+                <div class="row g-3 align-items-end">
+                    <div class="col-auto">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="quietHoursEnabled">
+                            <label class="form-check-label" for="quietHoursEnabled">Enable quiet hours</label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="quietHoursStart" class="form-label small mb-1">Pause at</label>
+                        <input type="time" class="form-control form-control-sm" id="quietHoursStart" value="08:00">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="quietHoursEnd" class="form-label small mb-1">Resume at</label>
+                        <input type="time" class="form-control form-control-sm" id="quietHoursEnd" value="01:00">
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-sm btn-primary" id="quietHoursSaveBtn">
+                            <i class="bi bi-check me-1"></i>Save
+                        </button>
+                    </div>
+                </div>
+                <div class="form-text mt-2">
+                    Times are container-local. Leave Pause and Resume the same to disable. Manual <strong>Pause All</strong>
+                    overrides still work between boundary times &mdash; quiet hours only flip the state at the configured edges,
+                    not continuously.
+                </div>
+            </div>
+        </div>
+
         <!-- All Schedules -->
         <div class="card section-card" id="section-schedules-list">
             <div class="card-header d-flex justify-content-between align-items-center">

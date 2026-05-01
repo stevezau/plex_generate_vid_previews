@@ -1976,6 +1976,53 @@ class TestSetupWizardAPI:
 # ---------------------------------------------------------------------------
 
 
+class TestQuietHoursAPI:
+    """D21 — /api/quiet-hours GET + POST."""
+
+    def test_get_returns_default_when_unset(self, client):
+        resp = client.get("/api/quiet-hours", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["enabled"] is False
+        assert body["start"]
+        assert body["end"]
+        assert "currently_in_quiet_window" in body
+
+    def test_post_persists_and_round_trips(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "start": "08:00", "end": "01:00"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["enabled"] is True
+        assert body["start"] == "08:00"
+        assert body["end"] == "01:00"
+
+        get = client.get("/api/quiet-hours", headers=_api_headers()).get_json()
+        assert get["enabled"] is True
+        assert get["start"] == "08:00"
+        assert get["end"] == "01:00"
+
+    def test_post_invalid_start_time_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "start": "25:00", "end": "01:00"},
+        )
+        assert resp.status_code == 400
+        assert "Invalid time" in resp.get_json().get("error", "")
+
+    def test_post_invalid_end_time_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "start": "08:00", "end": "ab:cd"},
+        )
+        assert resp.status_code == 400
+
+
 class TestSchedulesAPI:
     """Test /api/schedules/* endpoints."""
 

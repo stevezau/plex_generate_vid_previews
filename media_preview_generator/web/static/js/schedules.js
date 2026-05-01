@@ -200,6 +200,69 @@ function _formatAbsoluteShort(dt) {
     return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + timeStr;
 }
 
+// D21 — quiet-hours config cache, populated by /api/quiet-hours.
+// Used by updateScheduleList() to render an overlap warning on rows
+// whose fire time falls inside the paused window, and by the schedule
+// modal to flag a save that would land in the window.
+window._quietHoursConfig = window._quietHoursConfig || null;
+
+// D21 — parse "HH:MM" → [hour, minute] or null on bad input.
+function _parseHHMM(value) {
+    const v = String(value || '').trim();
+    if (!v) return null;
+    const m = /^(\d{1,2}):(\d{1,2})$/.exec(v);
+    if (!m) return null;
+    const h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (!(h >= 0 && h < 24 && min >= 0 && min < 60)) return null;
+    return [h, min];
+}
+
+// D21 — true when ``minute`` (minutes-since-midnight) is inside the
+// quiet-hours paused window. Handles cross-midnight (start > end).
+function _isInQuietWindow(minute, startMin, endMin) {
+    if (startMin === endMin) return false;
+    if (startMin < endMin) return minute >= startMin && minute < endMin;
+    return minute >= startMin || minute < endMin;
+}
+
+// D21 — for a schedule, return the time-of-day [hour, minute] it
+// fires at IF it has a single fixed daily fire time (specific-time
+// or simple "MIN HOUR * * *" cron). Returns null for interval or
+// complex cron — we don't warn for those because some fires WILL
+// land outside quiet hours and the user gets the partial behaviour
+// they probably want.
+function _scheduleFireTime(schedule) {
+    if (!schedule || schedule.trigger_type !== 'cron' || !schedule.trigger_value) return null;
+    const parts = String(schedule.trigger_value).split(/\s+/);
+    if (parts.length !== 5) return null;
+    if (!/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return null;
+    const minute = parseInt(parts[0], 10);
+    const hour = parseInt(parts[1], 10);
+    if (!(hour >= 0 && hour < 24 && minute >= 0 && minute < 60)) return null;
+    return [hour, minute];
+}
+
+// D21 — return a human-friendly tooltip string when ``schedule`` would
+// fire inside the configured quiet-hours window. Returns "" when no
+// overlap. Cached config in window._quietHoursConfig.
+function _scheduleQuietHoursOverlap(schedule) {
+    const qh = window._quietHoursConfig;
+    if (!qh || !qh.enabled) return '';
+    const startHM = _parseHHMM(qh.start);
+    const endHM = _parseHHMM(qh.end);
+    if (!startHM || !endHM || (startHM[0] === endHM[0] && startHM[1] === endHM[1])) return '';
+    const fire = _scheduleFireTime(schedule);
+    if (!fire) return '';
+    const fireMin = fire[0] * 60 + fire[1];
+    const startMin = startHM[0] * 60 + startHM[1];
+    const endMin = endHM[0] * 60 + endHM[1];
+    if (!_isInQuietWindow(fireMin, startMin, endMin)) return '';
+    return 'This schedule fires at ' + String(fire[0]).padStart(2, '0') + ':' + String(fire[1]).padStart(2, '0')
+        + ' which is inside Quiet Hours (' + qh.start + '–' + qh.end + ') — every fire will be skipped.';
+}
+window._scheduleQuietHoursOverlap = _scheduleQuietHoursOverlap;
+
 function updateScheduleList() {
     // Always update the teaser card if it exists (Dashboard).
     updateScheduleTeaser();
@@ -250,9 +313,18 @@ function updateScheduleList() {
             ? ' <span class="badge bg-info text-dark" title="Pauses any running job from this schedule daily; resumes on next start">stops at ' + escapeHtml(schedule.stop_time) + '</span>'
             : '';
 
+        // D21 — overlap warning. The processing_paused gate in
+        // scheduler.execute_scheduled_job will silently skip this
+        // schedule's fires during quiet hours; surface the conflict so
+        // users don't think the schedule is broken.
+        const overlapTip = _scheduleQuietHoursOverlap(schedule);
+        const overlapBadge = overlapTip
+            ? ' <i class="bi bi-exclamation-triangle text-warning" title="' + escapeHtml(overlapTip) + '" data-bs-toggle="tooltip"></i>'
+            : '';
+
         html += `
             <tr>
-                <td>${escapeHtml(schedule.name)}${typeBadge}</td>
+                <td>${escapeHtml(schedule.name)}${typeBadge}${overlapBadge}</td>
                 <td>${escapeHtml(schedule.library_name) || 'All Libraries'}${_serverBadge(schedule)}</td>
                 <td><code>${escapeHtml(cronDisplay)}</code>${stopBadge}</td>
                 <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
@@ -279,3 +351,106 @@ function updateScheduleList() {
 
     tbody.innerHTML = html;
 }
+
+
+// ---------------------------------------------------------------------------
+// D21 — Quiet Hours card load / save / sync
+// ---------------------------------------------------------------------------
+
+async function loadQuietHours() {
+    if (!document.getElementById('quietHoursSaveBtn')) return; // not on this page
+    try {
+        const data = await apiGet('/api/quiet-hours');
+        window._quietHoursConfig = data || null;
+    } catch (e) {
+        window._quietHoursConfig = null;
+        console.error('Failed to load quiet hours config:', e);
+        return;
+    }
+    _renderQuietHoursCard();
+    // Refresh schedule list so overlap badges reflect the new config.
+    if (typeof updateScheduleList === 'function') updateScheduleList();
+}
+window.loadQuietHours = loadQuietHours;
+
+function _renderQuietHoursCard() {
+    const qh = window._quietHoursConfig || {};
+    const enabledEl = document.getElementById('quietHoursEnabled');
+    const startEl = document.getElementById('quietHoursStart');
+    const endEl = document.getElementById('quietHoursEnd');
+    if (!enabledEl || !startEl || !endEl) return;
+    enabledEl.checked = !!qh.enabled;
+    if (qh.start) startEl.value = qh.start;
+    if (qh.end) endEl.value = qh.end;
+    _refreshQuietHoursBadge();
+}
+
+// D21 — public so app.js's processing_paused_changed handler can call it
+// to flip the badge between "on" and "paused now" without a refetch.
+function _refreshQuietHoursBadge() {
+    const badge = document.getElementById('quietHoursStateBadge');
+    if (!badge) return;
+    const qh = window._quietHoursConfig || {};
+    if (!qh.enabled) {
+        badge.textContent = 'off';
+        badge.className = 'badge bg-secondary';
+        badge.title = 'Quiet hours are disabled';
+        return;
+    }
+    const pausedNow = !!(qh.currently_in_quiet_window
+        || (typeof processingPaused !== 'undefined' && processingPaused));
+    if (pausedNow) {
+        badge.textContent = 'paused now';
+        badge.className = 'badge bg-warning text-dark';
+        badge.title = 'Quiet hours window is currently active — processing paused';
+    } else {
+        badge.textContent = 'on';
+        badge.className = 'badge bg-info text-dark';
+        badge.title = 'Quiet hours scheduled — currently outside the paused window';
+    }
+}
+window._refreshQuietHoursBadge = _refreshQuietHoursBadge;
+
+async function saveQuietHours() {
+    const enabled = document.getElementById('quietHoursEnabled').checked;
+    const start = document.getElementById('quietHoursStart').value;
+    const end = document.getElementById('quietHoursEnd').value;
+    if (!_parseHHMM(start)) {
+        if (typeof showToast === 'function') showToast('Invalid time', 'Pause time must be HH:MM (00:00–23:59)', 'danger');
+        return;
+    }
+    if (!_parseHHMM(end)) {
+        if (typeof showToast === 'function') showToast('Invalid time', 'Resume time must be HH:MM (00:00–23:59)', 'danger');
+        return;
+    }
+    if (enabled && start === end) {
+        if (typeof showToast === 'function') showToast('Quiet hours', 'Pause and Resume can\'t be the same time. Pick a window.', 'warning');
+        return;
+    }
+    const btn = document.getElementById('quietHoursSaveBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+    }
+    try {
+        await apiPost('/api/quiet-hours', { enabled, start, end });
+        await loadQuietHours();
+        if (typeof showToast === 'function') showToast('Quiet hours', 'Saved', 'success');
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Save failed', (e && e.message) || 'Unknown error', 'danger');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check me-1"></i>Save';
+        }
+    }
+}
+window.saveQuietHours = saveQuietHours;
+
+document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('quietHoursSaveBtn');
+    if (btn) {
+        btn.addEventListener('click', saveQuietHours);
+        loadQuietHours();
+    }
+});

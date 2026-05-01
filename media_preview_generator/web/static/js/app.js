@@ -343,6 +343,18 @@ function connectSocket() {
         processingPaused = !!data.paused;
         renderGlobalPauseResume();
         loadJobs();
+        // D21 — keep the Quiet Hours card badge ("on" vs "paused now")
+        // in sync the moment the global pause flag flips, whether from
+        // a quiet-hours boundary cron or the manual Pause All button.
+        if (typeof window._refreshQuietHoursBadge === 'function') {
+            // Update the cached config too so the badge has the latest value
+            // before re-rendering.
+            if (window._quietHoursConfig) {
+                window._quietHoursConfig.currently_in_quiet_window = !!data.paused
+                    && !!window._quietHoursConfig.enabled;
+            }
+            window._refreshQuietHoursBadge();
+        }
     });
 
 }

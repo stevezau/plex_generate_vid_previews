@@ -4,7 +4,8 @@ from flask import jsonify, request
 from loguru import logger
 
 from ..auth import api_token_required
-from ..scheduler import get_schedule_manager
+from ..scheduler import _parse_hhmm, get_schedule_manager, is_in_quiet_window
+from ..settings_manager import get_settings_manager
 from . import api
 
 
@@ -166,3 +167,77 @@ def run_schedule_now(schedule_id):
     if schedule_manager.run_now(schedule_id):
         return jsonify({"success": True})
     return jsonify({"error": "Schedule not found"}), 404
+
+
+# ---------------------------------------------------------------------------
+# Quiet Hours (D21) — global queue pause/resume schedule
+# ---------------------------------------------------------------------------
+
+_QUIET_HOURS_DEFAULT = {"enabled": False, "start": "08:00", "end": "01:00"}
+
+
+def _quiet_hours_payload(qh: dict | None) -> dict:
+    """Normalise the persisted shape to a stable JSON response."""
+    qh = qh if isinstance(qh, dict) else {}
+    enabled = bool(qh.get("enabled"))
+    start = str(qh.get("start") or _QUIET_HOURS_DEFAULT["start"])
+    end = str(qh.get("end") or _QUIET_HOURS_DEFAULT["end"])
+    in_window = False
+    if enabled:
+        try:
+            shm = _parse_hhmm(start)
+            ehm = _parse_hhmm(end)
+        except ValueError:
+            shm = ehm = None
+        if shm and ehm and shm != ehm:
+            from datetime import datetime as _dt
+
+            now = _dt.now()
+            in_window = is_in_quiet_window((now.hour, now.minute), shm, ehm)
+    return {
+        "enabled": enabled,
+        "start": start,
+        "end": end,
+        "currently_in_quiet_window": in_window,
+    }
+
+
+@api.route("/quiet-hours")
+@api_token_required
+def get_quiet_hours():
+    """Return the current quiet-hours config (D21)."""
+    sm = get_settings_manager()
+    return jsonify(_quiet_hours_payload(sm.get("quiet_hours")))
+
+
+@api.route("/quiet-hours", methods=["POST"])
+@api_token_required
+def update_quiet_hours():
+    """Update the quiet-hours config and re-register the boundary crons (D21).
+
+    Body: ``{"enabled": bool, "start": "HH:MM", "end": "HH:MM"}``.
+    Validation rejects malformed times. Equal times disable the window
+    even when ``enabled=True`` (we just don't register the crons).
+    """
+    data = request.get_json() or {}
+    try:
+        start = str(data.get("start") or "").strip() or _QUIET_HOURS_DEFAULT["start"]
+        end = str(data.get("end") or "").strip() or _QUIET_HOURS_DEFAULT["end"]
+        # Validate both up front; ValueError → 400.
+        _parse_hhmm(start)
+        _parse_hhmm(end)
+    except ValueError as exc:
+        return jsonify({"error": f"Invalid time: {exc}"}), 400
+
+    qh = {"enabled": bool(data.get("enabled")), "start": start, "end": end}
+    sm = get_settings_manager()
+    sm.set("quiet_hours", qh)
+
+    schedule_manager = get_schedule_manager()
+    try:
+        schedule_manager.apply_quiet_hours(qh)
+    except Exception:
+        logger.exception("Could not apply quiet-hours cron registration")
+        return jsonify({"error": "Could not apply quiet-hours schedule"}), 500
+
+    return jsonify(_quiet_hours_payload(qh))

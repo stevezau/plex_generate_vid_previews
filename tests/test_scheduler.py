@@ -332,6 +332,95 @@ class TestScheduleStopTime:
             _parse_hhmm("12")
 
 
+class TestQuietHours:
+    """D21 — global queue pause/resume schedule."""
+
+    def test_is_in_quiet_window_equal_times_disables(self):
+        from media_preview_generator.web.scheduler import is_in_quiet_window
+
+        assert is_in_quiet_window((10, 0), (8, 0), (8, 0)) is False
+        assert is_in_quiet_window((0, 0), (0, 0), (0, 0)) is False
+
+    def test_is_in_quiet_window_same_day_window(self):
+        from media_preview_generator.web.scheduler import is_in_quiet_window
+
+        # Window is 09:00–17:00. start inclusive, end exclusive.
+        assert is_in_quiet_window((9, 0), (9, 0), (17, 0)) is True
+        assert is_in_quiet_window((10, 30), (9, 0), (17, 0)) is True
+        assert is_in_quiet_window((17, 0), (9, 0), (17, 0)) is False
+        assert is_in_quiet_window((8, 59), (9, 0), (17, 0)) is False
+        assert is_in_quiet_window((22, 0), (9, 0), (17, 0)) is False
+
+    def test_is_in_quiet_window_cross_midnight(self):
+        from media_preview_generator.web.scheduler import is_in_quiet_window
+
+        # Window is 22:00–06:00 (overnight). Pause = 22:00, resume = 06:00.
+        assert is_in_quiet_window((22, 0), (22, 0), (6, 0)) is True
+        assert is_in_quiet_window((23, 30), (22, 0), (6, 0)) is True
+        assert is_in_quiet_window((0, 0), (22, 0), (6, 0)) is True
+        assert is_in_quiet_window((5, 59), (22, 0), (6, 0)) is True
+        assert is_in_quiet_window((6, 0), (22, 0), (6, 0)) is False
+        assert is_in_quiet_window((12, 0), (22, 0), (6, 0)) is False
+
+    def test_apply_quiet_hours_enabled_registers_both_crons(self, scheduler_manager):
+        scheduler_manager.apply_quiet_hours({"enabled": True, "start": "08:00", "end": "01:00"})
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert "__quiet_hours_pause" in ids
+        assert "__quiet_hours_resume" in ids
+
+    def test_apply_quiet_hours_disabled_removes_both_crons(self, scheduler_manager):
+        scheduler_manager.apply_quiet_hours({"enabled": True, "start": "08:00", "end": "01:00"})
+        scheduler_manager.apply_quiet_hours({"enabled": False, "start": "08:00", "end": "01:00"})
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert "__quiet_hours_pause" not in ids
+        assert "__quiet_hours_resume" not in ids
+
+    def test_apply_quiet_hours_equal_times_treated_as_disabled(self, scheduler_manager):
+        scheduler_manager.apply_quiet_hours({"enabled": True, "start": "08:00", "end": "08:00"})
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert "__quiet_hours_pause" not in ids
+        assert "__quiet_hours_resume" not in ids
+
+    def test_apply_quiet_hours_malformed_times_skipped(self, scheduler_manager):
+        # Malformed times should NOT raise; just skip cron registration.
+        scheduler_manager.apply_quiet_hours({"enabled": True, "start": "25:00", "end": "01:00"})
+        ids = {j.id for j in scheduler_manager.scheduler.get_jobs()}
+        assert "__quiet_hours_pause" not in ids
+        assert "__quiet_hours_resume" not in ids
+
+    def test_execute_scheduled_job_skipped_when_processing_paused(self, scheduler_manager, monkeypatch):
+        """D21 — when the global queue is paused (manual or quiet hours),
+        a scheduled trigger MUST NOT spawn a new Job. Otherwise an
+        every-15-min recently_added schedule would balloon the queue."""
+        from media_preview_generator.web import scheduler as sched_mod
+
+        called = []
+        scheduler_manager.set_run_job_callback(lambda **kw: called.append(kw))
+
+        schedule = scheduler_manager.create_schedule(
+            name="GatedSchedule",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 2 * * *",
+        )
+        # Stub settings_manager.processing_paused = True
+        fake_sm = MagicMock()
+        fake_sm.processing_paused = True
+        monkeypatch.setattr(
+            "media_preview_generator.web.settings_manager.get_settings_manager",
+            lambda: fake_sm,
+        )
+        sched_mod.execute_scheduled_job(
+            schedule["id"],
+            ["1"],
+            "Movies",
+            {},
+            None,
+            None,
+        )
+        assert called == [], "callback fired despite processing_paused=True"
+
+
 class TestExecuteScheduleStop:
     """D20 — the stop handler pauses the right jobs and ignores others."""
 
