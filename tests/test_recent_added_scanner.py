@@ -4,6 +4,7 @@ Exercises the stateless scan_recently_added function directly — the
 scheduler dispatch path is covered in test_scheduler.py.
 """
 
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -285,3 +286,84 @@ def test_scan_logs_history_when_items_submitted(mock_schedule, tmp_path, monkeyp
     import media_preview_generator.web.webhooks as wh
 
     assert any(e.get("source") == "recently_added" and e.get("status") == "queued" for e in wh._webhook_history)
+
+
+@pytest.fixture
+def _force_pdt_timezone():
+    """Set worker libc TZ to America/Los_Angeles for the duration of the test.
+
+    Restores both the env var AND calls ``time.tzset()`` AFTER the env
+    var is restored, so the worker's libc tz state matches the env on
+    cleanup. monkeypatch alone leaks: it restores the env var on
+    fixture teardown but doesn't run our tzset(), so libc keeps the
+    PDT setting and breaks every subsequent test that calls
+    ``datetime.fromtimestamp()`` on a UTC-naive value.
+    """
+    import time as _time
+
+    prev_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Los_Angeles"
+    if hasattr(_time, "tzset"):
+        _time.tzset()
+    try:
+        yield
+    finally:
+        if prev_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = prev_tz
+        if hasattr(_time, "tzset"):
+            _time.tzset()
+
+
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
+def test_scan_in_utc_minus_7_does_not_drop_in_window_items(mock_schedule, tmp_path, monkeypatch, _force_pdt_timezone):
+    """GitHub #226 — on a UTC-7 (PDT) host, plexapi returns addedAt as a
+    naive *local time*. The previous comparison (naive UTC cutoff vs
+    naive local addedAt) silently dropped every item because the local
+    timestamp was 7 hours behind the UTC cutoff. Pin the comparison via
+    the to_utc_naive helper using a real PDT system timezone so
+    ``datetime.fromtimestamp()`` actually returns the local-naive value
+    plexapi would produce on that host."""
+    import time as _time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    mock_schedule.return_value = True
+
+    # plexapi computes addedAt via datetime.fromtimestamp(unix_ts) with
+    # no tz arg → naive local time. Simulate "30 minutes ago" using
+    # exactly that path so the test exercises the real bug surface, not
+    # a synthetic stand-in.
+    now_unix = _time.time()
+    added_at = datetime.fromtimestamp(now_unix - 1800)  # naive local PDT
+    item = _make_item("New Movie", ["/data/movies/New.mkv"], added_at)
+    section = _make_section("Movies", "movie", "1", [item])
+    plex = _make_plex([section])
+
+    submitted = scanner.scan_recently_added(1, plex=plex)
+
+    assert submitted == 1, "30-min-ago item on a PDT host must NOT be dropped"
+    mock_schedule.assert_called_once()
+
+
+def test_to_utc_naive_handles_naive_local_input():
+    """to_utc_naive on a naive local datetime returns its UTC-naive
+    equivalent. Spot-check using a known-fixed timestamp; matches
+    plexapi's datetime.fromtimestamp(unix_ts) convention."""
+    from media_preview_generator.utils import to_utc_naive
+
+    # Pick a real unix ts and round-trip via local-naive; the result
+    # must equal the equivalent UTC-naive datetime regardless of host tz.
+    unix_ts = 1777352608  # 2026-04-28 05:03:28 UTC (the issue reporter's example)
+    local_naive = datetime.fromtimestamp(unix_ts)
+    expected_utc_naive = datetime.fromtimestamp(unix_ts, tz=timezone.utc).replace(tzinfo=None)
+    assert to_utc_naive(local_naive) == expected_utc_naive
+
+
+def test_to_utc_naive_passes_through_aware_input():
+    """to_utc_naive on a tz-aware datetime returns its UTC-naive form,
+    leaving the wall-clock value correct after offset adjustment."""
+    from media_preview_generator.utils import to_utc_naive
+
+    aware_pdt = datetime(2026, 4, 27, 22, 3, 28, tzinfo=timezone(timedelta(hours=-7)))
+    assert to_utc_naive(aware_pdt) == datetime(2026, 4, 28, 5, 3, 28)

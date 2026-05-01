@@ -111,10 +111,15 @@ class PlexProcessor(_MediaServerProcessor):
                     )
                     continue
 
+            # GitHub #226 — see utils.to_utc_naive docstring; comparing
+            # a naive UTC cutoff to a naive *local* added_at silently
+            # dropped every item on UTC-behind hosts.
+            from ..utils import to_utc_naive
+
             for item in results or []:
                 added_at = getattr(item, "addedAt", None)
                 if isinstance(added_at, datetime):
-                    added_naive = added_at.replace(tzinfo=None) if added_at.tzinfo else added_at
+                    added_naive = to_utc_naive(added_at)
                     if added_naive < cutoff_naive:
                         # Newest-first iteration; below the window means stop.
                         break

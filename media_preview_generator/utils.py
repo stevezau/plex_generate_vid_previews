@@ -10,7 +10,32 @@ import shutil
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
+
+
+def to_utc_naive(value: datetime) -> datetime:
+    """Convert a datetime to a UTC-naive value safe for comparison.
+
+    plexapi returns ``addedAt`` as a *naive local time* (via
+    ``datetime.fromtimestamp()`` with no tz arg), which silently
+    miscompares against a naive UTC cutoff on any non-UTC server. On a
+    PDT (UTC-7) host:
+
+        added_at     = 2026-04-27 22:03 (naive local PDT)
+        cutoff_naive = 2026-04-27 23:33 (naive UTC, ~30 min ago)
+        22:03 < 23:33 → True → item incorrectly dropped
+
+    This helper normalises both sides to UTC-naive so comparisons work
+    regardless of host timezone. For tz-aware inputs it converts to UTC
+    first; for naive inputs it assumes system local time (matching
+    plexapi's convention) and converts via the timestamp() round-trip.
+
+    See GitHub #226 for the silent zero-items repro on UTC-behind hosts.
+    """
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return datetime.fromtimestamp(value.timestamp(), tz=timezone.utc).replace(tzinfo=None)
 
 
 def calculate_title_width():

@@ -252,7 +252,7 @@ class TestPlexProcessorRecentlyAdded:
     """
 
     def test_item_id_is_bare_ratingkey_not_url(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         proc = PlexProcessor()
         cfg = _config(
@@ -270,7 +270,15 @@ class TestPlexProcessorRecentlyAdded:
         item.key = "/library/metadata/54321"
         item.ratingKey = 54321
         item.title = "Recent Movie"
-        item.addedAt = datetime.now(timezone.utc).replace(tzinfo=None)
+        # plexapi always produces naive local-time values via
+        # datetime.fromtimestamp(unix_ts) (no tz arg). Use the same path
+        # so the test data matches what the production code receives —
+        # otherwise to_utc_naive (which assumes naive == local) skews
+        # the comparison by the host's UTC offset on non-UTC test
+        # runners (CI box AEST is UTC+10 → 10h drift → silent drop).
+        import time as _time
+
+        item.addedAt = datetime.fromtimestamp(_time.time())
         item.locations = ["/r/recent.mkv"]
 
         with patch("media_preview_generator.processing.plex.PlexServer") as klass:

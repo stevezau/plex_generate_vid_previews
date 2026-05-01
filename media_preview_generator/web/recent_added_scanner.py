@@ -186,11 +186,19 @@ def _iter_window_items(section, libtype: str, cutoff: datetime):
             )
             return
 
+    # GitHub #226 — convert added_at to UTC-naive before comparing.
+    # plexapi returns addedAt as a naive *local time* via
+    # datetime.fromtimestamp(); the previous .replace(tzinfo=None) on
+    # the (UTC-aware) cutoff plus that naive local on the item silently
+    # dropped every result on UTC-behind hosts (e.g. PDT/UTC-7 saw
+    # 22:03 < 23:33 and exited the loop on the first item).
+    from ..utils import to_utc_naive
+
     cutoff_naive = cutoff.replace(tzinfo=None)
     for item in results or []:
         added_at = getattr(item, "addedAt", None)
         if isinstance(added_at, datetime):
-            added_naive = added_at.replace(tzinfo=None) if added_at.tzinfo else added_at
+            added_naive = to_utc_naive(added_at)
             if added_naive < cutoff_naive:
                 # We're scanning newest-first; once we drop below the
                 # window we can stop walking the section.
@@ -340,7 +348,12 @@ def scan_recently_added(
             scanned_sections,
         )
     else:
-        logger.debug(
+        # Promoted from DEBUG to INFO (GitHub #226) — silent zero-item
+        # scans masked the timezone-comparison bug for months. INFO
+        # makes "ran successfully but found nothing" visible at the
+        # default log level so operators can spot scan failures vs.
+        # genuinely-quiet libraries.
+        logger.info(
             "Recently Added: no new items in last {:.2g}h ({} section(s) scanned)",
             lookback,
             scanned_sections,
