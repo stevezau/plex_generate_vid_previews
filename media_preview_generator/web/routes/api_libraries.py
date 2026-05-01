@@ -323,13 +323,11 @@ def get_libraries():
                         )
 
                 return jsonify({"libraries": libraries})
-            except Exception as e:
-                logger.error(
-                    "Could not load Plex libraries using the saved configuration ({}: {}). "
+            except Exception:
+                logger.exception(
+                    "Could not load Plex libraries using the saved configuration. "
                     "The library picker will show 'Plex not configured. Complete setup in Settings.' "
-                    "Verify the Plex URL and token in Settings, and that Plex is reachable from this app.",
-                    type(e).__name__,
-                    e,
+                    "Verify the Plex URL and token in Settings, and that Plex is reachable from this app."
                 )
                 return jsonify(
                     {
@@ -407,12 +405,10 @@ def get_libraries():
         )
         return jsonify({"error": f"{detail}. {hint}", "libraries": []}), 502
     except Exception as e:
-        logger.error(
-            "Plex libraries: could not retrieve the library list ({}: {}). "
+        logger.exception(
+            "Plex libraries: could not retrieve the library list. "
             "The library picker will show an error until this is fixed. "
-            "Check the recent log lines for the underlying cause; "
-            "verify the Plex URL/token in Settings and that Plex is reachable.",
-            type(e).__name__,
-            e,
+            "The traceback above identifies the cause; verify the Plex URL/token in Settings "
+            "and that Plex is reachable."
         )
         return jsonify({"error": f"Failed to retrieve libraries: {e}", "libraries": []}), 500

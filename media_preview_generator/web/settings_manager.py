@@ -163,14 +163,12 @@ class SettingsManager:
                 clear_config_cache()
             except (ImportError, AttributeError):
                 pass
-        except Exception as e:
-            logger.error(
-                "Could not save settings to {} ({}: {}). "
+        except Exception:
+            logger.exception(
+                "Could not save settings to {}. "
                 "Your changes were NOT persisted and will be lost on restart. Check the config "
                 "directory exists and is writable, and that the disk isn't full.",
                 self.settings_file,
-                type(e).__name__,
-                e,
             )
             raise
 
@@ -181,14 +179,12 @@ class SettingsManager:
                 with open(self.setup_state_file) as f:
                     self._setup_state = json.load(f)
                 logger.debug("Loaded setup state from {}", self.setup_state_file)
-            except Exception as e:
-                logger.error(
-                    "Could not read setup-state file at {} ({}: {}). "
+            except Exception:
+                logger.exception(
+                    "Could not read setup-state file at {}. "
                     "The setup wizard will treat this as a fresh install — you may be asked "
                     "to re-complete first-run setup. Check the file is valid JSON and readable.",
                     self.setup_state_file,
-                    type(e).__name__,
-                    e,
                 )
                 self._setup_state = {}
         else:
@@ -201,13 +197,11 @@ class SettingsManager:
 
             atomic_json_save_with_backup(str(self.setup_state_file), self._setup_state)
             logger.debug("Saved setup state to {}", self.setup_state_file)
-        except Exception as e:
-            logger.error(
-                "Could not save setup-state to {} ({}: {}). "
+        except Exception:
+            logger.exception(
+                "Could not save setup-state to {}. "
                 "Wizard progress was NOT persisted; check the config directory is writable.",
                 self.setup_state_file,
-                type(e).__name__,
-                e,
             )
             raise
 

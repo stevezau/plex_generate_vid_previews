@@ -126,14 +126,12 @@ def dismiss_notification_permanent(notification_id: str):
 
     try:
         get_settings_manager().dismiss_notification_permanent(notification_id)
-    except Exception as exc:
-        logger.error(
-            "Notifications: could not save your dismissal of notification {!r} ({}: {}). "
+    except Exception:
+        logger.exception(
+            "Notifications: could not save your dismissal of notification {!r}. "
             "The notification will reappear on the next page reload. "
             "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
             notification_id,
-            type(exc).__name__,
-            exc,
         )
         return (
             jsonify({"ok": False, "error": "Failed to persist dismissal"}),
@@ -156,13 +154,11 @@ def reset_dismissed_notifications():
 
     try:
         get_settings_manager().reset_dismissed_notifications()
-    except Exception as exc:
-        logger.error(
-            "Notifications: could not reset your list of dismissed notifications ({}: {}). "
+    except Exception:
+        logger.exception(
+            "Notifications: could not reset your list of dismissed notifications. "
             "Your dismissals are unchanged and the previously-hidden notifications will remain hidden. "
-            "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
-            type(exc).__name__,
-            exc,
+            "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID)."
         )
         return jsonify({"ok": False, "error": "Failed to reset"}), 500
     reset_session()
@@ -180,14 +176,12 @@ def rescan_gpus():
         with _gpu_cache_lock:
             gpus = _gpu_cache["result"] or []
         return jsonify({"gpus": gpus})
-    except Exception as e:
-        logger.error(
-            "GPU re-scan failed ({}: {}). "
+    except Exception:
+        logger.exception(
+            "GPU re-scan failed. "
             "The GPU list shown in Settings won't refresh — the previous list is still in effect. "
-            "Check the recent log lines above; if your GPU isn't visible to the container, "
-            "verify the device is forwarded (Docker: --runtime=nvidia or --device /dev/dri:/dev/dri).",
-            type(e).__name__,
-            e,
+            "The traceback above identifies the cause; if your GPU isn't visible to the container, "
+            "verify the device is forwarded (Docker: --runtime=nvidia or --device /dev/dri:/dev/dri)."
         )
         return jsonify({"error": "GPU scan failed"}), 500
 
@@ -215,14 +209,12 @@ def get_system_status():
             "pending_jobs": len(job_manager.get_pending_jobs()),
         }
         return jsonify(resp)
-    except Exception as e:
-        logger.error(
-            "Could not load the system status panel for the dashboard ({}: {}). "
+    except Exception:
+        logger.exception(
+            "Could not load the system status panel for the dashboard. "
             "GPU info and running-job summary won't load until this is resolved — "
             "actual job processing is unaffected. "
-            "Check the recent log lines above for the underlying cause.",
-            type(e).__name__,
-            e,
+            "The traceback above identifies the cause."
         )
         return jsonify({"error": "Failed to retrieve system status"}), 500
 
@@ -374,14 +366,11 @@ def get_config():
                 "No workers configured — jobs will remain pending until GPU or CPU workers are added."
             )
         return jsonify(resp)
-    except Exception as e:
-        logger.error(
-            "Could not load the runtime config for the API ({}: {}). "
+    except Exception:
+        logger.exception(
+            "Could not load the runtime config for the API. "
             "The /api/system/config endpoint will return an error until this is resolved. "
-            "Check the recent log lines above for the underlying cause; "
-            "verify settings.json is readable and valid JSON.",
-            type(e).__name__,
-            e,
+            "The traceback above identifies the cause; verify settings.json is readable and valid JSON."
         )
         return jsonify({"error": "Failed to retrieve configuration"}), 500
 
