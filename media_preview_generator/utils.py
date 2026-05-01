@@ -135,7 +135,7 @@ def sanitize_path(path: str) -> str:
     return os.path.normpath(path)
 
 
-def atomic_json_save(filepath: str, data: Any, *, permissions: int = None) -> None:
+def atomic_json_save(filepath: str, data: Any, *, permissions: int | None = None) -> None:
     """Write JSON data to a file atomically.
 
     Writes to a temporary file in the same directory first, then replaces
@@ -201,7 +201,7 @@ def _prune_old_backups(filepath: str, keep: int) -> None:
             pass
 
 
-def atomic_json_save_with_backup(filepath: str, data: Any, *, permissions: int = None) -> None:
+def atomic_json_save_with_backup(filepath: str, data: Any, *, permissions: int | None = None) -> None:
     """Atomic JSON write that keeps the last N timestamped backups of prior contents.
 
     Same atomicity guarantees as ``atomic_json_save``, plus: before writing,

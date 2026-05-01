@@ -883,12 +883,12 @@ class JobManager:
     def update_progress(
         self,
         job_id: str,
-        percent: float = None,
-        current_item: str = None,
-        total_items: int = None,
-        processed_items: int = None,
-        speed: str = None,
-        current_file: str = None,
+        percent: float | None = None,
+        current_item: str | None = None,
+        total_items: int | None = None,
+        processed_items: int | None = None,
+        speed: str | None = None,
+        current_file: str | None = None,
     ) -> Job | None:
         """Update job progress."""
         with self._lock:
@@ -1090,7 +1090,7 @@ class JobManager:
             except OSError as e:
                 logger.debug("Could not append to job log {}: {}", log_path, e)
 
-    def get_logs(self, job_id: str, last_n: int = None) -> list[str]:
+    def get_logs(self, job_id: str, last_n: int | None = None) -> list[str]:
         """Get logs for a job (from memory if present, else from file; retention message if cleared)."""
         with self._lock:
             if job_id in self._job_logs:

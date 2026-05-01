@@ -73,7 +73,7 @@ def _build_selected_gpus(settings) -> list:
     return selected
 
 
-def _start_job_async(job_id: str, config_overrides: dict = None):
+def _start_job_async(job_id: str, config_overrides: dict | None = None):
     """Start job execution in a background thread.
 
     If a thread is already in-flight for *job_id* (e.g. still scanning
@@ -310,7 +310,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
                 current: int,
                 total: int,
                 message: str,
-                percent_override: float = None,
+                percent_override: float | None = None,
             ):
                 """Update job progress from processing."""
                 if percent_override is not None:

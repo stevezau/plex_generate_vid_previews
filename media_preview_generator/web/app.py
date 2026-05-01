@@ -347,7 +347,7 @@ def _log_image_deprecation_warning() -> None:
     )
 
 
-def create_app(config_dir: str = None) -> Flask:
+def create_app(config_dir: str | None = None) -> Flask:
     """Create and configure the Flask application.
 
     Args:

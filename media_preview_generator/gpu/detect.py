@@ -361,7 +361,7 @@ def _test_hwaccel_functionality(
         return False
 
 
-def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str, acceleration: str = None) -> str:
+def format_gpu_info(gpu_type: str, gpu_device: str, gpu_name: str, acceleration: str | None = None) -> str:
     """Format GPU information for display.
 
     Args:

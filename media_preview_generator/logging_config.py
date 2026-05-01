@@ -129,10 +129,10 @@ def get_app_log_path() -> str:
 
 def setup_logging(
     log_level: str = "INFO",
-    console: Console = None,
-    log_format: str = None,
+    console: Console | None = None,
+    log_format: str | None = None,
     rotation: str = "10 MB",
-    retention=5,
+    retention: int = 5,
 ) -> None:
     """Create (or replace) the managed loguru handlers.
 

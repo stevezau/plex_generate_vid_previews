@@ -68,7 +68,7 @@ def preview_settings_after_update(base: dict[str, Any], updates: dict[str, Any])
 class SettingsManager:
     """Manages persistent settings stored in a JSON file."""
 
-    def __init__(self, config_dir: str = None):
+    def __init__(self, config_dir: str | None = None):
         """Initialize settings manager with config directory."""
         if config_dir is None:
             config_dir = os.environ.get("CONFIG_DIR", "/config")
@@ -709,7 +709,7 @@ _settings_manager: SettingsManager | None = None
 _settings_lock = threading.Lock()
 
 
-def get_settings_manager(config_dir: str = None) -> SettingsManager:
+def get_settings_manager(config_dir: str | None = None) -> SettingsManager:
     """Get the global settings manager instance.
 
     Thread-safe singleton. If config_dir is provided and different from
