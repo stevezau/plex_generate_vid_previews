@@ -16,19 +16,29 @@ GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfi
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
+| **Multi-Vendor** | Plex, Emby, and Jellyfin in any combination — Plex bundle BIF, Emby `-WIDTH-INTERVAL.bif` sidecar, or Jellyfin trickplay tile sheets, all from one app |
+| **One-Pass-Many-Servers** | The dispatcher runs FFmpeg once per file and publishes the right format to every server that owns it (a Plex+Jellyfin install gets both BIF and trickplay from a single decode) |
+| **Universal Webhook URL** | `POST /api/webhooks/incoming` auto-detects Plex / Emby / Jellyfin / Sonarr / Radarr / generic-`{path}` payloads — one URL, every vendor |
+| **Multi-Plex** | Multiple Plex servers configured side by side, routed by `clientIdentifier` |
+| **Plex OAuth** | Sign-in flow in the setup wizard discovers all your Plex servers; pick which to add |
+| **Quick Connect** | Jellyfin Quick Connect ceremony in the wizard — no token copying |
+| **Trickplay One-Click Fix** | Surfaces Jellyfin's "EnableTrickplayImageExtraction" setting per library and flips it on with one click |
+| **Frame Reuse Cache** | A webhook arriving for a file recently extracted by a sibling server reuses the frames without re-running FFmpeg (configurable TTL + disk cap) |
+| **Slow-Backoff Retry Queue** | Files where the source server says "not yet indexed" retry on geometric backoff (30s → 60min) instead of dropping the webhook |
+| **Cross-Server BIF Viewer** | Inspect any vendor's published preview for any file from one viewer |
+| **Multi-GPU** | NVIDIA, AMD, Intel — per-GPU enable/disable and worker count |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
 | **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
-| **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| **Library Filtering** | Process specific Plex libraries |
-| **Quality Control** | Adjustable thumbnail quality (1-10) |
+| **Hardware Acceleration** | CUDA, VAAPI, QuickSync (and OpenCL / Vulkan for Dolby Vision tone-mapping) |
+| **Per-Server Filtering** | Library toggles, path mappings, and exclude rules scoped per server |
+| **Quality Control** | Adjustable thumbnail quality (1-10) and frame interval (1-60s) |
 | **Docker Ready** | Pre-built images with GPU support |
-| **Web Dashboard** | Manage jobs, schedules, and status |
+| **Web Dashboard** | Manage jobs, schedules, status, and the recent-webhook history |
 | **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Radarr/Sonarr** | Webhook integration for auto-processing on import |
-| **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
-| **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
+| **Smart Skipping** | Skips files that already have a fresh preview output (mtime+size journal) |
+| **Radarr/Sonarr/Sportarr** | Webhook integration for auto-processing on import |
+| **Plex Direct Webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Recently Added Scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ## Quick Start
 

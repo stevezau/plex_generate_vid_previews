@@ -33,15 +33,18 @@ Dashboard for managing preview generation jobs, settings, and schedules.
 
 ### Setup Wizard
 
-When you first access the web interface, you'll be guided through a **Setup Wizard**:
+When you first access the web interface, you'll be guided through a **Setup Wizard** that supports **Plex, Emby, and Jellyfin**:
 
-1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
-2. **Select Server** — choose which Plex server to connect to
-3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, CPU threads, thumbnail quality, etc.
-5. **Security** — view or customize your access token (optional)
+1. **Choose your media server** — pick **Plex**, **Emby**, or **Jellyfin**. The chosen card expands inline:
+   - **Plex** — sign in via Plex OAuth (no manual token copying), or paste a URL + token if you prefer.
+   - **Emby** — enter the server URL and an API key.
+   - **Jellyfin** — enter the URL and run a **Quick Connect** ceremony (or paste an API key).
+2. **Server & Libraries** *(Plex only)* — pick which Plex server (if you have several) and which libraries to enable. Emby/Jellyfin flows skip this step; libraries are managed later from **Settings → Media Servers**.
+3. **Path Configuration** *(Plex only)* — confirm the Plex application data folder where BIF files are written, plus any media path mappings. Emby/Jellyfin push their output via HTTP, so this step is skipped for those flows.
+4. **Processing Options** — per-GPU enable/workers/FFmpeg threads, CPU workers, thumbnail interval, and quality.
+5. **Security** — view or replace your access token (optional).
 
-After setup completes, you'll be taken to the dashboard.
+After setup completes, you'll land on the dashboard. You can add additional servers (any vendor, any number) at any time from **Settings → Media Servers** without re-running the wizard.
 
 ### Accessing the Dashboard
 

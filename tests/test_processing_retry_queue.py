@@ -39,6 +39,7 @@ class TestBackoffSchedule:
         assert _BACKOFF[0] <= 60
 
 
+@pytest.mark.slow
 class TestRetrySchedulerSchedule:
     def test_schedule_fires_callback_after_delay(self):
         sched = RetryScheduler()
@@ -106,6 +107,7 @@ class TestRetrySchedulerSchedule:
                     assert ok is False, n
 
 
+@pytest.mark.slow
 class TestRetrySchedulerCancel:
     def test_cancel_pending_retry(self):
         sched = RetryScheduler()
@@ -131,6 +133,7 @@ class TestRetrySchedulerCancel:
         assert sched.cancel("/never-scheduled") is False
 
 
+@pytest.mark.slow
 class TestSchedulerSingleton:
     def test_get_retry_scheduler_is_singleton(self):
         a = get_retry_scheduler()
@@ -156,6 +159,7 @@ class TestSchedulerSingleton:
         assert cb_calls == 0
 
 
+@pytest.mark.slow
 class TestScheduleRetryForUnindexed:
     """The integration-y wrapper that calls back into process_canonical_path."""
 

@@ -20,15 +20,48 @@ from media_preview_generator.logging_config import (
 
 @pytest.fixture(autouse=True)
 def _reset_logging_state():
-    """Reset setup_logging module globals between tests."""
+    """Reset setup_logging module globals AND loguru sinks between tests.
+
+    Without snapshotting loguru's own _core.handlers, tests that call
+    setup_logging() (which removes existing handlers and adds new ones
+    bound to test-scoped StringIO objects) leave the global loguru in a
+    broken state. Background threads from other test modules — the job
+    dispatcher, scheduler, retry queue, webhook timers — keep emitting
+    into those torn-down sinks and can crash with
+    "I/O operation on closed file" when the captured StringIO is GC'd.
+
+    Snapshot loguru's handler set on entry, restore on exit so the
+    next test (or a daemon thread that survives this test) sees a sane
+    sink configuration.
+    """
+    from loguru import logger as _loguru_logger
+
+    snapshot = dict(_loguru_logger._core.handlers)  # noqa: SLF001
     _logging_mod._managed_handler_ids = []
     _logging_mod._initial_setup_done = False
     old_broadcaster = _logging_mod._broadcaster
     _logging_mod._broadcaster = None
-    yield
-    _logging_mod._managed_handler_ids = []
-    _logging_mod._initial_setup_done = False
-    _logging_mod._broadcaster = old_broadcaster
+    try:
+        yield
+    finally:
+        _logging_mod._managed_handler_ids = []
+        _logging_mod._initial_setup_done = False
+        _logging_mod._broadcaster = old_broadcaster
+        # Restore loguru's pre-test handler set so test-scoped StringIO
+        # sinks can't outlive the test that created them.
+        _loguru_logger.remove()
+        for handler in snapshot.values():
+            try:
+                _loguru_logger.add(
+                    handler._sink,  # noqa: SLF001
+                    level=handler.levelno,
+                )
+            except Exception:
+                # Best-effort restore; some handlers (Rich console) carry
+                # state that doesn't round-trip cleanly. The next call to
+                # setup_logging() in production code will re-establish
+                # the production sinks anyway.
+                pass
 
 
 class TestLoggingConfig:

@@ -2,7 +2,7 @@
 
 > [Back to Docs](README.md)
 
-Get Plex preview thumbnails generating in minutes.
+Get preview thumbnails generating in minutes — for **Plex, Emby, Jellyfin**, or any combination of them.
 
 > [!IMPORTANT]
 > This page is the source of truth for installation and first-time setup.
@@ -34,9 +34,13 @@ Get Plex preview thumbnails generating in minutes.
 
 ## Prerequisites
 
-1. Plex Media Server running and accessible
-2. A Plex account (for OAuth sign-in)
-3. Docker installed on your server
+1. **At least one media server** reachable from this container — any of:
+   - **Plex Media Server** (a Plex account is needed for OAuth sign-in; a manual URL + token also works)
+   - **Emby Server** (URL + API key)
+   - **Jellyfin Server** (URL + API key, or use **Quick Connect** in the Setup Wizard)
+2. Docker installed on your server
+
+You can configure several servers — even a mix of vendors — and a single FFmpeg pass will publish to every server that owns the file.
 
 ---
 
@@ -75,7 +79,17 @@ Find your token using the [Authentication Token](#authentication-token) section 
 
 1. Open `http://YOUR_SERVER_IP:8080`
 2. Enter the authentication token from the logs
-3. Follow the wizard: **Sign in with Plex** → **Select Server** → **Configure Paths** → **Options** → **Security**
+3. Follow the wizard:
+   - **Step 1 — Choose your media server**: pick Plex, Emby, or Jellyfin. The vendor card expands inline to its own connect flow:
+     - **Plex** → **Sign in with Plex** OAuth (or paste a URL + token).
+     - **Emby** → enter URL + API key.
+     - **Jellyfin** → enter URL + **Quick Connect** code (or URL + API key).
+   - **Step 2 — Server & Libraries** *(Plex only)*: pick which server (if multiple) and which libraries to enable. Emby/Jellyfin flows skip this step — libraries are managed later from the Servers page.
+   - **Step 3 — Path Configuration** *(Plex only)*: confirm the Plex application data folder (where the BIF files are written) and any media path mappings.
+   - **Step 4 — Processing Options**: GPU/CPU workers, FFmpeg threads, thumbnail interval, quality.
+   - **Step 5 — Security**: view or replace your access token (optional).
+
+After setup, add additional servers (any vendor) any time from **Settings → Media Servers**.
 
 ---
 
@@ -97,8 +111,11 @@ This tool generates **video preview thumbnails only** — the small frames Plex 
 | Container Path | Purpose | Mode |
 |----------------|---------|------|
 | `/media` | Your media files | `ro` (read-only) |
-| `/plex` | Plex application data (where BIF files are stored) | `rw` |
+| `/plex` | Plex application data (where Plex BIF files are stored) | `rw` |
 | `/config` | App settings, schedules, job history | `rw` |
+
+> [!NOTE]
+> **Emby / Jellyfin output is delivered via HTTP**, not a shared mount — the container POSTs the generated `.bif` sidecar (Emby) or trickplay tile sheets + manifest (Jellyfin) to the server's REST API. You only need a writable Plex application-data mount when you have at least one Plex server configured. Containers serving Emby/Jellyfin only can omit `/plex`.
 
 ---
 
@@ -285,7 +302,7 @@ Two install paths: the Community Applications template (easiest) or a manual `do
 4. Complete the Setup Wizard — sign in with Plex, configure settings.
 
 > [!TIP]
-> The setup wizard guides you through Plex OAuth authentication. No need to manually find your Plex token.
+> The setup wizard guides you through Plex OAuth, Emby URL + API key, or Jellyfin Quick Connect — no need to copy tokens by hand for any of the supported vendors.
 
 ### Manual Docker Run — Intel iGPU (Most Common)
 

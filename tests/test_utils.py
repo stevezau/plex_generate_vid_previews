@@ -10,6 +10,8 @@ import tempfile
 from collections import namedtuple
 from unittest.mock import patch
 
+import pytest
+
 from media_preview_generator.utils import (
     calculate_title_width,
     format_display_title,
@@ -294,6 +296,7 @@ class TestAtomicJsonSaveWithBackup:
         assert len(suffix) == 15 and suffix[8] == "-"
         assert _json.loads(baks[0].read_text())["v"] == 1
 
+    @pytest.mark.slow
     def test_keeps_history_across_many_writes(self, tmp_path):
         """Multiple saves accumulate timestamped backups (vs. the old rolling single)."""
         import time
@@ -309,6 +312,7 @@ class TestAtomicJsonSaveWithBackup:
         # 5 saves → 4 backups (the first save had no prior contents to back up).
         assert len(baks) == 4
 
+    @pytest.mark.slow
     def test_prunes_oldest_beyond_retention(self, tmp_path, monkeypatch):
         """CONFIG_BACKUP_KEEP caps how many history entries are kept."""
         import time

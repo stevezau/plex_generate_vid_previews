@@ -100,6 +100,7 @@ class TestFrameCacheBasics:
 
 
 class TestCacheValidity:
+    @pytest.mark.slow
     def test_mtime_change_invalidates(self, tmp_path):
         cache = FrameCache(tmp_path / "cache")
         media = tmp_path / "m.mkv"
