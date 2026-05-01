@@ -637,10 +637,26 @@ def bif_servers_search(server_id: str):
         # install). Each vendor adapter overrides search_items to use its
         # own server-side index — Plex /hubs/search via library.search(),
         # Emby/Jellyfin /Items?searchTerm=…
+        #
+        # The vendor search API doesn't know which libraries the user has
+        # disabled in this app's settings, so post-filter the hits to drop
+        # results from libraries the user explicitly turned off (D4-FIX
+        # for the regression introduced by the brute-force-walk replacement).
+        enabled_library_ids: set[str] = set()
+        for lib in server_cfg.libraries or []:
+            if getattr(lib, "enabled", True):
+                enabled_library_ids.add(str(getattr(lib, "id", "")))
+
         items = server.search_items(query, limit=_MAX_SEARCH_RESULTS)
         for item in items:
             if len(results) >= _MAX_SEARCH_RESULTS:
                 break
+            # Items without a library_id pass through (vendor APIs sometimes
+            # omit it on aggregate-search responses); only filter when we
+            # can confidently say the hit is from a disabled library.
+            item_lib_id = str(getattr(item, "library_id", "") or "")
+            if enabled_library_ids and item_lib_id and item_lib_id not in enabled_library_ids:
+                continue
             results.append(_resolve_preview_for_item(item, server_cfg))
     except Exception as exc:
         logger.warning(

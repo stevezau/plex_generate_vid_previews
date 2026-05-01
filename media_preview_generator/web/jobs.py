@@ -357,6 +357,13 @@ class JobManager:
         self._job_logs: dict[str, deque] = {}
         self._max_log_lines = 500
 
+        # Per-job file-results JSONL counter — keyed by job_id, lazily seeded
+        # from disk on first record_file_result call. Without this, the cap
+        # check would re-scan the JSONL on EVERY append and a 100k-item scan
+        # past the 5000-entry cap would do ~95k * O(5k) = 475M file reads.
+        self._file_result_counts: dict[str, int] = {}
+        self._file_result_counts_lock = threading.Lock()
+
         # Worker status tracking
         self._worker_statuses: dict[str, WorkerStatus] = {}
 
@@ -1211,18 +1218,27 @@ class JobManager:
             worker: Worker display name (e.g. "GPU Worker 1 (NVIDIA TITAN RTX)").
         """
         path = self._file_results_path(job_id)
-        # Soft cap — reading the file size each call is cheap and avoids
-        # carrying a per-job counter through the orchestrator just for this.
-        # The truncation marker line itself counts toward the cap so a
-        # full file is still parseable JSONL.
-        try:
-            existing_lines = 0
-            if os.path.isfile(path):
-                with open(path, "rb") as f:
-                    existing_lines = sum(1 for _ in f)
-            if existing_lines >= self._FILE_RESULTS_PER_JOB_CAP:
-                # One-shot truncation marker on the boundary record only.
-                if existing_lines == self._FILE_RESULTS_PER_JOB_CAP:
+
+        # Soft-cap check is O(1) via an in-memory per-job counter, lazily
+        # seeded from disk on the first call. The naive approach
+        # (re-scanning the JSONL each call) is O(n) per call and turns a
+        # 100k-item scan past the cap into ~475M file reads.
+        with self._file_result_counts_lock:
+            if job_id not in self._file_result_counts:
+                seeded = 0
+                if os.path.isfile(path):
+                    try:
+                        with open(path, "rb") as f:
+                            seeded = sum(1 for _ in f)
+                    except OSError as e:
+                        logger.debug("Could not seed file-results counter for {}: {}", path, e)
+                self._file_result_counts[job_id] = seeded
+
+            current = self._file_result_counts[job_id]
+            if current >= self._FILE_RESULTS_PER_JOB_CAP:
+                # One-shot truncation marker on the boundary record only;
+                # subsequent calls are silent O(1) returns.
+                if current == self._FILE_RESULTS_PER_JOB_CAP:
                     marker = {
                         "file": "",
                         "outcome": "truncated",
@@ -1237,11 +1253,10 @@ class JobManager:
                     try:
                         with open(path, "a") as f:
                             f.write(json.dumps(marker, separators=(",", ":")) + "\n")
+                        self._file_result_counts[job_id] = current + 1
                     except OSError as e:
                         logger.debug("Could not append truncation marker to {}: {}", path, e)
                 return
-        except OSError as e:
-            logger.debug("Could not stat file results at {}: {}", path, e)
 
         record = {
             "file": file_path,
@@ -1253,6 +1268,8 @@ class JobManager:
         try:
             with open(path, "a") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            with self._file_result_counts_lock:
+                self._file_result_counts[job_id] = self._file_result_counts.get(job_id, 0) + 1
         except OSError as e:
             logger.debug("Could not append file result to {}: {}", path, e)
 
@@ -1304,6 +1321,10 @@ class JobManager:
                 os.remove(path)
         except OSError as e:
             logger.debug("Could not remove file results {}: {}", path, e)
+        # Drop the in-memory counter so a future job that reuses this id
+        # (or a fresh fixture) doesn't inherit a stale "saturated" state.
+        with self._file_result_counts_lock:
+            self._file_result_counts.pop(job_id, None)
 
     # ========================================================================
     # Worker Status Management
