@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-server support (Plex + Emby + Jellyfin)** — any combination of servers can be configured under Settings → Media Servers. The dispatcher runs FFmpeg once per file and publishes the right preview format to every server that owns it: Plex bundle BIF, Emby `-WIDTH-INTERVAL.bif` sidecar, or Jellyfin trickplay tile sheets + manifest. Per-server library filtering, path mappings, exclude rules, and credentials are all stored on the server entry — no global single-Plex assumption left.
+- **Universal webhook router** (`POST /api/webhooks/incoming`) auto-detects Plex / Emby / Jellyfin / Radarr / Sonarr / generic `{path: ...}` payloads and dispatches to the right owners. Per-server URLs (`POST /api/webhooks/server/<id>`) pin a webhook to one configured server.
+- **Plex Direct Webhook (Plex Pass) registration** — register/unregister this app's webhook URL with plex.tv directly from the Servers page. Per-server registration: each Plex card carries its own webhook URL.
+- **Frame reuse cache** — when a webhook for a file fires for a sibling server within the configured TTL, frames extracted by FFmpeg are reused without re-running. Tunable under Settings → Performance (`enabled`, `ttl_minutes`, `max_cache_disk_mb`; defaults: enabled / 60 min / 2 GB).
+- **Slow-backoff retry queue** — files where the source server says "not yet indexed" are retried on a geometric backoff (30s → 2m → 5m → 15m → 60m) instead of dropping the webhook.
+- **Multi-Plex same-vendor support** — multiple Plex servers can be configured side by side; webhooks are routed by `server_identity` (Plex `clientIdentifier` / Emby/Jellyfin `ServerId`) so the right server's bundle path is updated.
+- **Jellyfin trickplay one-click fix** — Jellyfin libraries default `EnableTrickplayImageExtraction` to false, which silently hides this app's published manifests. The Servers page surfaces a "Fix it for me" button when any library is mis-configured.
+- **Cross-server BIF / trickplay viewer** — the BIF viewer reads any of the three vendors' formats so you can verify "did Plex get the bundle, did Emby get the sidecar, did Jellyfin get the tile sheets" from one UI.
+- **Setup wizard vendor picker (step 1)** — choose Plex (OAuth), Emby (password / API key), or Jellyfin (Quick Connect / password / API key). Plex stays the recommended default; the wizard skips through to the Servers page for non-Plex installs.
+- **Schema migrations v7 → v11** (`upgrade.py`) — synthesise `media_servers` from legacy flat `plex_*` keys (v7), move global `path_mappings` / `exclude_paths` into the per-server entry (v8), dedupe rows from the v7+v8 double-copy bug (v9), rewrite legacy Plex Direct webhook URL `/plex` → `/incoming` and drop the per-server `webhook_secret` key (v10), and seed the `frame_reuse` block with sane defaults (v11).
+- **Job storage moved to SQLite** (Phase J8) — jobs persist as one row per job in `jobs.db` instead of rewriting the whole `jobs.json` on every change. Per-row upserts keep schema drift on free-form fields (progress, config, publishers) from wiping job history.
+- **Schema downgrade refusal** — refuses to start when `settings.json` was written by a newer schema version than the running binary, instead of silently dropping unknown fields on the next save (the failure mode that wiped a tester's job history during a tag-drift incident).
+
+### Changed
+
+- The dedicated CPU-fallback worker pool was removed. When a GPU worker hits `CodecNotSupportedError`, it now retries the same item on CPU in-place inside the GPU worker. Existing `cpu_fallback_threads` settings are folded into `cpu_threads` automatically on upgrade (schema v5).
+- The `recently_added_*` settings keys are migrated into real Schedule entries on first start (schema v4); the obsolete `system_recently_added_scan` APScheduler job is removed.
+
 ### Fixed
 
 - **Multi-GPU NVIDIA detection in Docker (#221)** — containers running the NVIDIA Container Toolkit deliberately omit `/dev/dri/renderD*` nodes, so DRM enumeration saw zero GPUs and the nvidia-smi fallback only ever registered one card. Even on bare-metal hosts, every NVIDIA GPU collapsed onto a single `"cuda"` device path in `gpu_config`. NVIDIA GPUs are now enumerated primarily via `nvidia-smi` (one entry per card, keyed as `cuda:0`, `cuda:1`, …) and each card is independently CUDA-tested and dispatched with FFmpeg's `-hwaccel_device` flag. Legacy generic `"cuda"` gpu_config entries are stripped automatically on upgrade (schema v6).

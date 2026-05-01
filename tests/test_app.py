@@ -113,11 +113,16 @@ class TestRunScheduledJob:
     """Test module-level scheduled job callback."""
 
     @patch("media_preview_generator.web.routes._start_job_async")
-    def test_creates_and_starts_job(self, mock_start):
-        """run_scheduled_job creates a job and calls _start_job_async."""
+    def test_creates_and_starts_job(self, mock_start, tmp_path):
+        """run_scheduled_job creates a job and calls _start_job_async.
+
+        Uses tmp_path (not a hard-coded /tmp/test_scheduled_job) so xdist
+        workers don't race on the same dir and clobber each other's
+        auth.json / settings.json mid-test.
+        """
         from media_preview_generator.web.app import create_app
 
-        config_dir = "/tmp/test_scheduled_job"
+        config_dir = str(tmp_path / "scheduled_job")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -135,15 +140,11 @@ class TestRunScheduledJob:
                 run_scheduled_job(library_name="Movies")
                 mock_start.assert_called_once()
 
-        import shutil
-
-        shutil.rmtree(config_dir, ignore_errors=True)
-
     @patch("media_preview_generator.web.routes._start_job_async")
-    def test_includes_library_id_in_config(self, mock_start):
+    def test_includes_library_id_in_config(self, mock_start, tmp_path):
         from media_preview_generator.web.app import create_app
 
-        config_dir = "/tmp/test_scheduled_job2"
+        config_dir = str(tmp_path / "scheduled_job2")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -161,10 +162,6 @@ class TestRunScheduledJob:
                 run_scheduled_job(library_id="1", library_name="Movies")
                 config_overrides = mock_start.call_args[0][1]
                 assert "1" in str(config_overrides)
-
-        import shutil
-
-        shutil.rmtree(config_dir, ignore_errors=True)
 
 
 class TestWsgiModule:
@@ -241,14 +238,17 @@ class TestPrewarmCaches:
     """Test background cache pre-warming at startup."""
 
     @patch("media_preview_generator.web.app._prewarm_caches")
-    def test_prewarm_called_during_create_app(self, mock_prewarm):
-        """create_app invokes _prewarm_caches so GPU/version caches are warm."""
+    def test_prewarm_called_during_create_app(self, mock_prewarm, tmp_path):
+        """create_app invokes _prewarm_caches so GPU/version caches are warm.
+
+        Uses tmp_path so parallel xdist workers don't race on a shared dir.
+        """
         import json
         import os
 
         from media_preview_generator.web.app import create_app
 
-        config_dir = "/tmp/test_prewarm"
+        config_dir = str(tmp_path / "prewarm")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -263,10 +263,6 @@ class TestPrewarmCaches:
         ):
             create_app(config_dir=config_dir)
             mock_prewarm.assert_called_once()
-
-        import shutil
-
-        shutil.rmtree(config_dir, ignore_errors=True)
 
     @pytest.mark.real_prewarm
     @patch(
