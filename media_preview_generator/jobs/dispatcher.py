@@ -16,7 +16,7 @@ from typing import Any
 from loguru import logger
 
 from ..config import Config
-from ..processing.orchestrator import ProcessingResult
+from ..processing.generator import ProcessingResult
 from ..web.jobs import PRIORITY_NORMAL
 from .worker import Worker, WorkerPool
 

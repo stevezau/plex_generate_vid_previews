@@ -41,7 +41,7 @@ from ..output.base import OutputAdapter
 from ..output.journal import clear_meta, outputs_fresh_for_source, write_meta
 from ..servers.base import LibraryNotYetIndexedError, MediaServer, ServerConfig, ServerType
 from .frame_cache import get_frame_cache
-from .orchestrator import (
+from .generator import (
     CodecNotSupportedError,
     _cleanup_temp_directory,
     generate_images,

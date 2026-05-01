@@ -12,7 +12,7 @@ import shutil
 from loguru import logger
 
 from ..plex_client import get_media_items_by_paths, plex_server
-from ..processing.orchestrator import ProcessingResult, clear_failures, log_failure_summary
+from ..processing.generator import ProcessingResult, clear_failures, log_failure_summary
 from ..servers.ownership import apply_path_mappings
 from .worker import WorkerPool
 

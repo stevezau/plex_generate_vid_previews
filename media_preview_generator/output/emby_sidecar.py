@@ -84,7 +84,7 @@ class EmbyBifAdapter(OutputAdapter):
             )
             raise
 
-        from ..processing.orchestrator import generate_bif
+        from ..processing.generator import generate_bif
         from .plex_bundle import BifIntervalConfig
 
         generate_bif(

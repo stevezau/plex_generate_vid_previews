@@ -1,7 +1,24 @@
-"""Media processing functions for video thumbnail generation.
+"""Per-item BIF generator: FFmpeg execution and frame-pack pipeline.
 
-Handles FFmpeg execution, BIF file generation, and all media processing
-logic including HDR detection, skip frame heuristics, and GPU acceleration.
+Renamed from ``processing/orchestrator.py`` because this module is *not*
+the workflow orchestrator — :mod:`media_preview_generator.jobs.orchestrator`
+holds that role (`run_processing` scans libraries and dispatches items
+to a worker pool). This module handles the per-item leaf operation:
+take a single media file, extract frames via FFmpeg with HDR/HW-decode
+support, retry through a 4-tier fallback ladder (skip-frame → libplacebo
+software → DV-safe filter → CPU), then pack the JPGs into a BIF file.
+
+Public API consumed elsewhere:
+
+- :class:`ProcessingResult` — outcome enum used by counters/UI badges
+- :class:`CodecNotSupportedError`, :class:`CancellationError` — sentinel
+  exceptions the worker catches to drive its in-place GPU→CPU fallback
+- :func:`generate_images` — the per-item entry point
+- :func:`generate_bif` — pure JPG-folder → BIF packer used by output
+  adapters that need a BIF without going through the FFmpeg pipeline
+- :func:`failure_scope`, :func:`record_failure`, :func:`get_failures`,
+  :func:`clear_failures`, :func:`log_failure_summary` — per-job failure
+  registry consumed by the job runner for end-of-job summaries
 """
 
 import array

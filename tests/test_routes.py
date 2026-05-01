@@ -1502,7 +1502,7 @@ class TestJobConfigPathMappings:
             ),
             patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1561,7 +1561,7 @@ class TestJobConfigPathMappings:
             ),
             patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1616,7 +1616,7 @@ class TestJobConfigPathMappings:
             ),
             patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1662,7 +1662,7 @@ class TestJobConfigPathMappings:
             ),
             patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
@@ -1707,7 +1707,7 @@ class TestJobConfigPathMappings:
             ),
             patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "media_preview_generator.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(

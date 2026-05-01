@@ -536,7 +536,7 @@ class TestPublisherFailureModes:
                 side_effect=fake_generate_images,
             ),
             patch(
-                "media_preview_generator.processing.orchestrator.generate_bif",
+                "media_preview_generator.processing.generator.generate_bif",
                 side_effect=PermissionError(13, "Permission denied", "/data/movies/Test (2024)-320-10.bif"),
             ),
         ):
@@ -581,7 +581,7 @@ class TestPublisherFailureModes:
                 side_effect=fake_generate_images,
             ),
             patch(
-                "media_preview_generator.processing.orchestrator.generate_bif",
+                "media_preview_generator.processing.generator.generate_bif",
                 side_effect=OSError(28, "No space left on device", "/data/movies/Test.bif"),
             ),
         ):

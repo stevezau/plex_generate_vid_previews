@@ -111,7 +111,7 @@ class PlexBundleAdapter(OutputAdapter):
 
         # Delegate the actual byte-packing to the existing helper so we keep a
         # single source of truth for the BIF header layout.
-        from ..processing.orchestrator import generate_bif
+        from ..processing.generator import generate_bif
 
         generate_bif(
             str(index_bif),

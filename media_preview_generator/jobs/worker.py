@@ -14,7 +14,7 @@ from typing import Any, Optional
 from loguru import logger
 
 from ..config import Config
-from ..processing.orchestrator import (
+from ..processing.generator import (
     CancellationError,
     CodecNotSupportedError,
     ProcessingResult,

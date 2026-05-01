@@ -97,7 +97,7 @@ def _start_job_async(job_id: str, config_overrides: dict = None):
             from ...config import ConfigValidationError, load_config
             from ...jobs.orchestrator import run_processing
             from ...jobs.worker import is_job_thread, register_job_thread
-            from ...processing.orchestrator import (
+            from ...processing.generator import (
                 _verify_tmp_folder_health,
                 clear_failures,
                 failure_scope,

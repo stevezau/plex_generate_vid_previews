@@ -3,7 +3,7 @@
 This is a thin façade over the existing :mod:`media_preview_generator.plex_client`
 helpers so the rest of the codebase can be migrated to the abstract interface
 without rewriting Plex-specific logic. As the multi-server refactor lands, the
-inline calls in :mod:`processing.orchestrator` and :mod:`web.webhooks` are
+inline calls in :mod:`processing.generator` and :mod:`web.webhooks` are
 re-routed through this class.
 """
 

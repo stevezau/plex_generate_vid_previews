@@ -37,13 +37,7 @@ from .filter_chain import (  # noqa: F401
     DV5_PATH_VAAPI_VULKAN,
     build_dv5_vf,
 )
-from .hdr_detection import (  # noqa: F401
-    detect_dolby_vision_rpu_error,
-    detect_zscale_colorspace_error,
-    is_dolby_vision,
-    is_dv_no_backward_compat,
-)
-from .orchestrator import (  # noqa: F401
+from .generator import (  # noqa: F401
     FFMPEG_STALL_TIMEOUT_SEC,
     CancellationError,
     CodecNotSupportedError,
@@ -67,6 +61,12 @@ from .orchestrator import (  # noqa: F401
     parse_ffmpeg_progress_line,
     record_failure,
     set_file_result_callback,
+)
+from .hdr_detection import (  # noqa: F401
+    detect_dolby_vision_rpu_error,
+    detect_zscale_colorspace_error,
+    is_dolby_vision,
+    is_dv_no_backward_compat,
 )
 from .registry import get_processor_for, register_processor, registered_types  # noqa: F401
 from .retry_cascade import (  # noqa: F401

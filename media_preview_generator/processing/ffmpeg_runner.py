@@ -72,7 +72,7 @@ def create_ffmpeg_runner(
     # Import at factory-call time to avoid a circular dependency at module
     # load (orchestrator imports create_ffmpeg_runner from here). Runs
     # once per media file, not once per FFmpeg invocation.
-    from .orchestrator import (
+    from .generator import (
         FFMPEG_STALL_TIMEOUT_SEC,
         CancellationError,
         _diagnose_ffmpeg_exit_code,
