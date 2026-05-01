@@ -895,6 +895,80 @@ def _resolve_plex_paths_from_rating_key(
     return paths, display_title
 
 
+def _classify_plex_event(data: dict) -> tuple[str, tuple | None]:
+    """Decide what to do with a parsed Plex webhook payload's top-level event.
+
+    Returns ``(event_name, early_response)``. ``early_response`` is non-None
+    when the dispatcher should reply immediately (test ping, master switch
+    off, or non-library.new noise event) — the tuple is the
+    ``(jsonify_body, status)`` to return verbatim. ``early_response`` is
+    None when the event is a real ``library.new`` that needs full path
+    resolution + dispatch.
+
+    History entries for the early-exit cases are written here so the caller
+    doesn't repeat the wiring.
+    """
+    event = str(data.get("event", "")).strip()
+
+    if event == "test.ping":
+        _add_history_entry("plex", "Test", "", "test")
+        return event, (jsonify({"success": True, "message": "Plex webhook endpoint reachable"}), 200)
+
+    settings = get_settings_manager()
+    if not settings.get("webhook_enabled", True):
+        _add_history_entry("plex", event or "Plex", "", "disabled")
+        logger.info("Webhook: Plex event '{}' ignored (master webhook switch off)", event)
+        return event, (jsonify({"success": True, "message": "Webhooks disabled"}), 200)
+
+    if event != "library.new":
+        # Plex always sends every event the user has subscribed the URL to —
+        # ignoring noise like media.play silently is intentional.
+        _add_history_entry("plex", event or "Plex", "", "ignored")
+        logger.debug("Webhook: Plex event '{}' ignored (not library.new)", event)
+        return event, (jsonify({"success": True, "message": f"Ignored event: {event}"}), 200)
+
+    return event, None
+
+
+def _resolve_plex_webhook_paths_and_title(metadata: dict, rating_key) -> tuple[list[str], str]:
+    """Recover the file paths + display title for a library.new Plex webhook.
+
+    Tries the cheap path first: file paths embedded in the payload's
+    ``Media[].Part[].file`` fields. Plex includes these inconsistently
+    (present for some media types but not all), so falls back to a Plex
+    API lookup by ratingKey when the embedded paths or title are missing.
+
+    Returns ``(paths, display_title)``. Either may be empty if every
+    resolution strategy fails — the caller is responsible for the
+    "couldn't recover" warning + history entry.
+    """
+    raw_title = str(metadata.get("title", "")).strip() or "Plex item"
+    display_title = _format_plex_title_from_metadata(metadata)
+
+    paths: list[str] = []
+    media_list = metadata.get("Media")
+    if isinstance(media_list, list):
+        for media in media_list:
+            parts = _as_dict(media).get("Part")
+            if isinstance(parts, list):
+                for part in parts:
+                    file_path = _as_dict(part).get("file")
+                    if isinstance(file_path, str) and file_path.strip():
+                        paths.append(file_path.strip())
+
+    if not paths or display_title is None:
+        resolved_paths, resolved_title = _resolve_plex_paths_from_rating_key(rating_key)
+        if not paths:
+            paths = resolved_paths
+        if display_title is None:
+            display_title = resolved_title
+
+    if display_title is None:
+        display_title = raw_title
+
+    return paths, display_title
+
+
 @webhooks_bp.route("/plex", methods=["POST"])
 @_authenticate_webhook
 def plex_webhook():
@@ -925,67 +999,27 @@ def plex_webhook():
         )
         return jsonify({"success": False, "error": parse_error}), 400
 
-    event = str(data.get("event", "")).strip()
-
-    if event == "test.ping":
-        _add_history_entry("plex", "Test", "", "test")
-        return jsonify({"success": True, "message": "Plex webhook endpoint reachable"})
-
-    settings = get_settings_manager()
-    if not settings.get("webhook_enabled", True):
-        _add_history_entry("plex", event or "Plex", "", "disabled")
-        logger.info("Webhook: Plex event '{}' ignored (master webhook switch off)", event)
-        return jsonify({"success": True, "message": "Webhooks disabled"})
-
-    if event != "library.new":
-        # Plex always sends every event the user has subscribed the URL to —
-        # ignoring noise like media.play silently is intentional.
-        _add_history_entry("plex", event or "Plex", "", "ignored")
-        logger.debug("Webhook: Plex event '{}' ignored (not library.new)", event)
-        return jsonify({"success": True, "message": f"Ignored event: {event}"})
+    _event, early = _classify_plex_event(data)
+    if early is not None:
+        return early
 
     metadata = _as_dict(data.get("Metadata"))
     rating_key = metadata.get("ratingKey")
-    raw_title = str(metadata.get("title", "")).strip() or "Plex item"
-    display_title = _format_plex_title_from_metadata(metadata)
 
     if not rating_key:
+        raw_title = str(metadata.get("title", "")).strip() or "Plex item"
+        fallback_display = _format_plex_title_from_metadata(metadata) or raw_title
         logger.warning(
             "Plex 'library.new' webhook for {!r} arrived without a ratingKey — we can't look the item up. "
             "Plex usually includes this; if you see this often the webhook source may be a third-party tool "
             "sending a stripped-down payload. Payload structure for diagnosis: {}",
-            display_title or raw_title,
+            fallback_display,
             _summarize_payload(data),
         )
-        _add_history_entry("plex", "library.new", display_title or raw_title, "ignored_no_path")
+        _add_history_entry("plex", "library.new", fallback_display, "ignored_no_path")
         return jsonify({"success": False, "error": "Missing Metadata.ratingKey"}), 400
 
-    # Try the cheap path first: file paths embedded in the payload's
-    # Media[].Part[].file fields.  Plex includes these inconsistently —
-    # they're present for some media types but not all — so fall back to
-    # a Plex API lookup by ratingKey when they're missing.
-    paths: list[str] = []
-    media_list = metadata.get("Media")
-    if isinstance(media_list, list):
-        for media in media_list:
-            parts = _as_dict(media).get("Part")
-            if isinstance(parts, list):
-                for part in parts:
-                    file_path = _as_dict(part).get("file")
-                    if isinstance(file_path, str) and file_path.strip():
-                        paths.append(file_path.strip())
-
-    # Fall back to the ratingKey lookup if we're missing either paths or
-    # a descriptive title — the lookup gives us both in a single round trip.
-    if not paths or display_title is None:
-        resolved_paths, resolved_title = _resolve_plex_paths_from_rating_key(rating_key)
-        if not paths:
-            paths = resolved_paths
-        if display_title is None:
-            display_title = resolved_title
-
-    if display_title is None:
-        display_title = raw_title
+    paths, display_title = _resolve_plex_webhook_paths_and_title(metadata, rating_key)
 
     if not paths:
         logger.warning(
@@ -1007,10 +1041,7 @@ def plex_webhook():
             200,
         )
 
-    queued_any = False
-    for path in paths:
-        if _schedule_webhook_job("plex", display_title, path):
-            queued_any = True
+    queued_any = any(_schedule_webhook_job("plex", display_title, path) for path in paths)
 
     if not queued_any:
         _add_history_entry("plex", "library.new", display_title, "ignored_no_path")
