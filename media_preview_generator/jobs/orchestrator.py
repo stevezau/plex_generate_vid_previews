@@ -345,6 +345,23 @@ def _dispatch_processable_items(
         return gpu_type, gpu_device
 
     def _process_one(index_and_item):
+        # D27 — register the executor's worker thread under this job's
+        # id so the per-job log handler captures every per-file
+        # Dispatch / Owners-resolved / FFmpeg / Publisher line that
+        # process_canonical_path emits. Without this, the Emby/Jellyfin
+        # full-scan path (which uses ThreadPoolExecutor directly,
+        # bypassing JobDispatcher → Worker.assign_task → register_job_thread)
+        # leaves its threads anonymous and the per-job log shows only
+        # the lifecycle markers — users see "dispatching 5000 items"
+        # then nothing for hours despite continuous activity in app.log.
+        # Idempotent re-register per call: the executor pool reuses
+        # threads across items, but every call sets the same job_id so
+        # there's no churn in _job_thread_to_job_id.
+        if job_id:
+            from .worker import register_job_thread
+
+            register_job_thread(job_id)
+
         index, (server_cfg, item) = index_and_item
         if cancel_check and cancel_check():
             return None

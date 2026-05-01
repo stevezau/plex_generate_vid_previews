@@ -237,6 +237,87 @@ class TestMultiServerFullScan:
         )
 
 
+class TestPerJobLogCapture:
+    """D27 — every executor-pool worker thread MUST register itself
+    under the active job's id so the per-job log handler captures the
+    per-file Dispatch / FFmpeg / Publisher lines.
+
+    Without this, the Emby/Jellyfin full-scan path (which uses a raw
+    ThreadPoolExecutor instead of the JobDispatcher → Worker chain that
+    Plex uses) leaves its worker threads anonymous. The per-job log
+    handler's filter is_job_thread_for(record.thread.id, job_id) drops
+    every record from those threads. Result: per-job log file shows
+    only the lifecycle markers ("Started job", "dispatching N items")
+    while app.log shows continuous activity.
+    """
+
+    def test_dispatch_processable_items_registers_executor_threads(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.jobs.worker import (
+            _job_thread_to_job_id,
+            register_job_thread,
+            unregister_job_thread,
+        )
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path=f"/data/m{i}.mkv",
+                    server_id="srv-a",
+                    item_id_by_server={"srv-a": str(i)},
+                    title=f"M{i}",
+                    library_id="lib1",
+                ),
+            )
+            for i in range(3)
+        ]
+
+        # Reset registry. The dispatch-pool's threads should populate it
+        # with the test job_id; without the D27 fix they'd remain absent
+        # (or registered to "" if a previous task on a recycled thread had
+        # left a different mapping).
+        _job_thread_to_job_id.clear()
+        register_job_thread("MAIN")  # the test thread itself
+
+        captured_thread_to_job: dict = {}
+
+        def fake_pcp(canonical_path, **_):
+            import threading as _t
+
+            from media_preview_generator.jobs.worker import _job_thread_to_job_id as _r
+
+            captured_thread_to_job[_t.get_ident()] = _r.get(_t.get_ident())
+            return SimpleNamespace(publishers=[], canonical_path=canonical_path)
+
+        try:
+            with patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_pcp,
+            ):
+                _dispatch_processable_items(
+                    items=items,
+                    config=_config(),
+                    registry=MagicMock(),
+                    selected_gpus=[],
+                    job_id="job-D27-test",
+                    label="full scan",
+                )
+        finally:
+            unregister_job_thread()
+
+        # Every executor thread that ran an item must have been registered
+        # under the test job's id. Empty-string registration (the bug) or
+        # missing registration both fail this.
+        assert captured_thread_to_job, "no items processed?"
+        for tid, mapped_job in captured_thread_to_job.items():
+            assert mapped_job == "job-D27-test", (
+                f"thread {tid} was registered to {mapped_job!r}, expected 'job-D27-test' — "
+                "per-job log filter would drop this thread's logs"
+            )
+
+
 class TestMultiPlexDeduping:
     """Phase P4: when the same canonical_path appears on more than one
     enabled server (e.g. two Plex servers sharing storage, or Plex+Jellyfin
