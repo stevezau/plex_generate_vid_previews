@@ -549,17 +549,27 @@ function renderFileResultsTable(files) {
         // OR already existed), show a shortcut to /bif-viewer pre-loaded
         // with this file. Skipped/failed-with-no-output files don't get
         // the shortcut \u2014 there'd be nothing to preview.
+        //
+        // Bug fix: the button used to live inside the same `text-truncate`
+        // td as the filename, so a long path would push it off-screen
+        // (Bootstrap text-truncate sets white-space:nowrap + overflow:
+        // hidden). Wrap in a flex row with `flex-shrink-0` on the button
+        // so the filename truncates around it instead of swallowing it.
         var inspectorBtn = '';
         if (fileName && (f.outcome === 'generated' || f.outcome === 'skipped_bif_exists' || f.outcome === 'skipped_output_exists' || f.outcome === 'published')) {
             var encodedFile = encodeURIComponent(fileName);
-            inspectorBtn = ' <a href="/bif-viewer?file=' + encodedFile
-                + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"'
+            inspectorBtn = '<a href="/bif-viewer?file=' + encodedFile
+                + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-2 flex-shrink-0"'
                 + ' title="Open in Preview Inspector"><i class="bi bi-eye"></i></a>';
         }
 
         html += '<tr>'
-            + '<td class="text-truncate" style="max-width: 400px;" title="' + escapeHtml(fileName) + '">'
-            + '<small>' + escapeHtml(shortName) + '</small>' + inspectorBtn + '</td>'
+            + '<td style="max-width: 400px;">'
+            +   '<div class="d-flex align-items-center">'
+            +     '<small class="text-truncate" title="' + escapeHtml(fileName) + '">' + escapeHtml(shortName) + '</small>'
+            +     inspectorBtn
+            +   '</div>'
+            + '</td>'
             + '<td><span class="badge ' + meta.badge + '">' + meta.label + '</span></td>'
             + '<td>' + serversHtml + '</td>'
             + '<td><small class="text-muted" title="' + reason + '">' + reason + '</small></td>'
