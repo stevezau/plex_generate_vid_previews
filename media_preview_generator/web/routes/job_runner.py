@@ -831,11 +831,26 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             else:
                                 job_manager.complete_job(job_id, warning=error_msg)
                         else:
-                            if is_retry:
+                            # D25 — when files ended in skipped_not_indexed,
+                            # the JOB has finished dispatching but background
+                            # retries are still pending. Marking it plain
+                            # "Completed" (green) is misleading because more
+                            # work IS scheduled. Surface as a warning so the
+                            # user sees an amber badge with a clear message.
+                            not_indexed_count = (outcome or {}).get("skipped_not_indexed", 0) if outcome else 0
+                            if not_indexed_count > 0:
+                                msg = (
+                                    f"{not_indexed_count} file(s) waiting for the server to finish indexing — "
+                                    "they'll be retried automatically (slow backoff: 30s → 2m → 5m → 15m → 60m)."
+                                )
+                                job_manager.add_log(job_id, f"INFO - {msg}")
+                                job_manager.complete_job(job_id, warning=msg)
+                            elif is_retry:
                                 job_manager.add_log(job_id, "INFO - Retry job completed successfully")
+                                job_manager.complete_job(job_id)
                             else:
                                 job_manager.add_log(job_id, "INFO - Job completed successfully")
-                            job_manager.complete_job(job_id)
+                                job_manager.complete_job(job_id)
             finally:
                 # Release the per-job failure bucket before the scope exits
                 # so the dict entry doesn't linger after the job ends.
