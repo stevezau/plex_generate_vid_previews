@@ -123,8 +123,12 @@ def get_latest_github_release() -> str | None:
     except (KeyError, ValueError) as e:
         logger.debug("Invalid response from GitHub API: {}", e)
         return None
-    except Exception as e:
-        logger.debug("Unexpected error during version check: {}", e)
+    except Exception:
+        logger.warning(
+            "Update-check against GitHub failed unexpectedly. "
+            "The dashboard's 'New release available' badge will be silent until the next check succeeds.",
+            exc_info=True,
+        )
         return None
 
 

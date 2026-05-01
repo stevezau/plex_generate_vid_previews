@@ -1159,13 +1159,12 @@ def run_processing(
             e,
         )
         return None
-    except Exception as e:
-        logger.error(
-            "Unexpected error during the preview-generation job — aborting this job. Underlying cause: {}. "
+    except Exception:
+        logger.exception(
+            "Unexpected error during the preview-generation job — aborting this job. "
             "This is likely a bug. The web UI and other jobs keep running. "
-            "Enable Debug logging under Settings → Logging, re-run the job to capture the full traceback, "
-            "then report it at https://github.com/stevezau/media_preview_generator/issues.",
-            e,
+            "The full traceback is included above; please report it at "
+            "https://github.com/stevezau/media_preview_generator/issues."
         )
         raise
     finally:

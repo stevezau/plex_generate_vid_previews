@@ -430,15 +430,13 @@ class Worker:
                     )
                     self.outcome_counts["failed"] += 1
                     self.failed += 1
-            except Exception as e:
-                ctx_logger.error(
-                    "{} failed to generate a preview for {}: {}. "
+            except Exception:
+                ctx_logger.exception(
+                    "{} failed to generate a preview for {}. "
                     "Marking this file as failed; other items keep processing. "
-                    "Enable Debug logging under Settings → Logging and re-run for the full "
-                    "traceback if you want to dig in.",
+                    "The full traceback is included above.",
                     self.display_name,
                     display_name,
-                    e,
                 )
                 self.outcome_counts["failed"] += 1
                 self.failed += 1

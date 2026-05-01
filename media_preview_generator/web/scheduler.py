@@ -111,13 +111,11 @@ def execute_scheduled_job(
                 lookback_hours=lookback,
             )
             manager._update_last_run(schedule_id)
-        except Exception as e:
-            logger.error(
-                "Scheduled 'recently added' scan {} could not run ({}: {}). "
+        except Exception:
+            logger.exception(
+                "Scheduled 'recently added' scan {} could not run. "
                 "It will retry on its next scheduled tick — verify the target server is reachable and credentials are valid.",
                 schedule_id,
-                type(e).__name__,
-                e,
             )
         return
 
@@ -143,14 +141,12 @@ def execute_scheduled_job(
                 kwargs["server_id"] = server_id
             manager.run_job_callback(**kwargs)
             manager._update_last_run(schedule_id)
-        except Exception as e:
-            logger.error(
-                "Scheduled job {} for library {!r} could not start ({}: {}). "
+        except Exception:
+            logger.exception(
+                "Scheduled job {} for library {!r} could not start. "
                 "It will retry on its next scheduled tick — check the Jobs page for any prior error details.",
                 schedule_id,
                 library_name or "all libraries",
-                type(e).__name__,
-                e,
             )
     else:
         logger.warning(

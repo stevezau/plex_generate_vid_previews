@@ -98,11 +98,13 @@ def get_auth_token() -> str:
     new_token = generate_token()
     config["token"] = new_token
     save_auth_config(config)
+    masked = "****" + new_token[-4:] if len(new_token) > 4 else "****"
     logger.info("=" * 60)
     logger.info("FIRST-RUN: Generated new authentication token")
-    logger.info("Token: {}", new_token)
+    logger.info("Token: {}", masked)
     logger.info("Saved to: {}", AUTH_FILE)
-    logger.info("Set WEB_AUTH_TOKEN env var to use your own password.")
+    logger.info("Read the full token with: cat {} | jq -r .token", AUTH_FILE)
+    logger.info("(Or set WEB_AUTH_TOKEN env var to use your own password.)")
     logger.info("=" * 60)
     return new_token
 

@@ -87,8 +87,13 @@ def _get_ffmpeg_version() -> tuple[int, int, int] | None:
         logger.debug("Could not parse FFmpeg version from: '{}'", version_line)
         return None
 
-    except Exception as e:
-        logger.debug("Error getting FFmpeg version: {}", e)
+    except Exception:
+        logger.warning(
+            "FFmpeg version detection raised an unexpected error. "
+            "Version-gated GPU features will fall back to the lowest-supported assumptions; "
+            "if a feature you expect doesn't appear, this is the place to look.",
+            exc_info=True,
+        )
         return None
 
 

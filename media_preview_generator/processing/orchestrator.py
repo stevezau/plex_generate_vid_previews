@@ -243,13 +243,11 @@ except OSError as e:
         else:
             logger.error("  See: https://mediaarea.net/en/MediaInfo/Download")
         sys.exit(1)
-except Exception as e:
-    logger.warning(
-        "Could not verify the MediaInfo library on startup ({}: {}). "
+except Exception:
+    logger.exception(
+        "Could not verify the MediaInfo library on startup. "
         "Continuing anyway — preview generation may still work, but if processing fails "
-        "with metadata-related errors, reinstalling MediaInfo usually fixes it.",
-        type(e).__name__,
-        e,
+        "with metadata-related errors, reinstalling MediaInfo usually fixes it."
     )
 
 
