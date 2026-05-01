@@ -252,8 +252,6 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
         tuple: (section, media_items) for each library
 
     """
-    import time
-
     # Step 1: Get all library sections (1 API call)
     logger.info("Getting all Plex library sections...")
     if progress_callback:

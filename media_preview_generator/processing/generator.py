@@ -1057,10 +1057,10 @@ def generate_images(
                     )
 
     # Check for codec errors or crash signals after every prior retry tier
-    # has had a chance: skip-frame retry (earliest, ~line 1614), software-
-    # libplacebo retry (~line 1660), DV-safe fps+scale retry (~line 1721).
-    # If this is still a GPU context and a codec/crash error is detected,
-    # raise so the worker pool can hand off to a CPU worker.
+    # has had a chance: skip-frame retry, software-libplacebo retry, and
+    # DV-safe fps+scale retry. If this is still a GPU context and a
+    # codec/crash error is detected, raise CodecNotSupportedError so the
+    # worker pool can hand off to a CPU worker.
 
     if rc != 0 and image_count == 0 and gpu is not None:
         if cancel_check and cancel_check():

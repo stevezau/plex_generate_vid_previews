@@ -714,11 +714,12 @@ def _should_use_multi_server_full_scan(config, pinned_type: str) -> bool:
     * At least one non-Plex server (Emby / Jellyfin) is enabled.
 
     The legacy Plex-only branch only fires for the pure single-Plex install.
-    Reason: ``_run_full_scan_legacy_plex`` calls ``from_legacy_config`` which
-    has empty per-server path_mappings — on a multi-server install Plex items
-    come back with their remote view paths (``/media/Movies/...``) and every
-    worker fails with "source missing" because the registry doesn't know how
-    to translate those.
+    Reason: :func:`_run_plex_full_scan_phase` builds its registry via
+    ``ServerRegistry.from_legacy_config`` which has empty per-server
+    path_mappings — on a multi-server install Plex items come back with
+    their remote view paths (``/media/Movies/...``) and every worker fails
+    with "source missing" because the registry doesn't know how to
+    translate those.
     """
     no_webhook_paths = not getattr(config, "webhook_paths", None)
     if not no_webhook_paths:
