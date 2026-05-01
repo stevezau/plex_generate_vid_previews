@@ -462,6 +462,28 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     )
                     set_file_result_callback(None)
 
+                    # run_processing returns None when it bailed on a
+                    # connection / interrupt error (logged with actionable
+                    # text by the orchestrator). Without surfacing it here
+                    # the job lands as a green "completed" with no output —
+                    # the dashboard badge would mask a Plex outage as
+                    # success. Mark FAILED so the user sees the red badge
+                    # and can re-run once the upstream is back.
+                    if result is None:
+                        job_manager.add_log(
+                            job_id,
+                            "ERROR - Job aborted before any items were processed (connection/interrupt). "
+                            "See the application log for the specific cause.",
+                        )
+                        job_manager.complete_job(
+                            job_id,
+                            error=(
+                                "Job aborted before any items were processed — most commonly because Plex "
+                                "could not be reached. Check the app log for the specific cause and re-run."
+                            ),
+                        )
+                        return
+
                     result = result or {}
                     failures = get_failures()
 

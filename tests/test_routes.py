@@ -1683,6 +1683,53 @@ class TestJobConfigPathMappings:
         assert cfg.plex_library_ids == ["1", "2"]
         assert cfg.plex_libraries == []
 
+    def test_run_processing_returning_none_marks_job_failed(self, client, tmp_path):
+        """When orchestrator returns None (e.g. ConnectionError to Plex), the
+        job must land as FAILED with an actionable error — not silently as
+        a green 'completed' that masks the upstream outage."""
+        done = threading.Event()
+
+        def boom(*args, **kwargs):
+            done.set()
+            return None  # mirrors run_processing's ConnectionError path
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.working_tmp_folder = str(tmp_path / "work")
+
+        with (
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=boom,
+            ),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
+            patch(
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "media_preview_generator.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post("/api/jobs", headers=_api_headers(), json={})
+            assert resp.status_code == 201
+            job_id = resp.get_json()["id"]
+            assert done.wait(timeout=2.0), "run_processing was not called"
+            # Allow job_runner's post-call code to update job state.
+            for _ in range(20):
+                state = client.get(f"/api/jobs/{job_id}", headers=_api_headers()).get_json()
+                if state["status"] in ("failed", "completed"):
+                    break
+                time.sleep(0.05)
+
+        assert state["status"] == "failed", state
+        assert "aborted" in (state.get("error") or "").lower()
+
     def test_start_job_selected_libraries_ids_map_to_id_scope(self, client, tmp_path):
         """selected_libraries values that are IDs should populate plex_library_ids."""
         captured_configs = []
