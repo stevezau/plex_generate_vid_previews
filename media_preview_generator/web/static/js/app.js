@@ -1383,7 +1383,7 @@ function _renderPublishersBlock(job) {
         return `<div class="mt-1"><span class="badge bg-light text-dark border me-2">${logo}${escapeHtmlText(sname)}</span>${badges}</div>`;
     }).filter(Boolean).join('');
     if (!lines) return '';
-    return `<div class="mt-3 pt-2 border-top"><strong>Publishers:</strong>${lines}</div>`;
+    return `<div class="mt-3 pt-2 border-top"><strong>Servers:</strong>${lines}</div>`;
 }
 
 let _jobQueueUpdatePending = false;
