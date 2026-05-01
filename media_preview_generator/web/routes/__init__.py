@@ -18,6 +18,7 @@ from . import (  # noqa: E402
     api_jobs,  # noqa: F401
     api_libraries,  # noqa: F401
     api_plex,  # noqa: F401
+    api_plex_webhook,  # noqa: F401
     api_schedules,  # noqa: F401
     api_server_auth,  # noqa: F401
     api_servers,  # noqa: F401
