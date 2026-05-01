@@ -17,13 +17,13 @@ import pytest
 def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
 
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
 
@@ -33,7 +33,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
     """Create Flask app for testing."""
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -49,7 +49,7 @@ def client(flask_app):
 @pytest.fixture
 def auth_headers(flask_app):
     """Get auth headers for API calls."""
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     token = get_auth_token()
     return {"X-Auth-Token": token}
@@ -60,13 +60,13 @@ class TestIsWithinBase:
 
     def test_exact_match(self):
         """Path equal to the base returns True."""
-        from plex_generate_previews.web.routes import _is_within_base
+        from media_preview_generator.web.routes import _is_within_base
 
         assert _is_within_base("/plex", "/plex") is True
 
     def test_child_path(self, tmp_path):
         """Path inside the base returns True."""
-        from plex_generate_previews.web.routes import _is_within_base
+        from media_preview_generator.web.routes import _is_within_base
 
         base = str(tmp_path)
         child = str(tmp_path / "subdir")
@@ -74,7 +74,7 @@ class TestIsWithinBase:
 
     def test_outside_path(self, tmp_path):
         """Path outside the base returns False."""
-        from plex_generate_previews.web.routes import _is_within_base
+        from media_preview_generator.web.routes import _is_within_base
 
         base = str(tmp_path / "allowed")
         outside = str(tmp_path / "other")
@@ -82,7 +82,7 @@ class TestIsWithinBase:
 
     def test_prefix_collision(self, tmp_path):
         """Base /plex should not match /plex2 (no trailing sep trick)."""
-        from plex_generate_previews.web.routes import _is_within_base
+        from media_preview_generator.web.routes import _is_within_base
 
         base = str(tmp_path / "plex")
         candidate = str(tmp_path / "plex2")
@@ -128,7 +128,7 @@ class TestPathTraversalPrevention:
 
         # Set PLEX_DATA_ROOT to tmp_path so the path is allowed
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
 
@@ -153,7 +153,7 @@ class TestPathTraversalPrevention:
         outside.mkdir()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(allowed_root),
         )
 
@@ -175,7 +175,7 @@ class TestPathTraversalPrevention:
         secret.mkdir()
 
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(allowed_root),
         )
 
@@ -213,7 +213,7 @@ class TestInformationExposurePrevention:
     def test_get_jobs_error_no_leak(self, client, auth_headers):
         """Error in get_jobs does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.api_jobs.get_job_manager",
+            "media_preview_generator.web.routes.api_jobs.get_job_manager",
             side_effect=RuntimeError("Database connection refused on port 5432"),
         ):
             response = client.get("/api/jobs", headers=auth_headers)
@@ -225,7 +225,7 @@ class TestInformationExposurePrevention:
     def test_get_worker_statuses_error_no_leak(self, client, auth_headers):
         """Error in get_worker_statuses does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.api_jobs.get_job_manager",
+            "media_preview_generator.web.routes.api_jobs.get_job_manager",
             side_effect=RuntimeError("Internal memory error at 0xdeadbeef"),
         ):
             response = client.get("/api/jobs/workers", headers=auth_headers)
@@ -236,7 +236,7 @@ class TestInformationExposurePrevention:
     def test_get_job_stats_error_no_leak(self, client, auth_headers):
         """Error in get_job_stats does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.api_jobs.get_job_manager",
+            "media_preview_generator.web.routes.api_jobs.get_job_manager",
             side_effect=RuntimeError("SQLAlchemy pool overflow"),
         ):
             response = client.get("/api/jobs/stats", headers=auth_headers)
@@ -247,7 +247,7 @@ class TestInformationExposurePrevention:
     def test_get_system_status_error_no_leak(self, client, auth_headers):
         """Error in get_system_status does not expose exception details."""
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_job_manager",
+            "media_preview_generator.web.routes.api_system.get_job_manager",
             side_effect=RuntimeError("nvidia-smi binary not found at /usr/bin/nvidia-smi"),
         ):
             response = client.get("/api/system/status", headers=auth_headers)
@@ -262,7 +262,7 @@ class TestFlaskSecretFilePermissions:
     @pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions not enforced on Windows")
     def test_secret_file_has_restricted_permissions(self, tmp_path):
         """Generated Flask secret file has 0o600 permissions."""
-        from plex_generate_previews.web.app import get_or_create_flask_secret
+        from media_preview_generator.web.app import get_or_create_flask_secret
 
         secret = get_or_create_flask_secret(str(tmp_path))
         secret_file = tmp_path / "flask_secret.key"

@@ -1,6 +1,6 @@
-# Plex Generate Previews
+# Media Preview Generator
 
-> GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, D3D11VA, VideoToolbox) and parallel workers to generate previews 5-10x faster than Plex's built-in method. Distributed as a Docker image with a web UI as the only interface (no CLI).
+> GPU-accelerated video preview thumbnail generation for Plex, Emby, and Jellyfin media servers. Uses FFmpeg hardware decoding (CUDA, VAAPI, QSV) and parallel workers to generate previews 5-10x faster than each vendor's built-in scanner. Distributed as a Docker image with a web UI as the only interface (no CLI). Supports any combination of multiple servers (multi-Plex, Plex+Emby, Plex+Jellyfin, etc.) with a single FFmpeg pass per file fanning out to every owning server.
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ Run with Docker (Intel/AMD GPU via VAAPI):
 
 ```
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -16,54 +16,54 @@ docker run -d \
   -v /path/to/media:/media:ro \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 For NVIDIA, replace `--device` with `--gpus all` and add `-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`. Use `all` rather than `compute,video,utility`: the `graphics` capability (included in `all`) is what makes the NVIDIA Container Toolkit inject the NVIDIA Vulkan driver, which is required for Dolby Vision Profile 5 thumbnails (libplacebo Vulkan tone-mapping).
 
-Open `http://YOUR_IP:8080`, get the auth token from `docker logs plex-generate-previews | grep "Token:"`, and complete the setup wizard.
+Open `http://YOUR_IP:8080`, get the auth token from `docker logs media-preview-generator | grep "Token:"`, and complete the setup wizard.
 
 ## Features
 
-- Multi-GPU support: NVIDIA (CUDA), AMD (VAAPI), Intel (QuickSync/VAAPI), Windows (D3D11VA), macOS (VideoToolbox)
-- Per-GPU configuration in Settings: enable/disable individual GPUs, workers per GPU, FFmpeg threads per GPU
-- GPU-to-CPU fallback workers for unsupported codecs
-- Web UI (only interface): dashboard for job management, scheduling, and settings
-- Cron and interval-based scheduling
-- Radarr/Sonarr/Tdarr webhook integration for automatic processing on media import
-- Custom webhook endpoint for any external tool
-- Library filtering to process specific Plex libraries
-- Adjustable thumbnail quality (1-10) and frame interval (1-60s)
-- Plex OAuth sign-in via setup wizard
-- Path mapping support for Docker volume differences
-- REST API with token authentication
-- WebSocket real-time progress updates
-- Rate limiting and CORS configuration
+- **Multi-server**: Plex, Emby, and Jellyfin in any combination — one FFmpeg pass per file publishes to every server that owns it (per-vendor BIF/sidecar/trickplay format auto-selected).
+- Multi-GPU support: NVIDIA (CUDA), AMD (VAAPI), Intel (QuickSync/VAAPI).
+- Per-GPU configuration in Settings: enable/disable individual GPUs, workers per GPU, FFmpeg threads per GPU.
+- Web UI (only interface): dashboard for job management, scheduling, and settings.
+- Cron and interval-based scheduling.
+- Universal webhook router (`/api/webhooks/incoming`) auto-detects Radarr/Sonarr/Plex/Emby/Jellyfin payloads.
+- Per-server webhook URLs (`/api/webhooks/server/<id>`) pin a webhook to a specific configured server.
+- Custom webhook endpoint (`/api/webhooks/custom`) for any external tool.
+- Plex Direct Webhook (Plex Pass) registration via the Servers page.
+- Frame reuse cache: a webhook arriving for a file recently extracted by a sibling server reuses the frames without re-running FFmpeg.
+- Slow-backoff retry queue for items the source server hasn't indexed yet.
+- Per-server library filtering, path mappings, and exclude rules.
+- Adjustable thumbnail quality (1-10) and frame interval (1-60s).
+- Plex OAuth sign-in via setup wizard.
+- REST API with token authentication.
+- WebSocket real-time progress updates.
+- Rate limiting and CORS configuration.
 
 ## Volume Mounts
 
-- `/media` (ro) — media files
-- `/plex` (rw) — Plex application data where BIF files are stored
-- `/config` (rw) — app settings, schedules, job history
+- `/media` (ro) — media files (read-only).
+- `/plex` (rw) — Plex application data where BIF files are stored. Only required for Plex publishers; omit on Emby/Jellyfin-only installs.
+- `/config` (rw) — app settings, schedules, job history.
 
 ## GPU Support
 
-| GPU      | Platform | Acceleration     | Docker Flag              |
-|----------|----------|------------------|--------------------------|
-| NVIDIA   | Linux    | CUDA/NVENC       | `--gpus all`             |
-| AMD      | Linux    | VAAPI            | `--device /dev/dri`      |
-| Intel    | Linux    | QuickSync/VAAPI  | `--device /dev/dri`      |
-| NVIDIA   | Windows  | CUDA             | Native only              |
-| AMD/Intel| Windows  | D3D11VA          | Native only              |
-| Apple    | macOS    | VideoToolbox     | Native only              |
+| GPU      | Acceleration       | Docker Flag         |
+|----------|--------------------|---------------------|
+| NVIDIA   | CUDA / NVENC       | `--gpus all`        |
+| AMD      | VAAPI              | `--device /dev/dri` |
+| Intel    | QuickSync / VAAPI  | `--device /dev/dri` |
 
 ## Configuration
 
 **settings.json** at `/config/settings.json` is the sole source of truth. On first start, env vars are migrated as seed values. After that, configure via the Web UI Settings page.
 
-**Infrastructure env vars** (always active): `CONFIG_DIR`, `WEB_PORT`, `PUID`, `PGID`, `TZ`, `CORS_ORIGINS`, `HTTPS`, `DEV_RELOAD`, `WEB_AUTH_TOKEN`
+**Infrastructure env vars** (always active): `CONFIG_DIR`, `WEB_PORT`, `PUID`, `PGID`, `TZ`, `CORS_ORIGINS`, `HTTPS`, `DEV_RELOAD`, `WEB_AUTH_TOKEN`.
 
-**Deprecated** (use Settings instead): `GPU_SELECTION`, `GPU_THREADS`, `FFMPEG_THREADS`
+**Deprecated** (use Settings instead): `GPU_SELECTION`, `GPU_THREADS`, `FFMPEG_THREADS`, `PLEX_LIBRARIES`, `REGENERATE_THUMBNAILS`, `SORT_BY`, `NICE_LEVEL`, `FALLBACK_CPU_THREADS`.
 
 **Per-GPU config**: In Settings → Processing Options, configure each GPU: enabled, workers, ffmpeg_threads.
 
@@ -76,32 +76,45 @@ Key endpoints:
 - `GET /api/setup/status` — setup completion status (no auth)
 - `GET /api/settings` — current settings
 - `POST /api/settings` — update settings (partial)
-- `GET /api/jobs` — list jobs
-- `POST /api/jobs` — create job (`{"library_id": "1", "library_name": "Movies"}`)
+- `GET /api/jobs` — list jobs (paginated)
+- `POST /api/jobs` — create job
 - `GET /api/jobs/{id}` — job details with worker status
 - `POST /api/jobs/{id}/cancel` — cancel job
+- `POST /api/jobs/{id}/reprocess` — re-run a completed/failed job
 - `GET /api/schedules` — list schedules
 - `POST /api/schedules` — create schedule (cron or interval)
-- `POST /api/webhooks/radarr` — Radarr webhook receiver
-- `POST /api/webhooks/sonarr` — Sonarr webhook receiver
+- `GET /api/servers` — list configured media servers (Plex/Emby/Jellyfin)
+- `POST /api/servers` — add a server
+- `PUT /api/servers/{id}` — update a server
+- `DELETE /api/servers/{id}` — remove a server
+- `POST /api/servers/test-connection` — probe a candidate server
+- `POST /api/servers/{id}/refresh-libraries` — re-fetch a server's library list
+- `GET /api/servers/owners?path=...` — diagnose which servers own a file
+- `POST /api/webhooks/incoming` — universal webhook router (auto-detects vendor)
+- `POST /api/webhooks/server/{id}` — webhook pinned to one configured server
+- `POST /api/webhooks/radarr` — Radarr webhook receiver (legacy URL)
+- `POST /api/webhooks/sonarr` — Sonarr webhook receiver (legacy URL)
+- `POST /api/webhooks/plex` — native Plex webhook (legacy; `/incoming` is the canonical path now)
 - `POST /api/webhooks/custom` — custom webhook (`{"file_path": "..."}` or `{"file_paths": [...]}`)
 - `GET /api/webhooks/history` — recent webhook events
 - `GET /api/system/status` — system status (GPUs, workers, job counts)
-- `GET /api/libraries` — Plex libraries
+- `GET /api/system/media-servers` — per-server reachability summary (cached 30s)
+- `GET /api/libraries` — aggregated library list across all configured servers
 - `POST /api/processing/pause` — pause all processing
 - `POST /api/processing/resume` — resume processing
 
 ## WebSocket
 
-Real-time updates via Socket.IO on the `/jobs` namespace. Events: `job_progress`, `job_complete`, `job_error`, `worker_update`.
+Real-time updates via Socket.IO on the `/jobs` namespace. Events: `job_created`, `job_started`, `job_progress`, `job_completed`, `job_failed`, `job_cancelled`, `job_paused`, `job_resumed`, `worker_update`, `processing_paused_changed`.
 
 ## Links
 
-- [GitHub Repository](https://github.com/stevezau/plex_generate_vid_previews)
-- [Docker Hub](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews)
-- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md)
-- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md)
-- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md)
-- [Docker Compose Example](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docker-compose.example.yml)
-- [Report a Bug](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug)
-- [Request a Feature](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement)
+- [GitHub Repository](https://github.com/stevezau/media_preview_generator)
+- [Docker Hub](https://hub.docker.com/r/stevezzau/media_preview_generator)
+- [Getting Started](https://github.com/stevezau/media_preview_generator/blob/main/docs/getting-started.md)
+- [Configuration & API Reference](https://github.com/stevezau/media_preview_generator/blob/main/docs/reference.md)
+- [Multi-Server Guide](https://github.com/stevezau/media_preview_generator/blob/main/docs/multi-server.md)
+- [Guides & Troubleshooting](https://github.com/stevezau/media_preview_generator/blob/main/docs/guides.md)
+- [Docker Compose Example](https://github.com/stevezau/media_preview_generator/blob/main/docker-compose.example.yml)
+- [Report a Bug](https://github.com/stevezau/media_preview_generator/issues/new?labels=bug)
+- [Request a Feature](https://github.com/stevezau/media_preview_generator/issues/new?labels=enhancement)

@@ -16,19 +16,19 @@
 <div align="center">
   <img src="docs/images/icon.svg" alt="Logo" width="120" height="120">
 
-  <h1 align="center">Plex Generate Previews</h1>
+  <h1 align="center">Media Preview Generator</h1>
 
   <p align="center">
-    GPU-accelerated video preview thumbnail generation for Plex Media Server
+    GPU-accelerated video preview thumbnail generation for <strong>Plex, Emby, and Jellyfin</strong>
     <br />
     <a href="docs/README.md"><strong>Explore the docs</strong></a>
     <br />
     <br />
     <a href="#quick-start">Quick Start</a>
     &middot;
-    <a href="https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug">Report Bug</a>
+    <a href="https://github.com/stevezau/media_preview_generator/issues/new?labels=bug">Report Bug</a>
     &middot;
-    <a href="https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement">Request Feature</a>
+    <a href="https://github.com/stevezau/media_preview_generator/issues/new?labels=enhancement">Request Feature</a>
   </p>
 </div>
 
@@ -36,11 +36,11 @@
 
 ## About
 
-Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos in Plex.
+Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are the small images you see when scrubbing through videos in any of those servers.
 
-**The Problem:** Plex's built-in preview generation is painfully slow.
+**The Problem:** Server-side preview generation is painfully slow — Plex's is single-threaded software-decoded, Emby has no GPU acceleration at all, and Jellyfin's HW-accelerated trickplay is buggy/slow on many systems.
 
-**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
+**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**, and can drive any number of Plex / Emby / Jellyfin servers from a single instance — each new file is processed once and the result is published to every server that owns it, in the format that server expects (BIF for Plex/Emby, native JPG tile-grid for Jellyfin).
 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
@@ -51,18 +51,26 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 | Feature | Description |
 |---------|-------------|
+| **Multi-Vendor** | Plex, Emby, and Jellyfin — any combination, any number of each ([guide](docs/multi-server.md)) |
+| **One Pass, Many Servers** | A single FFmpeg pass produces output for every server that owns the file |
 | **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
 | **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
 | **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| **Library Filtering** | Process specific Plex libraries |
+| **Library Filtering** | Per-library enable/disable per server |
 | **Quality Control** | Adjustable thumbnail quality (1-10) |
 | **Docker Ready** | Pre-built images with GPU support |
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Radarr/Sonarr** | Webhook integration for auto-processing on import |
+| **Smart Dedup Journal** | A `.meta` sidecar records source `(mtime, size)` so late-arriving webhooks short-circuit FFmpeg entirely; Sonarr quality upgrades correctly trigger regen |
+| **Slow-Backoff Retries** | Plex not yet scanned? The dispatcher schedules 30 s → 2 m → 5 m → 15 m → 60 m retries automatically — no manual re-run needed |
+| **Universal Webhooks** | One URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
 | **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Plex multi-server discovery** | One Plex.tv OAuth sign-in lists every server your account can access — tick multiple to add them all at once |
+| **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves the user's browser |
+| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's `EnableTrickplayImageExtraction` flag (the most common gotcha) so the previews you publish actually appear in Jellyfin's web UI |
+| **Multi-Server BIF Viewer** | Inspect published previews per-server in the browser — works for Plex bundle BIFs, Emby sidecar BIFs, and Jellyfin trickplay tile-grid sheets |
 | **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ---
@@ -83,7 +91,7 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -93,7 +101,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -121,8 +129,8 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
-> The Docker Hub image is published as `stevezzau/plex_generate_vid_previews` (double-`z`):
-> [stevezzau/plex_generate_vid_previews](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews).
+> The Docker Hub image is published as `stevezzau/media_preview_generator` (double-`z`):
+> [stevezzau/media_preview_generator](https://hub.docker.com/r/stevezzau/media_preview_generator).
 
 ---
 
@@ -206,20 +214,20 @@ Star this repo if you find it useful!
 </div>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[contributors-url]: https://github.com/stevezau/plex_generate_vid_previews/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[forks-url]: https://github.com/stevezau/plex_generate_vid_previews/network/members
-[stars-shield]: https://img.shields.io/github/stars/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[stars-url]: https://github.com/stevezau/plex_generate_vid_previews/stargazers
-[issues-shield]: https://img.shields.io/github/issues/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[issues-url]: https://github.com/stevezau/plex_generate_vid_previews/issues
-[license-shield]: https://img.shields.io/github/license/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[license-url]: https://github.com/stevezau/plex_generate_vid_previews/blob/main/LICENSE
-[docker-shield]: https://img.shields.io/docker/pulls/stevezzau/plex_generate_vid_previews?style=for-the-badge
-[docker-url]: https://hub.docker.com/r/stevezzau/plex_generate_vid_previews
-[codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/plex_generate_vid_previews?style=for-the-badge
-[codecov-url]: https://codecov.io/gh/stevezau/plex_generate_vid_previews
+[contributors-shield]: https://img.shields.io/github/contributors/stevezau/media_preview_generator.svg?style=for-the-badge
+[contributors-url]: https://github.com/stevezau/media_preview_generator/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/stevezau/media_preview_generator.svg?style=for-the-badge
+[forks-url]: https://github.com/stevezau/media_preview_generator/network/members
+[stars-shield]: https://img.shields.io/github/stars/stevezau/media_preview_generator.svg?style=for-the-badge
+[stars-url]: https://github.com/stevezau/media_preview_generator/stargazers
+[issues-shield]: https://img.shields.io/github/issues/stevezau/media_preview_generator.svg?style=for-the-badge
+[issues-url]: https://github.com/stevezau/media_preview_generator/issues
+[license-shield]: https://img.shields.io/github/license/stevezau/media_preview_generator.svg?style=for-the-badge
+[license-url]: https://github.com/stevezau/media_preview_generator/blob/main/LICENSE
+[docker-shield]: https://img.shields.io/docker/pulls/stevezzau/media_preview_generator?style=for-the-badge
+[docker-url]: https://hub.docker.com/r/stevezzau/media_preview_generator
+[codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/media_preview_generator?style=for-the-badge
+[codecov-url]: https://codecov.io/gh/stevezau/media_preview_generator
 
 [ai-shield]: https://img.shields.io/badge/AI--Assisted-Cursor%20%2B%20Claude-blue?style=for-the-badge&logo=openai&logoColor=white
 [ai-url]: #about

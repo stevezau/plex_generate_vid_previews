@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.web.jobs import (
+from media_preview_generator.web.jobs import (
     LOG_RETENTION_CLEARED_MESSAGE,
     JobManager,
     JobStatus,
@@ -23,7 +23,7 @@ from plex_generate_previews.web.jobs import (
 @pytest.fixture(autouse=True)
 def _reset_job_manager():
     """Reset global job manager so tests can create their own with custom config_dir."""
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
@@ -108,9 +108,9 @@ class TestLogRetentionEnforcement:
         # Backdate completed_at to 60 days ago
         old_time = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         jm._jobs[job.id].completed_at = old_time
-        jm._save_jobs()
+        jm._persist_job(jm._jobs[job.id])
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -128,7 +128,7 @@ class TestLogRetentionEnforcement:
 
         log_path = os.path.join(config_dir, "logs", "jobs", f"{job.id}.log")
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -147,7 +147,7 @@ class TestLogRetentionEnforcement:
         old_time = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         jm._jobs[job.id].created_at = old_time
 
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -162,7 +162,7 @@ class TestLogRetentionEnforcement:
             f.write("orphaned\n")
 
         jm = JobManager(config_dir=config_dir)
-        with patch("plex_generate_previews.web.settings_manager.get_settings_manager") as m:
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
             m.return_value.get.return_value = 30
             jm._enforce_log_retention()
 
@@ -453,3 +453,284 @@ class TestRequeueInterruptedJobs:
         assert second == []
         assert jm._interrupted_jobs == []
         assert len(jm.get_all_jobs()) == 1
+
+
+class TestPublishersAttribution:
+    """Phase H5: per-publisher rows persisted on Job for the Jobs UI."""
+
+    def test_default_publishers_is_empty_list(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+        assert job.publishers == []
+        assert job.to_dict()["publishers"] == []
+
+    def test_append_publishers_persists_through_restart(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+
+        rows = [
+            {
+                "server_id": "p1",
+                "server_name": "Plex Home",
+                "server_type": "plex",
+                "adapter_name": "plex_bundle",
+                "status": "published",
+                "message": "",
+                "canonical_path": "/data/movies/Foo.mkv",
+            },
+            {
+                "server_id": "e1",
+                "server_name": "Emby Den",
+                "server_type": "emby",
+                "adapter_name": "emby_sidecar",
+                "status": "failed",
+                "message": "sidecar dir not writable",
+                "canonical_path": "/data/movies/Foo.mkv",
+            },
+        ]
+        jm.append_publishers(job.id, rows)
+
+        # Same in-memory state.
+        assert len(jm.get_job(job.id).publishers) == 2
+        assert jm.get_job(job.id).publishers[1]["status"] == "failed"
+
+        # Round-trip through disk via a fresh JobManager.
+        jm2 = JobManager(config_dir=config_dir)
+        revived = jm2.get_job(job.id)
+        assert revived is not None
+        assert len(revived.publishers) == 2
+        assert revived.publishers[0]["server_name"] == "Plex Home"
+        assert revived.publishers[1]["message"] == "sidecar dir not writable"
+
+    def test_append_publishers_noop_when_unknown_job(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        # Should not raise.
+        jm.append_publishers("missing-id", [{"server_id": "x"}])
+
+    def test_append_publishers_noop_when_rows_empty(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="X")
+        jm.append_publishers(job.id, [])
+        assert jm.get_job(job.id).publishers == []
+
+
+class TestJobUnknownFieldTolerance:
+    """Phase H Fix-5: jobs.json with future / removed fields must still load.
+
+    Without the kwarg-filtering safeguard, adding/removing any field on the
+    Job dataclass would silently drop every persisted job at startup (the
+    surrounding ``except (TypeError, ...)`` swallows the failure)."""
+
+    def test_load_skips_unknown_kwarg_fields(self, config_dir):
+        """A persisted job with an extra field (e.g. one we removed since)
+        must still load — the unknown field is silently dropped."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        jobs_file = os.path.join(config_dir, "jobs.json")
+        with open(jobs_file, "w") as f:
+            _json.dump(
+                {
+                    "jobs": [
+                        {
+                            "id": "j1",
+                            "library_name": "Movies",
+                            "future_field_we_dont_know_about": 42,
+                            "another_unknown": "ignore me",
+                        }
+                    ]
+                },
+                f,
+            )
+        jm = JobManager(config_dir=config_dir)
+        loaded = jm.get_job("j1")
+        assert loaded is not None
+        assert loaded.library_name == "Movies"
+
+
+class TestSqliteJobsBackend:
+    """Phase J8: jobs persistence moved from jobs.json to jobs.db."""
+
+    def test_creates_jobs_db_on_first_start(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        assert os.path.isfile(os.path.join(config_dir, "jobs.db"))
+        assert jm._storage is not None
+        assert jm._storage.row_count() == 0
+
+    def test_create_job_persists_one_row_not_a_full_file(self, config_dir):
+        """The backup helper rewrites whole files; SQLite writes one row.
+
+        Crucially, jobs.json should never appear after a fresh start — only
+        jobs.db. This is what makes a future schema-drift incident structurally
+        impossible.
+        """
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        jm.create_job(library_name="Movies")
+        jm.create_job(library_name="TV")
+        assert jm._storage.row_count() == 2
+        assert not os.path.exists(os.path.join(config_dir, "jobs.json"))
+
+    def test_state_survives_manager_recreation(self, config_dir):
+        """Recreate the JobManager (simulating a restart) and verify history persists."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Persistent")
+        jm.start_job(job.id)
+        jm.complete_job(job.id)
+
+        # Force the singleton reset so a "fresh" manager is rebuilt.
+        import media_preview_generator.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm._storage.close()
+
+        jm2 = JobManager(config_dir=config_dir)
+        recovered = jm2.get_job(job.id)
+        assert recovered is not None
+        assert recovered.status == JobStatus.COMPLETED
+        assert recovered.library_name == "Persistent"
+
+    def test_legacy_json_imports_then_renames(self, config_dir):
+        """A pre-J8 jobs.json gets imported once, then renamed to .imported.bak."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        legacy = os.path.join(config_dir, "jobs.json")
+        with open(legacy, "w") as f:
+            _json.dump(
+                {
+                    "jobs": [
+                        {"id": "good-1", "library_name": "Movies", "status": "completed"},
+                        {"id": "good-2", "library_name": "TV", "status": "failed"},
+                    ]
+                },
+                f,
+            )
+
+        jm = JobManager(config_dir=config_dir)
+        assert jm.get_job("good-1") is not None
+        assert jm.get_job("good-2") is not None
+        assert jm.get_job("good-2").status == JobStatus.FAILED
+        # Legacy file is preserved, just out of the way
+        assert not os.path.exists(legacy)
+        assert os.path.isfile(legacy + ".imported.bak")
+
+    def test_legacy_import_skips_corrupt_records(self, config_dir):
+        """One bad record never blocks the others (Fix-5 pattern, J4 mirror)."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "jobs.json"), "w") as f:
+            _json.dump(
+                {
+                    "jobs": [
+                        {"id": "ok-1", "library_name": "Movies"},
+                        # priority must be int / known label — "garbage" is neither
+                        {"id": "bad", "library_name": "X", "priority": object()}
+                        if False
+                        else {"id": "ok-2", "library_name": "TV"},
+                        {"id": "bad", "progress": "not-a-dict-or-progress-shape"},
+                    ]
+                },
+                f,
+            )
+
+        jm = JobManager(config_dir=config_dir)
+        assert jm.get_job("ok-1") is not None
+        assert jm.get_job("ok-2") is not None
+        # The bad row's progress assignment ends up as a TypeError in __post_init__
+        # which gets caught + logged. Either way the good rows survive.
+
+    def test_does_not_reimport_when_db_already_populated(self, config_dir):
+        """Restoring jobs.json on top of a populated DB must not duplicate."""
+        import json as _json
+
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        jm.create_job(library_name="Direct")
+        baseline = jm._storage.row_count()
+        jm._storage.close()
+
+        # Drop a stale jobs.json next to the now-populated jobs.db.
+        with open(os.path.join(config_dir, "jobs.json"), "w") as f:
+            _json.dump({"jobs": [{"id": "stale", "library_name": "Should not appear"}]}, f)
+
+        # Reset singleton + reopen.
+        import media_preview_generator.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm2 = JobManager(config_dir=config_dir)
+        assert jm2._storage.row_count() == baseline
+        assert jm2.get_job("stale") is None
+        # The legacy file is left in place — we did NOT consume it because the
+        # DB was already populated. This is intentional: don't silently merge.
+        assert os.path.isfile(os.path.join(config_dir, "jobs.json"))
+
+    def test_delete_removes_row(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Doomed")
+        assert jm._storage.row_count() == 1
+        jm.delete_job(job.id)
+        assert jm._storage.row_count() == 0
+        assert jm.get_job(job.id) is None
+
+
+class TestRetryPreservesServerIdentity:
+    """K1 — retry job spawned by job_runner._spawn_retry_job must inherit the
+    parent's server_id/server_name/server_type. Today's bug shows up as
+    "Created job ... (server=(all))" instead of "(server=Plex)".
+
+    We can't easily call the closure directly, so this test mirrors the
+    pattern: create parent with server triple → simulate retry using the same
+    create_job call shape job_runner now uses → verify the child carries it.
+    """
+
+    def test_retry_inherits_parent_server_triple(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        parent = jm.create_job(
+            library_name="Sonarr: Show.S01E01",
+            server_id="plex-living-room",
+            server_name="Living Room Plex",
+            server_type="plex",
+        )
+
+        # Mirror job_runner.py:_spawn_retry_job's new behaviour.
+        retry = jm.create_job(
+            library_name="Retry: Sonarr: Show.S01E01",
+            config={"is_retry": True, "parent_job_id": parent.id, "retry_attempt": 1},
+            priority=parent.priority,
+            server_id=parent.server_id,
+            server_name=parent.server_name,
+            server_type=parent.server_type,
+        )
+
+        assert retry.server_id == "plex-living-room"
+        assert retry.server_name == "Living Room Plex"
+        assert retry.server_type == "plex"
+
+    def test_retry_when_parent_has_no_server_pin(self, config_dir):
+        """Webhook with no ?server_id= produces parent with None — retry mirrors None."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        parent = jm.create_job(library_name="Custom: file.mkv")
+        assert parent.server_id is None
+
+        retry = jm.create_job(
+            library_name="Retry: Custom: file.mkv",
+            config={"is_retry": True, "parent_job_id": parent.id, "retry_attempt": 1},
+            priority=parent.priority,
+            server_id=parent.server_id,
+            server_name=parent.server_name,
+            server_type=parent.server_type,
+        )
+        assert retry.server_id is None

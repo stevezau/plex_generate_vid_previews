@@ -9,14 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.web import recent_added_scanner as scanner
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web import recent_added_scanner as scanner
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     reset_settings_manager()
-    import plex_generate_previews.web.webhooks as wh
+    import media_preview_generator.web.webhooks as wh
 
     wh._webhook_history.clear()
     yield
@@ -55,7 +55,7 @@ def _make_plex(sections):
     return plex
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_submits_in_window_items(mock_schedule, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
@@ -74,7 +74,7 @@ def test_scan_submits_in_window_items(mock_schedule, tmp_path, monkeypatch):
     assert args[2] == "/data/movies/New.mkv"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_handles_episode_titles(mock_schedule, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
@@ -96,7 +96,7 @@ def test_scan_handles_episode_titles(mock_schedule, tmp_path, monkeypatch):
     assert args[1] == "Show S01E01"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_with_explicit_library_ids_scans_only_those_sections(mock_schedule, tmp_path, monkeypatch):
     """When library_ids=[...], only sections with matching keys are scanned."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
@@ -123,12 +123,12 @@ def test_scan_with_explicit_library_ids_scans_only_those_sections(mock_schedule,
     assert args[2] == "/data/tv/S01E01.mkv"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_empty_library_ids_falls_back_to_global_selected_libraries(mock_schedule, tmp_path, monkeypatch):
     """An empty library_ids falls back to the global selected_libraries."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     sm = get_settings_manager()
     sm.set("selected_libraries", ["Only This One"])
@@ -144,7 +144,7 @@ def test_scan_empty_library_ids_falls_back_to_global_selected_libraries(mock_sch
     assert mock_schedule.call_count == 1
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_fractional_lookback_hours(mock_schedule, tmp_path, monkeypatch):
     """lookback_hours=0.25 should translate to a 15-minute window."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
@@ -162,7 +162,7 @@ def test_scan_fractional_lookback_hours(mock_schedule, tmp_path, monkeypatch):
     assert args[2] == "/data/movies/New.mkv"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_handles_unsupported_section_type(mock_schedule, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     section = _make_section("Music", "artist", "1", [])
@@ -172,7 +172,7 @@ def test_scan_handles_unsupported_section_type(mock_schedule, tmp_path, monkeypa
     mock_schedule.assert_not_called()
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_handles_search_filter_unsupported(mock_schedule, tmp_path, monkeypatch):
     """If section.search raises with the addedAt filter, fall back to client-side filter."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
@@ -197,12 +197,12 @@ def test_scan_handles_search_filter_unsupported(mock_schedule, tmp_path, monkeyp
     assert submitted == 1
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_skips_items_with_existing_bifs(mock_schedule, tmp_path, monkeypatch):
     """Items that already have a BIF file on disk are filtered out before dispatch."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     plex_config = tmp_path / "plex"
     plex_config.mkdir()
@@ -238,12 +238,12 @@ def test_scan_skips_items_with_existing_bifs(mock_schedule, tmp_path, monkeypatc
     mock_schedule.assert_not_called()
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_submits_items_missing_bif(mock_schedule, tmp_path, monkeypatch):
     """Items without a BIF on disk are forwarded through the pipeline."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     plex_config = tmp_path / "plex"
     plex_config.mkdir()
@@ -271,7 +271,7 @@ def test_scan_submits_items_missing_bif(mock_schedule, tmp_path, monkeypatch):
     mock_schedule.assert_called_once()
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_scan_logs_history_when_items_submitted(mock_schedule, tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     mock_schedule.return_value = True
@@ -282,6 +282,6 @@ def test_scan_logs_history_when_items_submitted(mock_schedule, tmp_path, monkeyp
 
     scanner.scan_recently_added(1, plex=plex)
 
-    import plex_generate_previews.web.webhooks as wh
+    import media_preview_generator.web.webhooks as wh
 
     assert any(e.get("source") == "recently_added" and e.get("status") == "queued" for e in wh._webhook_history)

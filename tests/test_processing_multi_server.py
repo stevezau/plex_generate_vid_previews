@@ -1,0 +1,712 @@
+"""Tests for the multi-server processing entry point.
+
+Verifies that:
+
+- `process_canonical_path` resolves owning servers via the registry and
+  fans out to each one's adapter,
+- one FFmpeg pass feeds every publisher (frame extraction is mocked),
+- per-publisher exceptions are captured into :class:`PublisherResult`
+  rather than crashing the whole call,
+- the "no owners" / "no frames" / "source missing" branches return
+  the right :class:`MultiServerStatus`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from media_preview_generator.processing.frame_cache import reset_frame_cache
+from media_preview_generator.processing.multi_server import (
+    MultiServerStatus,
+    PublisherStatus,
+    _adapter_for_server,
+    process_canonical_path,
+)
+from media_preview_generator.servers import (
+    Library,
+    PlexServer,
+    ServerConfig,
+    ServerRegistry,
+    ServerType,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_frame_cache_singleton():
+    """Each test gets a fresh frame-cache singleton so the
+    base_dir-conflict guard in :func:`get_frame_cache` doesn't fire
+    across tests that use different ``tmp_path`` fixtures.
+    """
+    reset_frame_cache()
+    yield
+    reset_frame_cache()
+
+
+def _populate_frames(directory: str | Path, count: int, *, real_images: bool = True) -> None:
+    """Create ``count`` JPGs under ``directory``.
+
+    When ``real_images`` is True (default) we write valid Pillow-encoded
+    JPGs — the Jellyfin trickplay adapter passes them through Pillow,
+    so its tests need decodable inputs. When False we write minimal
+    JPEG-magic byte sequences which is enough for the BIF packer that
+    only reads file lengths.
+    """
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    if real_images:
+        from PIL import Image
+
+        img = Image.new("RGB", (320, 180), (10, 20, 30))
+        for i in range(count):
+            img.save(Path(directory) / f"{i:05d}.jpg", "JPEG", quality=70)
+    else:
+        for i in range(count):
+            (Path(directory) / f"{i:05d}.jpg").write_bytes(b"\xff\xd8\xff" + b"\x00" * 100)
+
+
+def _seed_canonical_file(media_dir: Path, *, name: str = "Test (2024).mkv") -> Path:
+    """Create a fake media file so ``os.path.isfile`` passes."""
+    media_dir.mkdir(parents=True, exist_ok=True)
+    media_file = media_dir / name
+    media_file.write_bytes(b"placeholder")
+    return media_file
+
+
+def _server_config(
+    *,
+    server_id: str,
+    server_type: ServerType,
+    libraries: list[Library],
+    output: dict | None = None,
+    exclude_paths: list[dict] | None = None,
+) -> dict:
+    return {
+        "id": server_id,
+        "type": server_type.value,
+        "name": server_id,
+        "enabled": True,
+        "url": "http://x",
+        "auth": {"token": "t", "method": "api_key", "api_key": "k"},
+        "libraries": [
+            {
+                "id": lib.id,
+                "name": lib.name,
+                "remote_paths": list(lib.remote_paths),
+                "enabled": lib.enabled,
+            }
+            for lib in libraries
+        ],
+        "exclude_paths": exclude_paths or [],
+        "output": output
+        or {
+            "adapter": {
+                ServerType.PLEX: "plex_bundle",
+                ServerType.EMBY: "emby_sidecar",
+                ServerType.JELLYFIN: "jellyfin_trickplay",
+            }[server_type],
+            "plex_config_folder": "/cfg",
+            "width": 320,
+            "frame_interval": 10,
+        },
+    }
+
+
+@pytest.fixture
+def mock_config_for_processing(mock_config, tmp_path):
+    mock_config.working_tmp_folder = str(tmp_path / "tmp")
+    return mock_config
+
+
+class TestNoOwners:
+    def test_returns_no_owners_when_no_server_covers_path(self, mock_config_for_processing):
+        registry = ServerRegistry()
+        result = process_canonical_path(
+            canonical_path="/data/movies/Foo.mkv",
+            registry=registry,
+            config=mock_config_for_processing,
+        )
+        assert result.status is MultiServerStatus.NO_OWNERS
+        assert result.publishers == []
+
+
+class TestPerServerExcludePaths:
+    """Per-server exclude_paths filtering — one server skips, others publish.
+
+    The dispatcher consults each owning server's ``exclude_paths`` list
+    before adding it to the publishers fan-out. A user can have very
+    different exclusion rules per server (skip /Trailers/ on Jellyfin
+    only, etc.).
+    """
+
+    def test_excluded_server_is_filtered_out(self, mock_config_for_processing, tmp_path):
+        # Two servers both own the path; only one excludes it.
+        media_dir = tmp_path / "movies" / "Trailer (2024)"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                    exclude_paths=[{"value": str(media_file), "type": "path"}],
+                ),
+                _server_config(
+                    server_id="jellyfin-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="2", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                ),
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=5)
+            return (True, 5, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+        # Emby was excluded; only Jellyfin should appear in the publishers list.
+        published_server_ids = [p.server_id for p in result.publishers]
+        assert "emby-1" not in published_server_ids
+        assert "jellyfin-1" in published_server_ids
+
+    def test_no_servers_remain_after_exclusion_returns_no_owners(self, mock_config_for_processing, tmp_path):
+        media_file = tmp_path / "movies" / "OnlyExcluded.mkv"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"fake")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                    exclude_paths=[{"value": str(media_file), "type": "path"}],
+                ),
+            ],
+        )
+        result = process_canonical_path(
+            canonical_path=str(media_file),
+            registry=registry,
+            config=mock_config_for_processing,
+        )
+        # Every owning server excluded the path → no publishers, NO_OWNERS.
+        assert result.status is MultiServerStatus.NO_OWNERS
+
+
+class TestSourceMissing:
+    def test_returns_failed_when_source_file_missing(self, mock_config_for_processing, tmp_path):
+        # An owning server exists but the file isn't on disk.
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=("/data/movies",), enabled=True)],
+                )
+            ],
+        )
+        result = process_canonical_path(
+            canonical_path="/data/movies/missing.mkv",
+            registry=registry,
+            config=mock_config_for_processing,
+        )
+        assert result.status is MultiServerStatus.FAILED
+        assert "not found" in result.message.lower()
+
+
+class TestSinglePublisher:
+    def test_emby_publisher_runs_one_ffmpeg_pass(self, mock_config_for_processing, tmp_path):
+        media_dir = tmp_path / "data" / "movies" / "Test (2024)"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[
+                        Library(
+                            id="1",
+                            name="Movies",
+                            remote_paths=(str(tmp_path / "data" / "movies"),),
+                            enabled=True,
+                        )
+                    ],
+                    output={"adapter": "emby_sidecar", "width": 320, "frame_interval": 10},
+                )
+            ],
+        )
+
+        # Mock FFmpeg frame generation: drop synthetic frames into the tmp dir.
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=5)
+            return (True, 5, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ) as gen:
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.status is MultiServerStatus.PUBLISHED
+        assert result.frame_count == 5
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        # Exactly one FFmpeg pass — the cornerstone of the multi-server design.
+        assert gen.call_count == 1
+
+        # Sidecar BIF appeared next to the media.
+        sidecar = media_dir / "Test (2024)-320-10.bif"
+        assert sidecar.exists()
+
+
+class TestMultiPublisherFanOut:
+    def test_one_pass_feeds_emby_and_jellyfin(self, mock_config_for_processing, tmp_path):
+        media_dir = tmp_path / "data" / "movies" / "Test (2024)"
+        media_file = _seed_canonical_file(media_dir)
+        media_root = str(tmp_path / "data" / "movies")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "emby_sidecar", "width": 320, "frame_interval": 10},
+                ),
+                _server_config(
+                    server_id="jelly-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="9", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                ),
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=12)
+            return (True, 12, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ) as gen:
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                item_id_by_server={"jelly-1": "jf-item-id"},
+            )
+
+        # One pass, two publishers, both succeed.
+        assert gen.call_count == 1
+        assert result.status is MultiServerStatus.PUBLISHED
+        assert len(result.publishers) == 2
+        statuses = {p.server_id: p.status for p in result.publishers}
+        assert statuses["emby-1"] is PublisherStatus.PUBLISHED
+        assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
+
+        # Both formats landed on disk.
+        assert (media_dir / "Test (2024)-320-10.bif").exists()
+        assert (media_dir / "trickplay" / "Test (2024)-320.json").exists()
+
+
+class TestPartialFailureIsolation:
+    def test_jellyfin_failure_does_not_block_emby(self, mock_config_for_processing, tmp_path):
+        media_dir = tmp_path / "data" / "movies" / "Test"
+        media_file = _seed_canonical_file(media_dir)
+        media_root = str(tmp_path / "data" / "movies")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(media_root,), enabled=True)],
+                ),
+                # Jellyfin entry without an item_id hint — JellyfinTrickplay
+                # will raise ValueError because the manifest needs the id.
+                _server_config(
+                    server_id="jelly-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="9", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                ),
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                # No Jellyfin item id supplied -> compute_output_paths raises.
+            )
+
+        assert result.status is MultiServerStatus.PUBLISHED  # at least one succeeded
+        statuses = {p.server_id: p.status for p in result.publishers}
+        assert statuses["emby-1"] is PublisherStatus.PUBLISHED
+        assert statuses["jelly-1"] is PublisherStatus.FAILED
+
+
+class TestNotYetIndexedRoutesToSkip:
+    def test_plex_returns_skipped_not_indexed_when_hash_missing(
+        self, mock_config_for_processing, tmp_path, mock_config
+    ):
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="plex-1",
+                    server_type=ServerType.PLEX,
+                    libraries=[
+                        Library(
+                            id="1",
+                            name="Movies",
+                            remote_paths=(str(media_dir),),
+                            enabled=True,
+                        )
+                    ],
+                    output={
+                        "adapter": "plex_bundle",
+                        "plex_config_folder": str(tmp_path / "plex"),
+                        "frame_interval": 10,
+                    },
+                )
+            ],
+            legacy_config=mock_config,
+        )
+
+        # Stub Plex's bundle metadata lookup to return empty (item not yet indexed).
+        with patch.object(PlexServer, "get_bundle_metadata", return_value=[]):
+
+            def fake_generate_images(video_file, output_folder, *args, **kwargs):
+                _populate_frames(output_folder, count=3)
+                return (True, 3, "h264", 1.0, 30.0, None)
+
+            with patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ):
+                result = process_canonical_path(
+                    canonical_path=str(media_file),
+                    registry=registry,
+                    config=mock_config_for_processing,
+                    item_id_by_server={"plex-1": "42"},
+                )
+
+        # Single skipped publisher — overall status is still PUBLISHED
+        # because the design treats "skipped not indexed" as a no-op
+        # (slow-backoff retry queue handles it).
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.SKIPPED_NOT_INDEXED
+
+
+class TestSkipIfExists:
+    def test_skips_publisher_when_output_already_present(self, mock_config_for_processing, tmp_path):
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+        existing_sidecar = media_dir / "Test (2024)-320-10.bif"
+        existing_sidecar.write_bytes(b"already here")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.publishers[0].status is PublisherStatus.SKIPPED_OUTPUT_EXISTS
+        # Existing file untouched — content unchanged.
+        assert existing_sidecar.read_bytes() == b"already here"
+        # Frame provenance: the all-fresh short-circuit means FFmpeg never
+        # ran for this publisher. The badge in the Job UI relies on this
+        # being "output_existed" rather than the default "extracted".
+        assert result.publishers[0].frame_source == "output_existed"
+
+    def test_regenerate_overrides_skip(self, mock_config_for_processing, tmp_path):
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+        existing_sidecar = media_dir / "Test (2024)-320-10.bif"
+        existing_sidecar.write_bytes(b"placeholder")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                regenerate=True,
+            )
+
+        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+
+
+class TestPublisherFailureModes:
+    """Disk-full / EACCES scenarios — verify graceful PublisherStatus.FAILED."""
+
+    def test_permission_denied_during_publish_returns_failed(self, mock_config_for_processing, tmp_path):
+        """When the adapter's ``publish`` raises PermissionError, ``_publish_one``
+        catches it (PermissionError is OSError) and reports FAILED.
+
+        Without graceful handling the worker pool would die with an
+        uncaught exception. We simulate by stubbing the EmbyBifAdapter's
+        ``publish`` method to raise.
+        """
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        # Patch the underlying generate_bif call so the publish path
+        # raises PermissionError. The adapter wraps generate_bif which
+        # writes the .bif file; that's where EACCES would happen in
+        # the real world.
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+            patch(
+                "media_preview_generator.processing.generator.generate_bif",
+                side_effect=PermissionError(13, "Permission denied", "/data/movies/Test (2024)-320-10.bif"),
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        # Aggregate status is FAILED because every publisher failed.
+        assert result.status is MultiServerStatus.FAILED
+        # The publisher row is FAILED, not PUBLISHED.
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.FAILED
+        # The error message surfaces the PermissionError so the user
+        # can diagnose. Loose match — PermissionError stringifies as
+        # "[Errno 13] Permission denied: ..." on POSIX.
+        assert "Permission" in result.publishers[0].message or "denied" in result.publishers[0].message
+
+    def test_disk_full_during_publish_returns_failed(self, mock_config_for_processing, tmp_path):
+        """ENOSPC (OSError errno 28) also routes to FAILED, not crash."""
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+            patch(
+                "media_preview_generator.processing.generator.generate_bif",
+                side_effect=OSError(28, "No space left on device", "/data/movies/Test.bif"),
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.status is MultiServerStatus.FAILED
+        assert result.publishers[0].status is PublisherStatus.FAILED
+        assert "No space" in result.publishers[0].message or "28" in result.publishers[0].message
+
+    def test_compute_output_paths_oserror_returns_failed(self, mock_config_for_processing, tmp_path):
+        """An OSError raised during ``compute_output_paths`` (e.g. by a
+        Plex bundle adapter unable to query the API for the bundle hash)
+        also produces FAILED, not an unhandled exception."""
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        from media_preview_generator.output.emby_sidecar import EmbyBifAdapter
+
+        # Patching the instance method by class works because the
+        # adapter is constructed by _adapter_for_server every dispatch.
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+            patch.object(
+                EmbyBifAdapter,
+                "compute_output_paths",
+                side_effect=OSError("EIO simulated"),
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.status is MultiServerStatus.FAILED
+        assert result.publishers[0].status is PublisherStatus.FAILED
+
+
+class TestNoFrames:
+    def test_returns_no_frames_when_ffmpeg_produces_zero(self, mock_config_for_processing, tmp_path):
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(str(media_dir),), enabled=True)],
+                )
+            ],
+        )
+
+        def fake_generate_images(*args, **kwargs):
+            return (True, 0, "h264", 0.5, 30.0, "no frames")
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert result.status is MultiServerStatus.NO_FRAMES
+
+
+class TestAdapterFactory:
+    def test_picks_default_per_server_type(self):
+        plex_cfg = ServerConfig(
+            id="p",
+            type=ServerType.PLEX,
+            name="P",
+            enabled=True,
+            url="x",
+            auth={},
+            output={"plex_config_folder": "/cfg"},
+        )
+        adapter = _adapter_for_server(plex_cfg)
+        assert adapter is not None
+        assert adapter.name == "plex_bundle"
+
+    def test_unknown_adapter_returns_none(self):
+        cfg = ServerConfig(
+            id="x",
+            type=ServerType.PLEX,
+            name="x",
+            enabled=True,
+            url="x",
+            auth={},
+            output={"adapter": "completely_made_up"},
+        )
+        assert _adapter_for_server(cfg) is None
+
+    def test_plex_without_config_folder_returns_none(self):
+        cfg = ServerConfig(
+            id="p",
+            type=ServerType.PLEX,
+            name="P",
+            enabled=True,
+            url="x",
+            auth={},
+            output={"adapter": "plex_bundle"},  # missing plex_config_folder
+        )
+        assert _adapter_for_server(cfg) is None

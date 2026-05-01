@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.web.app import create_app, socketio
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web.app import create_app, socketio
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -25,11 +25,11 @@ from plex_generate_previews.web.settings_manager import reset_settings_manager
 def _reset_singletons():
     """Reset web singletons between tests."""
     reset_settings_manager()
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
@@ -188,7 +188,7 @@ def _wait_for_event(sio_client, event_name: str, timeout: float = 2.0) -> list:
     """Drain receive buffer until *event_name* arrives or *timeout* elapses.
 
     ``JobManager._emit_event`` spawns a daemon thread per emit (see
-    ``plex_generate_previews/web/jobs.py:265-272``) so the SocketIO event
+    ``media_preview_generator/web/jobs.py:265-272``) so the SocketIO event
     arrives asynchronously and can lose a race against ``get_received``
     — especially under pytest-xdist + coverage where the emit thread gets
     scheduled unpredictably. Poll instead of read-once.
@@ -212,7 +212,7 @@ class TestJobEvents:
 
     def test_job_created_event(self, app, authed_socketio_client):
         """Creating a job should emit a job_created event."""
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Movies")
@@ -229,7 +229,7 @@ class TestJobEvents:
 
     def test_job_started_event(self, app, authed_socketio_client):
         """Starting a job should emit a job_started event."""
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="TV")
@@ -243,7 +243,7 @@ class TestJobEvents:
 
     def test_progress_update_event(self, app, authed_socketio_client):
         """Progress updates should emit events."""
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Anime")
@@ -265,7 +265,7 @@ class TestJobEvents:
 
     def test_job_completed_event(self, app, authed_socketio_client):
         """Completing a job should emit a job_completed event with completed status."""
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Music Videos")

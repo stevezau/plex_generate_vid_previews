@@ -33,15 +33,18 @@ Dashboard for managing preview generation jobs, settings, and schedules.
 
 ### Setup Wizard
 
-When you first access the web interface, you'll be guided through a **Setup Wizard**:
+When you first access the web interface, you'll be guided through a **Setup Wizard** that supports **Plex, Emby, and Jellyfin**:
 
-1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
-2. **Select Server** — choose which Plex server to connect to
-3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, CPU threads, thumbnail quality, etc.
-5. **Security** — view or customize your access token (optional)
+1. **Choose your media server** — pick **Plex**, **Emby**, or **Jellyfin**. The chosen card expands inline:
+   - **Plex** — sign in via Plex OAuth (no manual token copying), or paste a URL + token if you prefer.
+   - **Emby** — enter the server URL and an API key.
+   - **Jellyfin** — enter the URL and run a **Quick Connect** ceremony (or paste an API key).
+2. **Server & Libraries** *(Plex only)* — pick which Plex server (if you have several) and which libraries to enable. Emby/Jellyfin flows skip this step; libraries are managed later from **Settings → Media Servers**.
+3. **Path Configuration** *(Plex only)* — confirm the Plex application data folder where BIF files are written, plus any media path mappings. Emby/Jellyfin push their output via HTTP, so this step is skipped for those flows.
+4. **Processing Options** — per-GPU enable/workers/FFmpeg threads, CPU workers, thumbnail interval, and quality.
+5. **Security** — view or replace your access token (optional).
 
-After setup completes, you'll be taken to the dashboard.
+After setup completes, you'll land on the dashboard. You can add additional servers (any vendor, any number) at any time from **Settings → Media Servers** without re-running the wizard.
 
 ### Accessing the Dashboard
 
@@ -261,7 +264,7 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 
 ### Prerequisites
 
-- Plex Generate Previews running with the web UI accessible
+- Media Preview Generator running with the web UI accessible
 - Radarr and/or Sonarr installed and managing your media (for Radarr/Sonarr webhooks)
 
 ### Configure Radarr
@@ -467,8 +470,8 @@ The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbn
 | HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
 | HLG | zscale/tonemap (configurable algorithm, default: Hable) |
 | HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178), [#212](https://github.com/stevezau/plex_generate_vid_previews/issues/212)) |
+| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/media_preview_generator/issues/178)) |
+| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/media_preview_generator/issues/172), [#178](https://github.com/stevezau/media_preview_generator/issues/178), [#212](https://github.com/stevezau/media_preview_generator/issues/212)) |
 
 ### Tone-map algorithm
 
@@ -542,9 +545,37 @@ Enable detailed logs when diagnosing persistent issues. In **Settings** → **Pr
 
 ---
 
+## Rolling back to a previous version
+
+Schema downgrades are **not automated**. If you need to revert from a release that ran a settings migration, do it manually:
+
+1. **Stop the container.**
+   ```bash
+   docker stop media-preview-generator
+   ```
+2. **Restore the relevant `.bak` files** from your config volume. Each JSON file the app owns leaves a single rolling `.bak` next to it on every save:
+   ```bash
+   cd /your/config/dir
+   mv settings.json.bak settings.json          # required
+   mv schedules.json.bak schedules.json        # if you use Schedules
+   mv webhook_history.json.bak webhook_history.json  # optional
+   mv setup_state.json.bak setup_state.json    # optional
+   ```
+   `jobs.db` does **not** have a JSON `.bak` (jobs moved to SQLite as of this release). To recover an older job database, restore your full config-volume snapshot.
+3. **Start the older app version** that wrote those files.
+   ```bash
+   docker run ... your/image:older-tag
+   ```
+
+> **Multi-server caveat.** Multi-server installs cannot meaningfully downgrade to a single-server release without losing the second / third server's settings. The newer schema holds richer data than the older one can represent. The downgrade-refusal guard (introduced in this release) intentionally refuses to start the older binary against a newer `settings.json` — its log message names the `.bak` path so you have a one-line recovery hint.
+
+> **Why it refuses to "just work".** Silent acceptance would drop unknown fields on the next save — exactly the failure mode that wiped a user's job history during a tag-drift incident on the multi-server branch. Refusing to boot is loud and recoverable; silent truncation is quiet and final.
+
+---
+
 ## Support
 
-Open a [GitHub Issue](https://github.com/stevezau/plex_generate_vid_previews/issues).
+Open a [GitHub Issue](https://github.com/stevezau/media_preview_generator/issues).
 
 ---
 

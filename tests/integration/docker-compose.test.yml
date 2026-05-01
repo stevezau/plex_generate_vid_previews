@@ -1,0 +1,96 @@
+# Multi-media-server integration test stack.
+#
+# Brings up Emby, Jellyfin, and Plex against a shared synthetic media
+# library so the dispatcher's path-centric fan-out can be exercised
+# end-to-end. Plex requires a one-time PLEX_CLAIM token from
+# https://plex.tv/claim — Emby and Jellyfin are configured fully via API.
+#
+# Usage (from repo root):
+#   ./tests/integration/generate_test_media.sh           # creates synthetic mkv files
+#   PLEX_CLAIM=claim-XXXXXXXX docker compose -f tests/integration/docker-compose.test.yml up -d
+#   python tests/integration/setup_servers.py            # API-configures users + libraries
+#   pytest -m integration --no-cov tests/integration/    # runs the e2e scenarios
+#   docker compose -f tests/integration/docker-compose.test.yml down -v
+#
+# All three servers see the same files, but each at a different mount
+# path — that exercises per-server path_mappings end-to-end.
+
+name: plex-previews-test
+
+services:
+  emby:
+    image: emby/embyserver:latest
+    container_name: previews-test-emby
+    environment:
+      UID: "1000"
+      GID: "1000"
+      GIDLIST: "1000"
+    ports:
+      - "127.0.0.1:8096:8096"   # Emby API + UI
+    volumes:
+      - emby_config:/config
+      - ./media:/em-media:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8096/System/Info/Public >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  jellyfin:
+    # Pinned to 10.9.11 (the integration tests were validated against
+    # this version). Note: Jellyfin's first-run /Startup/User endpoint
+    # is broken across 10.9 / 10.10 / 10.11 — POST throws "Sequence
+    # contains no elements" because the User table starts empty and
+    # never gets seeded. Workaround: complete the wizard manually
+    # via http://127.0.0.1:8097 once, then pass --jellyfin-token to
+    # setup_servers.py. The unit tests cover JellyfinServer + the
+    # trickplay adapter exhaustively (it shares 90% with Emby via
+    # EmbyApiClient base class), so live integration is documented
+    # as a follow-up.
+    image: lscr.io/linuxserver/jellyfin:10.9.11
+    container_name: previews-test-jellyfin
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: UTC
+      JELLYFIN_PublishedServerUrl: "http://127.0.0.1:8097"
+    ports:
+      - "127.0.0.1:8097:8096"   # Jellyfin API + UI (host port shifted to avoid collision)
+    volumes:
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+      - ./media:/jf-media:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8096/System/Info/Public >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  plex:
+    image: plexinc/pms-docker:latest
+    container_name: previews-test-plex
+    environment:
+      TZ: UTC
+      PLEX_CLAIM: ${PLEX_CLAIM:-}    # one-time, from https://plex.tv/claim
+      ADVERTISE_IP: "http://127.0.0.1:32401"
+    ports:
+      - "127.0.0.1:32401:32400"      # host port shifted so the user's prod Plex (32400) is untouched
+    volumes:
+      - plex_config:/config
+      - plex_transcode:/transcode
+      - ./media:/media:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:32400/identity >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60   # Plex first-run takes longer than Emby/Jellyfin
+
+volumes:
+  emby_config:
+  jellyfin_config:
+  jellyfin_cache:
+  plex_config:
+  plex_transcode:

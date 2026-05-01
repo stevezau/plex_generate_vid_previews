@@ -10,12 +10,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.jobs.worker import Worker, WorkerPool
-from plex_generate_previews.processing import (
+from media_preview_generator.jobs.worker import Worker, WorkerPool
+from media_preview_generator.processing import (
     CancellationError,
     CodecNotSupportedError,
     ProcessingResult,
 )
+from tests.conftest import _ms, _pi, _pi_list_or_passthrough  # noqa: F401
 
 
 class TestWorker:
@@ -44,55 +45,75 @@ class TestWorker:
         worker.is_busy = True
         assert worker.is_available() is False
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_assign_task(self, mock_process):
         """Test task assignment."""
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         # Mock process_item to return quickly
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
 
         worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Test Movie",
-            media_type="movie",
-            title_max_width=30,
+            _pi("test_key", title="Test Movie", media_type="movie"), config, registry, title_max_width=30
         )
 
         assert worker.is_busy is True
-        assert worker.current_task == "test_key"
+        assert worker.current_task == "/data/test_key.mkv"
         assert worker.media_title == "Test Movie"
-        assert worker.media_type == "movie"
+        # title_kind is a display-only heuristic derived from the title
+        # ("episode" if " - S" in title else "video") — drives card
+        # truncation only, not any processing decision.
+        assert worker.title_kind == "video"
 
         # Wait for thread to complete
         if worker.current_thread:
             worker.current_thread.join(timeout=2)
 
     def test_worker_assign_task_when_busy(self):
-        """Test that assigning task to busy worker raises error."""
+        """Test that assigning task to a worker mid-task raises.
+
+        "Busy" with no current_task set (the pre-claimed state used by
+        _find_available_worker(claim=True)) is allowed — that's how the
+        atomic-claim path threads find/assign through the pool. Only an
+        in-flight task should reject a second assign_task.
+        """
         worker = Worker(0, "CPU")
         worker.is_busy = True
+        worker.current_task = "/data/already-running.mkv"  # mid-task
 
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         with pytest.raises(RuntimeError):
-            worker.assign_task("test_key", config, plex)
+            worker.assign_task(_pi("test_key", title="", media_type="movie"), config, registry)
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_worker_assign_task_accepts_pre_claimed_state(self, mock_process):
+        """Pre-claim path: a worker with is_busy=True but current_task=None
+        (just reserved by _find_available_worker(claim=True)) must accept
+        the immediately-following assign_task without raising. Otherwise
+        the atomic-claim race fix would self-trip its own busy check.
+        """
+        mock_process.return_value = _ms("generated")
+        worker = Worker(0, "CPU")
+        worker.is_busy = True  # pre-claimed
+        worker.current_task = None  # not yet assigned
+
+        config = MagicMock()
+        registry = MagicMock()
+        # Must not raise.
+        worker.assign_task(_pi("k", title="T", media_type="movie"), config, registry)
+        assert worker.current_task is not None  # task now assigned
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_check_completion(self, mock_process):
         """Test completion detection."""
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
+        mock_process.return_value = _ms("generated")
 
-        mock_process.return_value = ProcessingResult.GENERATED
-
-        worker.assign_task("test_key", config, plex, media_title="Test", media_type="movie")
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry)
 
         # Should be busy initially
         assert worker.is_busy is True
@@ -175,24 +196,23 @@ class TestWorker:
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_thread_execution(self, mock_process):
         """Test that worker executes in background thread."""
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         # Track if process_item was called
         call_count = [0]
 
         def mock_process_fn(*args, **kwargs):
             call_count[0] += 1
             time.sleep(0.1)  # Longer sleep to ensure thread is alive when checked
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = mock_process_fn
 
-        worker.assign_task("test_key", config, plex, media_title="Test", media_type="movie")
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry)
 
         # Give thread a moment to start
         time.sleep(0.01)
@@ -207,16 +227,15 @@ class TestWorker:
         assert call_count[0] == 1
         assert worker.completed == 1
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_last_task_outcome_delta(self, mock_process):
         """Test that last_task_outcome_delta returns correct per-task delta."""
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
+        mock_process.side_effect = lambda *a, **kw: _ms("generated")
 
-        mock_process.side_effect = lambda *a, **kw: ProcessingResult.GENERATED
-
-        worker.assign_task("key1", config, plex, media_title="T1", media_type="movie")
+        worker.assign_task(_pi("key1", title="T1", media_type="movie"), config, registry)
         worker.current_thread.join(timeout=2)
         worker.check_completion()
 
@@ -225,8 +244,8 @@ class TestWorker:
         assert all(v == 0 for k, v in delta.items() if k != "generated")
 
         # Second task — delta should reflect only the second task
-        mock_process.side_effect = lambda *a, **kw: ProcessingResult.SKIPPED_BIF_EXISTS
-        worker.assign_task("key2", config, plex, media_title="T2", media_type="movie")
+        mock_process.side_effect = lambda *a, **kw: _ms("skipped_bif_exists")
+        worker.assign_task(_pi("key2", title="T2", media_type="movie"), config, registry)
         worker.current_thread.join(timeout=2)
         worker.check_completion()
 
@@ -234,7 +253,7 @@ class TestWorker:
         assert delta2["skipped_bif_exists"] == 1
         assert delta2["generated"] == 0
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_gpu_codec_error_retries_on_cpu_in_place(self, mock_process):
         """GPU worker catches CodecNotSupportedError and retries the same item on CPU itself.
 
@@ -245,36 +264,29 @@ class TestWorker:
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
         config = MagicMock()
         config.cpu_threads = 2
-        plex = MagicMock()
-
+        registry = MagicMock()
         calls = []
 
         def mock_process_fn(*args, **kwargs):
             calls.append((args, kwargs))
             if len(calls) == 1:
                 raise CodecNotSupportedError("Codec not supported by GPU")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = mock_process_fn
 
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="AV1 Video",
-            media_type="episode",
-        )
+        worker.assign_task(_pi("test_key", title="AV1 Video", media_type="episode"), config, registry)
 
         if worker.current_thread:
             worker.current_thread.join(timeout=2)
 
         # Two calls: first GPU (gpu='NVIDIA'), second CPU (gpu=None).
         assert len(calls) == 2
-        first_args = calls[0][0]
-        second_args = calls[1][0]
-        assert first_args[1] == "NVIDIA"  # gpu arg
-        assert second_args[1] is None  # gpu=None on CPU retry
-        assert second_args[2] is None  # gpu_device_path=None on CPU retry
+        first_kwargs = calls[0][1]
+        second_kwargs = calls[1][1]
+        assert first_kwargs.get("gpu") == "NVIDIA"
+        assert second_kwargs.get("gpu") is None
+        assert second_kwargs.get("gpu_device_path") is None
 
         # Worker records the retry outcome + exposes fallback state.
         assert worker.completed == 1
@@ -282,31 +294,24 @@ class TestWorker:
         assert worker.fallback_active is True
         assert "Codec not supported by GPU" in (worker.fallback_reason or "")
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_gpu_cpu_fallback_records_failure_when_cpu_retry_fails(self, mock_process):
         """If the in-place CPU retry also fails, the worker counts the task as failed."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 2060 SUPER")
         config = MagicMock()
         config.cpu_threads = 1
-        plex = MagicMock()
-
+        registry = MagicMock()
         calls = []
 
         def mock_process_fn(*args, **kwargs):
             calls.append((args, kwargs))
             if len(calls) == 1:
                 raise CodecNotSupportedError("Codec not supported by GPU")
-            return ProcessingResult.FAILED
+            return _ms("failed")
 
         mock_process.side_effect = mock_process_fn
 
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="AV1 Video",
-            media_type="episode",
-        )
+        worker.assign_task(_pi("test_key", title="AV1 Video", media_type="episode"), config, registry)
         if worker.current_thread:
             worker.current_thread.join(timeout=2)
 
@@ -315,12 +320,12 @@ class TestWorker:
         assert worker.failed == 1
         assert worker.fallback_active is True
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_cpu_handles_codec_error_as_failure(self, mock_process):
         """Test that CPU worker treats CodecNotSupportedError as unexpected failure."""
         worker = Worker(0, "CPU")
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
 
         # Mock process_item to raise CodecNotSupportedError
         def mock_process_fn(*args, **kwargs):
@@ -328,7 +333,7 @@ class TestWorker:
 
         mock_process.side_effect = mock_process_fn
 
-        worker.assign_task("test_key", config, plex, media_title="Test", media_type="movie")
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry)
 
         # Wait for thread to complete
         if worker.current_thread:
@@ -378,18 +383,17 @@ class TestWorkerPool:
         assert pool.workers[1].gpu_index == 1
         assert pool.workers[3].gpu_index == 1
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_process_items(self, mock_process):
         """Test processing items with worker pool."""
         # Track if mock was called
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
 
         selected_gpus = []
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=selected_gpus)
 
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("key1", "Movie 1", "movie"),
             ("key2", "Movie 2", "movie"),
@@ -399,7 +403,7 @@ class TestWorkerPool:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=[0, 1])
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
         # All items should be processed
         total_completed = sum(w.completed for w in pool.workers)
@@ -462,7 +466,7 @@ class TestWorkerPool:
         assert retired == 1
         assert len([w for w in pool.workers if w.worker_type == "CPU"]) == 0
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_dynamic_remove_does_not_stall_completion(self, mock_process):
         """Dynamic worker removal should not trap processing at 100%."""
         mock_process.side_effect = lambda *args, **kwargs: (
@@ -471,7 +475,7 @@ class TestWorkerPool:
         )[-1]
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
         items = [(f"key{i}", f"Movie {i}", "movie") for i in range(8)]
 
         original_assign = pool._assign_main_queue_task
@@ -488,13 +492,13 @@ class TestWorkerPool:
 
         with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove):
             start = time.time()
-            result = pool.process_items_headless(items, config, plex)
+            result = pool.process_items_headless(_pi_list_or_passthrough(items), config, registry)
             elapsed = time.time() - start
 
         assert elapsed < 2.0
         assert result["completed"] + result["failed"] == len(items)
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_dynamic_gpu_removal_does_not_stall_completion(self, mock_process):
         """Dynamic GPU worker removal during active processing must not stall at 100%."""
         mock_process.side_effect = lambda *args, **kwargs: (
@@ -507,7 +511,7 @@ class TestWorkerPool:
         ]
         pool = WorkerPool(gpu_workers=2, cpu_workers=0, selected_gpus=selected_gpus)
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
         items = [(f"key{i}", f"Movie {i}", "movie") for i in range(8)]
 
         original_assign = pool._assign_main_queue_task
@@ -524,7 +528,7 @@ class TestWorkerPool:
 
         with patch.object(pool, "_assign_main_queue_task", side_effect=assign_and_remove_gpu):
             start = time.time()
-            result = pool.process_items_headless(items, config, plex)
+            result = pool.process_items_headless(_pi_list_or_passthrough(items), config, registry)
             elapsed = time.time() - start
 
         assert elapsed < 2.0, "Run must not stall after GPU removal"
@@ -533,13 +537,13 @@ class TestWorkerPool:
             f"failed={result['failed']}, total={len(items)}"
         )
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_pause_check_blocks_dispatch(self, mock_process):
         """Pause check should delay task dispatch until resumed."""
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
         items = [("key1", "Movie 1", "movie"), ("key2", "Movie 2", "movie")]
 
         pause_state = {"paused": True}
@@ -553,9 +557,9 @@ class TestWorkerPool:
         threading.Thread(target=unpause_later, daemon=True).start()
         start = time.time()
         result = pool.process_items_headless(
-            items,
+            _pi_list_or_passthrough(items),
             config,
-            plex,
+            registry,
             pause_check=lambda: pause_state["paused"],
         )
         elapsed = time.time() - start
@@ -563,13 +567,13 @@ class TestWorkerPool:
         assert result["completed"] == 2
         assert elapsed >= 0.2
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_no_dispatch_while_paused(self, mock_process):
         """No new task is assigned while pause_check returns True; first assignment after unpause."""
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
         items = [("key1", "Movie 1", "movie"), ("key2", "Movie 2", "movie")]
 
         pause_duration = 0.3
@@ -593,9 +597,9 @@ class TestWorkerPool:
 
             threading.Thread(target=unpause_later, daemon=True).start()
             result = pool.process_items_headless(
-                items,
+                _pi_list_or_passthrough(items),
                 config,
-                plex,
+                registry,
                 pause_check=lambda: pause_state["paused"],
             )
 
@@ -607,14 +611,14 @@ class TestWorkerPool:
             f"pause_duration={pause_duration}s"
         )
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_stats_are_per_library(self, mock_process):
         """Returned processing stats should be scoped to one library call."""
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         config = MagicMock()
-        plex = MagicMock()
+        registry = MagicMock()
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(return_value=0)
         main_progress = MagicMock()
@@ -626,16 +630,16 @@ class TestWorkerPool:
         second_items = [("key3", "Movie 3", "movie")]
 
         first_result = pool.process_items(
-            first_items,
+            _pi_list_or_passthrough(first_items),
             config,
-            plex,
+            registry,
             worker_progress,
             main_progress,
         )
         second_result = pool.process_items(
-            second_items,
+            _pi_list_or_passthrough(second_items),
             config,
-            plex,
+            registry,
             worker_progress,
             main_progress,
         )
@@ -645,22 +649,21 @@ class TestWorkerPool:
         assert second_result["completed"] == 1
         assert second_result["failed"] == 0
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_task_completion(self, mock_process):
         """Test that all tasks complete."""
 
         # Simulate slow processing
         def slow_process(*args, **kwargs):
             time.sleep(0.05)
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = slow_process
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
 
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("key1", "Movie 1", "movie"),
             ("key2", "Movie 2", "movie"),
@@ -672,13 +675,13 @@ class TestWorkerPool:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
         # All 4 items should be completed
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 4
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_error_handling(self, mock_process):
         """Test that failed tasks are tracked."""
         # Simulate failures
@@ -689,15 +692,14 @@ class TestWorkerPool:
             call_count[0] += 1
             if call_count[0] % 2 == 0:
                 raise Exception("Processing failed")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = failing_process
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
 
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("key1", "Movie 1", "movie"),
             ("key2", "Movie 2", "movie"),
@@ -709,22 +711,21 @@ class TestWorkerPool:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
         # Some should fail
         total_failed = sum(w.failed for w in pool.workers)
         assert total_failed > 0
 
-    @patch("plex_generate_previews.processing.orchestrator.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_progress_updates(self, mock_process):
         """Test that progress callbacks work correctly."""
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
 
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
 
         config = MagicMock()
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [("key1", "Movie 1", "movie")]
 
         main_progress = MagicMock()
@@ -732,7 +733,7 @@ class TestWorkerPool:
         task_id = 0
         worker_progress.add_task = MagicMock(return_value=task_id)
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
         # Progress update should have been called
         assert worker_progress.update.called or worker_progress.remove_task.called
@@ -752,27 +753,18 @@ class TestWorkerPool:
         assert total_completed == 8
         assert total_failed == 3
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_cpu_fallback_on_codec_error(self, mock_process):
         """GPU worker codec errors now trigger an in-place CPU retry on the same worker."""
         call_order = []
 
-        def mock_process_fn(
-            item_key,
-            gpu,
-            gpu_device,
-            config,
-            plex,
-            progress_callback=None,
-            ffmpeg_threads_override=None,
-            cancel_check=None,
-            worker_name=None,
-        ):
+        def mock_process_fn(*args, gpu=None, gpu_device_path=None, canonical_path=None, **kwargs):
+            item_key = (canonical_path or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
             call_order.append((item_key, gpu))
             time.sleep(0.01)
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported by GPU")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = mock_process_fn
 
@@ -781,8 +773,7 @@ class TestWorkerPool:
 
         config = MagicMock()
         config.cpu_threads = 0
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("key1", "AV1 Video", "episode"),
         ]
@@ -791,7 +782,7 @@ class TestWorkerPool:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=[0, 1])
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
         time.sleep(0.2)
 
         # Two calls on the same GPU worker: GPU first, then in-place CPU retry.
@@ -800,27 +791,18 @@ class TestWorkerPool:
         assert pool.workers[0].failed == 0
         assert pool.workers[0].fallback_active is True
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_mixed_workload_with_gpu_cpu_fallback(self, mock_process):
         """GPU+CPU pool handles a mix of items including in-place fallbacks."""
         call_order = []
 
-        def mock_process_fn(
-            item_key,
-            gpu,
-            gpu_device,
-            config,
-            plex,
-            progress_callback=None,
-            ffmpeg_threads_override=None,
-            cancel_check=None,
-            worker_name=None,
-        ):
+        def mock_process_fn(*args, gpu=None, gpu_device_path=None, canonical_path=None, **kwargs):
+            item_key = (canonical_path or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
             call_order.append((item_key, gpu))
             time.sleep(0.01)
             if gpu is not None and item_key == "key2":
                 raise CodecNotSupportedError("Codec not supported")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = mock_process_fn
 
@@ -829,8 +811,7 @@ class TestWorkerPool:
 
         config = MagicMock()
         config.cpu_threads = 2
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("key1", "Normal Video", "movie"),
             ("key2", "AV1 Video", "episode"),
@@ -841,31 +822,21 @@ class TestWorkerPool:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(side_effect=list(range(10)))
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
         time.sleep(0.2)
 
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 3
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_codec_error_fails_when_cpu_retry_also_fails(self, mock_process):
         """If the in-place CPU retry itself fails, the GPU worker records a failure."""
 
-        def mock_process_fn(
-            item_key,
-            gpu,
-            gpu_device,
-            config,
-            plex,
-            progress_callback=None,
-            ffmpeg_threads_override=None,
-            cancel_check=None,
-            worker_name=None,
-        ):
+        def mock_process_fn(*args, gpu=None, **kwargs):
             time.sleep(0.01)
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported")
-            return ProcessingResult.FAILED
+            return _ms("failed")
 
         mock_process.side_effect = mock_process_fn
 
@@ -874,8 +845,7 @@ class TestWorkerPool:
 
         config = MagicMock()
         config.cpu_threads = 0
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [
             ("key1", "AV1 Video", "episode"),
         ]
@@ -884,7 +854,7 @@ class TestWorkerPool:
         worker_progress = MagicMock()
         worker_progress.add_task = MagicMock(return_value=0)
 
-        pool.process_items(items, config, plex, worker_progress, main_progress)
+        pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
         assert pool.workers[0].failed == 1
         assert pool.workers[0].completed == 0
@@ -1014,26 +984,16 @@ class TestReconcileGpuWorkers:
 class TestWorkerProgressCount:
     """Test that GPU→CPU fallback does not double-count completed_tasks (H2)."""
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_progress_not_double_counted_on_gpu_cpu_fallback(self, mock_process):
         """When a GPU worker re-queues to CPU, completed_tasks increments only once."""
         completed_counts = []
 
-        def mock_process_fn(
-            item_key,
-            gpu,
-            gpu_device,
-            config,
-            plex,
-            progress_callback=None,
-            ffmpeg_threads_override=None,
-            cancel_check=None,
-            worker_name=None,
-        ):
+        def mock_process_fn(*args, gpu=None, **kwargs):
             time.sleep(0.01)
             if gpu is not None:
                 raise CodecNotSupportedError("Codec not supported by GPU")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = mock_process_fn
 
@@ -1042,8 +1002,7 @@ class TestWorkerProgressCount:
 
         config = MagicMock()
         config.cpu_threads = 1
-        plex = MagicMock()
-
+        registry = MagicMock()
         items = [("key1", "Test Video", "movie")]
 
         # We need to track the on_task_complete callback.
@@ -1053,9 +1012,9 @@ class TestWorkerProgressCount:
             completed_counts.append(completed)
 
         pool._process_items_loop(
-            media_items=items,
+            media_items=_pi_list_or_passthrough(items),
             config=config,
-            plex=plex,
+            registry=registry,
             title_max_width=30,
             library_name="Test",
             on_task_complete=on_task_complete,
@@ -1066,30 +1025,23 @@ class TestWorkerProgressCount:
             f"Expected final completed_tasks=1, got {completed_counts[-1]}. All counts: {completed_counts}"
         )
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_fallback_state_resets_on_new_task(self, mock_process):
         """fallback_active / fallback_reason are cleared when a new task is assigned."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 3080")
         config = MagicMock()
         config.cpu_threads = 1
-        plex = MagicMock()
-
+        registry = MagicMock()
         calls = []
 
         def first_fn(*args, **kwargs):
             calls.append(args)
             if len(calls) == 1:
                 raise CodecNotSupportedError("Codec not supported")
-            return ProcessingResult.GENERATED
+            return _ms("generated")
 
         mock_process.side_effect = first_fn
-        worker.assign_task(
-            "key1",
-            config,
-            plex,
-            media_title="Video 1",
-            media_type="movie",
-        )
+        worker.assign_task(_pi("key1", title="Video 1", media_type="movie"), config, registry)
         if worker.current_thread:
             worker.current_thread.join(timeout=2)
         worker.check_completion()
@@ -1099,14 +1051,8 @@ class TestWorkerProgressCount:
         # Second task: clean start — fallback state must reset on assign.
         calls.clear()
         mock_process.side_effect = None
-        mock_process.return_value = ProcessingResult.GENERATED
-        worker.assign_task(
-            "key2",
-            config,
-            plex,
-            media_title="Video 2",
-            media_type="movie",
-        )
+        mock_process.return_value = _ms("generated")
+        worker.assign_task(_pi("key2", title="Video 2", media_type="movie"), config, registry)
         assert worker.fallback_active is False
         assert worker.fallback_reason is None
         if worker.current_thread:
@@ -1117,23 +1063,17 @@ class TestWorkerProgressCount:
 class TestWorkerCancellation:
     """Test that cancellation is properly handled by workers."""
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_cancellation_does_not_fallback_to_cpu(self, mock_process):
         """Cancellation on GPU worker must not trigger an in-place CPU retry."""
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 3080")
         config = MagicMock()
         config.cpu_threads = 2
-        plex = MagicMock()
-
+        registry = MagicMock()
         mock_process.side_effect = CancellationError("cancelled")
 
         worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Cancelled Movie",
-            media_type="movie",
-            cancel_check=lambda: True,
+            _pi("test_key", title="Cancelled Movie", media_type="movie"), config, registry, cancel_check=lambda: True
         )
 
         if worker.current_thread:
@@ -1145,26 +1085,18 @@ class TestWorkerCancellation:
         # Only one call — cancellation short-circuits the CPU retry path.
         assert mock_process.call_count == 1
 
-    @patch("plex_generate_previews.jobs.worker.process_item")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_passes_cancel_check_to_process_item(self, mock_process):
         """Test that cancel_check is forwarded from assign_task to process_item."""
-        mock_process.return_value = ProcessingResult.GENERATED
+        mock_process.return_value = _ms("generated")
 
         def cancel_fn():
             return False
 
         worker = Worker(0, "CPU", None, None, 0, None)
         config = MagicMock()
-        plex = MagicMock()
-
-        worker.assign_task(
-            "test_key",
-            config,
-            plex,
-            media_title="Test",
-            media_type="movie",
-            cancel_check=cancel_fn,
-        )
+        registry = MagicMock()
+        worker.assign_task(_pi("test_key", title="Test", media_type="movie"), config, registry, cancel_check=cancel_fn)
 
         if worker.current_thread:
             worker.current_thread.join(timeout=2)
@@ -1180,7 +1112,7 @@ class TestBuildSelectedGpus:
     @pytest.fixture(autouse=True)
     def _stub_gpu_cache(self, monkeypatch):
         """Control the GPU cache directly and bypass live detection."""
-        from plex_generate_previews.web.routes import _helpers
+        from media_preview_generator.web.routes import _helpers
 
         _helpers._gpu_cache["result"] = []
         monkeypatch.setattr(_helpers, "_ensure_gpu_cache", lambda: None)
@@ -1188,7 +1120,7 @@ class TestBuildSelectedGpus:
         _helpers._gpu_cache["result"] = None
 
     def _set_cache(self, gpus):
-        from plex_generate_previews.web.routes import _helpers
+        from media_preview_generator.web.routes import _helpers
 
         _helpers._gpu_cache["result"] = gpus
 
@@ -1198,7 +1130,7 @@ class TestBuildSelectedGpus:
         return sm
 
     def test_enabled_gpu_returned_with_config_values(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "NVIDIA", "device": "cuda:0", "name": "RTX 3080"}])
         settings = self._make_settings([{"device": "cuda:0", "enabled": True, "workers": 3, "ffmpeg_threads": 4}])
@@ -1213,7 +1145,7 @@ class TestBuildSelectedGpus:
         assert info["ffmpeg_threads"] == 4
 
     def test_disabled_gpu_is_skipped(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "AMD", "device": "vaapi:/dev/dri/renderD128", "name": "RX 6800"}])
         settings = self._make_settings([{"device": "vaapi:/dev/dri/renderD128", "enabled": False, "workers": 2}])
@@ -1221,7 +1153,7 @@ class TestBuildSelectedGpus:
         assert _build_selected_gpus(settings) == []
 
     def test_zero_workers_is_skipped(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "NVIDIA", "device": "cuda:0", "name": "RTX"}])
         settings = self._make_settings([{"device": "cuda:0", "enabled": True, "workers": 0}])
@@ -1229,7 +1161,7 @@ class TestBuildSelectedGpus:
         assert _build_selected_gpus(settings) == []
 
     def test_failed_gpu_is_skipped(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache(
             [
@@ -1251,7 +1183,7 @@ class TestBuildSelectedGpus:
 
     def test_undetected_gpu_gets_default_config(self):
         """GPU in cache but not in gpu_config → defaults (workers=1, ffmpeg_threads=2)."""
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([{"type": "INTEL", "device": "qsv", "name": "Arc"}])
         settings = self._make_settings([])
@@ -1265,7 +1197,7 @@ class TestBuildSelectedGpus:
         assert info["ffmpeg_threads"] == 2
 
     def test_empty_cache_returns_empty_list(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache([])
         settings = self._make_settings([])
@@ -1273,7 +1205,7 @@ class TestBuildSelectedGpus:
         assert _build_selected_gpus(settings) == []
 
     def test_mixed_enabled_and_disabled(self):
-        from plex_generate_previews.web.routes.job_runner import _build_selected_gpus
+        from media_preview_generator.web.routes.job_runner import _build_selected_gpus
 
         self._set_cache(
             [

@@ -1,0 +1,777 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Media Preview Generator{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/settings.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Sidebar Navigation -->
+    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
+        <nav id="settings-sidebar" class="settings-sidebar sticky-top">
+            <div class="nav flex-column nav-pills">
+                <a class="nav-link" href="#section-media-servers"><i class="bi bi-hdd-network me-2"></i>Media Servers</a>
+                <a class="nav-link" href="#section-processing"><i class="bi bi-speedometer2 me-2"></i>Processing Options</a>
+                <a class="nav-link" href="#section-logging"><i class="bi bi-journal-text me-2"></i>Logging</a>
+                <a class="nav-link" href="#section-auth"><i class="bi bi-key me-2"></i>Authentication</a>
+                <a class="nav-link" href="#section-backups"><i class="bi bi-clock-history me-2"></i>Backups</a>
+                <a class="nav-link" href="#section-about"><i class="bi bi-info-circle me-2"></i>About</a>
+            </div>
+        </nav>
+    </div>
+    <!-- Main Content -->
+    <div class="col-lg-9 col-xl-8 settings-content">
+        <!-- Header with auto-save indicator -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2><i class="bi bi-gear me-2"></i>Settings</h2>
+            <span id="saveStatusIndicator" class="autosave-indicator"></span>
+        </div>
+
+        <!-- Media Servers (link to dedicated page) -->
+        <div class="card section-card" id="section-media-servers">
+            <div class="card-header">
+                <i class="bi bi-hdd-network me-2"></i>Media Servers
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    Connections, libraries, path mappings, and exclude rules now live on the dedicated
+                    <a href="/servers"><strong>Media Servers</strong></a> page &mdash; one card per Plex,
+                    Emby, or Jellyfin server you configure.
+                </p>
+                <a href="/servers" class="btn btn-outline-primary btn-sm">
+                    <i class="bi bi-box-arrow-up-right me-1"></i>Open Media Servers
+                </a>
+            </div>
+        </div>
+
+        <!-- Processing Options -->
+        <div class="card section-card" id="section-processing">
+            <div class="card-header">
+                <i class="bi bi-speedometer2 me-2"></i>Processing Options
+            </div>
+            <div class="card-body">
+
+                <!-- GPU Configuration -->
+                <h6 class="mb-3" id="gpu-configuration"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
+                <div id="gpuConfigContainer">
+                    <div class="text-muted mb-3" id="gpuDetecting">
+                        <div class="spinner-border spinner-border-sm me-2" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        Detecting GPUs...
+                    </div>
+                    <div id="gpuConfigList"></div>
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-4"
+                        onclick="rescanGPUs()" id="gpuRescanBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs
+                </button>
+
+                <!-- CPU Workers -->
+                <h6 class="mb-3"><i class="bi bi-cpu me-2"></i>CPU Workers</h6>
+                <div class="row mb-4">
+                    <div class="col-md-6 mb-3">
+                        <label for="cpuThreads" class="form-label">
+                            CPU Workers
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="How many items the CPU processes at the same time, in addition to any GPU workers. Each worker keeps one job busy at a time. Set to 0 to disable CPU processing entirely."></i>
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="cpuThreads"
+                               min="0" max="32" value="1">
+                        <div class="form-text">Parallel preview jobs to run on the CPU.</div>
+                    </div>
+                </div>
+                <div class="alert alert-secondary py-2 mb-4">
+                    <small>
+                        If a GPU worker can&rsquo;t process a file (e.g. unsupported codec, hardware-accelerator error),
+                        it automatically retries the same item on CPU in-place. The reason appears in logs and the worker card.
+                    </small>
+                </div>
+
+                <!-- Thumbnail Settings -->
+                <h6 class="mb-3"><i class="bi bi-image me-2"></i>Thumbnail Settings</h6>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailInterval" class="form-label">
+                            Thumbnail Interval
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."></i>
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control has-stepper" id="thumbnailInterval"
+                                   min="1" max="60" value="2">
+                            <span class="input-group-text">seconds</span>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="thumbnailQuality" class="form-label">
+                            Thumbnail Quality: <span id="qualityValue">4</span>/10
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="JPEG quality of each thumbnail (1 = smallest and blurriest, 10 = sharpest and largest). Default 4 looks fine at typical scrubbing sizes. Raise if thumbs look blocky on a 4K display; lower to shrink BIF files."></i>
+                        </label>
+                        <input type="range" class="form-range" id="thumbnailQuality"
+                               min="1" max="10" value="4">
+                    </div>
+                </div>
+
+                <!-- HDR Tone Mapping -->
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="tonemapAlgorithm" class="form-label">
+                            HDR Tone Mapping
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: pointer;"
+                               onclick="document.getElementById('tonemapHelp').classList.toggle('d-none')"
+                               title="Click for details"></i>
+                        </label>
+                        <select class="form-select" id="tonemapAlgorithm">
+                            <option value="hable">Hable (default) &mdash; balanced, slightly darker</option>
+                            <option value="reinhard">Reinhard &mdash; brightest, closest to SDR</option>
+                            <option value="mobius">Mobius &mdash; natural colors, good brightness</option>
+                            <option value="clip">Clip &mdash; accurate colors, clips highlights</option>
+                            <option value="gamma">Gamma &mdash; very bright, less contrast</option>
+                            <option value="linear">Linear &mdash; simple stretch, can look flat</option>
+                        </select>
+                        <div class="form-text" id="tonemapDescription">
+                            Preserves dark and bright details with a filmic look. Good all-round choice.
+                        </div>
+                        <div class="alert alert-secondary mt-2 small d-none" id="tonemapHelp">
+                            <strong>What is tone mapping?</strong><br>
+                            HDR (High Dynamic Range) videos have a wider range of brightness than a
+                            standard display can show. Tone mapping converts those brightness levels
+                            so thumbnails look correct on any screen. This setting only affects HDR
+                            content (HDR10, HLG, Dolby Vision).
+                            <hr class="my-2">
+                            <strong>Which should I pick?</strong>
+                            <ul class="mb-0 mt-1">
+                                <li><strong>Hable</strong> &mdash; The Plex default. Gives a filmic,
+                                    cinematic look that preserves detail in both shadows and highlights.
+                                    Can look slightly darker than the original.</li>
+                                <li><strong>Reinhard</strong> &mdash; Produces the brightest thumbnails,
+                                    closest to how standard (non-HDR) content looks. Try this first
+                                    if your thumbnails look too dark.</li>
+                                <li><strong>Mobius</strong> &mdash; A good middle ground: keeps colors
+                                    natural and accurate with good brightness. Slightly less bright
+                                    than Reinhard.</li>
+                                <li><strong>Clip</strong> &mdash; Keeps colours perfectly accurate for
+                                    normal brightness, but cuts off very bright highlights sharply.</li>
+                                <li><strong>Gamma</strong> &mdash; Makes everything noticeably brighter,
+                                    but can wash out colours and reduce contrast.</li>
+                                <li><strong>Linear</strong> &mdash; A simple brightness stretch.
+                                    Can look flat or washed out on some content.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Frame Reuse (cross-server cache) -->
+                <hr>
+                <h6 class="mb-2">Frame reuse across servers</h6>
+                <div class="alert alert-info py-2 small d-none" id="frameReuseMultiServerHint">
+                    <i class="bi bi-info-circle me-1"></i>
+                    You have <span id="frameReuseServerCount"></span> media servers configured.
+                    Keeping frame reuse on means a webhook from one server doesn't force FFmpeg
+                    to re-extract frames when a sibling server fires later for the same file.
+                </div>
+                <div class="row align-items-end">
+                    <div class="col-md-4 mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="frameReuseEnabled" checked>
+                            <label class="form-check-label" for="frameReuseEnabled">
+                                Reuse frames across servers
+                            </label>
+                        </div>
+                        <div class="form-text">
+                            When on, extracted frames are cached so a second webhook for the same
+                            file (from any configured server) reuses them instead of re-running FFmpeg.
+                            When off, the cache window falls back to the legacy 10 minutes.
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="frameReuseTtlMinutes" class="form-label">
+                            Cache TTL (minutes)
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="frameReuseTtlMinutes"
+                               min="1" max="1440" value="60">
+                        <div class="form-text">
+                            How long to keep extracted frames around for reuse. Default 60 min.
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="frameReuseMaxDiskMb" class="form-label">
+                            Max cache disk (MB)
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="frameReuseMaxDiskMb"
+                               min="64" max="65536" step="64" value="2048">
+                        <div class="form-text">
+                            Hard cap on the on-disk frame cache. Oldest entries are evicted when over.
+                            Default 2048 MB (2 GB).
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logging -->
+        <div class="card section-card" id="section-logging">
+            <div class="card-header">
+                <i class="bi bi-journal-text me-2"></i>Logging
+            </div>
+            <div class="card-body">
+                <div class="row mb-3">
+                    <div class="col-md-6 mb-3">
+                        <label for="logLevel" class="form-label">Log Level</label>
+                        <select class="form-select" id="logLevel">
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO" selected>INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="CRITICAL">CRITICAL</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-outline-primary mb-3" onclick="applyLogLevel()">
+                    <i class="bi bi-arrow-repeat me-1"></i>Apply Log Level Now
+                </button>
+
+                <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-text me-1"></i>System Log File</h6>
+                <p class="form-text mt-0 mb-2">
+                    A structured log file is kept at <code>/config/logs/app.log</code> in JSONL format
+                    at the log level configured above. The <a href="/logs">Logs</a> page reads from this file
+                    to show historical entries. When the file reaches the rotation size it is compressed and a new one starts.
+                </p>
+                <div class="row mb-3">
+                    <div class="col-md-3 mb-3">
+                        <label for="logRotationSize" class="form-label">Rotation Size</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control has-stepper" id="logRotationSize" min="1" max="100" value="10">
+                            <span class="input-group-text">MB</span>
+                        </div>
+                        <div class="form-text">Max size before rotating</div>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label for="logRetentionCount" class="form-label">Retention</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control has-stepper" id="logRetentionCount" min="1" max="50" value="5">
+                            <span class="input-group-text">files</span>
+                        </div>
+                        <div class="form-text">Rotated files to keep</div>
+                    </div>
+                </div>
+                <div class="form-text mb-3">Rotation &amp; retention changes take effect on next restart.</div>
+
+                <h6 class="text-muted mb-2"><i class="bi bi-list-task me-1"></i>Job History</h6>
+                <p class="form-text mt-0 mb-2">
+                    Each job keeps its own log file in <code>/config/logs/jobs/</code>.
+                    Completed, failed, and cancelled jobs older than this are automatically removed along with their logs.
+                </p>
+                <div class="row mb-3">
+                    <div class="col-md-3 mb-3">
+                        <label for="jobHistoryDays" class="form-label">Keep History For</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control has-stepper" id="jobHistoryDays" min="1" max="365" value="30">
+                            <span class="input-group-text">days</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Authentication Token -->
+        <div class="card section-card" id="section-auth">
+            <div class="card-header">
+                <i class="bi bi-key me-2"></i>Web Authentication
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">
+                    The authentication token secures access to this web interface.
+                </p>
+
+                <h6 class="mb-2"><i class="bi bi-pencil-square me-1"></i>Set a custom token</h6>
+                <p class="form-text mt-0 mb-2">
+                    Use your own static passphrase instead of the auto-generated random token. Useful when
+                    sharing a token with scripts or password managers. Minimum 8 characters.
+                </p>
+                <div class="row g-2 mb-2">
+                    <div class="col-md-5">
+                        <label class="form-label small mb-1" for="customAuthToken">New token</label>
+                        <input type="password" class="form-control form-control-sm" id="customAuthToken" autocomplete="new-password" placeholder="At least 8 characters">
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label small mb-1" for="customAuthTokenConfirm">Confirm</label>
+                        <input type="password" class="form-control form-control-sm" id="customAuthTokenConfirm" autocomplete="new-password" placeholder="Repeat the token">
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button class="btn btn-primary btn-sm w-100" onclick="setCustomToken()">
+                            <i class="bi bi-check-lg me-1"></i>Set
+                        </button>
+                    </div>
+                </div>
+                <div id="customTokenResult" class="small mb-3"></div>
+
+                <hr class="my-3">
+
+                <h6 class="mb-2"><i class="bi bi-arrow-repeat me-1"></i>Regenerate token</h6>
+                <p class="form-text mt-0 mb-2">
+                    Generate a fresh random token. Useful when you suspect the existing token has leaked.
+                </p>
+                <button class="btn btn-outline-danger btn-sm" onclick="regenerateToken()">
+                    <i class="bi bi-arrow-repeat me-1"></i>Regenerate Token
+                </button>
+
+                {# Holds the freshly-regenerated token until the user copies it.
+                   Shown by regenerateToken() instead of an alert() popup —
+                   this stays visible (and selectable) until the explicit
+                   "I've copied it, log me out" button is clicked. #}
+                <div id="newTokenPanel" class="alert alert-success d-none mt-3" role="alert">
+                    <h6 class="alert-heading mb-2"><i class="bi bi-check-circle-fill me-1"></i>New token generated</h6>
+                    <p class="small mb-2">Copy this token now — it&rsquo;s the only time it&rsquo;s shown.</p>
+                    <div class="input-group input-group-sm mb-2">
+                        <input type="text" id="newTokenValue" class="form-control font-monospace" readonly>
+                        <button type="button" class="btn btn-outline-secondary" id="newTokenCopyBtn">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </div>
+                    <button type="button" class="btn btn-danger btn-sm" id="newTokenLogoutBtn">
+                        I&rsquo;ve copied it &mdash; log me out
+                    </button>
+                </div>
+
+                <div class="form-text mt-2">
+                    Warning: Either action logs out all current sessions.
+                </div>
+            </div>
+        </div>
+
+        <!-- Backups -->
+        <div class="card section-card" id="section-backups">
+            <div class="card-header">
+                <i class="bi bi-clock-history me-2"></i>Backups
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    Each save to a config file (settings, schedules, webhook history) leaves a single rolling
+                    <code>.bak</code> next to it. If the live file ever gets clobbered &mdash; bad release, edit-by-mistake,
+                    truncation by an old container &mdash; you can restore from the most recent backup here.
+                </p>
+                <p class="form-text mt-0 mb-3">
+                    Job history lives in <code>jobs.db</code> (SQLite) and isn't backed up via this mechanism;
+                    rolling that back is a container-revert plus optional volume-snapshot restore.
+                </p>
+                <div id="backupRestorePanel" class="mb-2">
+                    <div class="text-muted small">
+                        <span class="spinner-border spinner-border-sm me-1"></span>Checking for backups&hellip;
+                    </div>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshBackupsBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- About -->
+        <div class="card section-card" id="section-about">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>About
+            </div>
+            <div class="card-body">
+                <p class="mb-2">
+                    <strong>Media Preview Generator</strong>
+                </p>
+                <p class="text-muted mb-2">
+                    Generate video preview thumbnails for Plex with GPU acceleration.
+                </p>
+
+                <div class="mb-3">
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="text-muted">Installed:</span>
+                        <span id="currentVersion">
+                            <span class="spinner-border spinner-border-sm text-muted" role="status"></span>
+                        </span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="text-muted">Latest:</span>
+                        <span id="latestVersion">
+                            <span class="spinner-border spinner-border-sm text-muted" role="status"></span>
+                        </span>
+                    </div>
+                </div>
+
+                <div id="updateAlert" class="alert alert-warning py-2 d-none">
+                    <i class="bi bi-arrow-up-circle me-1"></i>
+                    <span id="updateMessage"></span>
+                    <a href="https://github.com/stevezau/media_preview_generator/releases/latest"
+                       target="_blank" class="alert-link ms-1">View release notes</a>
+                </div>
+
+                <a href="https://github.com/stevezau/media_preview_generator"
+                   target="_blank" class="text-decoration-none">
+                    <i class="bi bi-github me-1"></i>View on GitHub
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/gpu_config_panel.js') }}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize scrollspy for sidebar navigation
+    new bootstrap.ScrollSpy(document.body, {
+        target: '#settings-sidebar',
+        rootMargin: '0px 0px -60%'
+    });
+
+    // Activate any static [data-bs-toggle="tooltip"] in the page (the
+    // per-GPU panel inits its own when it renders).
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+
+    // Wrap every numeric input flagged .has-stepper with −/+ buttons.
+    if (window.MPGShared && window.MPGShared.attachSteppersTo) {
+        window.MPGShared.attachSteppersTo(document);
+    }
+
+    // Fire all API calls concurrently to avoid a sequential waterfall.
+    // GPU rendering needs window._gpuConfig from settings, so we start
+    // the GPU status fetch in parallel but render after both resolve.
+    const gpuPromise = fetchGpuStatus();
+    Promise.all([
+        loadSettings().then(() => renderGpuFromFetch(gpuPromise)),
+        loadVersionInfo(),
+    ]).finally(() => {
+        // Refresh scrollspy after dynamic content changes page height
+        bootstrap.ScrollSpy.getInstance(document.body)?.refresh();
+    });
+
+    // Auto-save: all stateful inputs/selects inside .settings-content
+    // kick the shared debounced save helper.
+    if (typeof window.bindAutoSave === 'function') {
+        window.bindAutoSave({
+            containerSelector: '.settings-content',
+            saveFn: saveAllSettings,
+            indicatorId: 'saveStatusIndicator',
+            skipSelectors: [],
+        });
+    }
+
+    // Quality slider display
+    document.getElementById('thumbnailQuality').addEventListener('input', function() {
+        document.getElementById('qualityValue').textContent = this.value;
+    });
+
+    // Tonemap algorithm description
+    document.getElementById('tonemapAlgorithm').addEventListener('change', updateTonemapDescription);
+});
+
+const tonemapDescriptions = {
+    hable: 'Preserves dark and bright details with a filmic look. Good all-round choice.',
+    reinhard: 'Produces the brightest thumbnails, closest to how SDR content looks. Great if your HDR thumbnails look too dark.',
+    mobius: 'Keeps colors accurate and natural while still being brighter than Hable. A good middle ground.',
+    clip: 'Keeps colors perfectly accurate for normal brightness, but very bright highlights get cut off.',
+    gamma: 'Makes everything noticeably brighter, but can wash out colors and reduce contrast.',
+    linear: 'Simple brightness stretch. Can look flat or washed out on some content.',
+};
+
+function updateTonemapDescription() {
+    const algo = document.getElementById('tonemapAlgorithm').value;
+    document.getElementById('tonemapDescription').textContent = tonemapDescriptions[algo] || '';
+}
+
+// Programmatic edits (dynamic rows, GPU detection, etc.) call markDirty
+// to tell auto-save a change happened.  With the auto-save helper, we just
+// kick the shared per-container debounce chain.
+function markDirty() {
+    if (typeof window.autoSaveFlush === 'function') {
+        window.autoSaveFlush('.settings-content');
+    }
+}
+
+async function loadSettings() {
+    try {
+        const settings = await new SettingsManager().get();
+
+        // Store gpu_config for the GPU panel
+        window._gpuConfig = settings.gpu_config || [];
+        document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
+        document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
+        document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
+        document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
+        document.getElementById('tonemapAlgorithm').value = settings.tonemap_algorithm || 'hable';
+        updateTonemapDescription();
+
+        // Logging settings
+        document.getElementById('logLevel').value = settings.log_level || 'INFO';
+        document.getElementById('logRotationSize').value = parseInt(settings.log_rotation_size) || 10;
+        document.getElementById('logRetentionCount').value = settings.log_retention_count || 5;
+        document.getElementById('jobHistoryDays').value = settings.job_history_days ?? 30;
+
+        // Frame reuse (cross-server cache) — defaults match the v11 schema migration.
+        const fr = settings.frame_reuse || {};
+        document.getElementById('frameReuseEnabled').checked = fr.enabled !== false;
+        document.getElementById('frameReuseTtlMinutes').value = fr.ttl_minutes ?? 60;
+        document.getElementById('frameReuseMaxDiskMb').value = fr.max_cache_disk_mb ?? 2048;
+
+        // Show the multi-server hint when ≥2 enabled servers exist so users see
+        // the most-relevant context for this setting.
+        try {
+            const servers = (settings.media_servers || []).filter(
+                (s) => s && s.enabled !== false,
+            );
+            if (servers.length >= 2) {
+                document.getElementById('frameReuseServerCount').textContent = servers.length;
+                document.getElementById('frameReuseMultiServerHint').classList.remove('d-none');
+            }
+        } catch (_) {
+            /* hint is best-effort; don't block save on a render glitch */
+        }
+    } catch (error) {
+        console.error('Failed to load settings:', error);
+        showToast('Error', 'Failed to load settings', 'danger');
+    }
+}
+
+function escapeHtml(str) {
+    if (str == null) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function fetchGpuStatus() {
+    return fetch('/api/system/status').then(r => r.json());
+}
+
+async function renderGpuFromFetch(gpuPromise) {
+    try {
+        const data = await gpuPromise;
+        document.getElementById('gpuDetecting').classList.add('d-none');
+
+        if (data.gpus && data.gpus.length > 0) {
+            renderGpuConfigPanel(data.gpus, window._gpuConfig || []);
+        } else {
+            document.getElementById('gpuConfigList').innerHTML =
+                '<div class="alert alert-warning mb-0">' +
+                '<i class="bi bi-exclamation-triangle me-2"></i>' +
+                'No GPU detected. CPU processing will be used.</div>';
+        }
+    } catch (error) {
+        document.getElementById('gpuDetecting').classList.add('d-none');
+        document.getElementById('gpuConfigList').innerHTML =
+            '<div class="alert alert-danger mb-0">' +
+            '<i class="bi bi-x-circle me-2"></i>Failed to detect GPUs.</div>';
+    }
+}
+
+// Kept for the rescan button which doesn't need parallel loading.
+async function loadGpuInfo() {
+    return renderGpuFromFetch(fetchGpuStatus());
+}
+
+// renderGpuConfigPanel / collectGpuConfig / toggleGpuRow / onGpuWorkersChange
+// live in static/js/gpu_config_panel.js (loaded above) so the setup wizard
+// can reuse the same per-GPU panel instead of inventing its own widgets.
+
+async function rescanGPUs() {
+    const btn = document.getElementById('gpuRescanBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning...';
+    try {
+        const response = await fetch('/api/system/rescan-gpus', { method: 'POST' });
+        const data = await response.json();
+        if (data.gpus && data.gpus.length > 0) {
+            renderGpuConfigPanel(data.gpus, collectGpuConfig());
+            const ok = data.gpus.filter(g => g.status !== 'failed').length;
+            const failed = data.gpus.filter(g => g.status === 'failed').length;
+            const msg = failed > 0
+                ? `${ok} working, ${failed} failed`
+                : `Detected ${ok} GPU(s)`;
+            showToast('GPU Scan', msg, failed > 0 ? 'warning' : 'success');
+        } else {
+            showToast('GPU Scan', 'No GPUs detected', 'warning');
+        }
+    } catch (error) {
+        showToast('GPU Scan', 'Scan failed: ' + error.message, 'danger');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Re-scan GPUs';
+}
+
+async function loadVersionInfo() {
+    try {
+        const response = await fetch('/api/system/version');
+        const data = await response.json();
+
+        document.getElementById('currentVersion').textContent = data.current_version || 'unknown';
+
+        if (data.latest_version) {
+            document.getElementById('latestVersion').textContent = data.latest_version;
+        } else {
+            document.getElementById('latestVersion').innerHTML =
+                '<span class="text-muted">unavailable</span>';
+        }
+
+        if (data.install_type === 'local_docker' || data.install_type === 'pr_build') {
+            if (data.latest_version) {
+                document.getElementById('updateMessage').textContent =
+                    `Latest release: ${data.latest_version}`;
+                document.getElementById('updateAlert').classList.remove('d-none', 'alert-warning');
+                document.getElementById('updateAlert').classList.add('alert-info');
+            }
+        } else if (data.update_available) {
+            const msg = `Version ${data.latest_version} is available (you have ${data.current_version}).`;
+            document.getElementById('updateMessage').textContent = msg;
+            document.getElementById('updateAlert').classList.remove('d-none');
+        }
+    } catch (error) {
+        document.getElementById('currentVersion').textContent = 'error';
+        document.getElementById('latestVersion').innerHTML =
+            '<span class="text-muted">unavailable</span>';
+    }
+}
+
+async function saveAllSettings() {
+    const settings = {
+        gpu_config: collectGpuConfig(),
+        cpu_threads: parseInt(document.getElementById('cpuThreads').value),
+        thumbnail_interval: parseInt(document.getElementById('thumbnailInterval').value),
+        thumbnail_quality: parseInt(document.getElementById('thumbnailQuality').value),
+        tonemap_algorithm: document.getElementById('tonemapAlgorithm').value,
+        log_level: document.getElementById('logLevel').value,
+        log_rotation_size: document.getElementById('logRotationSize').value + ' MB',
+        log_retention_count: parseInt(document.getElementById('logRetentionCount').value),
+        job_history_days: parseInt(document.getElementById('jobHistoryDays').value),
+        frame_reuse: {
+            enabled: document.getElementById('frameReuseEnabled').checked,
+            ttl_minutes: parseInt(document.getElementById('frameReuseTtlMinutes').value, 10) || 60,
+            max_cache_disk_mb: parseInt(document.getElementById('frameReuseMaxDiskMb').value, 10) || 2048,
+        },
+    };
+
+    const result = await new SettingsManager().save(settings);
+
+    if (result && result.warning) {
+        // Surface non-fatal clamps/validation notes as a toast in addition
+        // to the Saved indicator.
+        showToast('Warning', result.warning, 'warning');
+    }
+}
+
+async function regenerateToken() {
+    if (!confirm('Are you sure? This will log out all sessions.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/token/regenerate', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.success) {
+            // Show the new token inline (selectable + with a copy button)
+            // instead of a popup that disappears on dismiss. The user has
+            // to explicitly click "log me out" once they've copied it.
+            const panel = document.getElementById('newTokenPanel');
+            document.getElementById('newTokenValue').value = data.token;
+            panel.classList.remove('d-none');
+            panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            document.getElementById('newTokenCopyBtn').onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(data.token);
+                    showToast('Copied', 'New token copied to clipboard.', 'success');
+                } catch (_) {
+                    document.getElementById('newTokenValue').select();
+                }
+            };
+            document.getElementById('newTokenLogoutBtn').onclick = () => {
+                window.location.href = '/login';
+            };
+        } else {
+            showToast('Failed to regenerate token', data.error || 'Unknown error', 'danger');
+        }
+    } catch (error) {
+        showToast('Failed to regenerate token', 'Network error', 'danger');
+    }
+}
+
+// Settings → Web Authentication → "Set custom token" form (Phase H2).
+// Posts to /api/token/set, surfaces server-side errors inline (env var locked,
+// length, mismatch). On success the server already cleared the session, so
+// just send the user to /login to enter the new token.
+async function setCustomToken() {
+    const tok = document.getElementById('customAuthToken').value;
+    const conf = document.getElementById('customAuthTokenConfirm').value;
+    const result = document.getElementById('customTokenResult');
+    result.className = 'small mb-3';
+    result.textContent = '';
+
+    if (!tok) {
+        result.classList.add('text-danger');
+        result.textContent = 'Enter a token first.';
+        return;
+    }
+    if (tok.length < 8) {
+        result.classList.add('text-danger');
+        result.textContent = 'Token must be at least 8 characters.';
+        return;
+    }
+    if (tok !== conf) {
+        result.classList.add('text-danger');
+        result.textContent = 'Tokens do not match.';
+        return;
+    }
+    if (!confirm('Set the new token? This will log out every open session, including this one.')) {
+        return;
+    }
+    try {
+        const response = await fetch('/api/token/set', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
+            },
+            body: JSON.stringify({ token: tok, confirm_token: conf }),
+        });
+        const data = await response.json();
+        if (data.success) {
+            // No popup — they entered the new token themselves and the
+            // login screen confirms it worked. Just redirect.
+            window.location.href = '/login';
+        } else {
+            result.classList.add('text-danger');
+            result.textContent = data.error || 'Failed to set token.';
+        }
+    } catch (error) {
+        result.classList.add('text-danger');
+        result.textContent = 'Network error: ' + (error && error.message ? error.message : 'unknown');
+    }
+}
+
+async function applyLogLevel() {
+    const level = document.getElementById('logLevel').value;
+    try {
+        const response = await fetch('/api/settings/log-level', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ log_level: level })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('Log level updated', `Log level set to ${data.log_level}`, 'success');
+        } else {
+            showToast('Error', 'Failed to update log level: ' + (data.error || 'Unknown error'), 'danger');
+        }
+    } catch (error) {
+        showToast('Error', 'Failed to update log level: ' + error.message, 'danger');
+    }
+}
+
+</script>
+{% endblock %}

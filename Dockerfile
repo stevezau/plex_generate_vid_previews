@@ -13,13 +13,13 @@ RUN apt-get update && \
 
 WORKDIR /build
 COPY pyproject.toml ./
-COPY plex_generate_previews/ ./plex_generate_previews/
+COPY media_preview_generator/ ./media_preview_generator/
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # Build wheels for the app and all dependencies (pre-compiled, no gcc needed at install time)
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
-      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=$SETUPTOOLS_SCM_PRETEND_VERSION \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=$SETUPTOOLS_SCM_PRETEND_VERSION \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
     else \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
@@ -33,6 +33,15 @@ FROM linuxserver/ffmpeg:8.0.1-cli-ls56
 # Build metadata (optional; set via --build-arg in CI)
 ARG GIT_BRANCH=unknown
 ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+# Published image name baked in at build time. CI passes one of:
+#   - stevezzau/plex_generate_vid_previews  (deprecated mirror; banner fires)
+#   - stevezzau/media_preview_generator     (canonical name; no banner)
+#   - local                                  (dev / unset; no banner)
+# The runtime reads $DOCKER_IMAGE_NAME and surfaces an in-app deprecation
+# notification when it matches the deprecated name.
+ARG DOCKER_IMAGE_NAME=local
 
 # Runtime dependencies.  Split into two apt passes because we add two
 # third-party repos before pulling jellyfin-ffmpeg + newer Intel drivers.
@@ -122,15 +131,25 @@ WORKDIR /app
 
 # Expose build metadata to the app (non-secret)
 ENV GIT_BRANCH=${GIT_BRANCH} \
-    GIT_SHA=${GIT_SHA}
+    GIT_SHA=${GIT_SHA} \
+    BUILD_DATE=${BUILD_DATE} \
+    DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME}
 
 # Copy application source (needed for Flask templates and static files)
 COPY pyproject.toml ./
-COPY plex_generate_previews/ ./plex_generate_previews/
+COPY media_preview_generator/ ./media_preview_generator/
 
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh
 RUN chmod +x /app/wrapper.sh
+
+# Persist build metadata as a JSON artifact too — startup logs read this
+# alongside the env vars so a tag-drift incident is grep-able from
+# `docker logs` ("Build: ..."). Falls back gracefully when build args
+# aren't supplied.
+RUN printf '{"branch": "%s", "sha": "%s", "built": "%s"}\n' \
+        "${GIT_BRANCH}" "${GIT_SHA}" "${BUILD_DATE}" \
+        > /app/build_info.json
 
 # Default PUID/PGID (override with environment variables)
 ENV PUID=1000 \

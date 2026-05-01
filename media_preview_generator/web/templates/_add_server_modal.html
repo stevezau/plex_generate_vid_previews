@@ -1,0 +1,46 @@
+{# Reusable Add Server modal partial.
+   Included from /servers (the dashboard view) and /setup (wizard step 1
+   when the user picks Emby or Jellyfin). The modal's JS lives in
+   static/js/servers.js — that file's DOMContentLoaded handler guards
+   loadServers() so it no-ops on /setup where there's no server list. #}
+<div class="modal fade" id="addServerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="serverModalTitle">Add Server</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Step 1: pick a type -->
+                <div id="step-type" class="server-step">
+                    <h6 class="text-muted mb-3">1. Choose server type</h6>
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-primary w-100 py-3 server-type-btn" data-type="plex">
+                                <img src="{{ url_for('static', filename='images/vendors/plex.svg') }}" alt="Plex" width="36" height="36" class="d-block mx-auto mb-1">
+                                Plex
+                            </button>
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-success w-100 py-3 server-type-btn" data-type="emby">
+                                <img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" alt="Emby" width="36" height="36" class="d-block mx-auto mb-1">
+                                Emby
+                            </button>
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-outline-info w-100 py-3 server-type-btn" data-type="jellyfin">
+                                <img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" alt="Jellyfin" width="36" height="36" class="d-block mx-auto mb-1">
+                                Jellyfin
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {# step-connect + step-result extracted to a shared partial so
+                   the setup wizard can render the exact same form inline (no
+                   modal overlay) when the user picks Emby/Jellyfin. #}
+                {% include "_server_connection_form.html" %}
+            </div>
+        </div>
+    </div>
+</div>

@@ -11,24 +11,24 @@ from unittest.mock import patch
 
 import pytest
 
-from plex_generate_previews.web.app import (
+from media_preview_generator.web.app import (
     _derive_secret,
     _requeue_interrupted_on_startup,
     get_cors_origins,
     get_or_create_flask_secret,
     run_scheduled_job,
 )
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 
 @pytest.fixture(autouse=True)
 def _reset():
     reset_settings_manager()
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
@@ -112,12 +112,17 @@ class TestGetOrCreateFlaskSecret:
 class TestRunScheduledJob:
     """Test module-level scheduled job callback."""
 
-    @patch("plex_generate_previews.web.routes._start_job_async")
-    def test_creates_and_starts_job(self, mock_start):
-        """run_scheduled_job creates a job and calls _start_job_async."""
-        from plex_generate_previews.web.app import create_app
+    @patch("media_preview_generator.web.routes._start_job_async")
+    def test_creates_and_starts_job(self, mock_start, tmp_path):
+        """run_scheduled_job creates a job and calls _start_job_async.
 
-        config_dir = "/tmp/test_scheduled_job"
+        Uses tmp_path (not a hard-coded /tmp/test_scheduled_job) so xdist
+        workers don't race on the same dir and clobber each other's
+        auth.json / settings.json mid-test.
+        """
+        from media_preview_generator.web.app import create_app
+
+        config_dir = str(tmp_path / "scheduled_job")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -135,15 +140,11 @@ class TestRunScheduledJob:
                 run_scheduled_job(library_name="Movies")
                 mock_start.assert_called_once()
 
-        import shutil
+    @patch("media_preview_generator.web.routes._start_job_async")
+    def test_includes_library_id_in_config(self, mock_start, tmp_path):
+        from media_preview_generator.web.app import create_app
 
-        shutil.rmtree(config_dir, ignore_errors=True)
-
-    @patch("plex_generate_previews.web.routes._start_job_async")
-    def test_includes_library_id_in_config(self, mock_start):
-        from plex_generate_previews.web.app import create_app
-
-        config_dir = "/tmp/test_scheduled_job2"
+        config_dir = str(tmp_path / "scheduled_job2")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -162,10 +163,6 @@ class TestRunScheduledJob:
                 config_overrides = mock_start.call_args[0][1]
                 assert "1" in str(config_overrides)
 
-        import shutil
-
-        shutil.rmtree(config_dir, ignore_errors=True)
-
 
 class TestWsgiModule:
     """Smoke test for wsgi.py module."""
@@ -175,16 +172,16 @@ class TestWsgiModule:
         import importlib
 
         # Just verify the module file exists and is syntactically valid
-        spec = importlib.util.find_spec("plex_generate_previews.web.wsgi")
+        spec = importlib.util.find_spec("media_preview_generator.web.wsgi")
         assert spec is not None
 
 
 class TestRequeueInterruptedOnStartup:
     """Startup helper only requeues jobs when the setting is enabled."""
 
-    @patch("plex_generate_previews.web.routes._start_job_async")
-    @patch("plex_generate_previews.web.app.get_job_manager")
-    @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
+    @patch("media_preview_generator.web.routes._start_job_async")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    @patch("media_preview_generator.web.settings_manager.get_settings_manager")
     def test_string_false_disables_requeue(self, mock_get_settings_manager, mock_get_job_manager, mock_start_job):
         """String 'false' disables startup requeue the same as a bool false."""
         mock_get_settings_manager.return_value.get.side_effect = lambda key, default=None: {
@@ -197,9 +194,9 @@ class TestRequeueInterruptedOnStartup:
         mock_get_job_manager.assert_not_called()
         mock_start_job.assert_not_called()
 
-    @patch("plex_generate_previews.web.routes._start_job_async")
-    @patch("plex_generate_previews.web.app.get_job_manager")
-    @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
+    @patch("media_preview_generator.web.routes._start_job_async")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    @patch("media_preview_generator.web.settings_manager.get_settings_manager")
     def test_string_true_requeues_jobs(self, mock_get_settings_manager, mock_get_job_manager, mock_start_job):
         """String 'true' still enables startup requeue for persisted settings."""
         mock_get_settings_manager.return_value.get.side_effect = lambda key, default=None: {
@@ -214,9 +211,9 @@ class TestRequeueInterruptedOnStartup:
         mock_get_job_manager.return_value.requeue_interrupted_jobs.assert_called_once_with(max_age_minutes=45)
         mock_start_job.assert_called_once_with("job-123", {"foo": "bar"})
 
-    @patch("plex_generate_previews.web.routes._start_job_async")
-    @patch("plex_generate_previews.web.app.get_job_manager")
-    @patch("plex_generate_previews.web.settings_manager.get_settings_manager")
+    @patch("media_preview_generator.web.routes._start_job_async")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    @patch("media_preview_generator.web.settings_manager.get_settings_manager")
     def test_processing_paused_cleared_on_startup(
         self, mock_get_settings_manager, mock_get_job_manager, mock_start_job
     ):
@@ -240,15 +237,18 @@ class TestRequeueInterruptedOnStartup:
 class TestPrewarmCaches:
     """Test background cache pre-warming at startup."""
 
-    @patch("plex_generate_previews.web.app._prewarm_caches")
-    def test_prewarm_called_during_create_app(self, mock_prewarm):
-        """create_app invokes _prewarm_caches so GPU/version caches are warm."""
+    @patch("media_preview_generator.web.app._prewarm_caches")
+    def test_prewarm_called_during_create_app(self, mock_prewarm, tmp_path):
+        """create_app invokes _prewarm_caches so GPU/version caches are warm.
+
+        Uses tmp_path so parallel xdist workers don't race on a shared dir.
+        """
         import json
         import os
 
-        from plex_generate_previews.web.app import create_app
+        from media_preview_generator.web.app import create_app
 
-        config_dir = "/tmp/test_prewarm"
+        config_dir = str(tmp_path / "prewarm")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -264,25 +264,21 @@ class TestPrewarmCaches:
             create_app(config_dir=config_dir)
             mock_prewarm.assert_called_once()
 
-        import shutil
-
-        shutil.rmtree(config_dir, ignore_errors=True)
-
     @pytest.mark.real_prewarm
     @patch(
-        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+        "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
         return_value=None,
     )
     @patch(
-        "plex_generate_previews.web.routes.api_system._get_version_info",
+        "media_preview_generator.web.routes.api_system._get_version_info",
         return_value={"current_version": "1.0.0"},
     )
-    @patch("plex_generate_previews.web.routes._helpers._ensure_gpu_cache")
+    @patch("media_preview_generator.web.routes._helpers._ensure_gpu_cache")
     def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version, mock_vulkan):
         """_prewarm_caches starts threads for GPU and version caches."""
         import threading
 
-        from plex_generate_previews.web.app import _prewarm_caches
+        from media_preview_generator.web.app import _prewarm_caches
 
         _prewarm_caches()
 

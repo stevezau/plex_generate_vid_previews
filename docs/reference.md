@@ -79,6 +79,16 @@ GPU settings are configured per-GPU in **Settings** → **Processing Options**. 
 | `selected_libraries` | Yes | All | Library IDs to process |
 | `sort_by` (per-run) | Yes | `newest` | Order items are processed: `newest`, `oldest`, `random`, or empty for Plex's natural order. Set per manual run (New Job modal) or per schedule — not a global setting. |
 
+### Frame Reuse Cache (frame_reuse)
+
+When the same canonical file fires multiple webhooks within the cache TTL (e.g. Sonarr fires immediately, Plex's library.new follows 30 min later), this cache reuses the FFmpeg-extracted frames across siblings instead of re-running FFmpeg. Tuned per-server under **Settings → Performance**:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Master toggle for cross-server frame reuse |
+| `ttl_minutes` | `60` | How long to keep extracted frames in the cache |
+| `max_cache_disk_mb` | `2048` | Disk cap for the cache (oldest entries evicted first) |
+
 > [!TIP]
 > **Multi-disk libraries (unraid shfs, mergerfs, JBOD):** pick **Random** as the Processing Order on the New Job modal or on a scheduled full-library scan. With alphabetical order, parallel workers tend to read sequential files from the same physical disk; shuffling spreads reads across disks so disk I/O stops being the bottleneck. Webhook jobs and Recently Added scans are unaffected — they touch too few files for ordering to matter.
 
@@ -131,20 +141,25 @@ When set to `external`:
 
 ### Deprecated (no longer used)
 
-These env vars are deprecated. Configure via **Settings** instead:
+These env vars are deprecated and silently ignored at startup with a warning logged. Configure via **Settings** instead:
 
 | Variable | Replacement |
 |----------|--------------|
 | `GPU_SELECTION` | Per-GPU enable/disable in Settings → Processing Options |
 | `GPU_THREADS` | Per-GPU workers in `gpu_config` |
 | `FFMPEG_THREADS` | Per-GPU `ffmpeg_threads` in `gpu_config` |
+| `PLEX_LIBRARIES` | Per-server library toggles (Settings → Media Servers → Libraries) |
+| `REGENERATE_THUMBNAILS` | Tick "Regenerate" when starting a job from the UI |
+| `SORT_BY` | Pick sort order when starting a job |
+| `NICE_LEVEL` | Removed — process priority is no longer configurable |
+| `FALLBACK_CPU_THREADS` | Removed in v3.x — CPU retry now happens in-place inside the GPU worker |
 
 ### One-time seed values (migrated on first start)
 
 On first run, these env vars are migrated into settings.json. After that, settings.json is the source of truth:
 
 - `PLEX_URL`, `PLEX_TOKEN`, `PLEX_CONFIG_FOLDER`, `PLEX_VERIFY_SSL`, `PLEX_TIMEOUT`
-- `PLEX_BIF_FRAME_INTERVAL`, `THUMBNAIL_QUALITY`, `CPU_THREADS`
+- `PLEX_BIF_FRAME_INTERVAL` / `THUMBNAIL_INTERVAL` (alias), `THUMBNAIL_QUALITY`, `TONEMAP_ALGORITHM`, `CPU_THREADS`
 - `MEDIA_PATH`, `TMP_FOLDER`, `LOG_LEVEL`
 
 ---
@@ -366,7 +381,7 @@ Get current settings.
   "plex_videos_path_mapping": "",
   "plex_local_videos_path_mapping": "",
   "path_mappings": [
-    {"plex_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+    {"remote_prefix": "/data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
   ],
   "gpu_config": [
     {"device": "/dev/dri/renderD128", "name": "Intel UHD 630", "type": "intel", "enabled": true, "workers": 4, "ffmpeg_threads": 2}
@@ -376,6 +391,8 @@ Get current settings.
   "thumbnail_quality": 4
 }
 ```
+
+> **path_mappings keys**: `remote_prefix` is the canonical key as of the multi-server refactor (works for Plex, Emby, and Jellyfin). The legacy `plex_prefix` is still accepted as an alias on read; new writes should use `remote_prefix`.
 
 #### POST /api/settings
 
@@ -583,9 +600,48 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | GET | `/api/system/config` | Yes | Current configuration |
 | GET | `/api/libraries` | Yes | Plex libraries |
 
+### Multi-Media-Server Endpoints
+
+For full design and per-vendor details see [Multi-Media-Server](multi-server.md).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/servers` | List configured servers (auth redacted) |
+| POST | `/api/servers` | Add a new server (auto-generates id) |
+| GET | `/api/servers/<id>` | Fetch one server (auth redacted) |
+| PUT/PATCH | `/api/servers/<id>` | Update; redacted auth values are kept |
+| DELETE | `/api/servers/<id>` | Remove a server |
+| POST | `/api/servers/test-connection` | Test a candidate config without saving |
+| POST | `/api/servers/<id>/refresh-libraries` | Re-fetch the server's library list |
+| GET | `/api/servers/owners?path=...` | Diagnose which servers own a given path |
+| GET | `/api/servers/<id>/output-status?path=...` | Whether publisher output files exist for a path on this server |
+| POST | `/api/servers/auth/emby/password` | Username+password → Emby token |
+| POST | `/api/servers/auth/jellyfin/password` | Username+password → Jellyfin token |
+| POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Begin Quick Connect ceremony |
+| POST | `/api/servers/auth/jellyfin/quick-connect/poll` | Poll for approval |
+| POST | `/api/servers/auth/jellyfin/quick-connect/exchange` | Exchange approved secret for token |
+| GET | `/api/servers/<id>/jellyfin/trickplay-status` | Per-library trickplay-extraction status (used by the Servers page to decide when to surface "Fix trickplay") |
+| POST | `/api/servers/<id>/jellyfin/fix-trickplay` | Auto-flip `EnableTrickplayImageExtraction` on a Jellyfin server's libraries (one-click fix for the most common Jellyfin gotcha — see [docs/multi-server#jellyfin-trickplay-extraction-flag](multi-server.md#jellyfin-trickplay-extraction-flag-the-most-common-gotcha)) |
+| GET | `/api/bif/servers/<id>/search?q=<query>` | Multi-server BIF Viewer search; returns `preview_kind` (`bif` or `trickplay`) per result so the viewer renders the right format |
+| GET | `/api/bif/trickplay/info?server_id=...&path=...` | Parse a Jellyfin trickplay manifest + report sheet metadata |
+| GET | `/api/bif/trickplay/frame?server_id=...&sheets_dir=...&index=N&tile_width=10&tile_height=10` | Slice and serve a single thumbnail JPEG from a trickplay tile sheet |
+
 ### Webhook Endpoints
 
 Inbound webhook endpoints for Radarr/Sonarr/Custom integration. Webhook endpoints accept `X-Auth-Token`, `Authorization: Bearer`, or a configured `webhook_secret`.
+
+> [!TIP]
+> The new **universal webhook URL** at `POST /api/webhooks/incoming` auto-detects the vendor (Plex / Emby / Jellyfin / Sonarr / Radarr / templated path) so you only need one URL across every server. Falls back to per-server URLs at `POST /api/webhooks/server/<server_id>` for ambiguous setups (rare). See [Multi-Media-Server — Webhook configuration](multi-server.md#webhook-configuration-per-vendor) for details.
+
+#### POST /api/webhooks/incoming
+
+Universal webhook router. Inspect the request body, classify it as Plex / Emby / Jellyfin / Sonarr / Radarr / generic-`{path: ...}`, and dispatch to every server that owns the resolved canonical path. Works alongside the per-vendor URLs below — you can keep using those, or replace them all with this one.
+
+Returns 200 with the dispatch result (`status`, `kind`, `canonical_path`, `publishers[]`, `frame_count`) on success, 202 with `status: "ignored"` for noise events the router intentionally drops (e.g. Jellyfin `PlaybackStart`), 400 for unrecognised payloads, 401 for bad auth, 413 for payloads above the 1 MiB cap.
+
+#### POST /api/webhooks/server/{server_id}
+
+Same as `/api/webhooks/incoming` but pins dispatch to one configured server. Useful when two configured servers (e.g. Plex + Jellyfin) own the same path and the source can't tell them apart — the URL itself carries the disambiguation. Returns 404 when the server id isn't configured.
 
 #### POST /api/webhooks/radarr
 

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Media Preview Generator</title>
+
+    <!-- Apply saved theme before CSS loads to avoid a flash of the wrong
+         theme. Mirrors the pre-paint script in base.html so the login page
+         respects the same localStorage.theme preference. -->
+    <script>
+        (function () {
+            try {
+                var saved = localStorage.getItem('theme');
+                if (saved === 'light' || saved === 'dark') {
+                    document.documentElement.setAttribute('data-bs-theme', saved);
+                }
+            } catch (e) { /* localStorage blocked — stay on the default */ }
+        })();
+    </script>
+
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet" integrity="sha256-u2/YzYU5TLNn6KxY5HKS8taOsoj6Evq2jmVDCl3fzkg=" crossorigin="anonymous">
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/login.css') }}">
+</head>
+<body class="text-center">
+    <main class="form-signin w-100 m-auto">
+        <form method="POST" action="{{ url_for('main.login') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <div class="logo-container">
+                <i class="bi bi-film"></i>
+                <h1>Media Preview Generator</h1>
+                <p class="text-muted">Sign in</p>
+            </div>
+
+            {% if rate_limited %}
+            <div class="alert alert-warning text-start" role="alert">
+                <div class="fw-semibold">
+                    <i class="bi bi-hourglass-split me-2"></i>Too many attempts.
+                </div>
+                <div class="small mt-1">
+                    Wait a minute, then try again.
+                </div>
+            </div>
+            {% elif error %}
+            <div class="alert alert-danger text-start" role="alert">
+                <div class="fw-semibold">
+                    <i class="bi bi-exclamation-triangle me-2"></i>That token didn&rsquo;t work.
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="form-floating mb-3">
+                <input type="password" class="form-control" id="token" name="token"
+                       placeholder="Authentication Token" required autofocus>
+                <label for="token"><i class="bi bi-key me-2"></i>Authentication Token</label>
+            </div>
+
+            <button class="btn btn-lg btn-warning w-100 py-2" type="submit">
+                <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+            </button>
+
+            <div class="mt-4 text-start">
+                <p class="text-muted small mb-2">
+                    <i class="bi bi-question-circle me-1"></i><strong>How do I find my token?</strong>
+                </p>
+                <div class="text-muted small ps-3" style="line-height: 1.8;">
+                    <div class="mb-1">
+                        <i class="bi bi-file-earmark-lock me-1 text-warning"></i>
+                        Check <code>/config/auth.json</code> in your config volume
+                    </div>
+                    <div class="mb-1">
+                        <i class="bi bi-terminal me-1 text-warning"></i>
+                        Or run: <code>docker logs &lt;container&gt;</code> for the file path
+                    </div>
+                    <div>
+                        <i class="bi bi-gear me-1 text-warning"></i>
+                        Or set <code>WEB_AUTH_TOKEN</code> in your environment/docker-compose
+                    </div>
+                </div>
+                <details class="mt-2 small text-muted"{% if error or rate_limited %} open{% endif %}>
+                    <summary class="cursor-pointer" style="cursor: pointer;">
+                        <i class="bi bi-info-circle me-1"></i>First time? More details&hellip;
+                    </summary>
+                    <div class="mt-2 ps-3" style="line-height: 1.7;">
+                        A random token was generated on first startup and saved to
+                        <code>/config/auth.json</code> inside the container. This maps to
+                        whichever host path you mounted as <code>/config</code>.
+                        <br><br>
+                        To use your own password instead, add this to your
+                        <code>docker-compose.yml</code>:
+                        <div class="bg-body-tertiary border rounded p-2 mt-1 mb-1" style="font-family: monospace; font-size: 0.8rem;">
+                            <span class="text-info">environment:</span><br>
+                            &nbsp;&nbsp;- <span class="text-warning">WEB_AUTH_TOKEN=your-password</span>
+                        </div>
+                        Then restart the container.
+                    </div>
+                </details>
+            </div>
+        </form>
+    </main>
+</body>
+</html>

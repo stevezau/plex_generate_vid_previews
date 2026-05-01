@@ -13,11 +13,11 @@ import pytest
 def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
 
     # Reset the global settings manager singleton
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
 
@@ -27,8 +27,8 @@ def mock_auth_config(tmp_path, monkeypatch):
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
     """Create Flask app for testing."""
-    from plex_generate_previews.web.app import create_app
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.app import create_app
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -47,7 +47,7 @@ def client(flask_app):
 @pytest.fixture
 def auth_headers(flask_app):
     """Get auth headers for API calls."""
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     token = get_auth_token()
     return {"X-Auth-Token": token}
@@ -192,6 +192,65 @@ class TestPlexServerRoutes:
         # Should return error since no server is configured
         assert response.status_code in [400, 500]
 
+    def test_check_pin_returns_auth_token(self, client, auth_headers, monkeypatch):
+        """check_plex_pin must return the auth_token to the client.
+
+        Regression test: the multi-server "Add Plex Server" wizard captures
+        the token from this response to populate the per-server entry's
+        auth.token field. Without it, addSelectedPlexServers fans out with
+        auth.token=null and every saved Plex server fails to authenticate.
+
+        The legacy single-Plex setup.html flow also benefits — it ignores
+        the token client-side but the saved settings.plex_token is still
+        set server-side, so back-compat is preserved.
+        """
+        from unittest.mock import MagicMock
+
+        # Stub the upstream plex.tv /api/v2/pins/<id> call.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "id": 12345,
+            "code": "ABCD",
+            "authToken": "secret-plex-token-from-plextv",
+        }
+        # api_plex.py imports `requests` locally inside the route, so patch
+        # the module's `get` method directly.
+        import requests as _requests
+
+        monkeypatch.setattr(_requests, "get", lambda *a, **kw: mock_response)
+
+        response = client.get("/api/plex/auth/pin/12345", headers=auth_headers)
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data["authenticated"] is True
+        assert data["auth_token"] == "secret-plex-token-from-plextv"
+
+    def test_check_pin_pending_returns_null_auth_token(self, client, auth_headers, monkeypatch):
+        """When plex.tv hasn't authenticated the PIN yet, auth_token is None."""
+        from unittest.mock import MagicMock
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "id": 12345,
+            "code": "ABCD",
+            "authToken": None,
+        }
+        # api_plex.py imports `requests` locally inside the route, so patch
+        # the module's `get` method directly.
+        import requests as _requests
+
+        monkeypatch.setattr(_requests, "get", lambda *a, **kw: mock_response)
+
+        response = client.get("/api/plex/auth/pin/12345", headers=auth_headers)
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data["authenticated"] is False
+        assert data["auth_token"] is None
+
 
 class TestAuthRequired:
     """Tests for authentication requirement on API endpoints."""
@@ -249,21 +308,21 @@ class TestAuthTokenFunctions:
     def test_is_token_env_controlled_false(self, mock_auth_config, monkeypatch):
         """Test is_token_env_controlled returns False when env var is not set."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from plex_generate_previews.web.auth import is_token_env_controlled
+        from media_preview_generator.web.auth import is_token_env_controlled
 
         assert is_token_env_controlled() is False
 
     def test_is_token_env_controlled_true(self, mock_auth_config, monkeypatch):
         """Test is_token_env_controlled returns True when env var is set."""
         monkeypatch.setenv("WEB_AUTH_TOKEN", "env-token-value")
-        from plex_generate_previews.web.auth import is_token_env_controlled
+        from media_preview_generator.web.auth import is_token_env_controlled
 
         assert is_token_env_controlled() is True
 
     def test_set_auth_token_success(self, mock_auth_config, monkeypatch):
         """Test setting a valid token succeeds."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from plex_generate_previews.web.auth import get_auth_token, set_auth_token
+        from media_preview_generator.web.auth import get_auth_token, set_auth_token
 
         result = set_auth_token("my-new-secure-token")
         assert result["success"] is True
@@ -272,7 +331,7 @@ class TestAuthTokenFunctions:
     def test_set_auth_token_too_short(self, mock_auth_config, monkeypatch):
         """Test setting a token that's too short fails."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from plex_generate_previews.web.auth import set_auth_token
+        from media_preview_generator.web.auth import set_auth_token
 
         result = set_auth_token("short")
         assert result["success"] is False
@@ -281,16 +340,28 @@ class TestAuthTokenFunctions:
     def test_set_auth_token_env_locked(self, mock_auth_config, monkeypatch):
         """Test setting token fails when WEB_AUTH_TOKEN env var is set."""
         monkeypatch.setenv("WEB_AUTH_TOKEN", "env-controlled-token")
-        from plex_generate_previews.web.auth import set_auth_token
+        from media_preview_generator.web.auth import set_auth_token
 
         result = set_auth_token("my-new-token-123")
         assert result["success"] is False
         assert "environment variable" in result["error"]
 
+    def test_set_auth_token_rejects_same_as_current(self, mock_auth_config, monkeypatch):
+        """Setup wizard step 5 forces a NEW token away from the auto-generated
+        one printed in Docker logs. The server enforces that by refusing to
+        save a token equal to the current one."""
+        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+        from media_preview_generator.web.auth import get_auth_token, set_auth_token
+
+        current = get_auth_token()
+        result = set_auth_token(current)
+        assert result["success"] is False
+        assert "different from the current" in result["error"]
+
     def test_get_token_info_structure(self, mock_auth_config, monkeypatch):
         """Test get_token_info returns correct structure."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from plex_generate_previews.web.auth import get_token_info
+        from media_preview_generator.web.auth import get_token_info
 
         info = get_token_info()
         assert "env_controlled" in info
@@ -301,7 +372,7 @@ class TestAuthTokenFunctions:
     def test_get_token_info_config_source(self, mock_auth_config, monkeypatch):
         """Test get_token_info returns config source when not env controlled."""
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from plex_generate_previews.web.auth import get_token_info
+        from media_preview_generator.web.auth import get_token_info
 
         info = get_token_info()
         assert info["env_controlled"] is False
@@ -310,7 +381,7 @@ class TestAuthTokenFunctions:
     def test_get_token_info_env_source(self, mock_auth_config, monkeypatch):
         """Test get_token_info returns environment source when env var set."""
         monkeypatch.setenv("WEB_AUTH_TOKEN", "env-token-12345")
-        from plex_generate_previews.web.auth import get_token_info
+        from media_preview_generator.web.auth import get_token_info
 
         info = get_token_info()
         assert info["env_controlled"] is True

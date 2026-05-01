@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Emby">
+  <title>Emby</title>
+  <!-- Emby-inspired green octagonal play. -->
+  <path fill="#52b54b" d="M7 2h10l5 5v10l-5 5H7l-5-5V7z"/>
+  <path fill="#fff" d="M10 8v8l6-4z"/>
+</svg>

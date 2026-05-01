@@ -27,7 +27,7 @@ def test_config(monkeypatch):
 
 Subprocess (FFmpeg):
 ```python
-@patch('plex_generate_previews.media_processing.subprocess.run')
+@patch('media_preview_generator.media_processing.subprocess.run')
 def test_ffmpeg(mock_run, mock_config):
     mock_run.return_value = MagicMock(returncode=0, stderr=b'')
 ```
@@ -42,7 +42,7 @@ def test_bif(tmp_path, mock_config):
 
 Plex API:
 ```python
-@patch('plex_generate_previews.plex_client.PlexServer')
+@patch('media_preview_generator.plex_client.PlexServer')
 def test_plex(mock_plex_class, mock_config):
     mock_server = MagicMock()
     mock_plex_class.return_value = mock_server

@@ -2,11 +2,13 @@
      When you update README.md significantly, update this file to match.
      Docker Hub does not render mermaid diagrams, GitHub admonitions, or relative images. -->
 
-# Plex Generate Previews
+# Media Preview Generator
 
-GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web UI only** — no CLI.
+GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfin**. **Web UI only** — no CLI.
 
-**The Problem:** Plex's built-in preview generation is painfully slow.
+> Previously named **Plex Generate Previews** at `stevezzau/plex_generate_vid_previews`. That image keeps mirroring updates until **2026-10-29**; after that, only this repo (`stevezzau/media_preview_generator`) is published. Update your `compose` to the new name when convenient — settings and volumes carry over unchanged.
+
+**The Problem:** Built-in preview generation in Plex / Emby / Jellyfin is painfully slow.
 
 **The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
 
@@ -14,25 +16,35 @@ GPU-accelerated video preview thumbnail generation for Plex Media Server. **Web 
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
+| **Multi-Vendor** | Plex, Emby, and Jellyfin in any combination — Plex bundle BIF, Emby `-WIDTH-INTERVAL.bif` sidecar, or Jellyfin trickplay tile sheets, all from one app |
+| **One-Pass-Many-Servers** | The dispatcher runs FFmpeg once per file and publishes the right format to every server that owns it (a Plex+Jellyfin install gets both BIF and trickplay from a single decode) |
+| **Universal Webhook URL** | `POST /api/webhooks/incoming` auto-detects Plex / Emby / Jellyfin / Sonarr / Radarr / generic-`{path}` payloads — one URL, every vendor |
+| **Multi-Plex** | Multiple Plex servers configured side by side, routed by `clientIdentifier` |
+| **Plex OAuth** | Sign-in flow in the setup wizard discovers all your Plex servers; pick which to add |
+| **Quick Connect** | Jellyfin Quick Connect ceremony in the wizard — no token copying |
+| **Trickplay One-Click Fix** | Surfaces Jellyfin's "EnableTrickplayImageExtraction" setting per library and flips it on with one click |
+| **Frame Reuse Cache** | A webhook arriving for a file recently extracted by a sibling server reuses the frames without re-running FFmpeg (configurable TTL + disk cap) |
+| **Slow-Backoff Retry Queue** | Files where the source server says "not yet indexed" retry on geometric backoff (30s → 60min) instead of dropping the webhook |
+| **Cross-Server BIF Viewer** | Inspect any vendor's published preview for any file from one viewer |
+| **Multi-GPU** | NVIDIA, AMD, Intel — per-GPU enable/disable and worker count |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
 | **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
-| **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| **Library Filtering** | Process specific Plex libraries |
-| **Quality Control** | Adjustable thumbnail quality (1-10) |
+| **Hardware Acceleration** | CUDA, VAAPI, QuickSync (and OpenCL / Vulkan for Dolby Vision tone-mapping) |
+| **Per-Server Filtering** | Library toggles, path mappings, and exclude rules scoped per server |
+| **Quality Control** | Adjustable thumbnail quality (1-10) and frame interval (1-60s) |
 | **Docker Ready** | Pre-built images with GPU support |
-| **Web Dashboard** | Manage jobs, schedules, and status |
+| **Web Dashboard** | Manage jobs, schedules, status, and the recent-webhook history |
 | **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Radarr/Sonarr** | Webhook integration for auto-processing on import |
-| **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
-| **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
+| **Smart Skipping** | Skips files that already have a fresh preview output (mtime+size journal) |
+| **Radarr/Sonarr/Sportarr** | Webhook integration for auto-processing on import |
+| **Plex Direct Webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
+| **Recently Added Scanner** | Polling fallback that catches manually-added items without Plex Pass |
 
 ## Quick Start
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -42,7 +54,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -74,8 +86,8 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -112,8 +124,8 @@ Set GPU Workers to 0 and CPU Workers as needed in the web UI Settings.
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -156,7 +168,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ### GPU + CPU Fallback
@@ -182,11 +194,11 @@ Application-level env vars (PLEX_URL, PLEX_TOKEN, CPU_THREADS, etc.) act as one-
 
 ## Unraid
 
-Search for "plex-generate-previews" in Community Applications, or run manually:
+Search for "media-preview-generator" in Community Applications, or run manually:
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -194,9 +206,9 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ## Performance Tuning
@@ -213,17 +225,17 @@ Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 Full documentation is available on GitHub:
 
-- [Getting Started](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
-- [Guides & Troubleshooting](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
-- [Configuration & API Reference](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/reference.md) — All settings, env vars, and REST API
-- [FAQ](https://github.com/stevezau/plex_generate_vid_previews/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
+- [Getting Started](https://github.com/stevezau/media_preview_generator/blob/main/docs/getting-started.md) — Docker, GPU, Unraid, networking
+- [Guides & Troubleshooting](https://github.com/stevezau/media_preview_generator/blob/main/docs/guides.md) — Web UI, schedules, webhooks, HDR, troubleshooting
+- [Configuration & API Reference](https://github.com/stevezau/media_preview_generator/blob/main/docs/reference.md) — All settings, env vars, and REST API
+- [FAQ](https://github.com/stevezau/media_preview_generator/blob/main/docs/faq.md) — Common questions about setup, performance, and compatibility
 
 ## Support
 
-- [Report a Bug](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug)
-- [Request a Feature](https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement)
-- [GitHub Repository](https://github.com/stevezau/plex_generate_vid_previews)
+- [Report a Bug](https://github.com/stevezau/media_preview_generator/issues/new?labels=bug)
+- [Request a Feature](https://github.com/stevezau/media_preview_generator/issues/new?labels=enhancement)
+- [GitHub Repository](https://github.com/stevezau/media_preview_generator)
 
 ## License
 
-MIT License. See [LICENSE](https://github.com/stevezau/plex_generate_vid_previews/blob/main/LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/stevezau/media_preview_generator/blob/main/LICENSE) for details.

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
-from plex_generate_previews.plex_client import (
+from media_preview_generator.plex_client import (
     VIDEO_EXTENSIONS,
     WebhookResolutionResult,
     _detect_path_prefix_mismatches,
@@ -887,7 +887,7 @@ class TestGetMediaItemsByPaths:
         assert result.unresolved_paths == []
         assert result.skipped_paths == []
 
-    @patch("plex_generate_previews.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_received_and_file_path_query(self, mock_info, mock_config):
         """Webhook resolution logs received file count and file-path query."""
         mock_plex = MagicMock()
@@ -904,7 +904,7 @@ class TestGetMediaItemsByPaths:
         )
         assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
+    @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_non_string_path_skipped(self, mock_warning, mock_config):
         """Non-string webhook paths are skipped without raising."""
         mock_plex = MagicMock()
@@ -939,7 +939,7 @@ class TestGetMediaItemsByPaths:
         assert "type=1" in call_ekey
         assert "Test Movie.mkv" in call_ekey or "Test%20Movie.mkv" in call_ekey
 
-    @patch("plex_generate_previews.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_per_path_resolved_status(self, mock_info, mock_config):
         """Resolved path emits a per-path diagnostic status line."""
         mock_plex = MagicMock()
@@ -959,7 +959,11 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
         assert any("resolved" in str(call) for call in mock_info.call_args_list)
-        assert any("[1/1]" in str(call) for call in mock_info.call_args_list)
+        # Match either pre-formatted "[1/1]" or Loguru placeholder form "[{}/{}]" with args 1, 1.
+        assert any(
+            "[1/1]" in str(call) or ("[{}/{}]" in str(call) and "1, 1" in str(call))
+            for call in mock_info.call_args_list
+        )
 
     def test_get_media_items_by_paths_no_match(self, mock_config):
         """Paths that match no Plex item return empty list."""
@@ -976,9 +980,14 @@ class TestGetMediaItemsByPaths:
         assert result.items == []
         assert result.unresolved_paths == ["/nonexistent/path.mkv"]
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(self, mock_warning, mock_config):
-        """Unresolved path emits a per-path diagnostic with explicit reason."""
+    @patch("media_preview_generator.plex_client.logger.info")
+    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(self, mock_info, mock_config):
+        """Unresolved path emits a per-path diagnostic with explicit reason.
+
+        These per-file lines are info-level diagnostics (the aggregate
+        ``Unresolved`` warning at the end of the run is the actionable
+        summary).
+        """
         mock_plex = MagicMock()
         mock_section = MagicMock()
         mock_section.key = "1"
@@ -990,8 +999,8 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/nonexistent/path.mkv"])
         assert result.items == []
-        assert any("not found" in str(call) for call in mock_warning.call_args_list)
-        assert any("Direct path not found in Plex" in str(call) for call in mock_warning.call_args_list)
+        assert any("not found" in str(call) for call in mock_info.call_args_list)
+        assert any("Direct path not found in Plex" in str(call) for call in mock_info.call_args_list)
 
     def test_get_media_items_by_paths_episode_match(self, mock_config):
         """Path matching an episode location returns episode tuple."""
@@ -1086,7 +1095,7 @@ class TestGetMediaItemsByPaths:
         assert result.items[0][0] == "/library/metadata/999"
         assert mock_plex.fetchItems.called
 
-    @patch("plex_generate_previews.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_file_path_query(self, mock_info, mock_config):
         """File-path resolution logs the query step."""
         mock_plex = MagicMock()
@@ -1104,7 +1113,7 @@ class TestGetMediaItemsByPaths:
         get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
         assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
+    @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_item_without_key_is_skipped(self, mock_warning, mock_config):
         """Matched items missing a Plex key are ignored safely."""
         mock_plex = MagicMock()
@@ -1286,9 +1295,17 @@ class TestGetMediaItemsByPaths:
         assert len(result.items) == 1
         assert result.items[0][0] == "/library/metadata/300"
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_skipped_unselected_library(self, mock_warning, mock_config):
-        """Log a clear reason when webhook path matches only excluded libraries."""
+    @patch("media_preview_generator.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.warning")
+    def test_get_media_items_by_paths_logs_skipped_unselected_library(self, mock_warning, mock_info, mock_config):
+        """Log a clear reason when webhook path matches only excluded libraries.
+
+        The aggregate "Skipped N input file(s): matched Plex items in
+        unselected libraries" stays at warning level (it's the
+        actionable summary). The per-file "Found in excluded library /
+        Result: skipped (excluded library: ...)" detail lines are
+        info-level diagnostics.
+        """
         mock_config.plex_libraries = ["movies"]
 
         mock_plex = MagicMock()
@@ -1321,12 +1338,15 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"])
         assert result.items == []
-        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
         assert any(
-            "skipped" in str(call).lower() and "excluded" in str(call).lower() for call in mock_warning.call_args_list
+            "haven't selected" in str(call).lower() or "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
+        assert any(
+            "skipped" in str(call).lower() and "excluded" in str(call).lower() for call in mock_info.call_args_list
         )
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
+    @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_logs_unselected_library_file_path_search(self, mock_warning, mock_config):
         """Excluded-library diagnostics when file-path search finds item there."""
         mock_config.plex_libraries = ["movies"]
@@ -1361,7 +1381,10 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"])
 
         assert result.items == []
-        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
+        assert any(
+            "haven't selected" in str(call).lower() or "unselected libraries" in str(call).lower()
+            for call in mock_warning.call_args_list
+        )
 
 
 class TestExpandDirectoryToMediaFiles:

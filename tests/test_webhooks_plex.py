@@ -12,26 +12,26 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Mirror the reset fixture from test_webhooks.py."""
     reset_settings_manager()
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
-    import plex_generate_previews.web.webhooks as wh
+    import media_preview_generator.web.webhooks as wh
 
     wh._webhook_history.clear()
     with wh._pending_lock:
@@ -76,7 +76,6 @@ def app(tmp_path):
             {
                 "setup_complete": True,
                 "webhook_enabled": True,
-                "plex_webhook_enabled": True,
             },
             f,
         )
@@ -110,7 +109,7 @@ def _multipart_post(client, payload_dict):
     )
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_extracts_paths_from_inline_media_part(mock_schedule, client):
     """library.new with inline Media.Part.file paths should not require Plex API lookup."""
     mock_schedule.return_value = True
@@ -133,8 +132,8 @@ def test_plex_webhook_extracts_paths_from_inline_media_part(mock_schedule, clien
     assert args[2] == "/data/movies/Inline Movie/Inline Movie.mkv"
 
 
-@patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._resolve_plex_paths_from_rating_key")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_falls_back_to_plex_api_lookup(mock_schedule, mock_resolve, client):
     """When Media.Part.file is missing, the endpoint should look the item up by ratingKey."""
     mock_schedule.return_value = True
@@ -155,7 +154,7 @@ def test_plex_webhook_falls_back_to_plex_api_lookup(mock_schedule, mock_resolve,
     assert mock_schedule.call_args[0][2] == "/data/tv/Show/S01E01.mkv"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_ignores_non_library_new_events(mock_schedule, client):
     """media.play and friends should be acknowledged but not processed."""
     payload = {"event": "media.play", "Metadata": {"ratingKey": "1"}}
@@ -167,7 +166,7 @@ def test_plex_webhook_ignores_non_library_new_events(mock_schedule, client):
     mock_schedule.assert_not_called()
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_test_ping_records_history(mock_schedule, client):
     """The synthetic test.ping event should respond OK without scheduling work."""
     resp = _multipart_post(client, {"event": "test.ping"})
@@ -176,7 +175,7 @@ def test_plex_webhook_test_ping_records_history(mock_schedule, client):
     assert body["success"] is True
     mock_schedule.assert_not_called()
 
-    import plex_generate_previews.web.webhooks as wh
+    import media_preview_generator.web.webhooks as wh
 
     assert any(e.get("source") == "plex" and e.get("status") == "test" for e in wh._webhook_history)
 
@@ -190,20 +189,28 @@ def test_plex_webhook_missing_rating_key_returns_400(client):
     assert "ratingKey" in body["error"]
 
 
-def test_plex_webhook_disabled_when_setting_off(client, app):
-    """When plex_webhook_enabled is False, library.new should be ignored."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+def test_plex_webhook_disabled_when_master_off(client, app):
+    """When the master webhook_enabled switch is False, library.new is ignored.
+
+    Phase I5 dropped the per-source plex_webhook_enabled gate — Plex Direct is
+    "enabled" implicitly by the per-server registration. Pausing all webhooks
+    is now a single global toggle.
+    """
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     sm = get_settings_manager()
-    sm.set("plex_webhook_enabled", False)
-    payload = {
-        "event": "library.new",
-        "Metadata": {"ratingKey": "1", "title": "Should be ignored"},
-    }
-    resp = _multipart_post(client, payload)
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert "disabled" in body["message"].lower()
+    sm.set("webhook_enabled", False)
+    try:
+        payload = {
+            "event": "library.new",
+            "Metadata": {"ratingKey": "1", "title": "Should be ignored"},
+        }
+        resp = _multipart_post(client, payload)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert "disabled" in body["message"].lower()
+    finally:
+        sm.set("webhook_enabled", True)
 
 
 def test_plex_webhook_requires_auth(client):
@@ -216,7 +223,7 @@ def test_plex_webhook_requires_auth(client):
     assert resp.status_code == 401
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_accepts_query_token(mock_schedule, client):
     """Plex's webhook UI has no header field — auth must work via ?token= query param."""
     mock_schedule.return_value = True
@@ -260,7 +267,7 @@ def test_plex_webhook_invalid_json_returns_400(client):
     assert resp.status_code == 400
 
 
-@patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
+@patch("media_preview_generator.web.webhooks._resolve_plex_paths_from_rating_key")
 def test_plex_webhook_no_paths_resolved_returns_200_ignored(mock_resolve, client):
     """When neither inline paths nor Plex lookup yield anything, respond 200 (don't make Plex retry)."""
     mock_resolve.return_value = ([], None)
@@ -276,10 +283,10 @@ def test_plex_webhook_no_paths_resolved_returns_200_ignored(mock_resolve, client
 
 def test_resolve_plex_paths_from_rating_key_handles_failure():
     """Plex client failures should return ([], None), not raise."""
-    from plex_generate_previews.web.webhooks import _resolve_plex_paths_from_rating_key
+    from media_preview_generator.web.webhooks import _resolve_plex_paths_from_rating_key
 
     with patch(
-        "plex_generate_previews.config.load_config",
+        "media_preview_generator.config.load_config",
         side_effect=Exception("config blew up"),
     ):
         assert _resolve_plex_paths_from_rating_key("1") == ([], None)
@@ -288,7 +295,7 @@ def test_resolve_plex_paths_from_rating_key_handles_failure():
 def test_resolve_plex_paths_from_rating_key_walks_media_parts():
     """When the Plex client returns an item, all part files and a formatted
     display title should be collected from the same fetched item."""
-    from plex_generate_previews.web.webhooks import _resolve_plex_paths_from_rating_key
+    from media_preview_generator.web.webhooks import _resolve_plex_paths_from_rating_key
 
     fake_part_a = MagicMock(file="/data/movies/A/A.mkv")
     fake_part_b = MagicMock(file="/data/movies/A/A-extras.mkv")
@@ -304,10 +311,10 @@ def test_resolve_plex_paths_from_rating_key_walks_media_parts():
     fake_plex.fetchItem.return_value = fake_item
 
     with (
-        patch("plex_generate_previews.config.load_config", return_value=MagicMock()),
-        patch("plex_generate_previews.plex_client.plex_server", return_value=fake_plex),
+        patch("media_preview_generator.config.load_config", return_value=MagicMock()),
+        patch("media_preview_generator.plex_client.plex_server", return_value=fake_plex),
         patch(
-            "plex_generate_previews.plex_client.retry_plex_call",
+            "media_preview_generator.plex_client.retry_plex_call",
             side_effect=lambda fn, *a, **kw: fn(*a, **kw),
         ),
     ):
@@ -326,7 +333,7 @@ def test_resolve_plex_paths_from_rating_key_walks_media_parts():
 
 
 def test_format_plex_title_from_metadata_episode_full():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+    from media_preview_generator.web.webhooks import _format_plex_title_from_metadata
 
     metadata = {
         "type": "episode",
@@ -341,7 +348,7 @@ def test_format_plex_title_from_metadata_episode_full():
 def test_format_plex_title_from_metadata_episode_drops_tautological_title():
     """When Plex uses the placeholder 'Episode N' as the episode title,
     the formatter should drop the redundant trailing segment."""
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+    from media_preview_generator.web.webhooks import _format_plex_title_from_metadata
 
     metadata = {
         "type": "episode",
@@ -354,7 +361,7 @@ def test_format_plex_title_from_metadata_episode_drops_tautological_title():
 
 
 def test_format_plex_title_from_metadata_episode_blank_title_drops_suffix():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+    from media_preview_generator.web.webhooks import _format_plex_title_from_metadata
 
     metadata = {
         "type": "episode",
@@ -367,21 +374,21 @@ def test_format_plex_title_from_metadata_episode_blank_title_drops_suffix():
 
 
 def test_format_plex_title_from_metadata_movie_with_year():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+    from media_preview_generator.web.webhooks import _format_plex_title_from_metadata
 
     metadata = {"type": "movie", "title": "Dune: Part Two", "year": 2024}
     assert _format_plex_title_from_metadata(metadata) == "Dune: Part Two (2024)"
 
 
 def test_format_plex_title_from_metadata_movie_without_year():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+    from media_preview_generator.web.webhooks import _format_plex_title_from_metadata
 
     metadata = {"type": "movie", "title": "Unknown Movie"}
     assert _format_plex_title_from_metadata(metadata) == "Unknown Movie"
 
 
 def test_format_plex_title_from_metadata_missing_fields_returns_none():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_metadata
+    from media_preview_generator.web.webhooks import _format_plex_title_from_metadata
 
     # Episode with no grandparentTitle
     assert _format_plex_title_from_metadata({"type": "episode", "parentIndex": 1, "index": 1, "title": "t"}) is None
@@ -406,7 +413,7 @@ def test_format_plex_title_from_metadata_missing_fields_returns_none():
 
 
 def test_format_plex_title_from_item_uses_plexapi_attrs():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_item
+    from media_preview_generator.web.webhooks import _format_plex_title_from_item
 
     item = MagicMock(
         type="episode",
@@ -420,7 +427,7 @@ def test_format_plex_title_from_item_uses_plexapi_attrs():
 
 
 def test_format_plex_title_from_item_returns_none_when_item_is_none():
-    from plex_generate_previews.web.webhooks import _format_plex_title_from_item
+    from media_preview_generator.web.webhooks import _format_plex_title_from_item
 
     assert _format_plex_title_from_item(None) is None
 
@@ -430,7 +437,7 @@ def test_format_plex_title_from_item_returns_none_when_item_is_none():
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_uses_formatted_episode_title(mock_schedule, client):
     """Rich Metadata should produce a descriptive 'Show - SxxExx - Title' label,
     not the raw Metadata.title."""
@@ -456,7 +463,7 @@ def test_plex_webhook_uses_formatted_episode_title(mock_schedule, client):
     assert args[1] == "Beyond Paradise - S04E03 - The Whispers"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_drops_tautological_episode_suffix(mock_schedule, client):
     """When Plex sends title='Episode 3' (the placeholder it uses for shows
     with no canonical titles), the final label should collapse to 'Show - S04E03'."""
@@ -479,7 +486,7 @@ def test_plex_webhook_drops_tautological_episode_suffix(mock_schedule, client):
     assert mock_schedule.call_args[0][1] == "Beyond Paradise - S04E03"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_uses_formatted_movie_title(mock_schedule, client):
     """Movie metadata should produce 'Title (Year)'."""
     mock_schedule.return_value = True
@@ -499,8 +506,8 @@ def test_plex_webhook_uses_formatted_movie_title(mock_schedule, client):
     assert mock_schedule.call_args[0][1] == "Dune: Part Two (2024)"
 
 
-@patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._resolve_plex_paths_from_rating_key")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_uses_ratingkey_title_when_metadata_is_sparse(mock_schedule, mock_resolve, client):
     """When Metadata lacks the fields needed to format a title but the ratingKey
     lookup returns one, the resolver-derived title should be used."""
@@ -523,8 +530,8 @@ def test_plex_webhook_uses_ratingkey_title_when_metadata_is_sparse(mock_schedule
     assert mock_schedule.call_args[0][1] == "Show - S01E01 - Pilot"
 
 
-@patch("plex_generate_previews.web.webhooks._resolve_plex_paths_from_rating_key")
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._resolve_plex_paths_from_rating_key")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_plex_webhook_falls_back_to_raw_title_when_nothing_else_works(mock_schedule, mock_resolve, client):
     """If neither the metadata nor the ratingKey lookup produce a formatted
     title, the raw Metadata.title is used (prior behavior)."""

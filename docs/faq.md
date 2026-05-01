@@ -24,19 +24,23 @@ Common questions about setup, usage, and behavior. For troubleshooting specific 
 
 **What does this tool do?**
 
-Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos. Plex's built-in generation is slow — this tool makes it 5-10x faster using GPU acceleration.
+Generates video preview thumbnails for **Plex, Emby, and Jellyfin** — alone or in any combination. These are the small images you see when scrubbing through videos. Each vendor's built-in generation is slow; this tool makes it 5-10x faster using GPU acceleration. The dispatcher runs FFmpeg once per file and publishes the right format to every server that owns it (Plex BIF bundle, Emby `-WIDTH-INTERVAL.bif` sidecar, Jellyfin trickplay tile sheets).
 
-**What Plex settings should I use?**
+**What Plex/Emby/Jellyfin settings should I use?**
 
-In Plex Settings → Library, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation. Disabling it in Plex avoids duplicate work and prevents Plex from using CPU for thumbnails when you want this app to handle them.
+- **Plex**: In Settings → Library, set **"Generate video preview thumbnails"** to **Never**.
+- **Emby**: Emby has no built-in trickplay generation, so no setting to change.
+- **Jellyfin**: In each library's settings, **enable "Trickplay image extraction"** (Jellyfin reads this app's published manifests only when this is on). The Servers page in this app surfaces a one-click "Fix trickplay" button when any library is missing the toggle.
 
-**Does this generate chapter thumbnails?**
-
-No. This tool only generates **video preview thumbnails** (BIF files for timeline scrubbing). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
+Disabling each vendor's built-in generation avoids duplicate work and prevents the server from using CPU for thumbnails when you want this app to handle them.
 
 **Does this work on Windows?**
 
-Yes. Windows supports GPU acceleration: NVIDIA GPUs use CUDA, and AMD/Intel GPUs use D3D11VA. Install the latest GPU drivers and it just works — but you need to run from source, not Docker (Docker Desktop on Windows runs a Linux VM that can't reach those accelerators).
+The supported deployment is Docker on Linux (or Docker Desktop on Mac via the Linux VM). There's no Windows native build — see "Is Docker required?" below.
+
+**Does this generate chapter thumbnails?**
+
+No. This tool only generates **video preview thumbnails** (the timeline-scrubbing strip). It does not generate chapter thumbnails, intro/credit detection, or other server-side media analysis.
 
 **Can I use this without a GPU?**
 
@@ -56,7 +60,7 @@ Yes, as long as the tool can reach the Plex API over the network and both machin
 
 **Does this work with Jellyfin or Emby?**
 
-No. This tool is Plex-only — it generates Plex-specific BIF files and uses the Plex API to discover libraries and media items.
+Yes. The app supports Plex, Emby, and Jellyfin — alone or in any combination. Each server is added under **Settings → Media Servers**; the dispatcher runs FFmpeg once per file and publishes the right preview format to every server that owns it (Plex BIF bundle, Emby `-WIDTH-INTERVAL.bif` sidecar, Jellyfin trickplay tile sheets + manifest). See the [Multi-Server guide](multi-server.md) for setup, webhook routing, and per-server library/exclude rules.
 
 ---
 
@@ -78,10 +82,6 @@ Yes. In **Settings** → **Processing Options**, enable individual GPUs and set 
 | Intel iGPU | Great for low-power setups, common on Unraid |
 | AMD | Good VAAPI support on Linux |
 | CPU-only | Works everywhere, slower |
-
-**Does GPU passthrough work with Docker Desktop on Windows?**
-
-Docker Desktop's GPU passthrough (via WSL2) is not currently supported by this tool. For Windows with GPU acceleration, run natively (CUDA for NVIDIA, D3D11VA for AMD/Intel) instead of Docker.
 
 **HDR / Dolby Vision support?**
 
@@ -121,7 +121,7 @@ Typical per-worker RSS with hardware decode:
 | 4K HDR10 / DV P7+8 | ~250–300 MB |
 | 4K DV Profile 5 (libplacebo) | ~350–500 MB |
 
-Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix ([#218](https://github.com/stevezau/plex_generate_vid_previews/issues/218)), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
+Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix ([#218](https://github.com/stevezau/media_preview_generator/issues/218)), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
 
 **What's thumbnail quality 1-10?**
 
@@ -133,7 +133,7 @@ Lower numbers = higher quality but larger file sizes.
 
 **Generation feels disk-bound on my multi-disk setup (unraid/mergerfs/JBOD) — how do I speed it up?**
 
-On setups where one share is backed by multiple physical disks (unraid's `shfs`, mergerfs, JBOD), parallel workers processing files in alphabetical order tend to pile onto one disk at a time. Open the **New Job** modal (or edit a full-library schedule) and set **Processing Order** to **Random**. Workers will pull items from different disks in parallel, so disk read throughput — not GPU — sets the ceiling. Webhook jobs and Recently Added scans don't expose this setting because they only touch a handful of files where ordering doesn't matter. See [Issue #219](https://github.com/stevezau/plex_generate_vid_previews/issues/219) for background.
+On setups where one share is backed by multiple physical disks (unraid's `shfs`, mergerfs, JBOD), parallel workers processing files in alphabetical order tend to pile onto one disk at a time. Open the **New Job** modal (or edit a full-library schedule) and set **Processing Order** to **Random**. Workers will pull items from different disks in parallel, so disk read throughput — not GPU — sets the ceiling. Webhook jobs and Recently Added scans don't expose this setting because they only touch a handful of files where ordering doesn't matter. See [Issue #219](https://github.com/stevezau/media_preview_generator/issues/219) for background.
 
 ---
 
@@ -150,10 +150,6 @@ Path mapping issue. See [Path Mappings](reference.md#path-mappings).
 **How do I get the authentication token?**
 
 Use [Authentication Token](getting-started.md#authentication-token).
-
-**Windows: paths in config must use forward slashes**
-
-On Windows, use forward slashes (`/`) in all path configuration (environment variables, `.env` files, Settings). Backslashes (`\`) will cause path resolution failures.
 
 ---
 
