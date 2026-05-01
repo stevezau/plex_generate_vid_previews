@@ -278,13 +278,13 @@ def _probe_media_server_entry(entry: dict) -> dict:
             summary["server_id"] = result.server_id
         return summary
 
-    err = (getattr(result, "error", "") or "").lower()
+    err = (getattr(result, "message", "") or "").lower()
     if "401" in err or "403" in err or "unauth" in err or "forbid" in err:
         summary["status"] = "unauthorised"
     else:
         summary["status"] = "unreachable"
-    if getattr(result, "error", ""):
-        summary["error"] = result.error
+    if getattr(result, "message", ""):
+        summary["error"] = result.message
     return summary
 
 

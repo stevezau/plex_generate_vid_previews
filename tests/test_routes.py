@@ -1976,6 +1976,46 @@ class TestSystemAPI:
                 _api_system._media_server_status_cache["result"] = None
                 _api_system._media_server_status_cache["fetched_at"] = 0.0
 
+    def test_media_servers_status_classifies_401_as_unauthorised(self, client):
+        """ConnectionResult uses .message (not .error). The unauthorised
+        classification used to read result.error which doesn't exist on the
+        dataclass, so every auth failure was silently bucketed as
+        'unreachable' — masking misconfig in the dashboard badge."""
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = None
+            _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+        live = MagicMock()
+        live.test_connection.return_value = ConnectionResult(ok=False, message="HTTP 401 Unauthorized — token rejected")
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm,
+            patch(
+                "media_preview_generator.web.routes.api_servers._instantiate_for_probe",
+                return_value=live,
+            ),
+        ):
+            sm = MagicMock()
+            sm.get.return_value = [
+                {
+                    "id": "e1",
+                    "name": "Emby",
+                    "type": "emby",
+                    "url": "http://emby:8096",
+                    "enabled": True,
+                    "auth": {"method": "api_key", "api_key": "bad"},
+                }
+            ]
+            mock_get_sm.return_value = sm
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+        body = resp.get_json()
+        row = body["servers"][0]
+        assert row["status"] == "unauthorised", row
+        assert "401" in row["error"]
+
 
 # ---------------------------------------------------------------------------
 # Path Validation

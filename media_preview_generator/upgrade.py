@@ -313,7 +313,7 @@ def _migrate_to_v2(sm) -> list:
             detected = detect_all_gpus()
         except Exception:
             logger.debug(
-                "Settings migration: GPU detection raised during v3 upgrade; proceeding with an empty GPU list.",
+                "Settings migration: GPU detection raised during v2 upgrade; proceeding with an empty GPU list.",
                 exc_info=True,
             )
             detected = []
