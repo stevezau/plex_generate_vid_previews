@@ -163,7 +163,7 @@ def _tmp_path_for(canonical_path: str, working_tmp_folder: str) -> str:
 
     Hashing the canonical path keeps the directory short and unique
     even when path lengths exceed filesystem limits, and lets the
-    frame cache (Phase 4) key off the same hash.
+    frame cache key off the same hash.
     """
     digest = hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:16]
     return os.path.join(working_tmp_folder, f"frames-{digest}")

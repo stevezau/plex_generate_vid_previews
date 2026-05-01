@@ -3,7 +3,8 @@
 Sub-modules:
 
 * :mod:`.orchestrator` — :func:`run_processing` kicks off a library or
-  webhook scan, resolves Plex items, and hands them to the dispatcher.
+  webhook scan against any configured server (Plex, Emby, Jellyfin),
+  resolves items, and hands them to the dispatcher.
 * :mod:`.dispatcher`   — :class:`JobDispatcher` + :class:`JobTracker`
   drive the persistent dispatch loop and priority scheduling across
   multiple concurrent jobs.
