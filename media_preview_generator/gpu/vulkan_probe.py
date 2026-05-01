@@ -623,7 +623,7 @@ def get_vulkan_device_info() -> VulkanProbeResult:
             if _VULKAN_ENV_OVERRIDES:
                 override_keys = ", ".join(sorted(_VULKAN_ENV_OVERRIDES))
                 via = f" (via {override_keys} override)"
-            logger.debug("Vulkan ready for Dolby Vision Profile 5 tone-mapping: {}{}", probe_device, via)
+            logger.info("Vulkan ready for Dolby Vision Profile 5 tone-mapping: {}{}", probe_device, via)
 
     device = _VULKAN_DEVICE_CACHE
     if device is None:
