@@ -1164,9 +1164,12 @@
             }
             // Re-fetch the server payload so the Libraries tab repaints with
             // fresh names without forcing the user to close and re-open.
+            // /api/servers/<id> returns the server dict directly (matches
+            // openEditModal's `const server = singleR.data;` earlier in this
+            // file) — not wrapped under `.server`.
             const fresh = await api('GET', `/api/servers/${encodeURIComponent(id)}`);
-            if (fresh.ok && fresh.data && fresh.data.server) {
-                renderEditLibraries(fresh.data.server.libraries || []);
+            if (fresh.ok && fresh.data) {
+                renderEditLibraries(fresh.data.libraries || []);
             }
             // Also refresh the cards on the page (counts changed).
             loadServers();
