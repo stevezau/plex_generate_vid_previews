@@ -2,7 +2,7 @@
 
 Each supported destination format (Plex bundle BIF, Emby sidecar BIF,
 Jellyfin native trickplay) implements the :class:`OutputAdapter` interface
-defined in :mod:`.base`. Concrete adapters are added in later phases.
+defined in :mod:`.base`.
 """
 
 from .base import BifBundle, OutputAdapter
