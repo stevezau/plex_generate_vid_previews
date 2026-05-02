@@ -528,16 +528,41 @@ class PlexServer(MediaServer):
         location. Plex's ``/library/metadata/{id}/tree`` endpoint returns XML;
         we surface the relevant attributes as plain tuples.
 
+        ``item_id`` may be either a bare ratingKey (``"557676"``) or a full
+        Plex API path (``"/library/metadata/557676"``); we normalise both so
+        a caller that accidentally passes the URL form doesn't end up
+        querying ``/library/metadata//library/metadata/557676/tree`` (404,
+        previously misreported as ``not_indexed``). The path-form input
+        used to be the silent root cause of every Sonarr/Radarr → Plex
+        webhook returning ``skipped_not_indexed`` — see D31.
+
         Returns an empty list when the lookup fails or the item has no parts —
         the adapter translates that into a
         :class:`~media_preview_generator.servers.LibraryNotYetIndexedError`.
+        Failures now WARN (not DEBUG) so the next time we malform a URL it
+        shows up in logs without users having to grep at debug level.
         """
         from ..plex_client import retry_plex_call
 
+        # D31 — accept either bare ratingKey or full /library/metadata/<id>
+        # form. Strip any prefix segments so the f-string below can't double.
+        item_id_str = str(item_id or "").strip()
+        bare_id = item_id_str.rsplit("/", 1)[-1] if item_id_str else ""
+        if not bare_id:
+            logger.warning("Plex /tree called with empty item_id; cannot compute bundle hash")
+            return []
+
         try:
-            data = retry_plex_call(self._connect().query, f"/library/metadata/{item_id}/tree")
+            data = retry_plex_call(self._connect().query, f"/library/metadata/{bare_id}/tree")
         except Exception as exc:
-            logger.debug("Plex /tree query failed for {}: {}", item_id, exc)
+            logger.warning(
+                "Plex /tree query failed for item {!r} ({}: {}). The publisher "
+                "will be reported as 'not indexed yet' and retried, but the underlying "
+                "cause is this query — not Plex's analyzer.",
+                bare_id,
+                type(exc).__name__,
+                exc,
+            )
             return []
 
         results: list[tuple[str, str]] = []

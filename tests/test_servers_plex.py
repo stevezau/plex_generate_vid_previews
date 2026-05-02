@@ -406,6 +406,122 @@ class TestResolveItemToRemotePath:
         assert plex_wrapper.resolve_item_to_remote_path("42") is None
 
 
+class TestGetBundleMetadata:
+    """D31 — get_bundle_metadata is the canary's path to Plex's bundle hash.
+
+    Critical regression test: the f-string used to build /tree's URL must
+    NEVER double-prefix /library/metadata/. The bug we shipped silently
+    in production (and only caught after 3 days of users reporting
+    "skipped_not_indexed" on every Sonarr/Radarr → Plex webhook):
+
+        item_id="/library/metadata/557676"        # caller passed full path
+        f"/library/metadata/{item_id}/tree"        # naive f-string
+        → "/library/metadata//library/metadata/557676/tree"
+        → 404 silently swallowed, reported as "no MediaPart with bundle hash yet"
+
+    These tests assert the URL passed to plex.query() is exactly correct
+    for both the bare-ratingKey input ("557676") AND the URL-form input
+    ("/library/metadata/557676") that webhook resolution accidentally fed
+    in for months.
+    """
+
+    def _xml_with_part(self, hash_value: str, file_path: str):
+        from xml.etree import ElementTree as ET
+
+        root = ET.fromstring(
+            f"<MediaContainer><MetadataItem><MediaItem>"
+            f'<MediaPart hash="{hash_value}" file="{file_path}" />'
+            f"</MediaItem></MetadataItem></MediaContainer>"
+        )
+        return root
+
+    def test_bare_rating_key_builds_correct_url(self, plex_wrapper):
+        plex = MagicMock()
+        plex.query.return_value = self._xml_with_part("abc123", "/data/foo.mkv")
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper.get_bundle_metadata("557676")
+
+        # Exact URL — must NOT have any duplicated prefix.
+        plex.query.assert_called_once_with("/library/metadata/557676/tree")
+        assert result == [("abc123", "/data/foo.mkv")]
+
+    def test_full_path_form_does_not_double_the_prefix(self, plex_wrapper):
+        """The bug: webhook resolution used to pass /library/metadata/<id>
+        as the item_id. Without normalisation the URL became
+        /library/metadata//library/metadata/<id>/tree → 404. This test
+        proves both input shapes produce the SAME, single-prefix URL."""
+        plex = MagicMock()
+        plex.query.return_value = self._xml_with_part("abc123", "/data/foo.mkv")
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper.get_bundle_metadata("/library/metadata/557676")
+
+        plex.query.assert_called_once_with("/library/metadata/557676/tree")
+        # No "/library/metadata//library/metadata/..." anywhere.
+        called_url = plex.query.call_args.args[0]
+        assert "//library/metadata" not in called_url, (
+            f"URL doubled the prefix: {called_url!r} — webhooks would 404 silently"
+        )
+        assert called_url.count("/library/metadata/") == 1
+        assert result == [("abc123", "/data/foo.mkv")]
+
+    def test_extracts_every_mediapart_with_hash(self, plex_wrapper):
+        """Multi-part items (e.g. multi-disc movies) report several MediaParts."""
+        from xml.etree import ElementTree as ET
+
+        plex = MagicMock()
+        plex.query.return_value = ET.fromstring(
+            "<MediaContainer><MetadataItem><MediaItem>"
+            '<MediaPart hash="hash1" file="/data/disc1.mkv" />'
+            '<MediaPart hash="hash2" file="/data/disc2.mkv" />'
+            "</MediaItem></MetadataItem></MediaContainer>"
+        )
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper.get_bundle_metadata("12345")
+
+        assert ("hash1", "/data/disc1.mkv") in result
+        assert ("hash2", "/data/disc2.mkv") in result
+
+    def test_skips_mediaparts_with_empty_hash(self, plex_wrapper):
+        """A MediaPart without a hash attribute means deep analysis hasn't
+        completed for that part. These should be filtered, not crash."""
+        from xml.etree import ElementTree as ET
+
+        plex = MagicMock()
+        plex.query.return_value = ET.fromstring(
+            "<MediaContainer><MetadataItem><MediaItem>"
+            '<MediaPart file="/data/no-hash.mkv" />'
+            '<MediaPart hash="hash2" file="/data/has-hash.mkv" />'
+            "</MediaItem></MetadataItem></MediaContainer>"
+        )
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper.get_bundle_metadata("12345")
+
+        assert result == [("hash2", "/data/has-hash.mkv")]
+
+    def test_query_failure_returns_empty_list(self, plex_wrapper):
+        """When the /tree query raises (404, network, anything), return []
+        so the publisher routes the file to the slow-backoff retry queue
+        instead of crashing the dispatcher."""
+        plex = MagicMock()
+        plex.query.side_effect = Exception("(404) not_found")
+        plex_wrapper._plex = plex
+
+        assert plex_wrapper.get_bundle_metadata("12345") == []
+
+    def test_empty_item_id_returns_empty_without_query(self, plex_wrapper):
+        """Empty/None item_id must NOT issue a malformed query."""
+        plex = MagicMock()
+        plex_wrapper._plex = plex
+
+        assert plex_wrapper.get_bundle_metadata("") == []
+        assert plex_wrapper.get_bundle_metadata(None) == []  # type: ignore[arg-type]
+        plex.query.assert_not_called()
+
+
 class TestTriggerRefresh:
     def test_dispatches_to_partial_scan(self, plex_wrapper):
         with patch("media_preview_generator.plex_client.trigger_plex_partial_scan") as scan:

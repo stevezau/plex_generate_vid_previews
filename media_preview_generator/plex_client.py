@@ -940,7 +940,21 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
                         continue
                     plex_locations = _extract_item_locations(item)
                     plex_path = plex_locations[0] if plex_locations else ""
-                    item_key = getattr(item, "key", None)
+                    # D31 — store the bare ratingKey, NOT item.key. PlexAPI's
+                    # m.key is the URL "/library/metadata/<id>"; passing that
+                    # downstream as item_id causes PlexBundleAdapter to build
+                    # "/library/metadata//library/metadata/<id>/tree" → 404,
+                    # silently misreported as "not indexed yet" for every
+                    # Sonarr/Radarr → Plex webhook. We fall back to parsing
+                    # the trailing segment of m.key when ratingKey isn't
+                    # populated (older plexapi versions or odd response
+                    # shapes); both paths yield the bare numeric id.
+                    raw_rk = getattr(item, "ratingKey", None)
+                    if isinstance(raw_rk, str | int) and str(raw_rk).strip():
+                        item_key = str(raw_rk)
+                    else:
+                        url_key = str(getattr(item, "key", "") or "")
+                        item_key = url_key.rsplit("/", 1)[-1] if url_key else ""
                     if not item_key:
                         logger.warning(
                             "Plex returned a search match for {} but didn't include the item's "

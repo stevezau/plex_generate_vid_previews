@@ -931,7 +931,7 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/100"
+        assert result.items[0][0] == "100"  # D31 — bare ratingKey, not URL
         assert result.items[0][1] == "Test Movie"
         assert result.items[0][2] == "movie"
         assert mock_plex.fetchItems.called
@@ -1025,7 +1025,7 @@ class TestGetMediaItemsByPaths:
             ["/data/tv/Test Show/Season 01/S01E01.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/200"
+        assert result.items[0][0] == "200"  # D31 — bare ratingKey, not URL
         assert "Test Show" in result.items[0][1]
         assert "S01E01" in result.items[0][1]
         assert result.items[0][2] == "episode"
@@ -1068,7 +1068,7 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, [webhook_path])
 
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/481077"
+        assert result.items[0][0] == "481077"  # D31 — bare ratingKey, not URL
         assert "The Mind, Explained" in result.items[0][1]
         assert result.items[0][2] == "episode"
         assert mock_plex.fetchItems.called
@@ -1092,8 +1092,45 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
 
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/999"
+        assert result.items[0][0] == "999"  # D31 — bare ratingKey, not URL
         assert mock_plex.fetchItems.called
+
+    def test_get_media_items_by_paths_prefers_explicit_ratingKey_over_url_key(self, mock_config):
+        """D31 — when plexapi populates BOTH .ratingKey (the canonical bare
+        id, e.g. ``999``) AND .key (the URL form ``/library/metadata/999``),
+        we MUST pick ratingKey. Picking .key was the silent root cause of
+        every Sonarr/Radarr → Plex webhook returning ``skipped_not_indexed``
+        for months — downstream code built ``f"/library/metadata/{item_id}/tree"``
+        which doubled the prefix, 404'd, and lied about the cause.
+
+        Mocks here mirror real plexapi shape (both attrs present) so the
+        test can't be silently falsified by an unconfigured MagicMock."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        # plexapi populates both — ratingKey is the bare canonical id (int
+        # in real responses), .key is the API path. Setting both makes the
+        # test fail loudly if production ever picks .key again.
+        mock_movie.ratingKey = 999
+        mock_movie.key = "/library/metadata/999"
+        mock_movie.title = "Late Match"
+        mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_plex.fetchItems.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
+
+        assert len(result.items) == 1
+        item_id = result.items[0][0]
+        # Bare ratingKey, NOT the URL form — anything else doubles the prefix
+        # downstream when PlexBundleAdapter builds f"/library/metadata/{id}/tree".
+        assert item_id == "999"
+        assert "/" not in item_id, f"item_id contains '/' ({item_id!r}) — would double the URL prefix in /tree query"
 
     @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_file_path_query(self, mock_info, mock_config):
@@ -1166,7 +1203,7 @@ class TestGetMediaItemsByPaths:
             ["/data/movies/Test Movie (2024)/Test Movie.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/100"
+        assert result.items[0][0] == "100"  # D31 — bare ratingKey, not URL
         assert result.items[0][2] == "movie"
 
     def test_get_media_items_by_paths_plex_form_path_matches_with_mapping(self, mock_config):
@@ -1198,7 +1235,7 @@ class TestGetMediaItemsByPaths:
             ["/data_16tb1/Movies/Other Movie.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/101"
+        assert result.items[0][0] == "101"  # D31 — bare ratingKey, not URL
 
     def test_get_media_items_by_paths_no_mapping_path_unchanged(self, mock_config):
         """With path_mappings empty, raw webhook path used for matching only."""
@@ -1219,7 +1256,7 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Direct Match.mkv"])
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/102"
+        assert result.items[0][0] == "102"  # D31 — bare ratingKey, not URL
 
     def test_get_media_items_by_paths_multi_row_same_webhook_alias(self, mock_config):
         """Two rows with same webhook_prefix; webhook path /data/... matches item on either plex root."""
@@ -1256,7 +1293,7 @@ class TestGetMediaItemsByPaths:
             ["/data/movies/Multi Disk Movie.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/200"
+        assert result.items[0][0] == "200"  # D31 — bare ratingKey, not URL
 
     def test_get_media_items_by_paths_fans_out_local_path_across_plex_roots(self, mock_config):
         """Webhook /data path should fan out to multiple Plex roots and match first hit."""
@@ -1293,7 +1330,7 @@ class TestGetMediaItemsByPaths:
             ["/data/tv/Test Show/Season 01/S01E03.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/300"
+        assert result.items[0][0] == "300"  # D31 — bare ratingKey, not URL
 
     @patch("media_preview_generator.plex_client.logger.info")
     @patch("media_preview_generator.plex_client.logger.warning")
