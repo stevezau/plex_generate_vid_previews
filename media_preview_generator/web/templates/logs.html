@@ -10,7 +10,6 @@
 <div class="log-page">
     <div class="log-toolbar bg-body-tertiary">
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <span id="serverLevelBadge" class="badge bg-secondary me-1" title="Server log level (change in Settings)">…</span>
             <div class="btn-group btn-group-sm" role="group" aria-label="Minimum level to show">
                 <button type="button" class="btn btn-outline-secondary log-level-btn" data-level="DEBUG">Debug</button>
                 <button type="button" class="btn btn-outline-info log-level-btn" data-level="INFO">Info</button>
@@ -34,8 +33,14 @@
                 <i class="bi bi-clipboard"></i> Copy
             </button>
 
-            <span id="logCount" class="text-muted ms-auto">0 lines</span>
-            <span id="liveIndicator" class="text-success"><span class="live-dot"></span>Live</span>
+            <!-- Right-side status group: server-side level + visible-line
+                 count + live socket indicator + connection state. Grouped
+                 here (vs. having the server-level pill on the far left) so
+                 the toolbar reads "controls on the left, meta on the
+                 right" instead of mixed. -->
+            <span id="serverLevelBadge" class="badge bg-secondary ms-auto" title="Server log level (change in Settings)">…</span>
+            <span id="logCount" class="text-muted small">0 lines</span>
+            <span id="liveIndicator" class="text-success small"><span class="live-dot"></span>Live</span>
             <span id="logConnStatus" class="badge bg-secondary">connecting...</span>
         </div>
     </div>
