@@ -68,6 +68,7 @@ class MultiServerStatus(str, Enum):
     PUBLISHED = "published"  # at least one publisher actually wrote new output
     SKIPPED = "skipped"  # owners exist but every one was skipped (output already on disk)
     SKIPPED_NOT_INDEXED = "skipped_not_indexed"  # owners exist but every one was waiting on the server's index
+    SKIPPED_FILE_NOT_FOUND = "skipped_file_not_found"  # source file missing on disk (retryable — usually mid-copy)
     NO_OWNERS = "no_owners"  # no enabled library covers the path
     FAILED = "failed"  # generation or every publisher failed
     NO_FRAMES = "no_frames"  # FFmpeg produced 0 frames (unrecoverable)
@@ -369,6 +370,8 @@ def _summarise_results(results: list[PublisherResult], status: MultiServerStatus
         # bundle hash we need to write the BIF to. Reword so the diagnosis
         # points at the right thing.
         return f"Waiting for {n} {word} to scan / analyse the file"
+    if status is MultiServerStatus.SKIPPED_FILE_NOT_FOUND:
+        return "Source file missing on disk — will retry"
     if status is MultiServerStatus.FAILED:
         return f"Failed on {n} {word}"
     if status is MultiServerStatus.NO_FRAMES:
@@ -587,9 +590,14 @@ def process_canonical_path(
             "under Settings → Media Servers. The rest of the queue is unaffected.",
             canonical_path,
         )
+        # SKIPPED_FILE_NOT_FOUND (not FAILED) so the webhook-retry path
+        # in job_runner picks it up and reschedules — webhooks fire at
+        # download-START in many *arrs, so a "file missing" right now
+        # is usually "still copying", which the retry backoff (30s, 2m,
+        # 5m, …) is exactly designed to wait through.
         return MultiServerResult(
             canonical_path=canonical_path,
-            status=MultiServerStatus.FAILED,
+            status=MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
             message=f"Source file not found: {canonical_path}",
         )
 

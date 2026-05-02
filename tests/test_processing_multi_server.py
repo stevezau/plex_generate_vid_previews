@@ -205,8 +205,22 @@ class TestPerServerExcludePaths:
 
 
 class TestSourceMissing:
-    def test_returns_failed_when_source_file_missing(self, mock_config_for_processing, tmp_path):
-        # An owning server exists but the file isn't on disk.
+    def test_returns_skipped_file_not_found_when_source_file_missing(self, mock_config_for_processing, tmp_path):
+        """Source-missing → SKIPPED_FILE_NOT_FOUND, NOT FAILED.
+
+        Why this matters (D33 regression): the webhook retry path in
+        job_runner.py triggers on outcome=='skipped_file_not_found'. If
+        we return MultiServerStatus.FAILED instead, the file maps to
+        outcome 'failed' and the retry never fires — even though
+        "file missing on disk" right after a webhook is the EXACT
+        case retry was built for (Sonarr/Radarr fire at download-start
+        in many setups, so the file is mid-copy when we look).
+
+        The user-flagged reproducer: job 1089f843 had two webhook paths,
+        both resolved by Plex, both failed with "Source video file is
+        missing on disk", and zero retries fired. With this status
+        change the retry path engages instead.
+        """
         registry = ServerRegistry.from_settings(
             [
                 _server_config(
@@ -221,7 +235,10 @@ class TestSourceMissing:
             registry=registry,
             config=mock_config_for_processing,
         )
-        assert result.status is MultiServerStatus.FAILED
+        assert result.status is MultiServerStatus.SKIPPED_FILE_NOT_FOUND, (
+            f"got {result.status} — webhook retry only fires on SKIPPED_FILE_NOT_FOUND; "
+            "FAILED would silently disable retry for the most-common-retry case (mid-copy webhooks)"
+        )
         assert "not found" in result.message.lower()
 
 

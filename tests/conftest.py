@@ -587,6 +587,7 @@ def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
         "skipped_bif_exists": MultiServerStatus.SKIPPED,
         "skipped": MultiServerStatus.SKIPPED,
         "skipped_not_indexed": MultiServerStatus.SKIPPED_NOT_INDEXED,
+        "skipped_file_not_found": MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
         "no_media_parts": MultiServerStatus.NO_OWNERS,
         "no_owners": MultiServerStatus.NO_OWNERS,
         "failed": MultiServerStatus.FAILED,

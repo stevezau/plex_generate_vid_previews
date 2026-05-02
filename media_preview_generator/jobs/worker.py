@@ -693,7 +693,13 @@ class WorkerPool:
         self.add_workers("GPU", gpu_workers)
         self.add_workers("CPU", cpu_workers)
 
-        logger.info("Initialized {} workers: {} GPU + {} CPU", len(self.workers), gpu_workers, cpu_workers)
+        logger.info(
+            "Created fresh worker pool — {} worker(s): {} GPU + {} CPU "
+            "(subsequent jobs reuse this pool, you'll see 'Reusing existing worker pool' instead)",
+            len(self.workers),
+            gpu_workers,
+            cpu_workers,
+        )
 
     def has_busy_workers(self) -> bool:
         """Check if any workers are currently busy."""

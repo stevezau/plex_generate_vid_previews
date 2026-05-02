@@ -36,6 +36,8 @@ def _outcome_for_multi_server_status(status) -> ProcessingResult:
         return ProcessingResult.SKIPPED_BIF_EXISTS
     if status is MultiServerStatus.SKIPPED_NOT_INDEXED:
         return ProcessingResult.SKIPPED_NOT_INDEXED
+    if status is MultiServerStatus.SKIPPED_FILE_NOT_FOUND:
+        return ProcessingResult.SKIPPED_FILE_NOT_FOUND
     if status is MultiServerStatus.NO_OWNERS:
         return ProcessingResult.NO_MEDIA_PARTS
     return ProcessingResult.FAILED
@@ -1717,6 +1719,20 @@ def run_processing(
                 existing = get_dispatcher()
                 if existing is not None:
                     worker_pool = existing.worker_pool
+                    # D33 — Surface the reuse so the per-job log doesn't
+                    # silently start dispatching with no worker context.
+                    # Without this, the absence of "Initialized N workers"
+                    # on a reused pool looked like the job was running
+                    # without any workers — confusing when comparing
+                    # back-to-back job logs.
+                    try:
+                        worker_count = len(worker_pool._snapshot_workers())
+                    except Exception:
+                        worker_count = 0
+                    logger.info(
+                        "Reusing existing worker pool ({} worker(s)) — no fresh init needed",
+                        worker_count,
+                    )
                 elif worker_pool is None:
                     worker_pool = _create_worker_pool()
                 dispatcher = get_dispatcher(worker_pool)
