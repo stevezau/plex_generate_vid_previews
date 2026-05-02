@@ -1699,12 +1699,16 @@ function updateActiveJobs(runningJobs) {
     const countBadge = document.getElementById('activeJobsCount');
 
     if (!runningJobs || runningJobs.length === 0) {
-        countBadge.textContent = 'No active jobs';
+        countBadge.textContent = 'Idle';
         countBadge.className = 'badge bg-secondary';
+        // Compact one-line empty state — the previous big-icon block was
+        // ~200px of vertical space spent saying nothing. Match the
+        // template's static empty-state markup so first paint and the
+        // post-load JS render are visually identical.
         container.innerHTML = `
-            <div class="text-muted text-center py-4">
-                <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-                No jobs are currently running
+            <div class="text-muted small d-flex align-items-center justify-content-center gap-2 py-1">
+                <i class="bi bi-inbox"></i>
+                <span>Idle &mdash; no jobs in flight.</span>
             </div>
         `;
         _stopElapsedTimer();

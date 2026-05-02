@@ -186,7 +186,7 @@
                             <h5 class="card-title mb-0">${vendorLogo}${escapeHtml(server.name)}</h5>
                             <span class="badge bg-${typeBadgeColor}">${escapeHtml(server.type)}</span>
                         </div>
-                        <div class="text-muted small mb-2">${escapeHtml(server.url)}</div>
+                        <div class="text-muted small mb-2 text-truncate" title="${escapeHtml(server.url)}">${escapeHtml(server.url)}</div>
                         <div class="mb-2">${enabledBadge}</div>
                         <div class="text-muted small">
                             Libraries: <strong>${enabledLibs}</strong> enabled / ${libCount} total

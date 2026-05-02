@@ -349,19 +349,21 @@ function updateScheduleList() {
                 <td>${nextRun}</td>
                 <td>${statusBadge}</td>
                 <td class="text-nowrap">
-                    <button class="btn btn-sm btn-outline-primary me-1" onclick="runScheduleNow('${escapeHtml(schedule.id)}')" title="Run Now">
-                        <i class="bi bi-play-fill"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-info me-1" onclick="showEditScheduleModal('${escapeHtml(schedule.id)}')" title="Edit">
-                        <i class="bi bi-pencil"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary me-1" onclick="toggleSchedule('${escapeHtml(schedule.id)}', ${!schedule.enabled})"
-                            title="${schedule.enabled ? 'Disable' : 'Enable'}">
-                        <i class="bi bi-${schedule.enabled ? 'pause' : 'play'}"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteSchedule('${escapeHtml(schedule.id)}')" title="Delete">
-                        <i class="bi bi-trash"></i>
-                    </button>
+                    <div class="btn-group btn-group-sm icon-btn-group" role="group">
+                        <button class="btn btn-outline-secondary" onclick="runScheduleNow('${escapeHtml(schedule.id)}')" title="Run now" aria-label="Run now">
+                            <i class="bi bi-play-fill"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="showEditScheduleModal('${escapeHtml(schedule.id)}')" title="Edit" aria-label="Edit schedule">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="toggleSchedule('${escapeHtml(schedule.id)}', ${!schedule.enabled})"
+                                title="${schedule.enabled ? 'Disable' : 'Enable'}" aria-label="${schedule.enabled ? 'Disable schedule' : 'Enable schedule'}">
+                            <i class="bi bi-${schedule.enabled ? 'pause' : 'play'}"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deleteSchedule('${escapeHtml(schedule.id)}')" title="Delete" aria-label="Delete schedule">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
                 </td>
             </tr>
         `;
