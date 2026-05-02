@@ -87,6 +87,63 @@ class TestTokenExtraction:
         assert s._token() == ""
 
 
+class TestRequestUrlConstruction:
+    """D31-class regression coverage: _request builds the HTTP URL by
+    concatenating ``url.rstrip('/') + path``. Every test in TestTestConnection
+    / TestListLibraries / TestResolveItemToRemotePath mocks _request itself,
+    so a URL-construction bug inside _request (e.g. doubled prefix, missing
+    slash, dropped path segment) would slip through every other test in this
+    file. Mock at the next layer down — ``requests.request`` — and assert the
+    URL we actually send.
+    """
+
+    def _capture_request(self, emby):
+        """Patch requests.request and return the call list."""
+        captured: list[dict] = []
+
+        def fake_request(method, url, **kwargs):
+            captured.append({"method": method, "url": url, **kwargs})
+            response = MagicMock()
+            response.json.return_value = {"Items": []}
+            response.raise_for_status.return_value = None
+            return response
+
+        return captured, patch("media_preview_generator.servers._embyish.requests.request", side_effect=fake_request)
+
+    def test_url_is_base_plus_path_no_doubled_prefix(self, emby):
+        """url='http://emby:8096' + path='/System/Info' → exact base+path."""
+        captured, ctx = self._capture_request(emby)
+        with ctx:
+            emby._request("GET", "/System/Info")
+        assert len(captured) == 1
+        assert captured[0]["url"] == "http://emby:8096/System/Info", (
+            f"URL was {captured[0]['url']!r}; D31 doubled-prefix or rstrip regression"
+        )
+        assert "//" not in captured[0]["url"].split("://", 1)[1]
+
+    def test_url_strips_trailing_slash_on_base(self):
+        """url='http://emby:8096/' (trailing slash) must NOT produce '//' in path."""
+        from media_preview_generator.servers.emby import EmbyServer
+
+        srv = EmbyServer(_emby_config(url="http://emby:8096/"))
+        captured, ctx = self._capture_request(srv)
+        with ctx:
+            srv._request("GET", "/Items")
+        assert captured[0]["url"] == "http://emby:8096/Items", (
+            f"trailing-slash url produced {captured[0]['url']!r} — strip regression"
+        )
+
+    def test_x_emby_token_header_is_set_from_config_token(self, emby):
+        """The X-Emby-Token header MUST be present and equal to the configured token.
+        A regression that drops the header would silently fail every authed call."""
+        captured, ctx = self._capture_request(emby)
+        with ctx:
+            emby._request("GET", "/System/Info")
+        headers = captured[0].get("headers") or {}
+        assert headers.get("X-Emby-Token"), f"X-Emby-Token missing from headers: {headers!r}"
+        assert headers.get("Accept") == "application/json"
+
+
 class TestTestConnection:
     def test_success(self, emby):
         with patch.object(EmbyServer, "_request") as req:
