@@ -791,6 +791,97 @@ class TestSchedulePersistence:
 
         manager.stop()
 
+    def test_schedules_re_register_with_apscheduler_after_jobstore_wipe(self, tmp_path, monkeypatch):
+        """D30 — schedules.json is the source of truth; the SQLAlchemy
+        jobstore is just a derived cache. If scheduler.db is wiped (or
+        was never persisted because of an earlier bug), the schedules
+        should ALL re-register with APScheduler at next load. Without
+        this, the canary observed 3 schedules in JSON but 0 jobs in
+        apscheduler_jobs and crons silently never fired."""
+        config_dir = str(tmp_path / "config")
+        os.makedirs(config_dir, exist_ok=True)
+
+        manager1 = ScheduleManager(config_dir=config_dir)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager1)
+        manager1.start()
+        s1 = manager1.create_schedule(
+            name="TV Daily",
+            library_id="2",
+            library_name="TV Shows",
+            cron_expression="0 14 * * *",
+        )
+        s2 = manager1.create_schedule(
+            name="Movies Daily",
+            library_id="1",
+            library_name="Movies",
+            cron_expression="0 1 * * *",
+        )
+        s3 = manager1.create_schedule(
+            name="Sports",
+            library_id="12",
+            library_name="Sports",
+            cron_expression="0 2 * * *",
+            enabled=False,  # disabled — must NOT register
+        )
+        manager1.stop()
+
+        # Simulate jobstore wipe — delete scheduler.db so the next manager
+        # boots with an empty jobstore. schedules.json is preserved.
+        sched_db = os.path.join(config_dir, "scheduler.db")
+        if os.path.exists(sched_db):
+            os.remove(sched_db)
+
+        manager2 = ScheduleManager(config_dir=config_dir)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager2)
+        manager2.start()
+
+        # Both enabled schedules must be re-registered with APScheduler.
+        registered_ids = {j.id for j in manager2.scheduler.get_jobs()}
+        assert s1["id"] in registered_ids, f"Enabled schedule s1 missing after jobstore wipe; got {registered_ids}"
+        assert s2["id"] in registered_ids, f"Enabled schedule s2 missing after jobstore wipe; got {registered_ids}"
+        # Disabled one must NOT be registered.
+        assert s3["id"] not in registered_ids, (
+            f"Disabled schedule s3 should not have been re-registered; got {registered_ids}"
+        )
+        # And each registered cron should have a future next_run_time.
+        for j in manager2.scheduler.get_jobs():
+            if j.id in (s1["id"], s2["id"]):
+                assert j.next_run_time is not None, f"Schedule {j.id} has no next_run_time"
+
+        manager2.stop()
+
+    def test_schedules_re_register_preserves_stop_time_cron(self, tmp_path, monkeypatch):
+        """D30 — re-registration must also restore the per-schedule D20
+        stop-cron, otherwise schedules with a stop_time would lose their
+        nightly pause behaviour after a restart."""
+        config_dir = str(tmp_path / "config")
+        os.makedirs(config_dir, exist_ok=True)
+
+        manager1 = ScheduleManager(config_dir=config_dir)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager1)
+        manager1.start()
+        s = manager1.create_schedule(
+            name="WithStop",
+            library_id="2",
+            library_name="TV Shows",
+            cron_expression="0 1 * * *",
+            stop_time="06:00",
+        )
+        manager1.stop()
+
+        sched_db = os.path.join(config_dir, "scheduler.db")
+        if os.path.exists(sched_db):
+            os.remove(sched_db)
+
+        manager2 = ScheduleManager(config_dir=config_dir)
+        monkeypatch.setattr("media_preview_generator.web.scheduler._schedule_manager", manager2)
+        manager2.start()
+
+        registered_ids = {j.id for j in manager2.scheduler.get_jobs()}
+        assert s["id"] in registered_ids
+        assert f"{s['id']}__stop" in registered_ids, f"D20 stop-cron missing after jobstore wipe; got {registered_ids}"
+        manager2.stop()
+
 
 # ========================================================================
 # get_schedule_manager singleton

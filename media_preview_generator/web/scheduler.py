@@ -541,6 +541,16 @@ class ScheduleManager:
                         migrated,
                     )
                     self._save_schedules()
+                # D30 — re-register every enabled schedule with APScheduler
+                # so a fresh / wiped scheduler.db doesn't leave the schedules
+                # dormant. Treat schedules.json as the source of truth and
+                # the SQLAlchemy jobstore as a derived/cache; rebuilding on
+                # every load makes restarts robust to a scheduler.db that
+                # was wiped, corrupted, or never persisted (we saw this on
+                # the canary: 3 schedules in JSON, 0 jobs in apscheduler_jobs,
+                # crons silently never fired). replace_existing=True is the
+                # safe-merge with whatever the jobstore did persist.
+                self._reregister_loaded_schedules()
             except (OSError, json.JSONDecodeError) as e:
                 bak = self.schedules_file + ".bak"
                 bak_hint = (
@@ -557,6 +567,88 @@ class ScheduleManager:
                     e,
                     bak_hint,
                 )
+
+    def _reregister_loaded_schedules(self) -> None:
+        """Re-register every enabled in-memory schedule with APScheduler (D30).
+
+        Called from :meth:`_load_schedules` after the JSON metadata has been
+        loaded. Builds a trigger from each schedule's persisted
+        ``trigger_type``/``trigger_value`` and adds the job back into the
+        APScheduler instance with ``replace_existing=True`` so a fresh /
+        empty / corrupted ``scheduler.db`` (the SQLAlchemy jobstore) can't
+        leave the schedules dormant. The schedules.json file is treated as
+        the source of truth; the jobstore is just a derived cache.
+
+        Disabled schedules and schedules with malformed trigger expressions
+        are skipped with a warning — never raises so a single bad entry can
+        never block boot.
+        """
+        if not self._schedules:
+            return
+        registered = 0
+        skipped_bad = 0
+        skipped_disabled = 0
+        for sched_id, sched in self._schedules.items():
+            if not sched.get("enabled"):
+                skipped_disabled += 1
+                continue
+            try:
+                trigger_type = sched.get("trigger_type")
+                trigger_value = sched.get("trigger_value")
+                if trigger_type == "cron":
+                    trigger = CronTrigger.from_crontab(str(trigger_value or ""))
+                elif trigger_type == "interval":
+                    trigger = IntervalTrigger(minutes=int(trigger_value))
+                else:
+                    logger.warning(
+                        "Schedule {!r} has unknown trigger_type {!r}; skipping re-registration.",
+                        sched.get("name") or sched_id,
+                        trigger_type,
+                    )
+                    skipped_bad += 1
+                    continue
+
+                ids_canonical = list(sched.get("library_ids") or [])
+                ids_canonical = [str(x) for x in ids_canonical if str(x).strip()]
+                self.scheduler.add_job(
+                    execute_scheduled_job,
+                    trigger=trigger,
+                    id=sched_id,
+                    args=[
+                        sched_id,
+                        ids_canonical,
+                        sched.get("library_name", ""),
+                        sched.get("config") or {},
+                        sched.get("priority"),
+                        sched.get("server_id"),
+                    ],
+                    replace_existing=True,
+                )
+                # Re-register the daily stop-cron (D20) if configured. _parse_hhmm
+                # returns None for empty/blank, in which case we skip silently.
+                stop_time = str(sched.get("stop_time") or "")
+                try:
+                    stop_hm = _parse_hhmm(stop_time)
+                except ValueError:
+                    stop_hm = None  # tolerate bad on-disk data
+                if stop_hm is not None:
+                    self._register_stop_job(sched_id, stop_hm)
+                registered += 1
+            except Exception as exc:
+                logger.warning(
+                    "Could not re-register schedule {!r} on startup ({}: {}); it will not fire "
+                    "until edited via the UI. Other schedules are unaffected.",
+                    sched.get("name") or sched_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                skipped_bad += 1
+        logger.info(
+            "Re-registered {} schedule(s) with APScheduler ({} disabled, {} skipped due to errors)",
+            registered,
+            skipped_disabled,
+            skipped_bad,
+        )
 
     def _save_schedules(self) -> None:
         """Save schedule metadata to persistent storage.
