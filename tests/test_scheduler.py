@@ -848,6 +848,20 @@ class TestSchedulePersistence:
             if j.id in (s1["id"], s2["id"]):
                 assert j.next_run_time is not None, f"Schedule {j.id} has no next_run_time"
 
+        # The persisted next_run in schedules.json must also be refreshed
+        # so the UI shows future fire times instead of the stale snapshot
+        # (the canary observed "Next: 3 days ago" because next_run wasn't
+        # re-computed on load, only when the cron actually fired).
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        s1_after = manager2.get_schedule(s1["id"])
+        assert s1_after["next_run"] is not None, "next_run not refreshed during re-registration"
+        nr = _dt.fromisoformat(s1_after["next_run"])
+        if nr.tzinfo is None:
+            nr = nr.replace(tzinfo=_tz.utc)
+        assert nr > _dt.now(_tz.utc), f"next_run {nr.isoformat()} is in the past — UI would show stale"
+
         manager2.stop()
 
     def test_schedules_re_register_preserves_stop_time_cron(self, tmp_path, monkeypatch):

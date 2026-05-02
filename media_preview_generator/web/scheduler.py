@@ -624,6 +624,24 @@ class ScheduleManager:
                     ],
                     replace_existing=True,
                 )
+                # Refresh the persisted next_run snapshot so the UI shows
+                # the future fire time immediately (not the stale value
+                # from the previous boot — which the canary observed as
+                # "Next: 3 days ago" until the cron actually fired).
+                # Compute via the trigger directly because add_job() called
+                # BEFORE scheduler.start() returns a pending Job that has
+                # no next_run_time attribute yet (APScheduler queues these
+                # and assigns next_run_time at start time).
+                try:
+                    next_fire = trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+                    if next_fire is not None:
+                        sched["next_run"] = next_fire.isoformat()
+                except Exception as exc:
+                    logger.debug(
+                        "next_run computation failed for schedule {!r}: {}",
+                        sched.get("name") or sched_id,
+                        exc,
+                    )
                 # Re-register the daily stop-cron (D20) if configured. _parse_hhmm
                 # returns None for empty/blank, in which case we skip silently.
                 stop_time = str(sched.get("stop_time") or "")
@@ -649,6 +667,11 @@ class ScheduleManager:
             skipped_disabled,
             skipped_bad,
         )
+        # Persist the refreshed next_run snapshots so the UI sees future
+        # fire times immediately on next API call instead of the stale
+        # value from the previous boot.
+        if registered > 0:
+            self._save_schedules()
 
     def _save_schedules(self) -> None:
         """Save schedule metadata to persistent storage.
