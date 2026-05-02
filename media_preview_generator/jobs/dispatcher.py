@@ -206,6 +206,11 @@ class JobDispatcher:
         # Backfill existing workers that were created before this event existed
         for w in worker_pool._snapshot_workers():
             w._done_event = self._worker_done
+        # Snapshot of {worker_id: is_busy} from the previous emit pass —
+        # used by _emit_worker_updates to detect state changes and
+        # bypass the 1Hz throttle when needed (so sub-second tasks
+        # don't flicker invisibly).
+        self._last_worker_busy_snapshot: dict[int, bool] = {}
 
     def submit_items(
         self,
@@ -527,15 +532,32 @@ class JobDispatcher:
         return None
 
     def _emit_worker_updates(self) -> None:
-        """Emit worker status updates for all active trackers (throttled)."""
+        """Emit worker status updates for all active trackers.
+
+        Normally 1Hz throttled to keep SocketIO traffic light, BUT when
+        any worker has changed state (busy↔idle) since the last emit,
+        we override the throttle and emit immediately. Without the
+        override, sub-second tasks (skip-cached BIF exists, frame-cache
+        hits) flickered "processing → idle" inside a single 1Hz window
+        and the user saw NO worker activity at all — the user-flagged
+        symptom: "I see progress sometimes but not for this job."
+        """
         now = time.time()
         with self._trackers_lock:
             active = [t for t in self._trackers.values() if not t.done_event.is_set()]
+        # Build a snapshot of (worker_id → is_busy) so we can detect
+        # state changes regardless of which worker is doing what for
+        # which tracker. Cheap — same lock as the worker_pool snapshot.
+        current_busy = {w.worker_id: bool(w.is_busy) for w in self.worker_pool._snapshot_workers()}
+        state_changed = current_busy != self._last_worker_busy_snapshot
         for tracker in active:
-            if tracker.worker_callback and now - tracker._last_worker_update >= 1.0:
+            throttle_ok = now - tracker._last_worker_update >= 1.0
+            if tracker.worker_callback and (throttle_ok or state_changed):
                 worker_statuses = self._build_worker_statuses()
                 tracker.worker_callback(worker_statuses)
                 tracker._last_worker_update = now
+        # Save the new state for the next loop iteration's diff.
+        self._last_worker_busy_snapshot = current_busy
 
     def _emit_progress_updates(self) -> None:
         """Emit periodic progress updates for active trackers.
