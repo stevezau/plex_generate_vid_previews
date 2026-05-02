@@ -1905,6 +1905,29 @@ function updateWorkerStatuses(workers, options = {}) {
     const cpuCount = workers.filter(w => w.worker_type === 'CPU').length;
     if (cpuWorkersEl) cpuWorkersEl.textContent = String(cpuCount);
 
+    // Workers panel header count badge — "N active / M slots". Gives the
+    // user a glance-able signal of how busy the queue is without forcing
+    // them to count rows. Hidden when there's nothing to count.
+    const headerBadge = document.getElementById('workersHeaderCount');
+    if (headerBadge) {
+        const total = workers.length;
+        const active = workers.filter(w => w.status === 'processing').length;
+        if (total === 0) {
+            headerBadge.textContent = '—';
+            headerBadge.className = 'badge bg-secondary';
+        } else if (active === 0) {
+            headerBadge.textContent = `${total} idle`;
+            headerBadge.className = 'badge bg-secondary';
+        } else {
+            headerBadge.textContent = `${active} of ${total} active`;
+            headerBadge.className = 'badge bg-primary';
+        }
+        // Match the all-caps card-header style suppression we set in HTML
+        // so the badge text stays case-as-typed.
+        headerBadge.style.textTransform = 'none';
+        headerBadge.style.letterSpacing = '0';
+    }
+
     // Surface GPU→CPU fallback transitions as a warning toast (once per switch).
     for (const w of workers) {
         const prev = _fallbackStateByWorker.get(w.worker_id) || false;
