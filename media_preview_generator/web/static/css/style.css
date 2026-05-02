@@ -344,6 +344,23 @@ html[data-bs-theme="dark"] .btn-primary:hover {
     color: #161616;
 }
 
+/* Outline-primary mirrors btn-primary on dark theme — brand orange.
+ * Without this it stays Bootstrap blue, which clashes with the orange
+ * primary actions everywhere else (e.g., Manual Trigger button on
+ * the dashboard renders blue when btn-primary renders orange). */
+html[data-bs-theme="dark"] .btn-outline-primary {
+    color: var(--plex-orange);
+    border-color: var(--plex-orange);
+}
+html[data-bs-theme="dark"] .btn-outline-primary:hover,
+html[data-bs-theme="dark"] .btn-outline-primary:focus,
+html[data-bs-theme="dark"] .btn-outline-primary:active,
+html[data-bs-theme="dark"] .btn-check:checked + .btn-outline-primary {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #161616;
+}
+
 /* ──────────────────────────────────────────────────────────────────────
  * Tables — borderless rows with subtle hover. The default Bootstrap
  * table-bordered look adds visual noise to the dense Job Queue.
