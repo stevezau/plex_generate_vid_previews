@@ -369,34 +369,15 @@ def _dispatch_processable_items(
         except (TypeError, ValueError):
             return 1
 
-    def _device_label(gpu_info, gpu_device, gpu_type) -> str:
-        # Compact human-readable device name for the worker row label.
-        # The raw gpu_info["name"] from lspci-style detection can be
-        # quite long (e.g. "Intel Corporation Raptor Lake-S GT1
-        # [UHD Graphics 770] (rev 04)") which made the Workers-panel
-        # row wrap and pushed the status badge around. Pull the
-        # bracketed user-recognisable identifier when present, else
-        # fall back to the full name / device path / type.
-        import re as _re
-
-        if isinstance(gpu_info, dict):
-            name = (gpu_info.get("name") or "").strip()
-        else:
-            name = (getattr(gpu_info, "name", "") or "").strip()
-        if not name:
-            return gpu_device or (gpu_type or "GPU")
-
-        m = _re.search(r"\[([^\]]+)\]", name)
-        if m:
-            bracketed = m.group(1).strip()
-            vendor = (gpu_type or name.split()[0] or "").strip()
-            v_low = vendor.lower()
-            if v_low == "intel":
-                return f"Intel {bracketed}"
-            if v_low in ("amd", "radeon"):
-                return f"AMD {bracketed}"
-            return f"{vendor} {bracketed}" if vendor else bracketed
-        return name
+    from .worker_naming import (
+        cpu_worker_label as _cpu_worker_label,
+    )
+    from .worker_naming import (
+        friendly_device_label as _device_label,
+    )
+    from .worker_naming import (
+        gpu_worker_label as _gpu_worker_label,
+    )
 
     # Pre-allocate one stable slot per concurrent worker. The slot is
     # alive for the entire dispatch; only ``status`` and ``current_title``
@@ -411,52 +392,69 @@ def _dispatch_processable_items(
     # ("GPU Worker 1 (NVIDIA TITAN RTX)") that users already recognise
     # — avoids two different label conventions side-by-side when a job
     # mixes the legacy and multi-server paths.
+    # Slot identity is decoupled from thread identity so the settings
+    # poller (further down) can add/remove rows mid-job without
+    # disturbing in-flight work — the dispatcher used to bake the slot
+    # count at job start, so a user bumping NVIDIA workers 2→3 saw no
+    # change until the next job. With the decoupling: a thread acquires
+    # the semaphore, claims any free slot at runtime, releases it on
+    # finish. New slots become claimable the moment the poller appends
+    # them.
     gpu_slots: list[dict] = []
-    slot_seq = 0
-    gpu_seq = 0
-    cpu_seq = 0
+    _seq_state = {"slot": 0, "gpu": 0, "cpu": 0}
+
+    def _build_gpu_slot(gpu_type: str, gpu_device: str | None, gpu_info: dict | object) -> dict:
+        _seq_state["slot"] += 1
+        _seq_state["gpu"] += 1
+        return {
+            "worker_id": _seq_state["slot"],
+            "worker_type": "GPU",
+            "worker_name": _gpu_worker_label(_seq_state["gpu"], _device_label(gpu_info, gpu_device, gpu_type)),
+            "gpu_type": gpu_type,
+            "gpu_device": gpu_device,
+            "_gpu_info": gpu_info,  # kept so the poller can build matching new slots
+            "status": "idle",
+            "current_title": "",
+            "library_name": "",
+            "progress_percent": 0,
+            "speed": "0.0x",
+            "remaining_time": 0,
+            "_claimed_by": None,
+            "_pending_removal": False,
+        }
+
+    def _build_cpu_slot() -> dict:
+        _seq_state["slot"] += 1
+        _seq_state["cpu"] += 1
+        return {
+            "worker_id": _seq_state["slot"],
+            "worker_type": "CPU",
+            "worker_name": _cpu_worker_label(_seq_state["cpu"]),
+            "gpu_type": None,
+            "gpu_device": None,
+            "_gpu_info": None,
+            "status": "idle",
+            "current_title": "",
+            "library_name": "",
+            "progress_percent": 0,
+            "speed": "0.0x",
+            "remaining_time": 0,
+            "_claimed_by": None,
+            "_pending_removal": False,
+        }
+
     for gpu_type, gpu_device, gpu_info in gpu_devices:
-        per_device = _read_workers_count(gpu_info)
-        device_label = _device_label(gpu_info, gpu_device, gpu_type)
-        for _ in range(per_device):
-            slot_seq += 1
-            gpu_seq += 1
-            gpu_slots.append(
-                {
-                    "worker_id": slot_seq,
-                    "worker_type": "GPU",
-                    "worker_name": f"GPU Worker {gpu_seq} ({device_label})",
-                    "gpu_type": gpu_type,
-                    "gpu_device": gpu_device,
-                    "status": "idle",
-                    "current_title": "",
-                    "library_name": "",
-                    "progress_percent": 0,
-                    "speed": "0.0x",
-                    "remaining_time": 0,
-                    "_thread": None,  # bound on first pickup; stripped from snapshots
-                }
-            )
+        for _ in range(_read_workers_count(gpu_info)):
+            gpu_slots.append(_build_gpu_slot(gpu_type, gpu_device, gpu_info))
     for _ in range(cpu_workers):
-        slot_seq += 1
-        cpu_seq += 1
-        gpu_slots.append(
-            {
-                "worker_id": slot_seq,
-                "worker_type": "CPU",
-                "worker_name": f"CPU Worker {cpu_seq}",
-                "gpu_type": None,
-                "gpu_device": None,
-                "status": "idle",
-                "current_title": "",
-                "library_name": "",
-                "progress_percent": 0,
-                "speed": "0.0x",
-                "remaining_time": 0,
-                "_thread": None,
-            }
-        )
-    parallelism = max(1, len(gpu_slots))
+        gpu_slots.append(_build_cpu_slot())
+
+    initial_concurrency = max(1, len(gpu_slots))
+    # Generous ThreadPool ceiling so the hot-reload poller can grow the
+    # active worker count without bumping into max_workers. Tasks waiting
+    # on the concurrency semaphore are cheap (one idle thread each) so
+    # 32 is fine; users wanting more can restart.
+    pool_max_workers = max(initial_concurrency, 32)
 
     job_manager = None
     if job_id:
@@ -468,10 +466,11 @@ def _dispatch_processable_items(
             job_manager = None
 
     logger.info(
-        "Multi-server {}: dispatching {} item(s) with parallelism={}",
+        "Multi-server {}: dispatching {} item(s) with parallelism={} (max pool={})",
         label,
         total,
-        parallelism,
+        initial_concurrency,
+        pool_max_workers,
     )
     # Surface "Dispatching N items…" up-front so the progress widget gets
     # a real total + denominator the moment enumeration finishes — without
@@ -479,38 +478,65 @@ def _dispatch_processable_items(
     # first item completes (can be 30s+ on the first FFmpeg pass).
     if progress_callback:
         try:
-            progress_callback(0, total, f"Dispatching {total} item(s) across {parallelism} worker(s)…")
+            progress_callback(0, total, f"Dispatching {total} item(s) across {initial_concurrency} worker(s)…")
         except Exception as exc:
             logger.debug("progress_callback raised on dispatch banner: {}", exc)
 
-    # Lock guarding ``gpu_slots`` mutations + thread→slot binding. The
-    # snapshot reader (called from worker threads on entry/exit AND from
-    # the dispatch thread between iterations) must observe a consistent
-    # view of every slot's state.
+    # Concurrency gate. Decoupled from ThreadPoolExecutor's max_workers
+    # so the hot-reload poller below can grow/shrink concurrency by
+    # adjusting the permit count alone.
     _slots_lock = threading.Lock()
-    _thread_to_slot: dict[str, dict] = {}
+    _concurrency_cond = threading.Condition(_slots_lock)
+    _concurrency_state = {"target": initial_concurrency, "active": 0}
 
-    def _claim_slot_for(thread_name: str) -> dict | None:
-        # First-pickup binds this thread to the next idle slot
-        # permanently — once bound, the thread keeps the same slot
-        # (and the same friendly name + GPU assignment) for the rest
-        # of the dispatch. Subsequent calls just look up the bound
-        # slot in O(1).
+    def _acquire_concurrency() -> None:
+        # Block until the active count is below the dynamic target.
+        # If the user shrinks workers mid-job, queued threads back up
+        # here until enough active ones finish; if they grow workers
+        # the poller's notify_all wakes a queued thread immediately.
+        with _concurrency_cond:
+            while _concurrency_state["active"] >= _concurrency_state["target"]:
+                _concurrency_cond.wait()
+            _concurrency_state["active"] += 1
+
+    def _release_concurrency() -> None:
+        with _concurrency_cond:
+            _concurrency_state["active"] -= 1
+            _concurrency_cond.notify_all()
+
+    def _claim_idle_slot(thread_name: str) -> dict | None:
+        # Slots are claimed at task start (after concurrency gate),
+        # released at task end. A thread is NOT pinned to a slot —
+        # different items the same thread processes can land on
+        # different slots (whichever is free). That's necessary for
+        # hot-reload: when the user adds a new GPU slot, any waiting
+        # thread can pick it up immediately rather than only the
+        # thread that was bound to that slot at job start.
         with _slots_lock:
-            slot = _thread_to_slot.get(thread_name)
-            if slot is not None:
-                return slot
             for s in gpu_slots:
-                if s["_thread"] is None:
-                    s["_thread"] = thread_name
-                    _thread_to_slot[thread_name] = s
+                if s["_claimed_by"] is None and not s["_pending_removal"] and s["status"] == "idle":
+                    s["_claimed_by"] = thread_name
                     return s
             return None
 
+    def _release_slot(slot: dict) -> None:
+        with _slots_lock:
+            slot["status"] = "idle"
+            slot["current_title"] = ""
+            slot["_claimed_by"] = None
+            slot["progress_percent"] = 0
+            # If the poller marked this slot for removal while it was
+            # busy, drop it now that it's free — the panel sees one
+            # fewer row on the next snapshot.
+            if slot["_pending_removal"]:
+                try:
+                    gpu_slots.remove(slot)
+                except ValueError:
+                    pass
+
     def _snapshot_slots() -> list[dict]:
-        # Strip the internal "_thread" binding before exposing snapshot
-        # rows to the worker_callback (the job-manager / panel never
-        # needs to know the underlying ThreadPool thread name).
+        # Strip internal bookkeeping ("_claimed_by", "_pending_removal",
+        # "_gpu_info") before exposing rows to the worker_callback.
         with _slots_lock:
             return [{k: v for k, v in s.items() if not k.startswith("_")} for s in gpu_slots]
 
@@ -521,6 +547,121 @@ def _dispatch_processable_items(
             worker_callback(_snapshot_slots())
         except Exception as exc:
             logger.debug("worker_callback raised: {}", exc)
+
+    # ── Hot-reload settings poller ───────────────────────────────────
+    # Reads gpu_config + cpu_threads every ~1.5s and reconciles
+    # gpu_slots + concurrency target with the live setting. The user
+    # can bump NVIDIA workers from 2→3 in Settings while the job is
+    # running and see the third row appear within ~1.5s — without
+    # this the slot count was baked at job start.
+    _poller_stop = threading.Event()
+    _poller_thread: threading.Thread | None = None
+
+    def _reconcile_with_settings() -> None:
+        try:
+            from ..web.settings_manager import get_settings_manager
+
+            sm = get_settings_manager()
+            new_gpu_config = sm.gpu_config or []
+            new_cpu = max(0, int(getattr(sm, "cpu_threads", 0) or 0))
+        except Exception as exc:
+            logger.debug("hot-reload poller: settings read failed ({}); skipping tick", exc)
+            return
+
+        # Build a target {device: desired_count} map for GPUs that were
+        # in scope at job start. Devices added/removed entirely
+        # mid-job are out of scope (next job picks them up).
+        gpu_info_by_device: dict[str, tuple[str, object]] = {}
+        for gpu_type, gpu_device, gpu_info in gpu_devices:
+            if gpu_device:
+                gpu_info_by_device[gpu_device] = (gpu_type, gpu_info)
+
+        desired_gpu_per_device: dict[str, int] = {}
+        for entry in new_gpu_config:
+            if not isinstance(entry, dict):
+                continue
+            device = entry.get("device")
+            if device not in gpu_info_by_device:
+                continue
+            if not entry.get("enabled", True):
+                desired_gpu_per_device[device] = 0
+                continue
+            try:
+                desired_gpu_per_device[device] = max(0, int(entry.get("workers", 1) or 0))
+            except (TypeError, ValueError):
+                desired_gpu_per_device[device] = 1
+
+        added = 0
+        removed = 0
+        with _slots_lock:
+            # GPU diff per device
+            for device, desired in desired_gpu_per_device.items():
+                live = [
+                    s
+                    for s in gpu_slots
+                    if s["worker_type"] == "GPU" and s["gpu_device"] == device and not s["_pending_removal"]
+                ]
+                delta = desired - len(live)
+                if delta > 0:
+                    gpu_type, gpu_info = gpu_info_by_device[device]
+                    for _ in range(delta):
+                        gpu_slots.append(_build_gpu_slot(gpu_type, device, gpu_info))
+                        added += 1
+                elif delta < 0:
+                    # Prefer to retire idle slots first (immediate),
+                    # mark busy ones as pending so they retire when
+                    # they finish their current item.
+                    surplus = -delta
+                    idle_first = sorted(live, key=lambda s: 0 if s["_claimed_by"] is None else 1)
+                    for s in idle_first[:surplus]:
+                        if s["_claimed_by"] is None:
+                            try:
+                                gpu_slots.remove(s)
+                                removed += 1
+                            except ValueError:
+                                pass
+                        else:
+                            s["_pending_removal"] = True
+                            removed += 1
+            # CPU diff
+            live_cpu = [s for s in gpu_slots if s["worker_type"] == "CPU" and not s["_pending_removal"]]
+            delta = new_cpu - len(live_cpu)
+            if delta > 0:
+                for _ in range(delta):
+                    gpu_slots.append(_build_cpu_slot())
+                    added += 1
+            elif delta < 0:
+                surplus = -delta
+                idle_first = sorted(live_cpu, key=lambda s: 0 if s["_claimed_by"] is None else 1)
+                for s in idle_first[:surplus]:
+                    if s["_claimed_by"] is None:
+                        try:
+                            gpu_slots.remove(s)
+                            removed += 1
+                        except ValueError:
+                            pass
+                    else:
+                        s["_pending_removal"] = True
+                        removed += 1
+
+            new_target = sum(1 for s in gpu_slots if not s["_pending_removal"])
+            if new_target != _concurrency_state["target"]:
+                _concurrency_state["target"] = max(1, new_target)
+                _concurrency_cond.notify_all()
+
+        if added or removed:
+            logger.info(
+                "Hot-reload: gpu_config changed mid-{} — added {} slot(s), removed {} slot(s); concurrency target now {}",
+                label,
+                added,
+                removed,
+                _concurrency_state["target"],
+            )
+            _emit_worker_snapshot()
+
+    def _poller_loop() -> None:
+        while not _poller_stop.wait(1.5):
+            _reconcile_with_settings()
 
     def _process_one(index_and_item):
         # D27 — register the executor's worker thread under this job's
@@ -542,28 +683,37 @@ def _dispatch_processable_items(
 
         index, (server_cfg, item) = index_and_item
         thread_name = threading.current_thread().name
-        slot = _claim_slot_for(thread_name)
-        # GPU assignment is *per slot*, not per item. The slot's
-        # gpu_type / gpu_device were chosen at slot-allocation time so
-        # a device configured for ``workers=2`` actually gets 2
-        # concurrent items routed to its physical hardware.
-        gpu_type = slot["gpu_type"] if slot else None
-        gpu_device = slot["gpu_device"] if slot else None
-        worker_label = slot["worker_name"] if slot else "Worker"
 
         if cancel_check and cancel_check():
-            return (worker_label, None)
+            return ("Worker", None)
 
-        # Flip the slot to "processing X" *in place* — never pop it.
-        # The legacy WorkerPool model: worker rows persist for the
-        # entire dispatch, only the title flips between items. Without
-        # this, the Workers panel rows visibly flashed on/off every
-        # time an item completed (the polling caught the gap between
-        # the per-item finally-pop and the next-item pickup).
-        if slot is not None:
-            with _slots_lock:
-                slot["status"] = "processing"
-                slot["current_title"] = item.title or os.path.basename(item.canonical_path)
+        # Two-step acquisition: concurrency permit (gates how many
+        # threads run real work simultaneously) and slot claim (which
+        # row in the Workers panel represents this thread). The poller
+        # adjusts both atomically.
+        _acquire_concurrency()
+        slot = _claim_idle_slot(thread_name)
+        # Edge case: poller marked all live slots for removal between
+        # the acquire and the claim. Release the permit so others can
+        # proceed and bail this item.
+        if slot is None:
+            _release_concurrency()
+            return ("Worker", None)
+
+        # GPU assignment is *per slot*, not per item — the slot's
+        # gpu_type/gpu_device were set at slot creation so concurrency
+        # is correctly distributed across physical devices even after
+        # hot-reload reshuffles slots.
+        gpu_type = slot["gpu_type"]
+        gpu_device = slot["gpu_device"]
+        worker_label = slot["worker_name"]
+
+        # Flip the slot to "processing X" in place — never pop it.
+        # Rows persist for the whole dispatch (legacy WorkerPool
+        # model) so the Workers panel doesn't flash entries on/off.
+        with _slots_lock:
+            slot["status"] = "processing"
+            slot["current_title"] = item.title or os.path.basename(item.canonical_path)
         # Push the snapshot the moment the thread picks up the item so
         # the Workers panel shows activity within ~1 frame of dispatch
         # (otherwise the panel would only update on completion — for
@@ -611,15 +761,13 @@ def _dispatch_processable_items(
             )
             return (worker_label, None)
         finally:
-            # Flip back to idle in place — DON'T pop the slot. Keeps
-            # the row visible in the Workers panel between items so
-            # the user sees a stable list of N workers throughout the
-            # job, the way the legacy WorkerPool model presents it.
-            if slot is not None:
-                with _slots_lock:
-                    slot["status"] = "idle"
-                    slot["current_title"] = ""
+            # Release the slot (auto-removes if poller flagged it) and
+            # the concurrency permit. Order matters: free the slot
+            # first so the snapshot reflects "idle" before another
+            # thread grabs it.
+            _release_slot(slot)
             _emit_worker_snapshot()
+            _release_concurrency()
 
     completed = 0
     # Index inputs alongside their outcomes so the per-item record can
@@ -628,7 +776,18 @@ def _dispatch_processable_items(
     # only the surviving rows; the failures were just a number on the
     # summary chip with no per-file attribution.
     indexed_items = list(enumerate(items))
-    with ThreadPoolExecutor(max_workers=parallelism) as pool:
+    _poller_thread = threading.Thread(
+        target=_poller_loop,
+        name=f"multi-server-poller-{label}",
+        daemon=True,
+    )
+    _poller_thread.start()
+    try:
+        pool_ctx = ThreadPoolExecutor(max_workers=pool_max_workers)
+    except Exception:
+        _poller_stop.set()
+        raise
+    with pool_ctx as pool:
         for index_and_pair in zip(indexed_items, pool.map(_process_one, indexed_items), strict=True):
             (idx, (_server_cfg, item)), (worker_label, result) = index_and_pair
             completed += 1
@@ -688,6 +847,15 @@ def _dispatch_processable_items(
             except Exception as exc:
                 logger.debug("Could not notify file result for {}: {}", result.canonical_path, exc)
 
+    # Stop the hot-reload poller and clear any persistent slot rows
+    # from the panel snapshot. Daemon thread, but explicit shutdown
+    # avoids a 1.5s tail of poller activity after the dispatch
+    # returns.
+    _poller_stop.set()
+    try:
+        _poller_thread.join(timeout=2.0)
+    except Exception:
+        pass
     logger.info("Multi-server {} complete: {} item(s) processed.", label, completed)
     return counts
 

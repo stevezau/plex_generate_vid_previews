@@ -874,10 +874,22 @@ def _build_idle_workers_from_config():
         "remaining_time": 0.0,
     }
 
+    # Use the shared label helper so the panel reads identically whether
+    # this synthesised idle list is on screen or the live dispatcher's
+    # rows are. Without this the row labels visibly flipped between
+    # "GPU Worker 1 (NVIDIA TITAN RTX)" (mid-job) and
+    # "NVIDIA TITAN RTX #1" (idle, after the job ended).
+    from ...jobs.worker_naming import (
+        cpu_worker_label,
+        friendly_device_label,
+        gpu_worker_label,
+    )
+
     statuses = []
     worker_id = 0
+    gpu_seq = 0
+    cpu_seq = 0
 
-    # Build GPU workers from per-GPU config
     config_by_device = {
         entry["device"]: entry for entry in gpu_config if isinstance(entry, dict) and entry.get("device")
     }
@@ -893,26 +905,27 @@ def _build_idle_workers_from_config():
             continue
         else:
             workers_for_gpu = 1
-        gpu_name = gpu_info.get("name", "GPU")
-        for w in range(workers_for_gpu):
+        device_label = friendly_device_label(gpu_info, device, gpu_info.get("type"))
+        for _ in range(workers_for_gpu):
             worker_id += 1
-            display = f"{gpu_name} #{w + 1}"
+            gpu_seq += 1
             statuses.append(
                 {
                     "worker_id": worker_id,
                     "worker_type": "GPU",
-                    "worker_name": display,
+                    "worker_name": gpu_worker_label(gpu_seq, device_label),
                     **idle_entry,
                 }
             )
 
-    for i in range(cpu_count):
+    for _ in range(cpu_count):
         worker_id += 1
+        cpu_seq += 1
         statuses.append(
             {
                 "worker_id": worker_id,
                 "worker_type": "CPU",
-                "worker_name": f"CPU - Worker {i + 1}",
+                "worker_name": cpu_worker_label(cpu_seq),
                 **idle_entry,
             }
         )

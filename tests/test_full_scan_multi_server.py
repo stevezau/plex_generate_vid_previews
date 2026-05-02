@@ -979,6 +979,114 @@ class TestParallelismRespectsPerDeviceWorkerCount:
         assert set(identity_by_id) == {1, 2}, identity_by_id
 
 
+class TestHotReloadWorkerCount:
+    """User report: bumped NVIDIA workers 2→3 in Settings while a job
+    was running, only saw the 3rd row after stopping + refreshing.
+    "IT SHould live update workers on changing the number of them even
+    in middle of job. it usef to work" — fix is the periodic settings
+    poller inside ``_dispatch_processable_items``.
+    """
+
+    @staticmethod
+    def _make_gpu(device: str, workers: int, gpu_type: str = "NVIDIA", name: str | None = None) -> tuple:
+        return (
+            gpu_type,
+            device,
+            {
+                "workers": workers,
+                "ffmpeg_threads": 2,
+                "device": device,
+                "name": name or "NVIDIA TITAN RTX",
+            },
+        )
+
+    def test_growing_gpu_workers_mid_job_adds_a_slot(self, tmp_path):
+        """Bumps NVIDIA workers 2→3 mid-job via the settings_manager
+        the poller reads from. Asserts a third slot appears in the
+        snapshots (not just at the end — while items are still
+        processing)."""
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        # Enough items that we definitely have work in flight when we
+        # bump the setting (each item sleeps ~80ms below).
+        # 60 items × 200ms ÷ 2 workers ≈ 6s wall clock, plenty of time
+        # for the 1.5s poller to tick after the bump fires at t=2s.
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/d/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(60)
+        ]
+        snapshots: list[list[dict]] = []
+        gpus = [self._make_gpu("cuda:0", workers=2, name="NVIDIA TITAN RTX")]
+
+        def _slow(canonical_path, **kwargs):
+            _time.sleep(0.2)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        # Mutable settings stub so we can flip the worker count after
+        # a delay — same shape the poller reads from
+        # `get_settings_manager()` in production.
+        gpu_config_state = [{"device": "cuda:0", "type": "NVIDIA", "enabled": True, "workers": 2, "ffmpeg_threads": 2}]
+
+        class _FakeSettings:
+            @property
+            def gpu_config(self):
+                return gpu_config_state
+
+            cpu_threads = 0
+
+        def _bump_after_delay():
+            _time.sleep(2.0)  # poll interval is 1.5s; give it a tick to read the original then bump
+            gpu_config_state[0]["workers"] = 3
+
+        import threading as _threading
+
+        bumper = _threading.Thread(target=_bump_after_delay, daemon=True)
+        bumper.start()
+
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=_slow,
+            ),
+            patch("media_preview_generator.web.settings_manager.get_settings_manager", return_value=_FakeSettings()),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        # Snapshot lengths over the run: must include 2 (initial) AND
+        # at least one snapshot with 3 (after the poller picked up the
+        # bump). If hot-reload is broken we'd only ever see 2.
+        max_seen = max(len(s) for s in snapshots)
+        assert max_seen >= 3, (
+            f"Settings bump 2→3 was not picked up mid-job; max concurrent slot count "
+            f"observed = {max_seen}. Snapshot timeline (lengths): {[len(s) for s in snapshots]!r}"
+        )
+        # And at least one of the post-bump snapshots must have 3
+        # slots ALL with the new "GPU Worker N (NVIDIA TITAN RTX)" label
+        # — not just three random slots.
+        big_snapshots = [s for s in snapshots if len(s) >= 3]
+        assert big_snapshots, "no snapshot with ≥3 slots — hot-reload didn't take effect"
+        sample = big_snapshots[-1]
+        names = sorted(s["worker_name"] for s in sample)
+        assert all("NVIDIA TITAN RTX" in n and "GPU Worker" in n for n in names), (
+            f"new slot didn't get the standard 'GPU Worker N (NVIDIA TITAN RTX)' label; got {names!r}"
+        )
+
+
 class TestPerJobLogCapture:
     """D27 — every executor-pool worker thread MUST register itself
     under the active job's id so the per-job log handler captures the

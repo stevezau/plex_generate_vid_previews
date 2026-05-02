@@ -600,12 +600,21 @@ class JobDispatcher:
                 is_busy = worker.is_busy
 
             idx = worker_type_index[worker.worker_id]
-            gpu_base_name = (worker.gpu_name or "").strip() or f"GPU {worker.gpu_index}"
+            # Shared label helper — keeps this dispatcher's rows visually
+            # identical to the multi-server dispatcher's rows and to the
+            # synthesised idle entries returned by /api/jobs/workers when
+            # no job is active.
+            from .worker_naming import cpu_worker_label, friendly_device_label, gpu_worker_label
 
             if worker.worker_type == "GPU":
-                display_name = f"{gpu_base_name} #{idx}"
+                device_label = friendly_device_label(
+                    {"name": worker.gpu_name or ""},
+                    worker.gpu_device,
+                    worker.worker_type,
+                )
+                display_name = gpu_worker_label(idx, device_label)
             else:
-                display_name = f"CPU - Worker {idx}"
+                display_name = cpu_worker_label(idx)
 
             statuses.append(
                 {
