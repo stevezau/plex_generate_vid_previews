@@ -459,6 +459,211 @@ class TestEnumerationStatusBanner:
         assert "Dispatching" in first[2]
 
 
+class TestFileResultEmissionFromMultiServerDispatch:
+    """D34 — the multi-server dispatch path bypasses
+    Worker → _persist → _notify_file_result, so without an explicit
+    notify call the Files panel stays empty for the entire run despite
+    continuous activity in app.log. Live reproducer: job d9918149's
+    Files panel showed 0 rows mid-run; the user thought the job was
+    stuck even though items were completing.
+
+    These tests assert that ``_dispatch_processable_items`` invokes the
+    file-result callback for every item — both happy path and the
+    exception-swallowed branch — so the panel populates as work
+    progresses.
+    """
+
+    def _items(self, n: int):
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        return [(cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a")) for i in range(n)]
+
+    def test_emits_file_result_per_completed_item(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.generator import set_file_result_callback
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        recorded: list[tuple] = []
+
+        def _cb(file_path, outcome_str, reason, worker, servers=None):
+            recorded.append((file_path, outcome_str, reason, worker, servers or []))
+
+        set_file_result_callback(_cb)
+        try:
+            with patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=[
+                    SimpleNamespace(
+                        publishers=[],
+                        canonical_path="/data/m0.mkv",
+                        status=MultiServerStatus.PUBLISHED,
+                        message="",
+                    ),
+                    SimpleNamespace(
+                        publishers=[],
+                        canonical_path="/data/m1.mkv",
+                        status=MultiServerStatus.SKIPPED,
+                        message="cached",
+                    ),
+                ],
+            ):
+                _dispatch_processable_items(
+                    items=self._items(2),
+                    config=_config(),
+                    registry=MagicMock(),
+                    selected_gpus=[],
+                    label="full scan",
+                )
+        finally:
+            set_file_result_callback(None)
+
+        assert len(recorded) == 2, f"Expected 2 file rows, got {len(recorded)}: {recorded!r}"
+        assert recorded[0][0] == "/data/m0.mkv"
+        assert recorded[0][1] == "generated"
+        assert recorded[1][0] == "/data/m1.mkv"
+        assert recorded[1][1] == "skipped_bif_exists"
+        # Worker label is present and non-empty so the Files panel column
+        # never shows a row with no attribution at all.
+        for r in recorded:
+            assert r[3], f"empty worker label on row {r!r}"
+
+    def test_emits_failed_file_result_when_process_canonical_path_raises(self, tmp_path):
+        """The exception-swallowed branch (process_canonical_path raised)
+        used to count toward the failed counter but never produce a
+        Files-panel row, so the user could see "5 failed" on the chip
+        but had no way to know which 5 files."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.generator import set_file_result_callback
+
+        recorded: list[tuple] = []
+
+        def _cb(file_path, outcome_str, reason, worker, servers=None):
+            recorded.append((file_path, outcome_str, reason, worker, servers or []))
+
+        set_file_result_callback(_cb)
+        try:
+            with patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=RuntimeError("FFmpeg crashed"),
+            ):
+                _dispatch_processable_items(
+                    items=self._items(1),
+                    config=_config(),
+                    registry=MagicMock(),
+                    selected_gpus=[],
+                    label="full scan",
+                )
+        finally:
+            set_file_result_callback(None)
+
+        assert len(recorded) == 1
+        path, outcome, _reason, _worker, _servers = recorded[0]
+        assert path == "/data/m0.mkv"
+        assert outcome == "failed", (
+            "exception-swallowed branch must still produce a per-file row so the user "
+            "can see which file blew up — without this the Files panel was just a counter."
+        )
+
+
+class TestWorkerCallbackEmissionFromMultiServerDispatch:
+    """D34 — multi-server dispatch path used to bypass the WorkerPool's
+    worker_callback so the Workers panel stayed empty for the entire run.
+    Synthetic worker rows derived from the executor's threads now flow
+    through the same callback the legacy path uses.
+    """
+
+    def test_worker_callback_fires_with_active_workers_during_run(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path=f"/data/m{i}.mkv",
+                    server_id="srv-a",
+                    title=f"Movie {i}",
+                ),
+            )
+            for i in range(3)
+        ]
+
+        snapshots: list[list[dict]] = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/data/m.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        # At least one snapshot must show a "processing" row — without
+        # the synthetic worker entries the panel would never have any
+        # rows at all during a multi-server scan.
+        assert any(any(w.get("status") == "processing" for w in snap) for snap in snapshots), (
+            f"no 'processing' worker entry in any snapshot: {snapshots!r}"
+        )
+        # Final state: every active row drained on completion.
+        assert snapshots[-1] == [], f"workers leaked into the final snapshot: {snapshots[-1]!r}"
+
+    def test_worker_callback_carries_current_title(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path="/data/named.mkv",
+                    server_id="srv-a",
+                    title="The Named Movie",
+                ),
+            )
+        ]
+
+        captured_titles: list[str] = []
+
+        def _wcb(workers_list):
+            for w in workers_list:
+                if w.get("current_title"):
+                    captured_titles.append(w["current_title"])
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/data/named.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        assert "The Named Movie" in captured_titles, f"item title missing from worker snapshots: {captured_titles!r}"
+
+
 class TestPerJobLogCapture:
     """D27 — every executor-pool worker thread MUST register itself
     under the active job's id so the per-job log handler captures the

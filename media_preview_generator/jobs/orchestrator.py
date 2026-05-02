@@ -17,6 +17,29 @@ from ..servers.ownership import apply_path_mappings
 from .worker import WorkerPool
 
 
+def _outcome_for_multi_server_status(status) -> ProcessingResult:
+    """Map a :class:`MultiServerStatus` to the legacy ProcessingResult.
+
+    Mirrors ``Worker._record_outcome`` so the multi-server dispatch path
+    (which bypasses :class:`Worker` and calls ``process_canonical_path``
+    directly) can persist file-result rows with the same outcome strings
+    the Files panel filters on. Without this the multi-server scan path
+    skipped ``record_file_result`` entirely and the panel stayed empty
+    for the duration of the run.
+    """
+    from ..processing.multi_server import MultiServerStatus
+
+    if status is MultiServerStatus.PUBLISHED:
+        return ProcessingResult.GENERATED
+    if status is MultiServerStatus.SKIPPED:
+        return ProcessingResult.SKIPPED_BIF_EXISTS
+    if status is MultiServerStatus.SKIPPED_NOT_INDEXED:
+        return ProcessingResult.SKIPPED_NOT_INDEXED
+    if status is MultiServerStatus.NO_OWNERS:
+        return ProcessingResult.NO_MEDIA_PARTS
+    return ProcessingResult.FAILED
+
+
 def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
     """Flatten a MultiServerResult into wire-friendly publisher rows for Job UI.
 
@@ -50,6 +73,9 @@ def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
                 # so the Job UI can render a distinct badge when frames were
                 # reused across a sibling-server webhook.
                 "frame_source": getattr(pub, "frame_source", "extracted"),
+                # output_paths feeds the BIF-viewer deep-link in the Files
+                # panel — see record_file_result + job_modal.js (D34).
+                "output_paths": [str(op) for op in (getattr(pub, "output_paths", None) or [])],
             }
         )
     return rows
@@ -280,6 +306,7 @@ def _dispatch_processable_items(
     job_id: str | None = None,
     label: str = "scan",
     server_id_filter: str | None = None,
+    worker_callback=None,
 ) -> dict:
     """Run a list of ``(server_config, ProcessableItem)`` pairs in parallel.
 
@@ -308,8 +335,10 @@ def _dispatch_processable_items(
         (``published``/``failed``/``skipped_*``) — same shape every
         existing caller already depends on.
     """
+    import threading
     from concurrent.futures import ThreadPoolExecutor
 
+    from ..processing.generator import _notify_file_result
     from ..processing.multi_server import process_canonical_path
     from ..servers.base import ServerType
 
@@ -354,6 +383,25 @@ def _dispatch_processable_items(
         gpu_type, gpu_device, _ = gpu_devices[index % len(gpu_devices)]
         return gpu_type, gpu_device
 
+    # Live workers map for the synthetic worker_callback. Keyed by the
+    # ThreadPoolExecutor's stable thread name so a worker that picks up
+    # a second item replaces (not duplicates) its existing entry. The
+    # legacy WorkerPool path emits this same shape via Worker._tick;
+    # mimicking it here keeps the Workers-panel UI vendor-agnostic so
+    # multi-server full scans don't render an empty panel mid-job.
+    _active_workers: dict[str, dict] = {}
+    _active_workers_lock = threading.Lock()
+
+    def _emit_worker_snapshot() -> None:
+        if not worker_callback:
+            return
+        with _active_workers_lock:
+            snapshot = list(_active_workers.values())
+        try:
+            worker_callback(snapshot)
+        except Exception as exc:
+            logger.debug("worker_callback raised: {}", exc)
+
     def _process_one(index_and_item):
         # D27 — register the executor's worker thread under this job's
         # id so the per-job log handler captures every per-file
@@ -376,6 +424,31 @@ def _dispatch_processable_items(
         if cancel_check and cancel_check():
             return None
         gpu_type, gpu_device = _gpu_for(index)
+        thread_name = threading.current_thread().name
+        worker_label_short = f"GPU Worker — {gpu_device or gpu_type}" if gpu_type else "CPU Worker"
+        # Register this thread as actively processing the item so the
+        # live worker snapshot reflects what's actually running. The
+        # snapshot is emitted via worker_callback after the result
+        # comes back (not here — the callback itself acquires the
+        # job-manager lock and we want the dispatch thread to do that
+        # not the worker thread).
+        with _active_workers_lock:
+            _active_workers[thread_name] = {
+                "worker_id": thread_name,
+                "worker_type": "GPU" if gpu_type else "CPU",
+                "worker_name": worker_label_short,
+                "status": "processing",
+                "current_title": item.title or os.path.basename(item.canonical_path),
+                "library_name": "",
+                "progress_percent": 0,
+                "speed": "0.0x",
+                "remaining_time": 0,
+            }
+        # Push the snapshot the moment the thread picks up the item so
+        # the Workers panel shows activity within ~1 frame of dispatch
+        # (otherwise the panel would only update on completion — for
+        # FFmpeg passes that take 30s+ that's a very long blank stare).
+        _emit_worker_snapshot()
         # Pin precedence:
         #   1. Caller-supplied ``server_id_filter`` always wins — that's
         #      the user's explicit "scan Movies on plex-default" pin from
@@ -415,34 +488,85 @@ def _dispatch_processable_items(
                 exc,
             )
             return None
+        finally:
+            # Free the worker slot the moment process_canonical_path
+            # returns so the next snapshot doesn't leave a stale row
+            # for a thread that's already idle.
+            with _active_workers_lock:
+                _active_workers.pop(thread_name, None)
+            _emit_worker_snapshot()
 
     completed = 0
+    # Index inputs alongside their outcomes so the per-item record can
+    # surface the canonical path even when ``result is None`` (the
+    # exception-swallowed branch). Without this the Files panel showed
+    # only the surviving rows; the failures were just a number on the
+    # summary chip with no per-file attribution.
+    indexed_items = list(enumerate(items))
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
-        for result in pool.map(_process_one, enumerate(items)):
+        for index_and_result in zip(indexed_items, pool.map(_process_one, indexed_items), strict=True):
+            (idx, (_server_cfg, item)), result = index_and_result
             completed += 1
             if progress_callback:
                 try:
                     progress_callback(completed, total, f"Processed {completed}/{total}")
                 except Exception:
                     pass
+            # Synthesise a worker label so the Files-panel "Worker" column
+            # isn't blank for the multi-server scan path. The legacy
+            # WorkerPool path produces "GPU Worker N (NVIDIA …)"; mimic
+            # that shape here using the GPU we round-robined onto.
+            gpu_type, gpu_device = _gpu_for(idx)
+            if gpu_type:
+                worker_label = f"GPU Worker (multi-server) — {gpu_device or gpu_type}"
+            else:
+                worker_label = "CPU Worker (multi-server)"
             if result is None:
                 # _process_one swallowed an exception (FFmpeg crash, codec
                 # not supported, etc.). Count it as a failed item so the
                 # outcome counter — and the Job UI badge — surface it
                 # instead of silently reporting "Completed".
                 counts["failed"] = counts.get("failed", 0) + 1
+                # Persist a Files-panel row so the user can see *which*
+                # file failed without grepping the log. Without this, a
+                # batch with 50 failures showed "0 file(s)" in the panel
+                # and the failures only existed as a counter on the chip.
+                try:
+                    _notify_file_result(
+                        item.canonical_path,
+                        ProcessingResult.FAILED,
+                        "process_canonical_path raised — see app log for traceback",
+                        worker_label,
+                        servers=[],
+                    )
+                except Exception as exc:
+                    logger.debug("Could not notify failed file result for {}: {}", item.canonical_path, exc)
                 continue
             for pub in result.publishers or []:
                 key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
                 counts[key] = counts.get(key, 0) + 1
+            rows = _publisher_rows_from_result(result, result.canonical_path)
             if job_manager is not None:
                 try:
-                    job_manager.append_publishers(
-                        job_id,
-                        _publisher_rows_from_result(result, result.canonical_path),
-                    )
+                    job_manager.append_publishers(job_id, rows)
                 except Exception as exc:
                     logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
+            # Live Files-panel row. The multi-server dispatch path
+            # bypasses Worker → _persist (it calls process_canonical_path
+            # directly via the ThreadPoolExecutor), so without this hook
+            # the JSONL file stays empty for the entire run and users
+            # see "0 file(s)" mid-job despite continuous activity.
+            try:
+                outcome = _outcome_for_multi_server_status(result.status)
+                _notify_file_result(
+                    result.canonical_path,
+                    outcome,
+                    (result.message or "").strip(),
+                    worker_label,
+                    servers=rows,
+                )
+            except Exception as exc:
+                logger.debug("Could not notify file result for {}: {}", result.canonical_path, exc)
 
     logger.info("Multi-server {} complete: {} item(s) processed.", label, completed)
     return counts
@@ -588,6 +712,7 @@ def _run_full_scan_multi_server(
     progress_callback=None,
     cancel_check=None,
     job_id: str | None = None,
+    worker_callback=None,
 ) -> dict:
     """Multi-server full-library scan via the per-vendor :class:`VendorProcessor`.
 
@@ -665,6 +790,7 @@ def _run_full_scan_multi_server(
         job_id=job_id,
         label="full scan",
         server_id_filter=server_id_filter,
+        worker_callback=worker_callback,
     )
 
 
@@ -678,6 +804,7 @@ def _run_recently_added_multi_server(
     progress_callback=None,
     cancel_check=None,
     job_id: str | None = None,
+    worker_callback=None,
 ) -> dict:
     """Recently-added scan for any vendor via :class:`VendorProcessor`.
 
@@ -736,6 +863,7 @@ def _run_recently_added_multi_server(
         job_id=job_id,
         label="recently-added scan",
         server_id_filter=server_id_filter,
+        worker_callback=worker_callback,
     )
 
 
@@ -1122,6 +1250,7 @@ def run_processing(
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
                 job_id=job_id,
+                worker_callback=worker_callback,
             )
             return {"outcome": outcome_counts}
 
