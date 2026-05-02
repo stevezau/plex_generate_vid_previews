@@ -47,10 +47,16 @@ if [ "${DEV_RELOAD:-false}" = "true" ]; then
 else
     echo "Starting gunicorn web server on port ${WEB_PORT:-8080}..."
 fi
+# --threads 32: each connected browser SocketIO client holds 1 thread for
+# the persistent WebSocket; under heavy emit traffic from a big multi-server
+# scan, the prior --threads 8 saturated and unrelated API calls (Pause All,
+# Job list refresh) failed with browser-side "Failed to fetch". Workers run
+# on their own dedicated threading.Thread pool — these threads only serve
+# HTTP requests + SocketIO emit fan-out.
 run_as_user gunicorn \
     --bind "0.0.0.0:${WEB_PORT:-8080}" \
     --worker-class gthread \
-    --threads 8 \
+    --threads 32 \
     --workers 1 \
     --timeout 300 \
     --graceful-timeout 30 \
