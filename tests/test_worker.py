@@ -550,11 +550,21 @@ class TestWorkerPool:
         assert pool.has_available_workers() is False
 
     def test_worker_pool_shutdown(self):
-        """Test graceful shutdown."""
+        """shutdown() must mark each worker as no-longer-running and release
+        any tracked threads. "Doesn't crash" is the floor — the contract is
+        that the pool reports zero available workers AFTER shutdown so the
+        dispatcher knows not to try assigning more work."""
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
 
-        # Should not crash
+        assert pool.has_available_workers() is True, "fixture sanity"
         pool.shutdown()
+        # After shutdown, every worker must be marked stopped — otherwise
+        # has_available_workers() lies and the dispatcher would try to feed
+        # a torn-down pool.
+        for w in pool.workers:
+            assert getattr(w, "is_running", False) is False or getattr(w, "_stopped", False) is True, (
+                f"worker {w.name} still reports as running after shutdown"
+            )
 
     def test_worker_pool_add_and_remove_workers(self):
         """Test dynamic worker add/remove behavior."""

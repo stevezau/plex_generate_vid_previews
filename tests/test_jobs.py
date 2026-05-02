@@ -505,10 +505,18 @@ class TestPublishersAttribution:
         assert revived.publishers[1]["message"] == "sidecar dir not writable"
 
     def test_append_publishers_noop_when_unknown_job(self, config_dir):
+        """append_publishers must silently no-op for an unknown job id and
+        not insert a phantom row. A regression that "creates the job on
+        first publish" would corrupt the dashboard's job count + leave
+        zombie rows in the jobs.db; assert that didn't happen."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
-        # Should not raise.
+        before = len(jm.get_all_jobs())
+
         jm.append_publishers("missing-id", [{"server_id": "x"}])
+
+        assert len(jm.get_all_jobs()) == before, "append_publishers created a phantom job for an unknown id"
+        assert jm.get_job("missing-id") is None
 
     def test_append_publishers_noop_when_rows_empty(self, config_dir):
         os.makedirs(config_dir, exist_ok=True)
@@ -552,9 +560,17 @@ class TestPublishersAttribution:
         assert revived.publishers[0]["counts"] == {"published": 50, "failed": 2}
 
     def test_set_publishers_noop_when_unknown_job(self, config_dir):
+        """Same contract as append_publishers: silently no-op for an unknown
+        id, MUST NOT create a phantom job. A regression that auto-creates
+        jobs on first publish would corrupt the dashboard count."""
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
-        jm.set_publishers("missing-id", [{"server_id": "x", "counts": {}}])  # no raise
+        before = len(jm.get_all_jobs())
+
+        jm.set_publishers("missing-id", [{"server_id": "x", "counts": {}}])
+
+        assert len(jm.get_all_jobs()) == before
+        assert jm.get_job("missing-id") is None
 
     def test_set_publishers_persists_through_restart(self, config_dir):
         os.makedirs(config_dir, exist_ok=True)

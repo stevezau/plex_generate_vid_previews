@@ -48,26 +48,48 @@ def loguru_caplog(caplog):
 
 
 class TestGetCurrentVersion:
-    """Test getting current version."""
+    """Test getting current version.
 
-    def test_get_current_version_from_local(self):
-        """Test getting version from local _version.py (priority 1)."""
-        # When running from source, should get version from _version.py
-        version = get_current_version()
-        # Should be a valid version string (either real or placeholder)
-        assert isinstance(version, str)
-        assert len(version) > 0
+    The function tries 3 sources in order:
+      1. ``from . import __version__`` (set by setuptools-scm at build time)
+      2. ``importlib.metadata.version("media-preview-generator")``
+      3. Fallback ``"0.0.0"``
 
-    def test_get_current_version_priority_order(self):
-        """Test that local _version.py takes priority over installed metadata."""
-        # This test verifies the priority: local _version.py is checked first
-        # We can't easily mock importlib.metadata since it's imported locally
-        # So we just verify that get_current_version() returns something valid
-        version = get_current_version()
-        assert isinstance(version, str)
-        assert len(version) > 0
-        # The version should come from local _version.py when running from source
-        # (not from any installed package metadata)
+    These tests force each branch and assert the return value, instead of
+    just asserting a string came back (which would pass even on a complete
+    breakage of all 3 sources).
+    """
+
+    def test_returns_package_version_when_dunder_version_present(self, monkeypatch):
+        """Branch 1: __version__ attribute exists ⇒ returned verbatim."""
+        import media_preview_generator as pkg
+
+        monkeypatch.setattr(pkg, "__version__", "9.9.9-test", raising=False)
+        assert get_current_version() == "9.9.9-test"
+
+    def test_falls_back_to_importlib_metadata_when_dunder_missing(self, monkeypatch):
+        """Branch 2: __version__ missing ⇒ importlib.metadata.version() used."""
+        import importlib.metadata
+
+        import media_preview_generator as pkg
+
+        monkeypatch.delattr(pkg, "__version__", raising=False)
+        monkeypatch.setattr(importlib.metadata, "version", lambda name: "5.4.3")
+        assert get_current_version() == "5.4.3"
+
+    def test_falls_back_to_zero_zero_zero_when_all_sources_fail(self, monkeypatch):
+        """Branch 3: both sources fail ⇒ "0.0.0" sentinel returned."""
+        import importlib.metadata
+
+        import media_preview_generator as pkg
+
+        monkeypatch.delattr(pkg, "__version__", raising=False)
+
+        def boom(_name):
+            raise importlib.metadata.PackageNotFoundError("not installed")
+
+        monkeypatch.setattr(importlib.metadata, "version", boom)
+        assert get_current_version() == "0.0.0"
 
 
 class TestParseVersion:

@@ -994,7 +994,12 @@ class TestAuth:
             headers={"Content-Type": "application/json"},
             data=json.dumps({"path": "/x.mkv"}),
         )
-        assert response.status_code in (401, 403)
+        # webhooks._authenticate_webhook returns 401 on missing token (never 403);
+        # tightened from `in (401, 403)` so a regression that flips to a different
+        # status (e.g. silent 200) can't slip through.
+        assert response.status_code == 401, response.status_code
+        body = response.get_json() or {}
+        assert "Authentication required" in (body.get("error") or "")
 
 
 class TestPayloadSizeLimit:
@@ -1011,13 +1016,25 @@ class TestPayloadSizeLimit:
         assert response.status_code == 413, response.status_code
 
     def test_normal_size_payload_is_accepted(self, client, auth_headers):
-        """Sanity: a small (real-world-sized) payload still gets through."""
+        """Sanity: a small (real-world-sized) payload still gets through.
+
+        With no servers configured, the router runs the dispatcher which
+        returns NO_OWNERS, then the route serialises that result with HTTP
+        200 (per webhook_router.py:578 — "All dispatch outcomes complete
+        synchronously here, so 200 is the right status"). The body's
+        ``status`` field carries the real outcome.
+
+        Tightened from `in (200, 202)` so a regression that returns the
+        wrong code is caught immediately.
+        """
         normal = json.dumps({"path": "/data/movies/Test/Test.mkv"})
         response = client.post(
             "/api/webhooks/incoming",
             headers={**auth_headers, "Content-Type": "application/json"},
             data=normal,
         )
-        # Either 200 (no_owners since no servers configured here) or
-        # 202; never 413 / 401 for an authed in-bounds payload.
-        assert response.status_code in (200, 202), response.status_code
+        assert response.status_code == 200, response.status_code
+        body = response.get_json() or {}
+        # No servers configured ⇒ no owners cover the path.
+        assert body.get("status") == "no_owners", body
+        assert body.get("publishers") == []

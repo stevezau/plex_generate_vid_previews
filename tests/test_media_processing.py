@@ -721,10 +721,17 @@ class TestGenerateImages:
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
         args = mock_popen.call_args[0][0]
-        # Should not have hwaccel
-        if "-hwaccel" in args:
-            # If it exists, it shouldn't be used (heuristic may add it)
-            pass
+        # CPU-only path: gpu=None should NOT enable any hardware decoder.
+        # Hardware-decoder flags are -hwaccel <type> with type in
+        # {cuda, vaapi, qsv, videotoolbox, drm, vulkan}. Asserting absence
+        # explicitly catches a regression that silently wires CUDA into the
+        # CPU branch — the "if/pass" we replaced let that pass forever.
+        gpu_decoders = {"cuda", "vaapi", "qsv", "videotoolbox", "drm", "vulkan", "auto"}
+        for i, a in enumerate(args):
+            if a == "-hwaccel" and i + 1 < len(args):
+                assert args[i + 1] not in gpu_decoders, (
+                    f"CPU-only generate_images() invoked GPU decoder {args[i + 1]!r} via -hwaccel"
+                )
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
@@ -826,53 +833,29 @@ class TestGenerateImages:
         renamed_targets = [os.path.basename(c.args[1]) for c in calls]
         assert renamed_targets == ["0000000000.jpg", "0000000005.jpg", "0000000010.jpg"]
 
-    @patch("media_preview_generator.processing.generator.MediaInfo")
-    @patch("subprocess.Popen")
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    @patch("builtins.open", new_callable=mock_open)
-    @patch("time.sleep")
-    @patch("glob.glob")
-    def test_generate_images_progress_callback(
-        self,
-        mock_glob,
-        mock_sleep,
-        mock_file,
-        mock_exists,
-        mock_run,
-        mock_popen,
-        mock_mediainfo,
-        temp_dir,
-        mock_config,
-    ):
-        """Test that progress callback is called during processing."""
-        mock_run.return_value = MagicMock(returncode=0)
+    def test_generate_images_accepts_progress_callback_signature(self, mock_config):
+        """generate_images must accept a 6th positional ``progress_callback``
+        argument (the dispatcher passes one in real workloads). This test
+        REPLACED a previous version that called the function with mocks too
+        thin to actually drive the FFmpeg progress path; the old version
+        had NO assertion at all and a comment admitting "may not be called".
 
-        mock_info = MagicMock()
-        mock_info.video_tracks = [MagicMock(hdr_format=None)]
-        mock_mediainfo.parse.return_value = mock_info
+        Here we verify the public contract via inspection — the call signature
+        must match what the dispatcher relies on. The actual progress-parsing
+        path is exercised end-to-end by tests/integration/test_e2e_*."""
+        import inspect
 
-        mock_proc = MagicMock()
-        mock_proc.poll.side_effect = [None, None, 0]
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        mock_exists.return_value = True
-        mock_glob.return_value = []
-
-        # Mock reading FFmpeg output
-        mock_file.return_value.readlines.return_value = ["frame= 100 fps=30.0 time=00:00:10.00 speed=1.0x\n"]
-
-        callback_called = [False]
-
-        def callback(*args, **kwargs):
-            callback_called[0] = True
-
-        generate_images("/test/video.mp4", temp_dir, None, None, mock_config, callback)
-
-        # Callback should have been called at least once
-        # Note: Due to mocking, it may not be called, but the structure is there
-        # This test verifies the code doesn't crash with a callback
+        sig = inspect.signature(generate_images)
+        params = list(sig.parameters.values())
+        # Param order from production: video_file, output_folder, gpu, gpu_device,
+        # config, progress_callback (optional). At least 5 required + 1 optional.
+        assert len(params) >= 6, f"generate_images signature changed: {params!r}"
+        # progress_callback must be a positional-or-keyword parameter (not a
+        # keyword-only / **kwargs catch-all) so the dispatcher's positional
+        # invocation keeps working.
+        cb_param = params[5]
+        assert cb_param.name == "progress_callback", f"6th param is {cb_param.name!r}, expected 'progress_callback'"
+        assert cb_param.kind in (cb_param.POSITIONAL_OR_KEYWORD, cb_param.POSITIONAL_ONLY)
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
