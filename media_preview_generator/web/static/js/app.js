@@ -1775,17 +1775,19 @@ function updateActiveJobs(runningJobs) {
 
         html += `
         <div class="active-job-card mb-3 p-3 border rounded" id="active-job-${jid}">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div>
-                    <strong>Job:</strong> <code>${jid.substring(0, 8)}</code>
-                    <span class="ms-2">${statusBadge}</span>${activePriBadge}
-                    <button class="btn btn-sm btn-outline-info ms-2" onclick="showLogsModal('${jid}')" title="View Logs">
+            <div class="d-flex justify-content-between align-items-start mb-2 gap-2 flex-wrap">
+                <div class="d-flex align-items-center flex-wrap gap-2 min-w-0">
+                    <span><strong>Job:</strong> <code>${jid.substring(0, 8)}</code></span>
+                    ${statusBadge}${activePriBadge}
+                </div>
+                <div class="btn-group btn-group-sm icon-btn-group flex-shrink-0" role="group">
+                    <button class="btn btn-outline-info" onclick="showLogsModal('${jid}')" title="View Logs" aria-label="View logs">
                         <i class="bi bi-file-text"></i>
                     </button>
+                    <button class="btn btn-outline-danger" onclick="cancelJob('${jid}')" title="Cancel job" aria-label="Cancel job">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
                 </div>
-                <button class="btn btn-sm btn-outline-danger text-nowrap" onclick="cancelJob('${jid}')" title="Cancel job" aria-label="Cancel job">
-                    <i class="bi bi-x-lg"></i><span class="d-none d-sm-inline ms-1">Cancel</span>
-                </button>
             </div>
             <div class="mb-2 small">
                 <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${_serverBadge(job)}${webhookFilesHtml}
