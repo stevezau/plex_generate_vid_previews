@@ -441,6 +441,34 @@ html[data-bs-theme="light"] .navbar {
     font-weight: bold;
 }
 
+/* Top-right utility icons (notification bell + theme toggle) — give them a
+ * unified circular hover affordance so they read as first-class controls
+ * instead of bare text links. Matches the .icon-btn-group treatment used
+ * inside tables. */
+.navbar .nav-item > #notificationBellBtn,
+.navbar .nav-item > #themeToggleBtn {
+    width: 38px;
+    height: 38px;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: 50%;
+    color: var(--bs-body-color) !important;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+.navbar .nav-item > #notificationBellBtn:hover,
+.navbar .nav-item > #themeToggleBtn:hover,
+.navbar .nav-item > #notificationBellBtn:focus-visible,
+.navbar .nav-item > #themeToggleBtn:focus-visible {
+    background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
+    color: var(--plex-orange) !important;
+}
+.navbar .nav-item > #notificationBellBtn .bi,
+.navbar .nav-item > #themeToggleBtn .bi {
+    font-size: 1.05rem;
+}
+
 /* Notification bell dropdown in the top-right navbar. */
 .notification-bell-wrapper {
     position: relative;
@@ -451,6 +479,38 @@ html[data-bs-theme="light"] .navbar {
     max-width: 95vw;
     max-height: 70vh;
     overflow-y: auto;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-2);
+    margin-top: 0.4rem;
+}
+
+/* Polished header — uppercase tracked label, brand-orange "Reset" link
+ * so it reads as a real action, not a faded utility. */
+.notification-bell-wrapper .dropdown-menu.notification-dropdown > .d-flex {
+    background: var(--surface-1, rgba(255, 255, 255, 0.04));
+}
+.notification-bell-wrapper .dropdown-menu.notification-dropdown strong {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--bs-secondary-color);
+}
+.notification-bell-wrapper #notificationResetBtn {
+    color: var(--plex-orange) !important;
+    font-weight: 500;
+    font-size: 0.8rem;
+}
+.notification-bell-wrapper #notificationResetBtn:hover {
+    color: var(--plex-orange) !important;
+    text-decoration: underline !important;
+}
+
+/* Empty state — lift the muted "No notifications." line so the dropdown
+ * doesn't feel barren when there's nothing to show. */
+.notification-bell-wrapper #notificationEmpty {
+    padding: 2.25rem 1rem !important;
+    color: var(--bs-secondary-color);
 }
 
 .notification-bell-wrapper .notification-entry {
