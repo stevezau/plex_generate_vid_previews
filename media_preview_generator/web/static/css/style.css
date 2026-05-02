@@ -1125,6 +1125,52 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
     }
     .schedules-table tbody tr > td:nth-child(6) { grid-area: status; justify-self: end; }
     .schedules-table tbody tr > td:nth-child(7) { grid-area: actions; justify-self: end; }
+
+    /* Trigger Activity Log table on /automation. Use display:inline on
+     * the meta cells (Time, Source, Server) so they flow as a single
+     * line below the Title; Title gets display:block on top, Status
+     * pill floats to the right of the title row. */
+    #historyTable thead { display: none; }
+    #historyTable,
+    #historyTable tbody { display: block; width: 100%; }
+    #historyTable tbody tr {
+        display: block;
+        margin-bottom: 0.55rem;
+        background: var(--surface-1);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius);
+        padding: 0.6rem 0.8rem;
+        position: relative;
+    }
+    #historyTable tbody tr > td {
+        display: inline;
+        border: none !important;
+        padding: 0;
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    /* Title: own row, prominent. */
+    #historyTable tbody tr > td:nth-child(4) {
+        display: block;
+        font-weight: 500;
+        font-size: 0.9rem;
+        color: var(--bs-body-color);
+        margin-bottom: 0.3rem;
+        padding-right: 5rem;  /* leave room for the absolutely-positioned status pill */
+    }
+    /* Status pill: pinned top-right. */
+    #historyTable tbody tr > td:nth-child(5) {
+        position: absolute;
+        top: 0.6rem;
+        right: 0.8rem;
+    }
+    /* Meta cells (Time, Source, Server) flow inline with " · " separators. */
+    #historyTable tbody tr > td:nth-child(2)::after,
+    #historyTable tbody tr > td:nth-child(3)::after {
+        content: " · ";
+        margin: 0 0.3rem;
+        opacity: 0.5;
+    }
 }
 
 /* Numeric inputs that pair a stepper-wrapped input with a unit addon
