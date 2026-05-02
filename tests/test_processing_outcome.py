@@ -225,7 +225,7 @@ class TestOutcomeInWorkerPoolResult:
         config = MagicMock()
         config.cpu_threads = 1
         registry = MagicMock()
-        items = [("/library/metadata/1", "Movie 1", "movie")]
+        items = [("1", "Movie 1", "movie")]
         result = pool.process_items_headless(
             _pi_list_or_passthrough(items),
             config,
@@ -257,9 +257,9 @@ class TestOutcomeInWorkerPoolResult:
         config.cpu_threads = 1
         registry = MagicMock()
         items = [
-            ("/library/metadata/1", "Movie 1", "movie"),
-            ("/library/metadata/2", "Movie 2", "movie"),
-            ("/library/metadata/3", "Movie 3", "movie"),
+            ("1", "Movie 1", "movie"),
+            ("2", "Movie 2", "movie"),
+            ("3", "Movie 3", "movie"),
         ]
         result = pool.process_items_headless(
             _pi_list_or_passthrough(items),

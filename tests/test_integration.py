@@ -53,10 +53,10 @@ class TestFullPipeline:
         # Mock Plex
         # Test items
         items = [
-            ("/library/metadata/1", "Movie 1", "movie"),
-            ("/library/metadata/2", "Movie 2", "movie"),
-            ("/library/metadata/3", "Movie 3", "movie"),
-            ("/library/metadata/4", "Movie 4", "movie"),
+            ("1", "Movie 1", "movie"),
+            ("2", "Movie 2", "movie"),
+            ("3", "Movie 3", "movie"),
+            ("4", "Movie 4", "movie"),
         ]
 
         # Mock progress
@@ -94,10 +94,10 @@ class TestFullPipeline:
         # Create worker pool
         pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
         items = [
-            ("/library/metadata/1", "Movie 1", "movie"),
-            ("/library/metadata/2", "Movie 2", "movie"),
-            ("/library/metadata/3", "Movie 3", "movie"),
-            ("/library/metadata/4", "Movie 4", "movie"),
+            ("1", "Movie 1", "movie"),
+            ("2", "Movie 2", "movie"),
+            ("3", "Movie 3", "movie"),
+            ("4", "Movie 4", "movie"),
         ]
 
         main_progress = MagicMock()
@@ -153,9 +153,9 @@ class TestWorkerPoolIntegration:
         pool = WorkerPool(gpu_workers=0, cpu_workers=3, selected_gpus=[])
 
         items = [
-            ("/library/metadata/1", "Movie 1", "movie"),
-            ("/library/metadata/2", "Movie 2", "movie"),
-            ("/library/metadata/3", "Movie 3", "movie"),
+            ("1", "Movie 1", "movie"),
+            ("2", "Movie 2", "movie"),
+            ("3", "Movie 3", "movie"),
         ]
 
         main_progress = MagicMock()
@@ -186,7 +186,7 @@ class TestWorkerPoolIntegration:
         # Create pool with multiple workers
         pool = WorkerPool(gpu_workers=0, cpu_workers=3, selected_gpus=[])
         # Many items to ensure distribution
-        items = [(f"/library/metadata/{i}", f"Movie {i}", "movie") for i in range(9)]
+        items = [(f"{i}", f"Movie {i}", "movie") for i in range(9)]
 
         main_progress = MagicMock()
         worker_progress = MagicMock()

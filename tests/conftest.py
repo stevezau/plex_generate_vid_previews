@@ -523,10 +523,27 @@ def _pi(key="test_key", title="Test", media_type=None, canonical_path=None, serv
     ``media_type`` is accepted for backward compat with the legacy 3-tuple
     callsites but is intentionally ignored — :class:`ProcessableItem` has
     no media-type field; vendor processors derive that from the path.
+
+    D31 guardrail: refuse a Plex item key in the ``/library/metadata/<id>``
+    URL form. The bug we shipped silently for days came from production
+    code accidentally storing the URL form here, then downstream code
+    building ``f"/library/metadata/{item_id}/tree"`` and doubling the
+    prefix. Tests that need to exercise the legacy URL-form input path
+    (e.g. defensive normalisation tests) must pass it directly to the
+    target API, not through this builder. Without this guardrail, the
+    ``conftest._pi`` helper made it cheap to author new D31-shape tests
+    that pass while production silently fails.
     """
     from media_preview_generator.processing.types import ProcessableItem
 
     del media_type  # see docstring — accepted but unused
+    if isinstance(key, str) and key.startswith("/library/metadata/"):
+        raise ValueError(
+            f"D31 guardrail: _pi(key={key!r}) is the URL form. Production stores "
+            "the bare ratingKey here (e.g. '54321'). If you intentionally need "
+            "the URL form to test defensive normalisation, build the ProcessableItem "
+            "directly with item_id_by_server=... rather than via this helper."
+        )
     return ProcessableItem(
         canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
         server_id=server_id,

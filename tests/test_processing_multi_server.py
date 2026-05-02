@@ -14,7 +14,7 @@ Verifies that:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -400,8 +400,28 @@ class TestNotYetIndexedRoutesToSkip:
             legacy_config=mock_config,
         )
 
-        # Stub Plex's bundle metadata lookup to return empty (item not yet indexed).
-        with patch.object(PlexServer, "get_bundle_metadata", return_value=[]):
+        # D31-aware: stub the underlying plex.query (NOT get_bundle_metadata)
+        # so the URL-construction layer actually runs. Mocking get_bundle_metadata
+        # directly was the test pattern that hid D31 — every Sonarr/Radarr → Plex
+        # webhook silently malformed the /tree URL and got 404'd. By mocking one
+        # layer deeper we exercise the bare-id normalisation + URL builder.
+        from xml.etree import ElementTree as ET
+
+        plex_query_calls: list[str] = []
+
+        def fake_plex_query(url):
+            plex_query_calls.append(url)
+            # Return XML with NO MediaPart hash — same end-state as "not indexed"
+            # but proves get_bundle_metadata's URL was correctly formed.
+            return ET.fromstring("<MediaContainer></MediaContainer>")
+
+        def install_fake_plex(server_self):
+            mock_plex = MagicMock()
+            mock_plex.query = fake_plex_query
+            server_self._plex = mock_plex
+            return mock_plex
+
+        with patch.object(PlexServer, "_connect", autospec=True, side_effect=install_fake_plex):
 
             def fake_generate_images(video_file, output_folder, *args, **kwargs):
                 _populate_frames(output_folder, count=3)
@@ -434,6 +454,16 @@ class TestNotYetIndexedRoutesToSkip:
         # misleading "0 of 1 succeeded" wording.
         assert "Waiting for 1 server" in result.message
         assert "publisher" not in result.message.lower()
+        # D31 — confirm every URL we hit Plex with had the correct, single-prefix
+        # shape. Without this, a regression that doubled the prefix would still
+        # produce an empty MediaPart list and this test would silently pass.
+        # (The freshness pre-check + publisher path both query, hence multiple calls.)
+        assert plex_query_calls, "plex.query was never called — adapter never reached Plex"
+        for url in plex_query_calls:
+            assert url == "/library/metadata/42/tree", (
+                f"plex.query called with {url!r} — D31 regression "
+                "(doubled /library/metadata/ prefix) would slip past this test."
+            )
 
 
 class TestSkipIfExists:
