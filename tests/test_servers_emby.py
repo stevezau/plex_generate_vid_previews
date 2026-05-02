@@ -98,7 +98,13 @@ class TestRequestUrlConstruction:
     """
 
     def _capture_request(self, emby):
-        """Patch requests.request and return the call list."""
+        """Patch the Session.request the client uses and return the call list.
+
+        The client now goes through ``self._get_session().request(...)`` for
+        HTTP keep-alive across the dozens of round-trips a single scan makes,
+        so the patch target is the per-client Session, not the module-level
+        ``requests.request``.
+        """
         captured: list[dict] = []
 
         def fake_request(method, url, **kwargs):
@@ -108,7 +114,11 @@ class TestRequestUrlConstruction:
             response.raise_for_status.return_value = None
             return response
 
-        return captured, patch("media_preview_generator.servers._embyish.requests.request", side_effect=fake_request)
+        # Force the lazy session init now so we have a concrete object to
+        # patch — _get_session() is otherwise called inside _request and
+        # we'd be patching after the call.
+        session = emby._get_session()
+        return captured, patch.object(session, "request", side_effect=fake_request)
 
     def test_url_is_base_plus_path_no_doubled_prefix(self, emby):
         """url='http://emby:8096' + path='/System/Info' → exact base+path."""
@@ -142,6 +152,16 @@ class TestRequestUrlConstruction:
         headers = captured[0].get("headers") or {}
         assert headers.get("X-Emby-Token"), f"X-Emby-Token missing from headers: {headers!r}"
         assert headers.get("Accept") == "application/json"
+
+    def test_session_is_reused_across_calls(self, emby):
+        """All requests share one Session so HTTP keep-alive amortises the
+        TCP+TLS handshake across the dozens of /Items round-trips a single
+        scan makes. A regression that reverted to per-call ``requests.request``
+        would silently re-handshake every call and add seconds of dead wall
+        time to a 500-item scan."""
+        first = emby._get_session()
+        second = emby._get_session()
+        assert first is second, "Session must be reused across calls"
 
 
 class TestTestConnection:

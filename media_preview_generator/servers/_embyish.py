@@ -45,10 +45,22 @@ class EmbyApiClient(MediaServer):
     def __init__(self, config: ServerConfig, *, default_name: str | None = None) -> None:
         super().__init__(server_id=config.id, name=config.name or (default_name or self.vendor_name))
         self._config = config
+        # Persistent requests.Session for HTTP keep-alive across the dozens of
+        # /Items + /Library/VirtualFolders + /Items/{id} round-trips a single
+        # full-library scan makes. Without a Session, every call paid the TCP
+        # handshake + TLS negotiation tax — a 500-item scan amortised that out
+        # to seconds of wasted wall time on top of the actual API latency.
+        self._session: requests.Session | None = None
 
     @property
     def config(self) -> ServerConfig:
         return self._config
+
+    def _get_session(self) -> requests.Session:
+        """Return the lazy-init requests.Session for this client."""
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
 
     # ------------------------------------------------------------------ HTTP
     def _token(self) -> str:
@@ -83,7 +95,7 @@ class EmbyApiClient(MediaServer):
         verify = bool(self._config.verify_ssl)
         if not verify:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        return requests.request(
+        return self._get_session().request(
             method,
             url,
             headers=headers,
