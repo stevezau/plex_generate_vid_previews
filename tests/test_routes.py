@@ -146,6 +146,9 @@ class TestPageRoutes:
     def test_settings_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/settings")
         assert resp.status_code == 200
+        # A regression that returns 200 with a stub/error page would pass
+        # the bare status check. Asserting page content catches that.
+        assert b"Settings" in resp.data or b"setting" in resp.data.lower()
 
     def test_servers_page_accepts_add_query_param(self, authed_client):
         """Setup wizard step 1's vendor picker redirects to
@@ -2458,19 +2461,31 @@ class TestPathValidation:
 
 
 class TestAuthMethods:
-    """Test that both Bearer token and session auth work for API."""
+    """Test that both Bearer token and session auth work for API.
+
+    Each test asserts the endpoint returned a real JSON body (not just
+    "auth didn't reject"). A regression where auth silently passes but
+    the endpoint short-circuits with 200+empty would otherwise look
+    identical to a healthy response here.
+    """
 
     def test_bearer_auth(self, client):
         resp = client.get("/api/jobs", headers={"Authorization": "Bearer test-token-12345678"})
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert isinstance(body, dict) and "jobs" in body, body
 
     def test_x_auth_token_header(self, client):
         resp = client.get("/api/jobs", headers={"X-Auth-Token": "test-token-12345678"})
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert isinstance(body, dict) and "jobs" in body, body
 
     def test_session_auth(self, authed_client):
         resp = authed_client.get("/api/jobs")
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert isinstance(body, dict) and "jobs" in body, body
 
 
 # ---------------------------------------------------------------------------
