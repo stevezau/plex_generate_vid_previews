@@ -1366,9 +1366,11 @@ const STATUS_META = {
     skipped_output_exists:  { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk on this server and source unchanged' },
     skipped:                { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk' },
 
-    // Server hasn't indexed the file yet; retry queue will try again later.
-    skipped_not_indexed:    { label: 'Not Indexed Yet', cls: 'bg-warning text-dark', tip: 'Server hasn\'t indexed this file yet — will retry' },
-    not_indexed:            { label: 'Not Indexed Yet', cls: 'bg-warning text-dark', tip: 'Server hasn\'t indexed this file yet — will retry' },
+    // Media server knows the file exists but hasn't completed its analysis
+    // pass yet (the bundle hash we need to write the BIF doesn't exist yet).
+    // Retry queue will try again on slow backoff.
+    skipped_not_indexed:    { label: 'Not Scanned Yet', cls: 'bg-warning text-dark', tip: 'Media server hasn\'t finished scanning / analysing this file yet — will retry' },
+    not_indexed:            { label: 'Not Scanned Yet', cls: 'bg-warning text-dark', tip: 'Media server hasn\'t finished scanning / analysing this file yet — will retry' },
 
     // Hard failures.
     failed:                 { label: 'Failed',        cls: 'bg-danger', tip: 'Processing failed' },

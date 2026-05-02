@@ -281,7 +281,11 @@ def _summarise_results(results: list[PublisherResult], status: MultiServerStatus
     if status is MultiServerStatus.SKIPPED:
         return f"Already up to date on {n} {word}"
     if status is MultiServerStatus.SKIPPED_NOT_INDEXED:
-        return f"Waiting for {n} {word} to finish indexing"
+        # "Indexing" was misleading — Plex DOES know the file exists, it just
+        # hasn't completed the deeper media analysis pass that produces the
+        # bundle hash we need to write the BIF to. Reword so the diagnosis
+        # points at the right thing.
+        return f"Waiting for {n} {word} to scan / analyse the file"
     if status is MultiServerStatus.FAILED:
         return f"Failed on {n} {word}"
     if status is MultiServerStatus.NO_FRAMES:

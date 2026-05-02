@@ -506,10 +506,17 @@
             // Drop release-tag noise (Bluray-2160p, WEBDL-1080p, codec
             // brackets, group suffix) so the title-search has a fighting
             // chance against Plex's title-only index.
+            //
+            // CAREFUL: the previous "- GroupName123" regex (`\s+-\s+[A-Z][a-z]*\d+`)
+            // ate the `S04E17` season/episode prefix because S04 matches
+            // [A-Z][a-z]*\d+ exactly. That left `Fire Country (2022)E17 - …`
+            // which Plex couldn't find. Now we explicitly EXCLUDE SxxExx
+            // (and SxxxExx, SxxxExxx) shapes from the group-suffix cleaner.
             const cleaned = stem
                 .replace(/\s*\[[^\]]*\]/g, '')                  // [imdb-tt..], [Bluray-2160p], etc.
                 .replace(/\s+-\s+(WEBDL|HDTV|Bluray|BluRay|REMUX|DVDRip)[^-\s]*/i, '') // - WEBDL-1080p
-                .replace(/\s+-\s+[A-Z][a-z]*\d+/g, '')          // - GroupName123
+                // " - GroupName123" but NOT " - S04E17" (negative lookahead).
+                .replace(/\s+-\s+(?!S\d+E\d+\b)[A-Z][a-z]*\d+/g, '')
                 .trim();
             const search = cleaned || stem || basename;
             const input = $('searchInput');

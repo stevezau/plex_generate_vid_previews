@@ -794,13 +794,15 @@ class TestSummariseResults:
         assert _summarise_results(results, MultiServerStatus.SKIPPED) == "Already up to date on 1 server"
 
     def test_skipped_not_indexed_phrasing(self):
+        """User-facing message must point at media-server analysis (not us)
+        and avoid the misleading "indexing" verb (Plex DOES know the file
+        exists; it just hasn't completed deep media analysis yet)."""
         from media_preview_generator.processing.multi_server import _summarise_results
 
         results = [self._result(PublisherStatus.SKIPPED_NOT_INDEXED)]
-        assert (
-            _summarise_results(results, MultiServerStatus.SKIPPED_NOT_INDEXED)
-            == "Waiting for 1 server to finish indexing"
-        )
+        msg = _summarise_results(results, MultiServerStatus.SKIPPED_NOT_INDEXED)
+        assert msg == "Waiting for 1 server to scan / analyse the file"
+        assert "publisher" not in msg.lower()
 
     def test_no_publisher_jargon_in_any_branch(self):
         """User-facing message must never use the internal 'publisher' term."""

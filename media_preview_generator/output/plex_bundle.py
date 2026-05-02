@@ -76,7 +76,14 @@ class PlexBundleAdapter(OutputAdapter):
 
         parts = server.get_bundle_metadata(item_id)
         if not parts:
-            raise LibraryNotYetIndexedError(f"Plex item {item_id} has no MediaPart with a bundle hash yet")
+            raise LibraryNotYetIndexedError(
+                f"File not yet scanned in Plex (item {item_id}): "
+                "Plex hasn't completed its media analysis pass for this file, so the bundle "
+                "hash we need to write the BIF doesn't exist yet. We'll auto-retry; if it "
+                "keeps happening, run an Analyze on the library in Plex Web (Settings → "
+                "Library → Run a partial scan / Analyze) and check that 'Run analysis tasks "
+                "during maintenance' is enabled."
+            )
 
         target_basename = os.path.basename(bundle.canonical_path)
         bundle_hash = self._select_hash_for_path(parts, target_basename, item_id)
@@ -156,7 +163,11 @@ class PlexBundleAdapter(OutputAdapter):
             if os.path.basename(remote_path) == target_basename:
                 if bundle_hash and len(bundle_hash) >= 2:
                     return bundle_hash
-                raise LibraryNotYetIndexedError(f"Plex item {item_id} returned an invalid bundle hash {bundle_hash!r}")
+                raise LibraryNotYetIndexedError(
+                    f"File not yet scanned in Plex (item {item_id}): the matching MediaPart "
+                    f"has an invalid bundle hash ({bundle_hash!r}). Plex's media analysis "
+                    "didn't finish writing the bundle. We'll auto-retry."
+                )
         # Fallback: first usable hash. Plex sometimes reports paths that don't
         # exactly match the file we received via webhook (e.g. casing, mount
         # differences); the hash is still correct for the item.
@@ -168,7 +179,10 @@ class PlexBundleAdapter(OutputAdapter):
                     target_basename,
                 )
                 return bundle_hash
-        raise LibraryNotYetIndexedError(f"Plex item {item_id} returned no valid bundle hashes")
+        raise LibraryNotYetIndexedError(
+            f"File not yet scanned in Plex (item {item_id}): every MediaPart returned by "
+            "Plex had an invalid/missing bundle hash. We'll auto-retry."
+        )
 
 
 class BifIntervalConfig:
