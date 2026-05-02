@@ -1562,12 +1562,25 @@ def run_processing(
         plex = plex_server(config)
         clear_failures()
 
-        # Build a registry from the legacy Config so the dispatch path can
-        # publish via process_canonical_path's per-vendor adapters when items
-        # arrive as ProcessableItems (the post-Phase-C unified path).
+        # Build a registry covering EVERY configured media server so the
+        # dispatch path can fan out to all owning publishers (Plex + Emby +
+        # Jellyfin). Previously this used from_legacy_config which only
+        # produced a single-Plex registry — webhook + scheduled jobs then
+        # silently dropped fan-out, publishing only to Plex even when the
+        # canonical path was also owned by Emby/Jellyfin libraries. Falls
+        # back to the legacy single-Plex shim only when the persisted
+        # media_servers list is empty (fresh install / pre-migration).
         from ..servers.registry import ServerRegistry as _ServerRegistry
+        from ..web.settings_manager import get_settings_manager as _get_sm
 
-        registry = _ServerRegistry.from_legacy_config(config)
+        try:
+            _media_servers_raw = _get_sm().get("media_servers") or []
+        except Exception:
+            _media_servers_raw = []
+        if _media_servers_raw:
+            registry = _ServerRegistry.from_settings(_media_servers_raw, legacy_config=config)
+        else:
+            registry = _ServerRegistry.from_legacy_config(config)
 
         title_max_width = 200
 

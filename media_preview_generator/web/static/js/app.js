@@ -589,9 +589,7 @@ async function updateMediaServersStatus() {
         return `
             <div class="d-flex justify-content-between align-items-start mb-2">
                 <div class="d-flex flex-column" style="min-width: 0;">
-                    <span>${logo}<strong>${escapeHtmlText(s.name || typeLabel || 'Server')}</strong>
-                        <span class="text-muted small ms-1">${typeLabel}</span>
-                    </span>
+                    <span>${logo}<strong>${escapeHtmlText(s.name || typeLabel || 'Server')}</strong></span>
                     ${url}
                 </div>
                 <span class="badge ${badge.cls}"${tooltip}>${escapeHtmlText(badge.label)}</span>
