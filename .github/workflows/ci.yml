@@ -109,7 +109,12 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    # Only depend on lint (formatting/style). The unit `test` job covers
+    # different scope (no Playwright); making e2e wait for test serialises
+    # the two and adds ~95s to wall clock for no real gain. The final
+    # `merge` job still gates publishing on test + e2e + build all passing,
+    # so the safety contract is preserved.
+    needs: lint
     steps:
       - uses: actions/checkout@v4
         with:
@@ -276,7 +281,11 @@ jobs:
 
   context:
     runs-on: ubuntu-latest
-    needs: [lint, test, e2e]
+    # Just resolves git/branch metadata — no test results needed. Letting
+    # context (and downstream `build`) start in parallel with test+e2e
+    # cuts ~95-170s off the critical path. Publishing safety is preserved
+    # by `merge` waiting on test + e2e + build.
+    needs: lint
     # Only publish on push to main/dev/tags or manual dispatch. PR runs stop
     # after lint/test so opening a PR never publishes a Docker image.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -396,7 +405,12 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs: [context, build]
+    # Publishing gate: hold the multi-arch manifest creation (which
+    # creates the public :dev / :latest tags) until BOTH the digest
+    # builds AND the test/e2e suites pass. The earlier `test` and
+    # `e2e` jobs run in parallel with `build` for speed, but nothing
+    # public ships unless all three are green.
+    needs: [context, build, test, e2e]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
