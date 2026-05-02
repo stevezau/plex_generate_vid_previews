@@ -1021,9 +1021,30 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
         justify-content: flex-end;
         padding-top: 0.4rem;
     }
+    /* The progress cell spans the full row width on mobile so users
+     * actually see the bar fill. Without this, the .progress wrapper
+     * gets compressed by the parent flex-row to its content width
+     * (the inner "100.0%" text), looking like a tiny stub pill. */
+    .jobs-table tbody tr > td:has(> .progress) {
+        display: block;
+        padding: 0.35rem 0 0.15rem;
+    }
+    .jobs-table tbody tr > td > .progress {
+        width: 100%;
+    }
     /* Hide the table-responsive horizontal scroll affordance — there's
        nothing left to scroll once rows stack. */
     .jobs-table-card .table-responsive { overflow-x: visible; }
+}
+
+/* Numeric inputs that pair a stepper-wrapped input with a unit addon
+ * (e.g. Settings → Logging → "Rotation Size [10] MB") wrap onto two
+ * lines on mobile because the inner stepper-input-group claims the
+ * full row, pushing the "MB" / "files" addon below. Keep the outer
+ * input-group on one row so the unit addon stays inline. */
+.input-group:has(> .input-group),
+.input-group:has(> .has-stepper) {
+    flex-wrap: nowrap;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
