@@ -821,11 +821,15 @@ function tickPendingWebhookCountdowns() {
 function renderGlobalPauseResume() {
     const pauseTitle = 'Pause all processing. No new jobs will start; active job will stop dispatching new tasks after current ones finish.';
     const resumeTitle = 'Resume processing. New jobs can start and dispatch will continue.';
-    const pauseBtn = `<button class="btn btn-sm btn-outline-warning" onclick="pauseProcessing()" title="${escapeHtml(pauseTitle)}">
-        <i class="bi bi-pause-fill me-1"></i>Pause Processing
+    // Hide the verbose "Pause Processing" / "Resume Processing" label on
+    // mobile (xs <576px) — keep the icon. Title attr + aria-label keep
+    // it accessible and tooltip-discoverable. On desktop the full label
+    // returns via .d-sm-inline.
+    const pauseBtn = `<button class="btn btn-sm btn-outline-warning text-nowrap" onclick="pauseProcessing()" title="${escapeHtml(pauseTitle)}" aria-label="Pause processing">
+        <i class="bi bi-pause-fill"></i><span class="d-none d-sm-inline ms-1">Pause Processing</span>
     </button>`;
-    const resumeBtn = `<button class="btn btn-sm btn-outline-success" onclick="resumeProcessing()" title="${escapeHtml(resumeTitle)}">
-        <i class="bi bi-play-fill me-1"></i>Resume Processing
+    const resumeBtn = `<button class="btn btn-sm btn-outline-success text-nowrap" onclick="resumeProcessing()" title="${escapeHtml(resumeTitle)}" aria-label="Resume processing">
+        <i class="bi bi-play-fill"></i><span class="d-none d-sm-inline ms-1">Resume Processing</span>
     </button>`;
     const html = processingPaused ? resumeBtn : pauseBtn;
     const elCurrent = document.getElementById('globalPauseResumeCurrentJob');
@@ -1779,8 +1783,8 @@ function updateActiveJobs(runningJobs) {
                         <i class="bi bi-file-text"></i>
                     </button>
                 </div>
-                <button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${jid}')">
-                    <i class="bi bi-x me-1"></i>Cancel
+                <button class="btn btn-sm btn-outline-danger text-nowrap" onclick="cancelJob('${jid}')" title="Cancel job" aria-label="Cancel job">
+                    <i class="bi bi-x-lg"></i><span class="d-none d-sm-inline ms-1">Cancel</span>
                 </button>
             </div>
             <div class="mb-2 small">
