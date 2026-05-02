@@ -1168,6 +1168,91 @@ class TestPerJobLogCapture:
             )
 
 
+class TestPauseGate:
+    """D32: pause_check on the multi-server full-scan path.
+
+    The dispatcher path (job_runner → JobDispatcher) honours pause via
+    tracker.is_paused() in _get_next_item, but the multi-server
+    ThreadPoolExecutor path used to ignore pause entirely. Pausing only
+    halted in-flight FFmpegs (via SIGSTOP from commit 6d812ad); the
+    executor kept pulling the next item and launching fresh subprocesses
+    until the queue drained. Reproduced as "FFmpegs continued spawning
+    for 6 minutes after I clicked Pause."
+    """
+
+    def test_pause_check_blocks_dispatch_until_unpaused(self, tmp_path):
+        """When pause_check returns True initially then False, items wait
+        and are dispatched only after pause is released. Asserts pause_check
+        is polled (not just consulted once) so the gate actually blocks."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+
+        pause_calls = {"count": 0}
+
+        def pause_check():
+            pause_calls["count"] += 1
+            # Block for the first 2 polls (~500ms), then release.
+            return pause_calls["count"] <= 2
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+        ) as mock_process:
+            mock_process.return_value = SimpleNamespace(publishers=[], canonical_path="/data/m.mkv", status=None)
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                pause_check=pause_check,
+                label="full scan",
+            )
+
+        # Polled at least 2 times before being released, then dispatched.
+        assert pause_calls["count"] >= 2, (
+            f"pause_check polled only {pause_calls['count']} time(s) — "
+            "the gate must spin-wait on pause, not consult once and bail"
+        )
+        mock_process.assert_called_once()
+
+    def test_pause_then_cancel_aborts_without_dispatch(self, tmp_path):
+        """When the user pauses then cancels, the item must abort without
+        ever calling process_canonical_path — otherwise Cancel-after-Pause
+        is stuck waiting for the unpause that never comes."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+
+        cancel_state = {"cancelled": False}
+
+        def pause_check():
+            # First pause poll: arm the cancellation, then keep paused.
+            cancel_state["cancelled"] = True
+            return True
+
+        def cancel_check():
+            return cancel_state["cancelled"]
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+        ) as mock_process:
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                pause_check=pause_check,
+                cancel_check=cancel_check,
+                label="full scan",
+            )
+
+        # FFmpeg / canonical-path dispatch must not have fired — pause
+        # was holding the thread, then cancel released it without work.
+        mock_process.assert_not_called()
+
+
 class TestMultiPlexDeduping:
     """Phase P4: when the same canonical_path appears on more than one
     enabled server (e.g. two Plex servers sharing storage, or Plex+Jellyfin

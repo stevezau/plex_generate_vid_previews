@@ -8,6 +8,7 @@ by the web layer (job_runner.py).
 import os
 import random
 import shutil
+import time
 
 from loguru import logger
 
@@ -209,6 +210,7 @@ def _dispatch_webhook_paths_multi_server(
     *,
     progress_callback=None,
     cancel_check=None,
+    pause_check=None,
     job_id: str | None = None,
     paths: list[str] | None = None,
 ) -> dict:
@@ -282,6 +284,14 @@ def _dispatch_webhook_paths_multi_server(
         if cancel_check and cancel_check():
             logger.info("Webhook dispatch cancelled after {} of {} path(s)", idx - 1, len(paths))
             break
+        # Pause gate — block (don't bail) so the loop resumes from the
+        # current path when the user un-pauses, instead of dropping the
+        # remaining webhook paths on the floor.
+        while pause_check and pause_check():
+            if cancel_check and cancel_check():
+                logger.info("Webhook dispatch cancelled while paused after {} of {} path(s)", idx - 1, len(paths))
+                return counts
+            time.sleep(0.25)
         if progress_callback:
             try:
                 progress_callback(idx - 1, len(paths), f"Dispatching {os.path.basename(p)}")
@@ -327,6 +337,7 @@ def _dispatch_processable_items(
     selected_gpus,
     progress_callback=None,
     cancel_check=None,
+    pause_check=None,
     job_id: str | None = None,
     label: str = "scan",
     server_id_filter: str | None = None,
@@ -718,6 +729,21 @@ def _dispatch_processable_items(
         if cancel_check and cancel_check():
             return ("Worker", None)
 
+        # Pause gate — block (don't bail) while the queue is paused so
+        # NEW FFmpegs don't spawn after the user clicks Pause All. The
+        # dispatcher path (job_runner → JobDispatcher) already honours
+        # pause via tracker.is_paused() in _get_next_item, but the
+        # multi-server full-scan / webhook ThreadPoolExecutor path used
+        # to ignore it — pausing only halted in-flight FFmpegs (via
+        # SIGSTOP from commit 6d812ad) while the executor kept pulling
+        # the next item and launching fresh subprocesses for ~6 minutes
+        # until the queue drained. Cancel takes precedence over pause
+        # so a user who pauses then cancels isn't stuck waiting.
+        while pause_check and pause_check():
+            if cancel_check and cancel_check():
+                return ("Worker", None)
+            time.sleep(0.25)
+
         # Two-step acquisition: concurrency permit (gates how many
         # threads run real work simultaneously) and slot claim (which
         # row in the Workers panel represents this thread). The poller
@@ -1066,6 +1092,7 @@ def _run_full_scan_multi_server(
     library_ids: list[str] | None = None,
     progress_callback=None,
     cancel_check=None,
+    pause_check=None,
     job_id: str | None = None,
     worker_callback=None,
 ) -> dict:
@@ -1142,6 +1169,7 @@ def _run_full_scan_multi_server(
         selected_gpus=selected_gpus,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
+        pause_check=pause_check,
         job_id=job_id,
         label="full scan",
         server_id_filter=server_id_filter,
@@ -1158,6 +1186,7 @@ def _run_recently_added_multi_server(
     lookback_hours: float = 1.0,
     progress_callback=None,
     cancel_check=None,
+    pause_check=None,
     job_id: str | None = None,
     worker_callback=None,
 ) -> dict:
@@ -1215,6 +1244,7 @@ def _run_recently_added_multi_server(
         selected_gpus=selected_gpus,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
+        pause_check=pause_check,
         job_id=job_id,
         label="recently-added scan",
         server_id_filter=server_id_filter,
@@ -1338,6 +1368,7 @@ def _run_webhook_paths_phase(
     dispatch_items,
     progress_callback,
     cancel_check,
+    pause_check=None,
     job_id: str | None,
     totals: dict,
     aggregate_outcome: dict,
@@ -1457,6 +1488,7 @@ def _run_webhook_paths_phase(
                     config,
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
+                    pause_check=pause_check,
                     job_id=job_id,
                     paths=unresolved,
                 )
@@ -1604,6 +1636,7 @@ def run_processing(
                 library_ids=library_ids or None,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
+                pause_check=pause_check,
                 job_id=job_id,
                 worker_callback=worker_callback,
             )
@@ -1621,6 +1654,7 @@ def run_processing(
                 config,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
+                pause_check=pause_check,
                 job_id=job_id,
             )
             return {"outcome": outcome_counts}
@@ -1759,6 +1793,7 @@ def run_processing(
                 dispatch_items=_dispatch_items,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
+                pause_check=pause_check,
                 job_id=job_id,
                 totals=totals,
                 aggregate_outcome=aggregate_outcome,
