@@ -42,6 +42,11 @@ html[data-bs-theme="light"] {
     --surface-1: rgba(0, 0, 0, 0.025);
     --surface-2: rgba(0, 0, 0, 0.04);
     --surface-border: rgba(0, 0, 0, 0.08);
+    /* Soft warm body bg — pure white feels clinical against the orange
+       brand mark. A 2% warm tint reads as paper, not chrome, while
+       still giving cards (#fff) a clean elevated feel. */
+    --bs-body-bg: #f7f6f3;
+    --bs-tertiary-bg: #f1efea;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -330,32 +335,36 @@ html[data-bs-theme="light"] .card-header {
  */
 .btn { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
 
-/* Primary button uses the brand orange on dark theme so the CTA
- * pops against the navy surface. Light theme keeps Bootstrap blue. */
-html[data-bs-theme="dark"] .btn-primary {
+/* Primary button uses the brand orange in BOTH themes so the CTA
+ * matches the orange logo + active nav tab. Without this, light mode
+ * shows Bootstrap's stock blue which clashes with the orange brand. */
+.btn-primary {
     background-color: var(--plex-orange);
     border-color: var(--plex-orange);
     color: #161616;
     font-weight: 600;
 }
-html[data-bs-theme="dark"] .btn-primary:hover {
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary:active,
+.btn-primary:focus-visible {
     background-color: #d18f0a;
     border-color: #d18f0a;
     color: #161616;
 }
 
-/* Outline-primary mirrors btn-primary on dark theme — brand orange.
+/* Outline-primary mirrors btn-primary — brand orange in both themes.
  * Without this it stays Bootstrap blue, which clashes with the orange
  * primary actions everywhere else (e.g., Manual Trigger button on
- * the dashboard renders blue when btn-primary renders orange). */
-html[data-bs-theme="dark"] .btn-outline-primary {
+ * the dashboard, Edit on server cards, Refresh libraries, etc). */
+.btn-outline-primary {
     color: var(--plex-orange);
     border-color: var(--plex-orange);
 }
-html[data-bs-theme="dark"] .btn-outline-primary:hover,
-html[data-bs-theme="dark"] .btn-outline-primary:focus,
-html[data-bs-theme="dark"] .btn-outline-primary:active,
-html[data-bs-theme="dark"] .btn-check:checked + .btn-outline-primary {
+.btn-outline-primary:hover,
+.btn-outline-primary:focus,
+.btn-outline-primary:active,
+.btn-check:checked + .btn-outline-primary {
     background-color: var(--plex-orange);
     border-color: var(--plex-orange);
     color: #161616;
@@ -904,6 +913,12 @@ html[data-bs-theme="light"] .log-line:hover { background-color: rgba(0, 0, 0, 0.
 .log-level-warning { color: #ffc107; }
 .log-level-error { color: #dc3545; }
 .log-level-critical { color: #dc3545; font-weight: bold; }
+/* Light mode: bright neon green/yellow on white is fatiguing. Drop
+ * to deeper hues so long log scans don't tire the eye. */
+html[data-bs-theme="light"] .log-level-info { color: #0e8060; }
+html[data-bs-theme="light"] .log-level-warning { color: #b88600; }
+html[data-bs-theme="light"] .log-level-error { color: #b02a37; }
+html[data-bs-theme="light"] .log-level-critical { color: #b02a37; }
 .log-highlight { background-color: rgba(229, 160, 13, 0.3); border-radius: 2px; }
 .log-line-hidden { display: none; }
 .log-nav-btn { padding: 0.15rem 0.35rem; line-height: 1; font-size: 0.8rem; backdrop-filter: blur(4px); }
