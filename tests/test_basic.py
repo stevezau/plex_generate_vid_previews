@@ -24,13 +24,17 @@ class TestBasicFunctionality:
             f"Version '{media_preview_generator.__version__}' doesn't match PEP 440 format"
         )
 
-    def test_web_module_importable(self):
+    def test_web_module_importable(self, tmp_path):
         """create_app() returns a real Flask app with registered routes (not just a callable)."""
         import flask
 
         from media_preview_generator.web.app import create_app
 
-        app = create_app()
+        # Pass an explicit writable config_dir so the test runs on CI runners
+        # where the production default (/config) isn't writable. Keeping the
+        # call real (not patched) means a regression that breaks app
+        # construction or blueprint registration still fails this test.
+        app = create_app(config_dir=str(tmp_path))
         assert isinstance(app, flask.Flask)
         # The app must have registered URL rules — guards against the failure
         # mode where blueprint registration silently raises on import and

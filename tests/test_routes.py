@@ -3253,20 +3253,61 @@ class TestLogHistoryAPI:
 class TestLibrariesAPI:
     """Test /api/libraries endpoint."""
 
-    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
-    def test_get_libraries_with_settings(self, mock_fetch, client):
-        """Libraries are fetched via HTTP when plex_url/token are set in settings."""
+    @patch("requests.get")
+    def test_get_libraries_with_settings(self, mock_get, client):
+        """Libraries are fetched via HTTP when plex_url/token are set in settings.
+
+        Mock at the HTTP boundary (requests.get), NOT at _fetch_libraries_via_http.
+        Mocking the helper itself was the D31-anti-pattern: it would let URL/header/
+        XML-parsing bugs inside the helper slip through unnoticed (exactly how the
+        D31 doubled-prefix bug shipped). With the boundary mock, we verify the
+        helper actually calls /library/sections with the correct URL+headers and
+        parses the XML correctly.
+        """
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie", "count": 100}]
+
+        captured: list[tuple] = []
+
+        def fake_requests_get(url, **kwargs):
+            captured.append((url, kwargs))
+            response = MagicMock()
+            response.status_code = 200
+            # Real Plex /library/sections returns JSON when Accept is JSON; the
+            # helper parses MediaContainer.Directory entries.
+            response.json.return_value = {
+                "MediaContainer": {
+                    "Directory": [
+                        {
+                            "key": "1",
+                            "title": "Movies",
+                            "type": "movie",
+                            "agent": "tv.plex.agents.movie",
+                        }
+                    ]
+                }
+            }
+            response.raise_for_status = MagicMock()
+            return response
+
+        mock_get.side_effect = fake_requests_get
         resp = client.get("/api/libraries", headers=_api_headers())
+
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data["libraries"]) == 1
         assert data["libraries"][0]["name"] == "Movies"
+        # Verify the helper actually hit Plex at the right URL with the right token.
+        # A regression that hit the wrong endpoint, omitted the token, or doubled
+        # the URL prefix (D31-shape) would now fail loudly here.
+        assert any(url.endswith("/library/sections") for url, _ in captured), (
+            f"_fetch_libraries_via_http didn't query /library/sections; called: {[u for u, _ in captured]}"
+        )
+        token_seen = any(kwargs.get("headers", {}).get("X-Plex-Token") == "test-token" for _, kwargs in captured)
+        assert token_seen, f"_fetch_libraries_via_http didn't pass X-Plex-Token; calls: {captured!r}"
 
     def test_get_libraries_no_config(self, client):
         """Libraries endpoint with no Plex AND no other media servers returns
