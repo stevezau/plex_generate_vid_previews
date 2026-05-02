@@ -13,6 +13,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -323,6 +324,152 @@ class TestMultiPublisherFanOut:
         # Both formats landed on disk.
         assert (media_dir / "Test (2024)-320-10.bif").exists()
         assert (media_dir / "trickplay" / "Test (2024)-320.json").exists()
+
+
+class TestCrossServerBifReuse:
+    """D34 — when one publisher already has a fresh BIF for an unchanged
+    source file, unpack it and feed the frames to a sibling publisher
+    instead of running FFmpeg again. The user's ask: "if all servers
+    selected and one has BIF files we reuse that for the others
+    regardless of when it was created, as long as the files are the same."
+    """
+
+    @staticmethod
+    def _write_real_bif(path: Path, frames: list[bytes]) -> None:
+        """Write a minimally valid BIF that round-trips through unpack_bif_to_jpegs."""
+        import array
+        import struct
+
+        magic = [0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A]
+        count = len(frames)
+        with open(path, "wb") as f:
+            array.array("B", magic).tofile(f)
+            f.write(struct.pack("<I", 0))  # version
+            f.write(struct.pack("<I", count))
+            f.write(struct.pack("<I", 1000))  # interval ms
+            array.array("B", [0x00] * 44).tofile(f)
+            table_size = 8 + (8 * count)
+            image_offset = 64 + table_size
+            for i, frame in enumerate(frames):
+                f.write(struct.pack("<I", i))
+                f.write(struct.pack("<I", image_offset))
+                image_offset += len(frame)
+            f.write(struct.pack("<I", 0xFFFFFFFF))
+            f.write(struct.pack("<I", image_offset))
+            for frame in frames:
+                f.write(frame)
+
+    def test_emby_existing_bif_feeds_jellyfin_without_running_ffmpeg(self, mock_config_for_processing, tmp_path):
+        """Two publishers: Emby has a fresh BIF, Jellyfin doesn't have a
+        manifest. The BIF reuse helper must unpack Emby's BIF for the
+        Jellyfin publish so generate_images is NEVER called.
+        """
+        media_dir = tmp_path / "data" / "movies" / "Reuse (2024)"
+        media_file = _seed_canonical_file(media_dir, name="Reuse (2024).mkv")
+        media_root = str(tmp_path / "data" / "movies")
+
+        # Pre-existing Emby sidecar BIF — naming matches the Emby adapter's
+        # convention "{stem}-{width}-{frame_interval}.bif". Frames are
+        # real Pillow-encoded JPEGs because the downstream Jellyfin
+        # trickplay adapter pipes the unpacked frames through Pillow;
+        # synthetic "\xff\xd8\xff…" bytes have the JPEG magic but won't
+        # decode and trip the trickplay publish step.
+        existing_bif = media_dir / "Reuse (2024)-320-10.bif"
+        from io import BytesIO
+
+        from PIL import Image
+
+        real_frames: list[bytes] = []
+        for _ in range(6):
+            buf = BytesIO()
+            Image.new("RGB", (320, 180), (10, 20, 30)).save(buf, "JPEG", quality=70)
+            real_frames.append(buf.getvalue())
+        self._write_real_bif(existing_bif, real_frames)
+        # Force the source mtime to NOT be newer than the BIF; otherwise
+        # outputs_fresh_for_source can return False on systems where
+        # _seed_canonical_file's touch happens after our BIF write.
+        bif_mtime = existing_bif.stat().st_mtime
+        os.utime(media_file, (bif_mtime - 1, bif_mtime - 1))
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "emby_sidecar", "width": 320, "frame_interval": 10},
+                ),
+                _server_config(
+                    server_id="jelly-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="9", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                ),
+            ],
+        )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+        ) as gen:
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                item_id_by_server={"jelly-1": "jf-item-id"},
+            )
+
+        # The headline assertion: FFmpeg never ran. All frames came from
+        # unpacking Emby's pre-existing BIF.
+        assert gen.call_count == 0, (
+            f"BIF reuse must skip FFmpeg entirely when a sibling publisher already has a fresh BIF — "
+            f"generate_images was called {gen.call_count} time(s)"
+        )
+        # And the Jellyfin trickplay published successfully off the
+        # reused frames.
+        assert result.status is MultiServerStatus.PUBLISHED
+        statuses = {p.server_id: p.status for p in result.publishers}
+        assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
+        # Emby's existing output is still SKIPPED_OUTPUT_EXISTS — its
+        # BIF was already on disk, so the publisher takes the skip path
+        # like any other repeat publish.
+        assert statuses["emby-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS
+
+    def test_single_publisher_does_not_attempt_bif_reuse(self, mock_config_for_processing, tmp_path):
+        """With only one owning publisher there's nobody to share BIF
+        with. The all_fresh short-circuit handles "BIF exists, fresh"
+        already; the cross-server reuse path must stay out of the way."""
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir, name="Solo (2024).mkv")
+        media_root = str(media_dir)
+
+        # NO existing BIF — generate_images MUST run (no reuse possible).
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "emby_sidecar", "width": 320, "frame_interval": 10},
+                ),
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=4)
+            return (True, 4, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ) as gen:
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+            )
+
+        assert gen.call_count == 1
+        assert result.publishers[0].status is PublisherStatus.PUBLISHED
 
 
 class TestPartialFailureIsolation:

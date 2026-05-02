@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 import requests
 from loguru import logger
 
+from ..bif_reader import unpack_bif_to_jpegs
 from ..output import BifBundle, EmbyBifAdapter, JellyfinTrickplayAdapter, PlexBundleAdapter
 from ..output.base import OutputAdapter
 from ..output.journal import clear_meta, outputs_fresh_for_source, write_meta
@@ -258,6 +259,88 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
             exc,
         )
         return None
+
+
+def _try_reuse_existing_bif(
+    publishers: list[tuple[MediaServer, OutputAdapter, str | None]],
+    canonical_path: str,
+    out_dir: str,
+    probe_bundle_factory,
+) -> int:
+    """Unpack the first fresh ``.bif`` we can find from a publisher into ``out_dir``.
+
+    Used by :func:`process_canonical_path` to avoid re-extracting frames
+    when one publisher (typically Plex) already has a fresh BIF for this
+    canonical path and a sibling publisher (typically Jellyfin trickplay)
+    is missing its output. The user's ask: "if all servers selected and
+    one has BIF files, reuse them for the others regardless of when it
+    was created, as long as the source files are the same."
+
+    "Same" = ``outputs_fresh_for_source`` returns True. That helper checks
+    the ``.meta`` sidecar's source mtime/inode fingerprint, so a re-encoded
+    source file invalidates the reuse path correctly.
+
+    Args:
+        publishers: ``[(server, adapter, item_id_hint), ...]`` from the
+            normal publisher resolution step.
+        canonical_path: The source media file we're trying to publish.
+        out_dir: Frame-cache slot to unpack into. Must be safe to overwrite.
+        probe_bundle_factory: Zero-arg callable returning a placeholder
+            :class:`BifBundle` for ``compute_output_paths`` (only the
+            canonical_path is consulted in the Plex bundle code path).
+
+    Returns:
+        Frame count when a reusable BIF was found and unpacked. Zero when
+        no publisher exposed a fresh BIF — the caller falls through to
+        FFmpeg extraction.
+    """
+    for server, adapter, item_id_hint in publishers:
+        try:
+            item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+            paths = adapter.compute_output_paths(probe_bundle_factory(), server, item_id)
+        except Exception as exc:
+            logger.debug(
+                "BIF reuse: compute_output_paths failed for {}/{} ({}: {}); skipping this publisher.",
+                server.name,
+                adapter.name,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        if not paths:
+            continue
+        for candidate in paths:
+            candidate_str = str(candidate)
+            if not candidate_str.endswith(".bif"):
+                continue
+            if not os.path.isfile(candidate_str):
+                continue
+            if not outputs_fresh_for_source([candidate], canonical_path):
+                # The BIF exists but the source has changed since it was
+                # written — using these stale frames would give the user
+                # previews from the *previous* version of the file. Pass.
+                continue
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+                count = unpack_bif_to_jpegs(candidate_str, out_dir)
+            except Exception as exc:
+                logger.warning(
+                    "BIF reuse: failed to unpack {} ({}: {}); falling back to FFmpeg.",
+                    candidate_str,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            if count > 0:
+                logger.info(
+                    "BIF reuse: unpacked {} frame(s) from {} (server={}) for {}",
+                    count,
+                    candidate_str,
+                    server.name,
+                    canonical_path,
+                )
+                return count
+    return 0
 
 
 def _summarise_results(results: list[PublisherResult], status: MultiServerStatus) -> str:
@@ -632,6 +715,39 @@ def process_canonical_path(
                 cache_hit = True
                 logger.info(
                     "Frames: REUSED from cache for {} ({} frames, no FFmpeg)",
+                    canonical_path,
+                    frame_count,
+                )
+
+        if not cache_hit and use_frame_cache and not regenerate and len(publishers) > 1:
+            # Cross-server BIF reuse: if another publisher (typically
+            # Plex) already has a fresh BIF for this canonical_path,
+            # unpack it into the frame cache instead of re-running
+            # FFmpeg for the sibling that's missing its output. This
+            # is the "all servers selected, one already has BIF →
+            # reuse for the others" path. We trust outputs_fresh_for_source
+            # for staleness so a re-encoded source file still triggers a
+            # genuine re-extract.
+            #
+            # Gated on len(publishers) > 1 because with a single owning
+            # publisher the all_fresh short-circuit above has already
+            # taken the "reuse the BIF" path; reaching here with one
+            # publisher means *its* BIF is stale, so unpacking it would
+            # serve frames from the previous source-file revision.
+            unpack_dest = str(cache.frame_dir_for(canonical_path))
+            recovered = _try_reuse_existing_bif(
+                publishers,
+                canonical_path,
+                unpack_dest,
+                _probe_bundle,
+            )
+            if recovered:
+                tmp_path = unpack_dest
+                frame_count = recovered
+                cache_hit = True
+                cache.put(canonical_path, frame_dir=Path(unpack_dest), frame_count=recovered)
+                logger.info(
+                    "Frames: REUSED from existing BIF for {} ({} frames, no FFmpeg)",
                     canonical_path,
                     frame_count,
                 )

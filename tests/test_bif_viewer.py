@@ -11,6 +11,7 @@ import pytest
 from media_preview_generator.bif_reader import (
     read_bif_frame,
     read_bif_metadata,
+    unpack_bif_to_jpegs,
 )
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.settings_manager import reset_settings_manager
@@ -120,6 +121,39 @@ class TestReadBifFrame:
         bif = _write_test_bif(str(tmp_path / "test.bif"))
         with pytest.raises(IndexError):
             read_bif_frame(bif, -1)
+
+
+class TestUnpackBifToJpegs:
+    """D34 — round-trip every JPEG inside a BIF back to disk so the
+    multi-server dispatcher can reuse Plex's existing BIF instead of
+    re-running FFmpeg for sibling publishers (Jellyfin trickplay, etc.).
+    """
+
+    def test_writes_one_jpeg_per_frame(self, tmp_path):
+        bif = _write_test_bif(str(tmp_path / "in.bif"))
+        out = tmp_path / "frames"
+        out.mkdir()
+
+        count = unpack_bif_to_jpegs(bif, str(out))
+
+        assert count == 5
+        files = sorted(os.listdir(str(out)))
+        assert files == ["00001.jpg", "00002.jpg", "00003.jpg", "00004.jpg", "00005.jpg"], (
+            f"unpacked filenames must be 1-indexed and zero-padded so the FFmpeg-shaped consumer can walk them: {files!r}"
+        )
+        # Spot-check that the bytes round-trip identically — no JPEG
+        # re-encoding step is involved, so byte equality is the contract.
+        with open(str(out / "00001.jpg"), "rb") as f:
+            assert f.read() == _FRAME_DATA[0]
+        with open(str(out / "00005.jpg"), "rb") as f:
+            assert f.read() == _FRAME_DATA[4]
+
+    def test_returns_zero_when_bif_empty(self, tmp_path):
+        bif = _write_test_bif(str(tmp_path / "empty.bif"), frames=[])
+        out = tmp_path / "frames"
+        out.mkdir()
+        assert unpack_bif_to_jpegs(bif, str(out)) == 0
+        assert os.listdir(str(out)) == []
 
 
 # ---------------------------------------------------------------------------

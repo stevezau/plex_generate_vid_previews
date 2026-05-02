@@ -81,6 +81,43 @@ def read_bif_metadata(path: str) -> BifMetadata:
     )
 
 
+def unpack_bif_to_jpegs(bif_path: str, out_dir: str) -> int:
+    """Write every frame of ``bif_path`` as a numbered ``.jpg`` in ``out_dir``.
+
+    Used by the multi-server dispatcher to reuse an existing fresh BIF from
+    one publisher (typically Plex) when feeding a sibling publisher
+    (typically Jellyfin trickplay) — instead of running FFmpeg again to
+    re-extract the same frames, we round-trip the JPEGs that are already
+    packed inside the BIF. The output filename pattern matches what
+    ``generate_images`` would have produced (``00001.jpg``, ``00002.jpg``,
+    …) so downstream code that walks ``out_dir`` doesn't need to know
+    where the frames came from.
+
+    Args:
+        bif_path: Absolute path to a .bif file.
+        out_dir: Destination directory. Must exist; caller's responsibility.
+
+    Returns:
+        Number of frames written. Zero when the BIF was empty (treated by
+        the caller as a cache miss).
+    """
+    metadata = read_bif_metadata(bif_path)
+    if metadata.frame_count <= 0:
+        return 0
+
+    with open(bif_path, "rb") as f:
+        for idx in range(metadata.frame_count):
+            offset = metadata.frame_offsets[idx]
+            size = metadata.frame_sizes[idx]
+            f.seek(offset)
+            jpeg = f.read(size)
+            out_path = os.path.join(out_dir, f"{idx + 1:05d}.jpg")
+            with open(out_path, "wb") as out:
+                out.write(jpeg)
+
+    return metadata.frame_count
+
+
 def read_bif_frame(path: str, index: int, metadata: BifMetadata | None = None) -> bytes:
     """Extract a single JPEG frame from a BIF file.
 
