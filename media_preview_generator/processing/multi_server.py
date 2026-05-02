@@ -344,6 +344,68 @@ def _try_reuse_existing_bif(
     return 0
 
 
+def _probe_sibling_mounts(canonical_path: str, registry) -> str | None:
+    """Find an existing copy of ``canonical_path`` on a SIBLING local mount.
+
+    Plex's indexed path can drift from disk reality when a post-import
+    script (Sonarr/Radarr) moves a file between disks that share a
+    logical webhook prefix. Plex still serves the stale path; dispatch
+    lands on the wrong mount and ``os.path.isfile`` lies-by-omission.
+
+    Strategy: gather every ``local_prefix`` configured across every
+    enabled server's ``path_mappings``. Find which prefix matches the
+    current canonical_path; everything else is a sibling. Try the same
+    trailing path under each sibling. Return the first one whose file
+    actually exists on disk, or ``None`` if no sibling holds it.
+
+    Returns ``None`` for the single-mount case (no siblings to probe)
+    or when the canonical_path doesn't sit under any known prefix.
+    """
+    try:
+        configs = list(registry.configs())
+    except Exception:
+        return None
+
+    # Collect every distinct local_prefix across all enabled servers
+    # that has a non-empty value. Sort longest-first so a match against
+    # /data_16tb3 wins over /data_16tb (otherwise the trailing "3" would
+    # remain in the suffix).
+    prefixes: set[str] = set()
+    for cfg in configs:
+        if not getattr(cfg, "enabled", True):
+            continue
+        for entry in getattr(cfg, "path_mappings", None) or []:
+            if not isinstance(entry, dict):
+                continue
+            local = (entry.get("local_prefix") or "").rstrip("/")
+            if local:
+                prefixes.add(local)
+    if len(prefixes) < 2:
+        return None  # No siblings to probe.
+
+    sorted_prefixes = sorted(prefixes, key=len, reverse=True)
+    matched_prefix: str | None = None
+    suffix: str | None = None
+    for p in sorted_prefixes:
+        if canonical_path == p or canonical_path.startswith(p + "/"):
+            matched_prefix = p
+            suffix = canonical_path[len(p) :]
+            break
+    if matched_prefix is None or suffix is None:
+        return None
+
+    for sibling in sorted_prefixes:
+        if sibling == matched_prefix:
+            continue
+        candidate = sibling + suffix
+        try:
+            if os.path.isfile(candidate):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def _summarise_results(results: list[PublisherResult], status: MultiServerStatus) -> str:
     """Build a user-facing one-liner describing what happened across servers (D16).
 
@@ -582,24 +644,48 @@ def process_canonical_path(
     )
 
     if not os.path.isfile(canonical_path):
-        logger.warning(
-            "Source video file is missing on disk: {}. "
-            "This often happens when a webhook fires before the file finishes copying, or "
-            "when the file was moved/deleted between scan and dispatch. "
-            "If the file is supposed to be there, check your media mount and the path mapping "
-            "under Settings → Media Servers. The rest of the queue is unaffected.",
-            canonical_path,
-        )
-        # SKIPPED_FILE_NOT_FOUND (not FAILED) so the webhook-retry path
-        # in job_runner picks it up and reschedules — webhooks fire at
-        # download-START in many *arrs, so a "file missing" right now
-        # is usually "still copying", which the retry backoff (30s, 2m,
-        # 5m, …) is exactly designed to wait through.
-        return MultiServerResult(
-            canonical_path=canonical_path,
-            status=MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
-            message=f"Source file not found: {canonical_path}",
-        )
+        # D35 — Sibling-disk probe before declaring the source missing.
+        # When the user runs multiple data disks under one logical view
+        # (mergerfs, etc.), Plex's indexed path can go stale: file was at
+        # /data_16tb3/X.mkv when Plex scanned, then *arr's post-import
+        # script moved it to /data_16tb/X.mkv (or vice-versa). Plex still
+        # serves the old path, dispatch lands on the wrong mount, the
+        # disk-probe fails, and the user blames the BIF generator.
+        #
+        # Fix: gather every local_prefix from every enabled server's
+        # path_mappings, find which one matches the current canonical_path,
+        # then try the same trailing path under each SIBLING local_prefix.
+        # First match wins. If none match, fall through to the original
+        # SKIPPED_FILE_NOT_FOUND path (still retryable).
+        rebound_path = _probe_sibling_mounts(canonical_path, registry)
+        if rebound_path:
+            logger.info(
+                "Source missing at canonical path {} — found at sibling mount {}. "
+                "This usually means Plex's indexed path is stale (file moved between disks "
+                "after import); we're using the live disk location instead.",
+                canonical_path,
+                rebound_path,
+            )
+            canonical_path = rebound_path
+        else:
+            logger.warning(
+                "Source video file is missing on disk: {}. "
+                "This often happens when a webhook fires before the file finishes copying, or "
+                "when the file was moved/deleted between scan and dispatch. "
+                "If the file is supposed to be there, check your media mount and the path mapping "
+                "under Settings → Media Servers. The rest of the queue is unaffected.",
+                canonical_path,
+            )
+            # SKIPPED_FILE_NOT_FOUND (not FAILED) so the webhook-retry path
+            # in job_runner picks it up and reschedules — webhooks fire at
+            # download-START in many *arrs, so a "file missing" right now
+            # is usually "still copying", which the retry backoff (30s, 2m,
+            # 5m, …) is exactly designed to wait through.
+            return MultiServerResult(
+                canonical_path=canonical_path,
+                status=MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
+                message=f"Source file not found: {canonical_path}",
+            )
 
     # Pre-FFmpeg short-circuit: when every owning publisher's outputs
     # already exist AND the journal confirms the source hasn't changed

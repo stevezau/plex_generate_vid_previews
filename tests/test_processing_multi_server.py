@@ -204,6 +204,75 @@ class TestPerServerExcludePaths:
         assert result.status is MultiServerStatus.NO_OWNERS
 
 
+class TestSiblingMountProbe:
+    """D35: when Plex's indexed path is stale (file moved to a sibling
+    disk after a post-import script), probe the other configured local
+    mounts before declaring the source missing.
+
+    Reproduces job 1089f843: Plex returned /data_16tb3/Sports/X.mkv but
+    the file was actually at /data_16tb/Sports/X.mkv. Without the probe,
+    the dispatcher hit SKIPPED_FILE_NOT_FOUND and (with D33) scheduled
+    a retry that would have failed identically every time."""
+
+    def test_finds_file_at_sibling_mount_when_canonical_stale(self, mock_config_for_processing, tmp_path):
+        # Create file at /data_16tb-equivalent (tmp_path / "live").
+        live_dir = tmp_path / "live" / "Sports"
+        live_dir.mkdir(parents=True)
+        live_file = live_dir / "Wolves vs Sunderland.mkv"
+        live_file.write_bytes(b"fake mkv")
+
+        # Plex (stale) reports it at /data_16tb3-equivalent (tmp_path / "stale").
+        stale_path = str(tmp_path / "stale" / "Sports" / "Wolves vs Sunderland.mkv")
+
+        cfg_dict = _server_config(
+            server_id="plex-1",
+            server_type=ServerType.PLEX,
+            libraries=[
+                Library(
+                    id="1",
+                    name="Sports",
+                    remote_paths=(str(tmp_path / "live"), str(tmp_path / "stale")),
+                    enabled=True,
+                )
+            ],
+        )
+        cfg_dict["path_mappings"] = [
+            {"plex_prefix": str(tmp_path / "live"), "local_prefix": str(tmp_path / "live")},
+            {"plex_prefix": str(tmp_path / "stale"), "local_prefix": str(tmp_path / "stale")},
+        ]
+        registry = ServerRegistry.from_settings([cfg_dict])
+        result = process_canonical_path(
+            canonical_path=stale_path,
+            registry=registry,
+            config=mock_config_for_processing,
+        )
+        # Probe rebound canonical_path to the live mount; result is NOT
+        # SKIPPED_FILE_NOT_FOUND. (May be other status depending on
+        # what the rest of the pipeline does with the rebound path.)
+        assert result.status is not MultiServerStatus.SKIPPED_FILE_NOT_FOUND, (
+            "sibling-mount probe should have found the file at the live mount; "
+            f"got status={result.status} message={result.message!r}"
+        )
+
+    def test_single_mount_falls_through_to_skipped(self, mock_config_for_processing, tmp_path):
+        """No siblings to probe → behave exactly like before D35."""
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=("/data/movies",), enabled=True)],
+                )
+            ],
+        )
+        result = process_canonical_path(
+            canonical_path="/data/movies/missing.mkv",
+            registry=registry,
+            config=mock_config_for_processing,
+        )
+        assert result.status is MultiServerStatus.SKIPPED_FILE_NOT_FOUND
+
+
 class TestSourceMissing:
     def test_returns_skipped_file_not_found_when_source_file_missing(self, mock_config_for_processing, tmp_path):
         """Source-missing → SKIPPED_FILE_NOT_FOUND, NOT FAILED.
