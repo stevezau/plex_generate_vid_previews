@@ -2668,29 +2668,31 @@ function getStatusBadge(status, paused, error, outcome) {
         ? ' data-bs-toggle="tooltip" data-bs-placement="top" data-bs-html="false" title="' + tooltipText + '"'
         : '';
 
-    if (status === 'running' && paused) {
-        return '<span class="badge bg-warning text-dark"' + tooltipAttrs + '>Paused</span>';
+    // Modern status indicator: a coloured dot + neutral label reads
+    // cleaner than a stack of full-fill pills in a dense table. The
+    // CSS lives under .status-dot in style.css.
+    function dot(cls, label) {
+        return '<span class="status-dot ' + cls + '"' + tooltipAttrs + '>' + label + '</span>';
     }
-    if (status === 'completed' && error) {
-        return '<span class="badge bg-warning text-dark"' + tooltipAttrs + '>Completed with warnings</span>';
-    }
-    var badgeMap = {
-        'pending': 'bg-secondary',
-        'running': 'bg-primary pulse',
-        'completed': 'bg-success',
-        'failed': 'bg-danger',
-        'cancelled': 'bg-warning text-dark'
+
+    if (status === 'running' && paused) return dot('status-warning', 'Paused');
+    if (status === 'completed' && error) return dot('status-warning', 'Completed with warnings');
+
+    var clsMap = {
+        'pending':   'status-pending',
+        'running':   'status-running',
+        'completed': 'status-completed',
+        'failed':    'status-failed',
+        'cancelled': 'status-cancelled'
     };
     var labelMap = {
-        'pending': 'Pending',
-        'running': 'Running',
+        'pending':   'Pending',
+        'running':   'Running',
         'completed': 'Completed',
-        'failed': 'Failed',
+        'failed':    'Failed',
         'cancelled': 'Cancelled'
     };
-    var cls = badgeMap[status] || 'bg-secondary';
-    var label = labelMap[status] || status;
-    return '<span class="badge ' + cls + '"' + tooltipAttrs + '>' + label + '</span>';
+    return dot(clsMap[status] || 'status-pending', labelMap[status] || status);
 }
 
 function formatDate(dateStr) {

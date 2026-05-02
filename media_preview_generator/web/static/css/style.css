@@ -1,9 +1,373 @@
-/* Media Preview Generator - Custom Styles */
+/* Media Preview Generator — design tokens + custom styles
+ *
+ * Design tokens are deliberately lightweight: brand colour + a small
+ * scale of surface elevations / radii / shadows / focus styles. The
+ * rest of the visual language defers to Bootstrap 5.3 so we don't end
+ * up maintaining a parallel design system.
+ */
 
 :root {
+    /* Brand */
     --plex-orange: #e5a00d;
+    --plex-orange-soft: rgba(229, 160, 13, 0.12);
     --plex-gray: #1a1a2e;
     --plex-dark: #0f0f1a;
+
+    /* Surface elevation — used for cards/modals/popovers when we need
+       more than Bootstrap's flat default. Two levels are enough; a third
+       starts to feel like skeuomorphism. */
+    --surface-1: rgba(255, 255, 255, 0.04);
+    --surface-2: rgba(255, 255, 255, 0.06);
+    --surface-border: rgba(255, 255, 255, 0.08);
+
+    /* Radii — match Bootstrap's --bs-border-radius-* but expose them
+       under shorter names so .css elsewhere doesn't have to know about
+       Bootstrap internals. */
+    --radius-sm: 0.375rem;
+    --radius:    0.5rem;
+    --radius-lg: 0.75rem;
+
+    /* Shadows — only used for modals + dropdowns; we deliberately avoid
+       elevating cards (would feel cluttered on the dense dashboard). */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.18), 0 1px 1px rgba(0, 0, 0, 0.12);
+    --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.15);
+
+    /* Focus ring — branded orange so it stands out on both dark and
+       light themes (Bootstrap's default primary blue washes out on the
+       dark Plex background and is invisible against dark form fields). */
+    --focus-ring: 0 0 0 0.2rem rgba(229, 160, 13, 0.45);
+}
+
+html[data-bs-theme="light"] {
+    --surface-1: rgba(0, 0, 0, 0.025);
+    --surface-2: rgba(0, 0, 0, 0.04);
+    --surface-border: rgba(0, 0, 0, 0.08);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Focus rings — applied to every interactive element. Bootstrap's
+ * default focus indicator is so subtle on this dark theme that
+ * keyboard users can't tell where they are; this lifts it to a
+ * visible orange ring that matches the brand. Mouse clicks still get
+ * the browser's :focus-visible suppression so the ring only appears
+ * for keyboard navigation.
+ * ────────────────────────────────────────────────────────────────────── */
+.btn:focus-visible,
+.form-control:focus-visible,
+.form-select:focus-visible,
+.form-check-input:focus-visible,
+.dropdown-toggle:focus-visible,
+.nav-link:focus-visible,
+a:focus-visible {
+    box-shadow: var(--focus-ring) !important;
+    outline: none;
+}
+
+/* Page-level title block — used by every top-level page so the H1
+ * + supporting subtitle has uniform spacing. The original templates
+ * each rolled their own h1/h2 with different margins; this normalises
+ * to the same leading + trailing space. */
+.page-header {
+    margin-bottom: 1.75rem;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.page-header h1,
+.page-header .page-title {
+    font-size: 1.75rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.2;
+}
+
+.page-header .page-subtitle {
+    color: var(--bs-secondary-color);
+    font-size: 0.95rem;
+    margin-top: 0.25rem;
+}
+
+.page-header .page-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Layout — centre the main column at a comfortable reading width on
+ * very wide displays (1920+). Bootstrap container-fluid is full-bleed
+ * which makes the dashboard feel like a generic admin tool; capping
+ * the content rail at ~1500px gives the app a designed feel without
+ * shrinking on common laptop widths.
+ * ────────────────────────────────────────────────────────────────────── */
+@media (min-width: 1600px) {
+    body > main.container-fluid,
+    .app-shell {
+        max-width: 1500px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Brand accent strip — single 2px line under the nav using the brand
+ * gradient. Anchors the top of the page and gives every screen an
+ * unmistakable Plex-orange edge that the eye picks up immediately.
+ * ────────────────────────────────────────────────────────────────────── */
+nav.navbar.sticky-top {
+    border-bottom: 1px solid var(--surface-border) !important;
+    background-image: linear-gradient(
+        to right,
+        transparent 0,
+        transparent calc(100% - 2px),
+        transparent 100%
+    );
+    position: relative;
+}
+nav.navbar.sticky-top::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: linear-gradient(
+        90deg,
+        rgba(229, 160, 13, 0) 0%,
+        rgba(229, 160, 13, 0.65) 18%,
+        rgba(229, 160, 13, 0.65) 82%,
+        rgba(229, 160, 13, 0) 100%
+    );
+    pointer-events: none;
+}
+
+/* Nav link hover: subtle highlight band, no jarring fill change. */
+.navbar .nav-link {
+    border-radius: var(--radius-sm);
+    padding-left: 0.7rem !important;
+    padding-right: 0.7rem !important;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+html[data-bs-theme="dark"] .navbar .nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+html[data-bs-theme="light"] .navbar .nav-link:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+.navbar .nav-link.active {
+    color: var(--plex-orange) !important;
+    background-color: var(--plex-orange-soft);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Panel — modern replacement for Bootstrap's flat .card. Larger
+ * radius, soft surface gradient, low-contrast border. Header has a
+ * subtle top padding bump and the card-title gets uppercase tracking
+ * so the visual hierarchy reads as "section / content" without
+ * needing dividing rules everywhere.
+ *
+ * NB: the existing markup uses `.card`, so we redefine `.card` rather
+ * than introducing a new class — the visual upgrade is uniform across
+ * every page without hunting down individual templates. The whole
+ * point of a design system is "change one place, propagate".
+ * ────────────────────────────────────────────────────────────────────── */
+html[data-bs-theme="dark"] .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0.02) 100%);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+}
+html[data-bs-theme="light"] .card {
+    background: #ffffff;
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+}
+
+html[data-bs-theme="dark"] .card-header,
+html[data-bs-theme="light"] .card-header {
+    background: transparent;
+    border-bottom: 1px solid var(--surface-border);
+    padding: 0.85rem 1.1rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color);
+}
+
+.card-header .bi {
+    color: var(--plex-orange);
+    font-size: 0.95rem;
+}
+
+.card-body { padding: 1.1rem; }
+.card-body.p-0 { padding: 0; } /* keep for tables */
+
+/* ──────────────────────────────────────────────────────────────────────
+ * KPI tiles — the dashboard's 6-cell stats grid (Pending / Running /
+ * Completed / Failed / Cancelled / Total) gets a per-tile background
+ * + small label-above-number layout that's easier to scan at a glance.
+ * Each tile is its own touch target; on mobile they stack 2-up.
+ * ────────────────────────────────────────────────────────────────────── */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+@media (max-width: 575.98px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.kpi-tile {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius);
+    padding: 0.7rem 0.8rem;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.kpi-tile:hover { background: var(--surface-2); }
+
+.kpi-tile .kpi-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    margin-bottom: 0.15rem;
+    font-weight: 600;
+}
+
+.kpi-tile .kpi-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Status colour accents on the value text only — keeps the tile
+   surface neutral so the colour reads as data, not chrome. */
+.kpi-tile.kpi-pending  .kpi-value { color: var(--bs-secondary-color); }
+.kpi-tile.kpi-running  .kpi-value { color: #4a9eff; }
+.kpi-tile.kpi-completed .kpi-value { color: #2ecc71; }
+.kpi-tile.kpi-failed   .kpi-value { color: #e74c3c; }
+.kpi-tile.kpi-cancelled .kpi-value { color: var(--plex-orange); }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Status indicator dots — replaces full-fill status pills in dense
+ * tables. A coloured ●  before a neutral label reads cleaner than
+ * stacked pill badges and works at any column width.
+ * ────────────────────────────────────────────────────────────────────── */
+.status-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--bs-body-color);
+    line-height: 1;
+}
+.status-dot::before {
+    content: "";
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background-color: currentColor;
+    opacity: 0.85;
+    flex-shrink: 0;
+}
+.status-dot.status-pending   { color: #adb5bd; }
+.status-dot.status-running   { color: #4a9eff; }
+.status-dot.status-completed { color: #2ecc71; }
+.status-dot.status-failed    { color: #e74c3c; }
+.status-dot.status-cancelled { color: var(--plex-orange); }
+.status-dot.status-warning   { color: var(--plex-orange); }
+
+/* Pulse the running dot so a live job is unmistakable at a glance. */
+.status-dot.status-running::before {
+    animation: status-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes status-dot-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.4); }
+    50% { box-shadow: 0 0 0 4px rgba(74, 158, 255, 0); }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Buttons — soft-fill ghost variant for secondary actions. Stops
+ * three or four loud "btn-outline-*" buttons from competing for
+ * attention with the actual primary CTA.
+ * ────────────────────────────────────────────────────────────────────── */
+.btn-ghost {
+    background-color: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    color: var(--bs-body-color);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.btn-ghost:hover {
+    background-color: var(--surface-2);
+    border-color: var(--surface-border);
+    color: var(--bs-body-color);
+}
+
+/* Smooth out the default Bootstrap btn transition feel — primary
+ * actions are the same, but icon-only secondary buttons get a more
+ * tactile feel.
+ */
+.btn { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
+
+/* Primary button uses the brand orange on dark theme so the CTA
+ * pops against the navy surface. Light theme keeps Bootstrap blue. */
+html[data-bs-theme="dark"] .btn-primary {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #161616;
+    font-weight: 600;
+}
+html[data-bs-theme="dark"] .btn-primary:hover {
+    background-color: #d18f0a;
+    border-color: #d18f0a;
+    color: #161616;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Tables — borderless rows with subtle hover. The default Bootstrap
+ * table-bordered look adds visual noise to the dense Job Queue.
+ * ────────────────────────────────────────────────────────────────────── */
+.table { --bs-table-border-color: var(--surface-border); }
+.table > :not(caption) > * > * { border-bottom-width: 1px; }
+html[data-bs-theme="dark"] .table > tbody > tr:last-child > td { border-bottom-color: transparent; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Form controls — slightly taller default with cleaner placeholder
+ * contrast. The original dark-theme form-control inherits Bootstrap's
+ * tight 0.375rem padding which feels cramped in a long form.
+ * ────────────────────────────────────────────────────────────────────── */
+.form-control,
+.form-select {
+    border-radius: var(--radius-sm);
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Modals — modern with larger radius + softer backdrop.
+ * ────────────────────────────────────────────────────────────────────── */
+.modal-content {
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-2);
+    overflow: hidden;
+}
+.modal-header { padding: 1rem 1.25rem; }
+.modal-body { padding: 1.25rem; }
+.modal-footer { padding: 0.75rem 1.25rem; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Toasts — bottom-right floating; tone down the loud border colour
+ * the default uses. Add the elevation shadow so they read as floating.
+ * ────────────────────────────────────────────────────────────────────── */
+.toast {
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-2);
 }
 
 body {
