@@ -686,6 +686,13 @@ def _dispatch_processable_items(
     def _poller_loop() -> None:
         while not _poller_stop.wait(1.5):
             _reconcile_with_settings()
+            # Periodic snapshot tick so the Workers panel reflects
+            # in-flight FFmpeg progress (progress_percent / speed) within
+            # ~1.5s. Without this, the snapshot only fires at task
+            # start / end and during settings reconciliation, leaving
+            # the panel frozen at "0% @ 0.0x" through 30s+ FFmpeg
+            # passes for multi-server full scans.
+            _emit_worker_snapshot()
 
     def _process_one(index_and_item):
         # D27 — register the executor's worker thread under this job's
@@ -762,6 +769,41 @@ def _dispatch_processable_items(
             per_item_pin = server_cfg.id
         else:
             per_item_pin = None
+
+        # Slot progress callback — updates the slot's progress_percent /
+        # speed / remaining_time fields in place during FFmpeg so the
+        # Workers panel rows show live "<progress>% @ <speed>" instead
+        # of a frozen 0.0x. Mirrors what worker._update_worker_progress
+        # does for the JobDispatcher path; without this the multi-server
+        # full-scan path (which uses ThreadPoolExecutor + the slot dict
+        # rather than the dispatcher's WorkerPool) emitted only the
+        # title, status changes, and 0% / 0.0x defaults.
+        def _slot_progress_callback(
+            progress_percent,
+            current_duration,
+            total_duration,
+            speed=None,
+            remaining_time=None,
+            frame=0,
+            fps=0,
+            q=0,
+            size=0,
+            time_str="00:00:00.00",
+            bitrate=0,
+            media_file=None,
+        ):
+            with _slots_lock:
+                slot["progress_percent"] = progress_percent
+                if speed:
+                    slot["speed"] = speed
+                if remaining_time is not None:
+                    slot["remaining_time"] = remaining_time
+            # Don't emit a snapshot per progress tick — that'd drown
+            # the SocketIO emit queue at 5+ updates/sec/worker. The
+            # _emit_worker_snapshot at the top + bottom of this task
+            # captures status changes; periodic snapshots come from the
+            # dispatcher poll thread (1Hz throttled).
+
         try:
             result = process_canonical_path(
                 canonical_path=item.canonical_path,
@@ -770,6 +812,7 @@ def _dispatch_processable_items(
                 item_id_by_server=item.item_id_by_server or None,
                 gpu=gpu_type,
                 gpu_device_path=gpu_device,
+                progress_callback=_slot_progress_callback,
                 cancel_check=cancel_check,
                 server_id_filter=per_item_pin,
             )
