@@ -212,9 +212,11 @@ class TestCheckForUpdates:
         assert "v2.1.0" in text
         assert "2.0.0" in text
 
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_up_to_date(self, mock_current, mock_latest, loguru_caplog):
+    def test_check_for_updates_up_to_date(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
         """When current == latest, no 'newer version' warning is emitted."""
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.0.0"
@@ -224,10 +226,19 @@ class TestCheckForUpdates:
         assert "newer version is available" not in loguru_caplog.text
         assert "Update:" not in loguru_caplog.text
 
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_current_newer(self, mock_current, mock_latest, loguru_caplog):
-        """Local version > GitHub latest (developer build) — no upgrade nag."""
+    def test_check_for_updates_current_newer(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """Local version > GitHub latest (developer build) — no upgrade nag.
+
+        Stub git_commit_sha + git_branch so the test isn't skewed by the
+        real git checkout on CI runners (where get_git_branch() returns
+        'dev' and the git-mode update path emits "🔄 Update: git pull
+        origin dev" — leaking the "Update:" string the test asserts is
+        absent).
+        """
         mock_current.return_value = "2.1.0"
         mock_latest.return_value = "v2.0.0"
 
@@ -236,9 +247,11 @@ class TestCheckForUpdates:
         # Must not falsely advertise a downgrade.
         assert "Update:" not in loguru_caplog.text
 
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_api_failure(self, mock_current, mock_latest, loguru_caplog):
+    def test_check_for_updates_api_failure(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
         """When latest can't be fetched the function returns silently — no upgrade msg."""
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = None
