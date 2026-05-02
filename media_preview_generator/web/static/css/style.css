@@ -1009,12 +1009,12 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
      */
     .jobs-table tbody tr {
         display: grid;
-        grid-template-columns: 1fr auto;
+        grid-template-columns: auto 1fr auto;
         grid-template-areas:
-            "title    title"
-            "meta     actions"
-            "progress progress";
-        gap: 0.45rem 0.75rem;
+            "title    title    title"
+            "status   created  actions"
+            "progress progress progress";
+        gap: 0.5rem 0.55rem;
         align-items: center;
         margin-bottom: 0.6rem;
         background: var(--surface-1);
@@ -1031,31 +1031,22 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
         line-height: 1.3;
     }
 
-    /* Cell → grid-area assignment by visible position. Hidden cells
-     * (ID col 1, Priority col 4, Created col 6) still occupy DOM
-     * order but are display:none, so we target by nth-child of the
-     * full td set. */
+    /* Cell → grid-area assignment by DOM position (hidden cells still
+     * occupy nth-child slots). Status (3) and Created (6) sit on the
+     * middle row in their own columns so they read as a single
+     * inline meta line. Actions cluster pins to the right. */
     .jobs-table tbody tr > td:nth-child(2) { grid-area: title; font-weight: 500; }
-    .jobs-table tbody tr > td:nth-child(3) { grid-area: meta; font-size: 0.85rem; }
+    .jobs-table tbody tr > td:nth-child(3) { grid-area: status; }
     .jobs-table tbody tr > td:nth-child(5) { grid-area: progress; }
-    .jobs-table tbody tr > td:nth-child(7) { grid-area: actions; }
+    .jobs-table tbody tr > td:nth-child(7) { grid-area: actions; justify-self: end; }
 
-    /* Force-show "Created" on mobile and tuck it next to status. The
-     * status cell renders a single ".status-dot" inline-block; we
-     * use ::after on the row to inject a separator before created
-     * time. Simpler: just unhide the created cell and lay it out
-     * inline with the status via the meta grid area. */
+    /* Force-show "Created" on mobile (it's d-none d-lg-table-cell on
+     * desktop) so users get the row metadata they were missing. */
     .jobs-table tbody tr > td:nth-child(6) {
-        display: inline-block !important;
-        grid-area: meta;
-        font-size: 0.8rem;
+        display: block !important;
+        grid-area: created;
+        font-size: 0.78rem;
         color: var(--bs-secondary-color);
-        margin-left: 0.4rem;
-    }
-    .jobs-table tbody tr > td:nth-child(6)::before {
-        content: "·";
-        margin-right: 0.4rem;
-        opacity: 0.6;
     }
 
     /* Detail (expanded files / publishers) row: full-width block
