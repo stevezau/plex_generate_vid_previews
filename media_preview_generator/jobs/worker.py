@@ -450,6 +450,13 @@ class Worker:
                             # own section). Without it the modal renders
                             # every server entry under "(unknown path)".
                             "canonical_path": item.canonical_path,
+                            # output_paths feeds the BIF-viewer deep-link
+                            # in the Files panel — when present, the
+                            # inspector links straight to the BIF file
+                            # rather than running a Plex title search
+                            # that can mis-resolve episodes (e.g. "S04E17"
+                            # mishandled by the title-stripping regex).
+                            "output_paths": [str(op) for op in (p.output_paths or [])],
                         }
                     )
                 self.last_publishers = rows

@@ -1359,6 +1359,7 @@ class JobManager:
         # canonical_path duplication, no frame_source unless it differs
         # from the boring "extracted" default). One entry per
         # (server, adapter) the file fanned out to.
+        bif_path = ""
         if servers:
             slim = []
             for s in servers:
@@ -1374,8 +1375,26 @@ class JobManager:
                 if fs and fs != "extracted":
                     entry["frame_source"] = fs
                 slim.append(entry)
+                # First publisher with a .bif output wins. We surface this
+                # at the top level (not on each server entry) because the
+                # Files-panel inspector button is per-file, not per-server,
+                # and the BIF viewer only needs one valid path. Plex bundle
+                # outputs are always single-file `index-sd.bif`; Jellyfin
+                # trickplay manifests have a sidecar that's not openable
+                # here so we filter to .bif explicitly.
+                if not bif_path:
+                    for op in s.get("output_paths") or []:
+                        if isinstance(op, str) and op.endswith(".bif"):
+                            bif_path = op
+                            break
             if slim:
                 record["servers"] = slim
+        if bif_path:
+            # Surfaced as a top-level field so the Files panel's inspector
+            # link can deep-link to /bif-viewer?bif=<path> and skip the
+            # Plex title-search heuristic entirely (which fails on episodes
+            # whose release-group suffix collides with the SxxExx regex).
+            record["bif_path"] = bif_path
 
         try:
             with open(path, "a") as f:

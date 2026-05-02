@@ -559,8 +559,24 @@ function renderFileResultsTable(files) {
         // so the filename truncates around it instead of swallowing it.
         var inspectorBtn = '';
         if (fileName && (f.outcome === 'generated' || f.outcome === 'skipped_bif_exists' || f.outcome === 'skipped_output_exists' || f.outcome === 'published')) {
-            var encodedFile = encodeURIComponent(fileName);
-            inspectorBtn = '<a href="/bif-viewer?file=' + encodedFile
+            // D34 — when the per-file row carries the absolute BIF path
+            // (recorded by Worker._capture_publishers from the publisher
+            // result), deep-link straight to it so the viewer skips the
+            // Plex title-search heuristic. The title-search path was
+            // mis-resolving episodes whose release-group suffix happened
+            // to look like a season/episode tag (e.g. "Fire Country" hit
+            // "Fire Country (2022)E17 - …-NTb" which the SxxExx regex
+            // fixed but the underlying search is still a guess).
+            // Falling back to ?file=<source_path> when no bif_path is
+            // present keeps older job histories functional.
+            var bifPath = f.bif_path || '';
+            var inspectorHref;
+            if (bifPath) {
+                inspectorHref = '/bif-viewer?bif=' + encodeURIComponent(bifPath);
+            } else {
+                inspectorHref = '/bif-viewer?file=' + encodeURIComponent(fileName);
+            }
+            inspectorBtn = '<a href="' + inspectorHref
                 + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary py-0 px-1 ms-2 flex-shrink-0"'
                 + ' title="Open in Preview Inspector"><i class="bi bi-eye"></i></a>';
         }

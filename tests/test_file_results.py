@@ -445,6 +445,122 @@ class TestFileResultServerAttribution:
         assert "servers" not in r
 
 
+class TestFileResultBifPath:
+    """D34 — surface the absolute BIF path on the file row so the
+    Files-panel inspector button can deep-link straight to the BIF
+    instead of running Plex's title-search heuristic (which mis-resolves
+    episodes whose release-group suffix collides with the SxxExx tag).
+    """
+
+    def test_bif_path_extracted_from_first_publisher(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "generated",
+            "",
+            "GPU 1",
+            servers=[
+                {
+                    "server_id": "plex-default",
+                    "server_name": "Plex",
+                    "server_type": "plex",
+                    "status": "published",
+                    "output_paths": [
+                        "/plex/Media/localhost/a/bcd.bundle/Contents/Indexes/index-sd.bif",
+                    ],
+                },
+            ],
+        )
+        r = jm.get_file_results(job.id)[0]
+        assert r["bif_path"] == "/plex/Media/localhost/a/bcd.bundle/Contents/Indexes/index-sd.bif"
+
+    def test_bif_path_skips_non_bif_outputs(self, config_dir):
+        """Jellyfin trickplay manifests aren't openable in the BIF viewer —
+        the picker must skip past the .json/.jpg sidecars and pick a .bif."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "generated",
+            "",
+            "GPU 1",
+            servers=[
+                {
+                    "server_id": "jelly-1",
+                    "server_name": "Jellyfin",
+                    "server_type": "jellyfin",
+                    "status": "published",
+                    "output_paths": [
+                        "/jelly/data/trickplay/abc/manifest.json",
+                        "/jelly/data/trickplay/abc/320.jpg",
+                    ],
+                },
+                {
+                    "server_id": "plex-default",
+                    "server_name": "Plex",
+                    "server_type": "plex",
+                    "status": "published",
+                    "output_paths": [
+                        "/plex/Media/localhost/a/bcd.bundle/Contents/Indexes/index-sd.bif",
+                    ],
+                },
+            ],
+        )
+        r = jm.get_file_results(job.id)[0]
+        assert r["bif_path"] == "/plex/Media/localhost/a/bcd.bundle/Contents/Indexes/index-sd.bif"
+
+    def test_bif_path_omitted_when_no_bif_output(self, config_dir):
+        """A Jellyfin-only publish (no Plex bundle) doesn't get a deep-link
+        — the field is omitted so the JS falls back to ?file= search."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "generated",
+            "",
+            "GPU 1",
+            servers=[
+                {
+                    "server_id": "jelly-1",
+                    "server_name": "Jellyfin",
+                    "server_type": "jellyfin",
+                    "status": "published",
+                    "output_paths": ["/jelly/data/trickplay/abc/manifest.json"],
+                },
+            ],
+        )
+        r = jm.get_file_results(job.id)[0]
+        assert "bif_path" not in r
+
+    def test_bif_path_omitted_when_publishers_have_no_output_paths(self, config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Test")
+
+        jm.record_file_result(
+            job.id,
+            "/media/foo.mkv",
+            "failed",
+            "FFmpeg crashed",
+            "GPU 1",
+            servers=[
+                {"server_id": "plex-default", "server_name": "Plex", "status": "failed"},
+            ],
+        )
+        r = jm.get_file_results(job.id)[0]
+        assert "bif_path" not in r
+
+
 class TestFileResultsCap:
     """The 5000-entry per-job soft cap protects /config from 100k-item scans."""
 

@@ -496,6 +496,20 @@
     (function _preloadFromDeepLink() {
         try {
             const params = new URLSearchParams(window.location.search);
+            // D34 — direct BIF path beats title-search every time. The
+            // Files panel records the absolute BIF path on every per-file
+            // row that produced one, so we can skip the Plex `/hubs/search`
+            // round-trip (which the title-cleaning regex above sometimes
+            // misses on episodes whose release-group suffix collides with
+            // the SxxExx tag). Falls through to the legacy ?file= path
+            // when the deep-link came from an older job history.
+            const bifDirect = (params.get('bif') || '').trim();
+            if (bifDirect) {
+                const input = $('pathInput');
+                if (input) input.value = bifDirect;
+                loadBif(bifDirect, bifDirect.split('/').pop() || bifDirect);
+                return;
+            }
             const file = (params.get('file') || '').trim();
             if (!file) return;
             // Strip directory and extension — Plex's /hubs/search matches
