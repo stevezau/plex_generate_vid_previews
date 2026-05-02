@@ -177,9 +177,13 @@ jobs:
         run: playwright install chromium
 
       - name: Run e2e tests
-        # -n 0: the e2e subprocess fixture binds a fixed port, so workers
-        # cannot run in parallel. Sequential is fast enough (~2 min).
-        run: pytest -m e2e -n 0 --no-cov --tb=short
+        # -n auto: on GH ubuntu-latest (2 vCPUs) this resolves to 2 workers.
+        # The "fixed port" comment that justified -n 0 historically was
+        # outdated — tests/e2e/conftest.py uses get_free_port() (dynamic
+        # ephemeral). Verified locally: -n 2 / -n 4 / -n 8 all pass; only
+        # very high parallelism (-n 16+) fails due to resource exhaustion.
+        # Cuts e2e wall-clock from ~167s to ~80-100s on CI.
+        run: pytest -m e2e -n auto --no-cov --tb=short
         timeout-minutes: 8
 
       - name: Upload Playwright traces on failure
