@@ -392,6 +392,7 @@ class Worker:
                     progress_callback=progress_callback,
                     cancel_check=self.cancel_check,
                     pause_check=self.pause_check,
+                    regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
                 )
 
             # Persist the per-file outcome via the job-runner-installed

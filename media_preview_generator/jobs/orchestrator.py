@@ -306,6 +306,7 @@ def _dispatch_webhook_paths_multi_server(
                 config=config,
                 cancel_check=cancel_check,
                 server_id_filter=sid_filter,
+                regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
             )
             for pub in result.publishers or []:
                 key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
@@ -843,6 +844,7 @@ def _dispatch_processable_items(
                 progress_callback=_slot_progress_callback,
                 cancel_check=cancel_check,
                 server_id_filter=per_item_pin,
+                regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
             )
             return (worker_label, result)
         except Exception as exc:
