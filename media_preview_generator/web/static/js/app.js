@@ -527,8 +527,13 @@ function _vendorLogo(type, size) {
     const stype = (type || '').toLowerCase();
     if (!['plex', 'emby', 'jellyfin'].includes(stype)) return null;
     const px = Number(size) || 18;
+    // alt="" + aria-hidden so screen-readers + copy/paste don't double-announce
+    // the vendor name (visible badge text already says "Plex"/"Emby"/etc.).
+    // Without this, users reading the row see "plexPlex 1 not indexed yet"
+    // instead of just "Plex 1 not indexed yet" because the alt-text bleeds
+    // into rendered textContent in many AT and copy paths.
     return (
-        `<img src="/static/images/vendors/${stype}.svg" alt="${stype}" ` +
+        `<img src="/static/images/vendors/${stype}.svg" alt="" aria-hidden="true" ` +
         `width="${px}" height="${px}" class="vendor-logo" ` +
         `style="vertical-align: -3px; margin-right: 4px;">`
     );
@@ -1422,12 +1427,24 @@ function _renderPublishersBlock(job) {
         const badges = ordered.map(function (status) {
             const meta = _statusMeta(status);
             const tip = meta.tip ? ` title="${escapeHtmlAttr(meta.tip)}"` : '';
-            return `<span class="badge ${meta.cls} me-1"${tip}>${counts[status]} ${escapeHtmlText(meta.label.toLowerCase())}</span>`;
-        }).join('');
-        return `<div class="mt-1"><span class="badge bg-light text-dark border me-2">${logo}${escapeHtmlText(sname)}</span>${badges}</div>`;
+            return `<span class="badge ${meta.cls}"${tip}>${escapeHtmlText(meta.label)} × ${counts[status]}</span>`;
+        }).join(' ');
+        // Stack server-name pill, an arrow separator, and the per-status
+        // badges with explicit gap-2 spacing so the visual hierarchy is
+        // unambiguous. Without this, "Plex" + "1 not indexed yet" run
+        // together visually and users misread it as "Plex1 not indexed yet"
+        // (and the SVG alt-text used to compound the confusion — see
+        // _vendorLogo for the alt="" aria-hidden fix).
+        return (
+            `<div class="mt-1 d-flex flex-wrap align-items-center gap-2">` +
+            `<span class="badge bg-light text-dark border">${logo}${escapeHtmlText(sname)}</span>` +
+            `<span class="text-muted small" aria-hidden="true">→</span>` +
+            badges +
+            `</div>`
+        );
     }).filter(Boolean).join('');
     if (!lines) return '';
-    return `<div class="mt-3 pt-2 border-top"><strong>Servers:</strong>${lines}</div>`;
+    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}</div>`;
 }
 
 let _jobQueueUpdatePending = false;
