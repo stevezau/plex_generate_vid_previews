@@ -481,6 +481,7 @@ class JobDispatcher:
                 job_id=job_id,
                 library_name=library_name,
                 cancel_check=tracker.cancel_check,
+                pause_check=tracker.pause_check,
             )
             logger.info(
                 "Dispatch: assigned canonical item {!r} (job {}) to {}",

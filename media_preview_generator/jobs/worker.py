@@ -246,6 +246,7 @@ class Worker:
         job_id: str | None = None,
         library_name: str = "",
         cancel_check=None,
+        pause_check=None,
     ) -> None:
         """Assign a :class:`ProcessableItem` to this worker.
 
@@ -309,6 +310,7 @@ class Worker:
         self.fallback_active = False
         self.fallback_reason = None
         self.cancel_check = cancel_check
+        self.pause_check = pause_check
 
         self.frame = 0
         self.fps = 0
@@ -389,6 +391,7 @@ class Worker:
                     gpu_device_path=gpu_device,
                     progress_callback=progress_callback,
                     cancel_check=self.cancel_check,
+                    pause_check=self.pause_check,
                 )
 
             # Persist the per-file outcome via the job-runner-installed
@@ -960,6 +963,7 @@ class WorkerPool:
         registry,
         title_max_width: int,
         cancel_check=None,
+        pause_check=None,
     ) -> bool:
         """Pop the next :class:`ProcessableItem` and assign it to ``worker``.
 
@@ -980,6 +984,7 @@ class WorkerPool:
             title_max_width=title_max_width,
             library_name="",
             cancel_check=cancel_check,
+            pause_check=pause_check,
         )
         logger.info(
             "Dispatch: assigned canonical item to {} (path={!r})",
@@ -1405,6 +1410,7 @@ class WorkerPool:
                     registry,
                     title_max_width,
                     cancel_check=cancel_check,
+                    pause_check=pause_check,
                 ):
                     # Race lost (queue drained between check and pop) —
                     # release the pre-claim so the worker stays available.

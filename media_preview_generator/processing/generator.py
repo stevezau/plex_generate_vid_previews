@@ -700,6 +700,7 @@ def generate_images(
     progress_callback=None,
     ffmpeg_threads_override: int | None = None,
     cancel_check=None,
+    pause_check=None,
 ) -> tuple[bool, int, str, float, float, str | None]:
     """Generate thumbnail images from ``video_file`` using FFmpeg.
 
@@ -913,6 +914,7 @@ def generate_images(
         progress_callback=progress_callback,
         ffmpeg_threads_override=ffmpeg_threads_override,
         cancel_check=cancel_check,
+        pause_check=pause_check,
         path_kind=path_kind,
         libplacebo_vf=libplacebo_vf,
         use_libplacebo=use_libplacebo,

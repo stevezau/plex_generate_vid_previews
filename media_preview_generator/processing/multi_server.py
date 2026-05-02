@@ -498,6 +498,7 @@ def process_canonical_path(
     progress_callback=None,
     ffmpeg_threads_override: int | None = None,
     cancel_check=None,
+    pause_check=None,
     regenerate: bool = False,
     use_frame_cache: bool = True,
     schedule_retry_on_not_indexed: bool = True,
@@ -786,6 +787,7 @@ def process_canonical_path(
                     progress_callback,
                     ffmpeg_threads_override=ffmpeg_threads_override,
                     cancel_check=cancel_check,
+                    pause_check=pause_check,
                 )
             except CodecNotSupportedError:
                 # Re-raised so callers can fall back to CPU; not a publisher failure.

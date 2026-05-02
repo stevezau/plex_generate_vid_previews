@@ -27,6 +27,7 @@ home address changed.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -52,6 +53,7 @@ def create_ffmpeg_runner(
     progress_callback: Callable | None,
     ffmpeg_threads_override: int | None,
     cancel_check: Callable | None,
+    pause_check: Callable | None = None,
     path_kind: str,
     libplacebo_vf: str | None,
     use_libplacebo: bool,
@@ -476,9 +478,17 @@ def create_ffmpeg_runner(
                     )
 
             time.sleep(0.02)
+            paused_locally = False
             while proc.poll() is None:
                 if cancel_check and cancel_check():
                     logger.info("Cancellation requested, terminating FFmpeg for {}", video_file)
+                    # If we were paused, resume first so SIGTERM can be delivered.
+                    if paused_locally:
+                        try:
+                            proc.send_signal(signal.SIGCONT)
+                        except (ProcessLookupError, OSError):
+                            pass
+                        paused_locally = False
                     proc.terminate()
                     try:
                         proc.wait(timeout=5)
@@ -486,6 +496,39 @@ def create_ffmpeg_runner(
                         proc.kill()
                         proc.wait()
                     raise CancellationError(f"Processing cancelled for {video_file}")
+
+                # Hard-pause via SIGSTOP/SIGCONT — freezes the FFmpeg process
+                # in place without losing work. When pause_check returns True
+                # we suspend the subprocess; when it flips back to False we
+                # resume. This is the live-halt behaviour that existed before
+                # the multi-server refactor: clicking Pause stops in-flight
+                # FFmpeg immediately rather than waiting for the current item
+                # to complete. SIGSTOP also stops the kernel from advancing
+                # the stall-detection clock, so a 30-min pause won't trip the
+                # FFMPEG_STALL_TIMEOUT_SEC kill below.
+                if pause_check and pause_check():
+                    if not paused_locally:
+                        try:
+                            proc.send_signal(signal.SIGSTOP)
+                            paused_locally = True
+                            last_progress_time = time.time()  # freeze stall clock
+                            logger.info(
+                                "FFmpeg paused for {} (PID {}) — global pause is active",
+                                video_file,
+                                proc.pid,
+                            )
+                        except (ProcessLookupError, OSError):
+                            pass
+                    time.sleep(0.2)
+                    continue
+                if paused_locally:
+                    try:
+                        proc.send_signal(signal.SIGCONT)
+                        paused_locally = False
+                        last_progress_time = time.time()  # restart stall clock
+                        logger.info("FFmpeg resumed for {} (PID {})", video_file, proc.pid)
+                    except (ProcessLookupError, OSError):
+                        pass
                 if os.path.exists(output_file):
                     try:
                         with open(output_file, encoding="utf-8") as f:
