@@ -436,6 +436,11 @@ class TestNotYetIndexedRoutesToSkip:
                     registry=registry,
                     config=mock_config_for_processing,
                     item_id_by_server={"plex-1": "42"},
+                    # Don't schedule a real retry timer — pytest tears down
+                    # loguru sinks after the test, and a 30s-later retry
+                    # firing after teardown floods CI with
+                    # "ValueError: I/O operation on closed file".
+                    schedule_retry_on_not_indexed=False,
                 )
 
         # Single skipped publisher — overall status is the dedicated
