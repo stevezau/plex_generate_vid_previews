@@ -39,39 +39,146 @@
 }
 
 html[data-bs-theme="light"] {
-    /* Modern-clean light theme — Linear/Vercel/Stripe family. Cool
-       neutral surfaces (no warm cream tint), muted Tailwind-style
-       accent palette, and a body bg that's noticeably greyer than the
-       cards so the cards lift via contrast rather than via shadow. */
-    --bs-body-bg: #f4f5f7;          /* cool soft grey, not warm cream */
-    --bs-secondary-bg: #ffffff;
-    --bs-tertiary-bg: #eceef2;
-    --bs-body-color: #1f2937;       /* slate-800 — softer than pure black */
-    --bs-secondary-color: #6b7280;  /* slate-500 — for muted/meta text */
-    --bs-border-color: #e5e7eb;     /* slate-200 — visible but quiet */
+    /* ──────────────────────────────────────────────────────────────────
+     * Modern-clean light theme — Linear / Stripe / Vercel family.
+     *
+     * Design principles:
+     *   1. Cool slate surfaces, never warm. Warm beiges read "consumer
+     *      web 2010"; cool greys read "professional SaaS 2026".
+     *   2. Status badges use TINTED bg + DARK text (Bootstrap 5.3's
+     *      *-subtle pattern) instead of solid saturated bg + white text.
+     *      Solid white-on-saturated reads as a warning at every size;
+     *      tinted-on-tinted reads as data.
+     *   3. Brand orange is a SCALPEL — primary CTA + active nav only.
+     *      Never on cards, borders, or data accents.
+     *   4. Cards lift via 1px slate border + bg contrast, not shadow.
+     *      Shadows are reserved for genuine elevation (modals, popovers).
+     *   5. Tonal scale (slate-50 → 900) for every neutral.
+     * ────────────────────────────────────────────────────────────────── */
+
+    /* Surfaces — every level uses cool slate so the eye reads them as
+       one family. Body is one step deeper than cards so cards float
+       on contrast alone. */
+    --bs-body-bg: #f8fafc;          /* slate-50 — body backdrop */
+    --bs-secondary-bg: #ffffff;     /* card surfaces */
+    --bs-tertiary-bg: #f1f5f9;      /* slate-100 — code blocks, raised regions */
+
+    /* Text scale — never pure black; slate-900 reads more refined and
+       pairs with the slate surfaces. Three levels are enough. */
+    --bs-body-color: #1e293b;       /* slate-800 — primary text */
+    --bs-secondary-color: #64748b;  /* slate-500 — meta / labels */
+    --bs-tertiary-color: #94a3b8;   /* slate-400 — disabled / placeholders */
+    --bs-emphasis-color: #0f172a;   /* slate-900 — headings + emphasis */
+
+    /* Borders — visible enough to define card edges, quiet enough to
+       not compete with content. Two weights. */
+    --bs-border-color: #e2e8f0;             /* slate-200 — default */
     --bs-border-color-translucent: rgba(15, 23, 42, 0.08);
 
-    /* Override Bootstrap's vivid utility palette with a muted Tailwind
-       balanced palette. .bg-primary / .bg-success / .text-info etc. on
-       the dashboard pick this up automatically — no template changes
-       needed. The dark theme keeps Bootstrap's vivid palette because
-       saturated colour reads as polish on dark navy; on white it reads
-       as candy. */
-    --bs-primary: #475569;          /* slate-600 — neutral data badge */
+    /* Status palette — solid colours kept for the rare callsite that
+       wants a vivid accent (the GPU stepper's "+" button), but every
+       BADGE switches to subtle tinted bg + dark text via the .bg-*
+       overrides further down. The subtle pattern is the actual
+       sophistication move; this layer just keeps Bootstrap happy.
+
+       We use Tailwind 600-weights for the solid colours (not 500) so
+       on the rare solid usage they don't shout. */
+    --bs-primary: #475569;           /* slate-600 — neutral data accent */
     --bs-primary-rgb: 71, 85, 105;
-    --bs-info: #0e7490;             /* cyan-700 */
+    --bs-info: #0e7490;              /* cyan-700 */
     --bs-info-rgb: 14, 116, 144;
-    --bs-success: #059669;          /* emerald-600 */
-    --bs-success-rgb: 5, 150, 105;
-    --bs-warning: #d97706;          /* amber-600 */
-    --bs-warning-rgb: 217, 119, 6;
-    --bs-danger: #b91c1c;           /* red-700 */
+    --bs-success: #047857;           /* emerald-700 — slightly deeper */
+    --bs-success-rgb: 4, 120, 87;
+    --bs-warning: #b45309;           /* amber-700 */
+    --bs-warning-rgb: 180, 83, 9;
+    --bs-danger: #b91c1c;            /* red-700 */
     --bs-danger-rgb: 185, 28, 28;
 
-    --surface-1: rgba(15, 23, 42, 0.025);
-    --surface-2: rgba(15, 23, 42, 0.045);
-    --surface-border: rgba(15, 23, 42, 0.08);
+    /* Subtle bg + emphasis text pairs — these are what badges + tinted
+       alerts use. Tailwind 100/800 pairings hit WCAG-AA at 12px+. */
+    --bs-primary-bg-subtle: #e2e8f0;     /* slate-200 */
+    --bs-primary-text-emphasis: #334155;  /* slate-700 */
+    --bs-secondary-bg-subtle: #f1f5f9;    /* slate-100 */
+    --bs-secondary-text-emphasis: #475569; /* slate-600 */
+    --bs-success-bg-subtle: #d1fae5;     /* emerald-100 */
+    --bs-success-text-emphasis: #065f46;  /* emerald-800 */
+    --bs-info-bg-subtle: #cffafe;        /* cyan-100 */
+    --bs-info-text-emphasis: #155e75;     /* cyan-800 */
+    --bs-warning-bg-subtle: #fef3c7;     /* amber-100 */
+    --bs-warning-text-emphasis: #92400e;  /* amber-800 */
+    --bs-danger-bg-subtle: #fee2e2;      /* red-100 */
+    --bs-danger-text-emphasis: #991b1b;   /* red-800 */
+
+    /* Surface tokens — used by .kpi-tile, .library-item etc. */
+    --surface-1: rgba(15, 23, 42, 0.03);
+    --surface-2: rgba(15, 23, 42, 0.05);
+    --surface-border: #e2e8f0;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Light mode badge overhaul — Bootstrap's `.bg-success` etc default
+ * to solid saturated bg with white text. That reads "alert! warning!"
+ * at every size. Modern dashboards (Linear, Stripe, Vercel) use
+ * tinted-bg + dark-text pills which read as DATA, not state alarms.
+ *
+ * We override .bg-* badges and alerts in light mode only — dark mode
+ * keeps the solid pills because they pop against the navy background.
+ * Alerts get the same treatment so info / success banners feel
+ * informative rather than urgent.
+ * ────────────────────────────────────────────────────────────────────── */
+html[data-bs-theme="light"] .badge.bg-primary,
+html[data-bs-theme="light"] .alert-primary {
+    background-color: var(--bs-primary-bg-subtle) !important;
+    color: var(--bs-primary-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-secondary,
+html[data-bs-theme="light"] .alert-secondary {
+    background-color: var(--bs-secondary-bg-subtle) !important;
+    color: var(--bs-secondary-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-success,
+html[data-bs-theme="light"] .alert-success {
+    background-color: var(--bs-success-bg-subtle) !important;
+    color: var(--bs-success-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-info,
+html[data-bs-theme="light"] .alert-info {
+    background-color: var(--bs-info-bg-subtle) !important;
+    color: var(--bs-info-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-warning,
+html[data-bs-theme="light"] .alert-warning {
+    background-color: var(--bs-warning-bg-subtle) !important;
+    color: var(--bs-warning-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-danger,
+html[data-bs-theme="light"] .alert-danger {
+    background-color: var(--bs-danger-bg-subtle) !important;
+    color: var(--bs-danger-text-emphasis) !important;
+    border-color: transparent;
+}
+
+/* `.text-dark` modifier (used by older callsites like `.bg-warning text-dark`)
+   becomes a no-op in light mode — the tinted bg + emphasis text already
+   gives us a dark-on-tint pill, so the .text-dark override would force
+   pure-black text and lose the emphasis-colour nuance. */
+html[data-bs-theme="light"] .badge.text-dark { color: inherit !important; }
+
+/* Progress bar fills — the table's "Workers" column shows a 100% bar
+ * coloured by status (.bg-success / .bg-warning). Inside .progress-bar
+ * we want the SOLID colour (Bootstrap blue → tinted is too washed for
+ * a fill), but the TEXT inside needs to stay dark for legibility on
+ * the lighter solid. Hand-tuned so the fill is visibly green/amber/red
+ * but the percentage label remains readable. */
+html[data-bs-theme="light"] .progress-bar.bg-success { background-color: #10b981 !important; color: #064e3b; }
+html[data-bs-theme="light"] .progress-bar.bg-warning { background-color: #f59e0b !important; color: #78350f; }
+html[data-bs-theme="light"] .progress-bar.bg-danger  { background-color: #ef4444 !important; color: #7f1d1d; }
+html[data-bs-theme="light"] .progress-bar.bg-secondary { background-color: #94a3b8 !important; color: #1e293b; }
 
 /* ──────────────────────────────────────────────────────────────────────
  * Focus rings — applied to every interactive element. Bootstrap's
@@ -167,6 +274,9 @@ nav.navbar.sticky-top::after {
     right: 0;
     bottom: -1px;
     height: 2px;
+    pointer-events: none;
+}
+html[data-bs-theme="dark"] nav.navbar.sticky-top::after {
     background: linear-gradient(
         90deg,
         rgba(229, 160, 13, 0) 0%,
@@ -174,7 +284,13 @@ nav.navbar.sticky-top::after {
         rgba(229, 160, 13, 0.65) 82%,
         rgba(229, 160, 13, 0) 100%
     );
-    pointer-events: none;
+}
+/* Light mode: drop the strip to a single 1px slate divider — the
+ * orange gradient on white was too candy-bright. Cleaner separation
+ * via a flat hairline reads as proper "header / body" hierarchy. */
+html[data-bs-theme="light"] nav.navbar.sticky-top::after {
+    height: 1px;
+    background: #e2e8f0;
 }
 
 /* Nav link hover: subtle highlight band, no jarring fill change. */
@@ -228,10 +344,18 @@ html[data-bs-theme="light"] .card {
 /* Subtle hover lift on cards that opt-in via .card-interactive (e.g.
  * server cards, schedule cards). Avoid lifting every dashboard panel
  * — that would have the whole page jiggle on cursor move. */
-.card-interactive:hover {
+html[data-bs-theme="dark"] .card-interactive:hover {
     border-color: rgba(229, 160, 13, 0.35);
     transform: translateY(-2px);
     box-shadow: var(--shadow-2);
+}
+/* Light-mode hover: NEUTRAL slate border lift — orange-on-white
+ * fights the calm palette and reads as a warning state. Dark mode
+ * keeps the brand orange because it pops against navy. */
+html[data-bs-theme="light"] .card-interactive:hover {
+    border-color: #94a3b8;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
 html[data-bs-theme="dark"] .card-header,
