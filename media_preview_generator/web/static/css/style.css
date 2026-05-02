@@ -1073,6 +1073,58 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
     /* Hide the table-responsive horizontal scroll affordance — there's
        nothing left to scroll once rows stack. */
     .jobs-table-card .table-responsive { overflow-x: visible; }
+
+    /* Schedules table — same card-stack treatment as the jobs table.
+     * Cells in DOM order: Name(1), Library(2), Schedule(3), Priority(4),
+     * Next Run(5), Status(6), Actions(7).
+     *
+     *   ┌─────────────────────────────────────┐
+     *   │ NAME · Library  · [Status]          │  row 1  (.title row)
+     *   │ Schedule  ·  Next Run    [actions]  │  row 2  (.meta + .actions)
+     *   │ Priority pill                        │  row 3  (.priority — small)
+     *   └─────────────────────────────────────┘
+     */
+    .schedules-table thead { display: none; }
+    .schedules-table,
+    .schedules-table tbody { display: block; width: 100%; }
+    .schedules-table tbody tr {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+            "name     status"
+            "schedule actions"
+            "nextrun  priority";
+        gap: 0.4rem 0.6rem;
+        align-items: center;
+        margin-bottom: 0.6rem;
+        background: var(--surface-1);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius);
+        padding: 0.7rem 0.85rem;
+    }
+    .schedules-table tbody tr > td {
+        display: block;
+        border: none !important;
+        padding: 0;
+    }
+    .schedules-table tbody tr > td:nth-child(1) { grid-area: name; font-weight: 500; }
+    .schedules-table tbody tr > td:nth-child(2) {
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    .schedules-table tbody tr > td:nth-child(2)::before {
+        content: "Library: ";
+        opacity: 0.6;
+    }
+    .schedules-table tbody tr > td:nth-child(3) { grid-area: schedule; font-size: 0.85rem; }
+    .schedules-table tbody tr > td:nth-child(4) { grid-area: priority; justify-self: end; }
+    .schedules-table tbody tr > td:nth-child(5) {
+        grid-area: nextrun;
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    .schedules-table tbody tr > td:nth-child(6) { grid-area: status; justify-self: end; }
+    .schedules-table tbody tr > td:nth-child(7) { grid-area: actions; justify-self: end; }
 }
 
 /* Numeric inputs that pair a stepper-wrapped input with a unit addon
