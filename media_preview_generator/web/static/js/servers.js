@@ -1001,7 +1001,17 @@
         const allServers = (listR.ok && listR.data && listR.data.servers) || [];
         _editState = { server, allServers };
 
-        $('#editServerName').textContent = `${server.name || ''} (${server.type || ''})`;
+        $('#editServerName').textContent = server.name || '';
+        const typeBadge = $('#editServerTypeBadge');
+        if (typeBadge) {
+            const t = (server.type || '').toLowerCase();
+            const colorMap = { plex: 'warning', emby: 'success', jellyfin: 'info' };
+            const color = colorMap[t] || 'secondary';
+            typeBadge.textContent = t;
+            typeBadge.className = `badge bg-${color} text-uppercase ms-1`;
+            typeBadge.style.fontSize = '0.65rem';
+            typeBadge.style.letterSpacing = '0.05em';
+        }
         $('#editServerId').value = server.id || '';
         $('#editServerType').value = server.type || '';
         $('#editServerDisplayName').value = server.name || '';
