@@ -797,7 +797,19 @@ async function loadPendingWebhooks() {
             const label = p.file_count === 1 && p.first_title
                 ? escapeHtml(p.first_title)
                 : `${p.file_count} file(s)`;
-            return `<strong>${source}</strong>: ${label} — starting in <strong class="pending-webhook-countdown" data-deadline="${deadline}">${initial}s</strong>`;
+            // "Fire now" button — short-circuits the debounce delay so the
+            // user can dispatch immediately when they don't want to wait.
+            // Encoded key stays attribute-safe (the key includes the source +
+            // path basename which can contain quotes / spaces).
+            const keyAttr = escapeHtmlAttr(p.key || '');
+            const fireBtn = p.key
+                ? ` <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 ms-2 pending-fire-now"
+                           data-key="${keyAttr}" title="Skip the delay and dispatch this batch now"
+                           style="font-size: 0.72rem; line-height: 1.4;">
+                       <i class="bi bi-lightning-charge-fill me-1"></i>Fire now
+                   </button>`
+                : '';
+            return `<strong>${source}</strong>: ${label} — starting in <strong class="pending-webhook-countdown" data-deadline="${deadline}">${initial}s</strong>${fireBtn}`;
         });
         content.innerHTML = parts.join(' &middot; ');
     } catch (error) {
@@ -815,6 +827,32 @@ function tickPendingWebhookCountdowns() {
         if (el.textContent !== text) el.textContent = text;
     });
 }
+
+// Click delegation for "Fire now" buttons inside the pending-webhooks
+// banner. POSTs /api/webhooks/pending/<key>/fire-now, then immediately
+// reloads the banner (the row should disappear because the batch was
+// dispatched) and the jobs list (the new job should appear).
+document.addEventListener('click', async function (e) {
+    const btn = e.target.closest && e.target.closest('.pending-fire-now');
+    if (!btn) return;
+    e.preventDefault();
+    const key = btn.getAttribute('data-key') || '';
+    if (!key) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Firing…';
+    try {
+        await apiPost('/api/webhooks/pending/' + encodeURIComponent(key) + '/fire-now');
+        showToast('Webhook Fired', 'Skipped the delay — dispatching now.', 'success');
+        // Refresh the banner (row should disappear) and the jobs list
+        // (the new job should appear within ~1s).
+        await loadPendingWebhooks();
+        await loadJobs();
+    } catch (error) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-lightning-charge-fill me-1"></i>Fire now';
+        showToast('Error', 'Could not fire webhook: ' + (error && error.message || error), 'danger');
+    }
+});
 
 function renderGlobalPauseResume() {
     const pauseTitle = 'Pause all processing. No new jobs will start; active job will stop dispatching new tasks after current ones finish.';

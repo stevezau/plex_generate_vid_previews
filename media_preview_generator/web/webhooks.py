@@ -1251,6 +1251,7 @@ def get_pending_webhooks():
             titles = batch.get("titles", [])
             pending.append(
                 {
+                    "key": key,
                     "source": batch.get("source", key),
                     "file_count": len(batch.get("file_paths", set())),
                     "first_title": titles[0] if titles else "",
@@ -1259,3 +1260,40 @@ def get_pending_webhooks():
                 }
             )
     return jsonify({"pending": pending})
+
+
+@webhooks_bp.route("/pending/<path:debounce_key>/fire-now", methods=["POST"])
+@api_token_required
+def fire_pending_webhook_now(debounce_key: str):
+    """Skip the debounce delay and dispatch this batch immediately.
+
+    The debounce window exists so an *arr that drops 30 episodes in 5
+    seconds gets one job, not 30. But once the user can SEE the batch
+    and KNOWS what's in it, the wait is just friction. This lets them
+    short-circuit it. Cancels the queued threading.Timer + dispatches
+    the same callback synchronously so the job appears in the queue
+    on the next dashboard tick.
+    """
+    cancelled_timer = False
+    with _pending_lock:
+        if debounce_key not in _pending_batches:
+            return jsonify({"error": "no pending batch with that key"}), 404
+        existing = _pending_timers.pop(debounce_key, None)
+        if existing is not None:
+            try:
+                existing.cancel()
+                cancelled_timer = True
+            except Exception:
+                logger.debug("fire-now: could not cancel timer for {}", debounce_key, exc_info=True)
+
+    logger.info(
+        "Webhook batch {!r}: user requested fire-now (cancelled_timer={}); dispatching immediately.",
+        debounce_key,
+        cancelled_timer,
+    )
+    # Run on a daemon thread so we don't block the HTTP response on
+    # job-creation work (Plex resolution, registry build, etc.).
+    threading.Thread(
+        target=_execute_webhook_job, args=[debounce_key], daemon=True, name=f"webhook-firenow-{debounce_key[:24]}"
+    ).start()
+    return jsonify({"success": True, "fired": debounce_key}), 202
