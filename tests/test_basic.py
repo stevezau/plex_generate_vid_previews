@@ -24,16 +24,27 @@ class TestBasicFunctionality:
             f"Version '{media_preview_generator.__version__}' doesn't match PEP 440 format"
         )
 
-    def test_web_module_importable(self, tmp_path):
-        """create_app() returns a real Flask app with registered routes (not just a callable)."""
+    def test_web_module_importable(self, tmp_path, monkeypatch):
+        """create_app() returns a real Flask app with registered routes (not just a callable).
+
+        CI gotcha: ``auth.py`` evaluates ``CONFIG_DIR`` and ``AUTH_FILE`` at
+        module-import time from the env var, defaulting to ``/config``.
+        Passing ``config_dir=tmp_path`` to create_app doesn't redirect those
+        constants. On CI runners (no /config write access), create_app's
+        ``log_token_on_startup()`` chain hits PermissionError.
+
+        Override AUTH_FILE before calling create_app — that's the only path
+        that touches /config in the no-config code path. The rest of
+        create_app respects the explicit config_dir we pass in.
+        """
         import flask
 
+        from media_preview_generator.web import auth as _auth
         from media_preview_generator.web.app import create_app
 
-        # Pass an explicit writable config_dir so the test runs on CI runners
-        # where the production default (/config) isn't writable. Keeping the
-        # call real (not patched) means a regression that breaks app
-        # construction or blueprint registration still fails this test.
+        monkeypatch.setattr(_auth, "AUTH_FILE", str(tmp_path / "auth.json"))
+        monkeypatch.setattr(_auth, "CONFIG_DIR", str(tmp_path))
+
         app = create_app(config_dir=str(tmp_path))
         assert isinstance(app, flask.Flask)
         # The app must have registered URL rules — guards against the failure
