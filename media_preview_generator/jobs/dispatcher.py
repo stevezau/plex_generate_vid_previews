@@ -90,6 +90,14 @@ class JobTracker:
         self.on_item_complete: Callable | None = cbs.get("on_item_complete")
         self.cancel_check: Callable | None = cbs.get("cancel_check")
         self.pause_check: Callable | None = cbs.get("pause_check")
+        # Wired by JobDispatcher.submit_items so record_completion can
+        # include the same in-flight fraction the periodic emitter uses.
+        # Without this, two competing emit paths produced different
+        # percent values for the same instant: the completion path saw
+        # only ``completed/total`` while the 3s periodic path included
+        # ``(completed + in_flight)/total`` — the bar visibly bounced
+        # between e.g. 12% (completion path) and 30% (periodic path).
+        self.in_progress_fraction_getter: Callable[[], float] | None = None
 
         # Throttle timestamps for callbacks
         self._last_progress_update = 0.0
@@ -140,10 +148,19 @@ class JobTracker:
             now = time.time()
             is_final = self.completed >= self.total_items
             if is_final or now - self._last_progress_update >= 0.5:
+                fraction = 0.0
+                if self.in_progress_fraction_getter is not None:
+                    try:
+                        fraction = self.in_progress_fraction_getter()
+                    except Exception:
+                        fraction = 0.0
+                effective = self.completed + fraction
+                percent = (effective / self.total_items * 100) if self.total_items > 0 else 0
                 self.progress_callback(
                     self.completed,
                     self.total_items,
                     f"{self.library_prefix}{self.completed}/{self.total_items} completed",
+                    percent_override=percent,
                 )
                 self._last_progress_update = now
 
@@ -249,6 +266,11 @@ class JobDispatcher:
             callbacks=callbacks,
             priority=priority,
         )
+        # Wire the in-flight fraction getter so JobTracker.record_completion
+        # emits the same percent the dispatcher's periodic _emit_progress_updates
+        # uses (completed + in_progress_fraction). Without this, the bar
+        # bounced between the two paths' divergent values.
+        tracker.in_progress_fraction_getter = lambda jid=job_id: self._get_in_progress_fraction(jid)
         with self._trackers_lock:
             self._trackers[job_id] = tracker
         logger.info(

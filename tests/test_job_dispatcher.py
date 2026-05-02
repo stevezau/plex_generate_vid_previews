@@ -119,7 +119,7 @@ class TestJobTracker:
             config=_make_config(),
             registry=MagicMock(),
             callbacks={
-                "progress_callback": lambda c, t, m: progress_calls.append((c, t)),
+                "progress_callback": lambda c, t, m, percent_override=None: progress_calls.append((c, t)),
                 "on_item_complete": lambda dn, t, s: item_calls.append((dn, t, s)),
             },
         )
@@ -707,6 +707,75 @@ class TestInProgressFraction:
         dispatcher.shutdown()
 
 
+class TestProgressBarMonotonicity:
+    """Regression: the bar must not bounce between 12% → 30% → 12% (D37).
+
+    Two emit paths can fire for the same job:
+
+    * ``JobTracker.record_completion`` fires on every completion
+      (0.5Hz throttle).
+    * ``JobDispatcher._emit_progress_updates`` fires periodically
+      (3s throttle) and includes ``in_progress_fraction``.
+
+    Before D37, the completion path emitted ``percent = completed/total``
+    while the periodic path emitted ``percent = (completed +
+    in_progress_fraction)/total``. With even one busy worker, the second
+    value was higher — so the UI bar visibly jumped UP every 3s and
+    fell back DOWN on the next completion. This test pins both paths
+    to the same formula by wiring an in-flight fraction getter onto
+    the tracker at submit time.
+    """
+
+    def test_record_completion_includes_in_flight_fraction(self):
+        """Both emit paths must agree on the percent for a given (completed, fraction) pair."""
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+
+        # Force a synthetic in-flight worker for "monotone-job".
+        worker = pool._snapshot_workers()[0]
+        worker.is_busy = True
+        worker.current_job_id = "monotone-job"
+        worker.progress_percent = 80.0
+
+        progress_calls: list[dict] = []
+
+        def capture(current, total, message, percent_override=None):
+            progress_calls.append({"current": current, "percent_override": percent_override})
+
+        from media_preview_generator.jobs.dispatcher import JobTracker
+
+        tracker = JobTracker(
+            job_id="monotone-job",
+            items=_pi_list_or_passthrough([("k1", "F1", "movie"), ("k2", "F2", "movie")]),
+            config=_make_config(),
+            registry=MagicMock(),
+            callbacks={"progress_callback": capture},
+        )
+        tracker.in_progress_fraction_getter = lambda: dispatcher._get_in_progress_fraction("monotone-job")
+        tracker.total_items = 100  # easier arithmetic
+
+        # Path A: record_completion fires the completion-path emit.
+        tracker.completed_when_recording = tracker.completed  # baseline
+        tracker.successful = 12
+        tracker._last_progress_update = 0.0  # bypass throttle
+        tracker.record_completion(True, "CPU 1", "F1")  # successful → 13
+
+        # Path B: dispatcher._emit_progress_updates would compute the same
+        # formula. Mirror it inline so the assertion ties the two paths
+        # together explicitly.
+        in_flight = dispatcher._get_in_progress_fraction("monotone-job")
+        path_b_percent = (tracker.completed + in_flight) / tracker.total_items * 100
+
+        # Path A's emit should match Path B's formula. Without the D37
+        # wiring, Path A would have emitted 13.0 while Path B emitted
+        # 13.8 (12 completed + 0.8 fraction)/100 — visible jump.
+        path_a_percent = progress_calls[-1]["percent_override"]
+        assert path_a_percent == pytest.approx(path_b_percent), (
+            f"Both emit paths must agree. record_completion={path_a_percent}, periodic={path_b_percent}"
+        )
+        dispatcher.shutdown()
+
+
 class TestProgressCallbackPercentOverride:
     """Verify that progress_callback accepts percent_override."""
 
@@ -738,9 +807,16 @@ class TestProgressCallbackPercentOverride:
         )
         assert tracker.wait(timeout=10)
 
-        # There should be completion callbacks (without override).
-        completions = [c for c in progress_calls if c["percent_override"] is None]
+        # Every completion callback now carries percent_override so the
+        # bar can't bounce between the completion path and the periodic
+        # path emitting different percent values for the same instant.
+        completions = [c for c in progress_calls if c["current"] > 0]
         assert len(completions) >= 1, "Expected at least one completion callback"
+        for c in completions:
+            assert c["percent_override"] is not None, (
+                "record_completion should pass percent_override so it stays "
+                "in lock-step with _emit_progress_updates — see D37."
+            )
         dispatcher.shutdown()
 
 
